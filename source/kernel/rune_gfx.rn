@@ -1,0 +1,23 @@
+// rune_gfx.rn — NoovexOS graphics, written in Rune, compiled by the Rune compiler,
+// linked into the C kernel. Draws an animated XOR/plasma texture into a pixel buffer.
+fn rune_render(buf: *u32, w: i32, h: i32, t: i32) -> void {
+    let mut y: i32 = 0;
+    while y < h {
+        let mut x: i32 = 0;
+        while x < w {
+            let e: i32 = ((x ^ y) + t) & 255;
+            let r: u32 = (e & 255) as u32;
+            let g: u32 = ((e * 2) & 255) as u32;
+            let b: u32 = ((200 - e) & 255) as u32;
+            *(buf + (y * w + x)) = (r << 16) | (g << 8) | b;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return;
+}
+// a pure-Rune compute demo the command also prints
+fn rune_fib(n: i32) -> i32 {
+    if n < 2 { return n; }
+    return rune_fib(n - 1) + rune_fib(n - 2);
+}
