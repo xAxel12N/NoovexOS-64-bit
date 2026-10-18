@@ -1,5 +1,10 @@
-static void nvw32(u32 off,u32 v){ if(g_nv_bar0)*(volatile u32*)(u64)(g_nv_bar0+off)=v; }
-static void nv_udelay(u32 us){ rtw_delay_us(us); }
+#include "include/nvx/base.h"
+#include "include/nvx/mm/pmm_vmm.h"
+#include "include/nvx/drivers/wifi/rtw_efuse.h"
+#include "include/nvx/drivers/video/nvidia/nvgpu.h"
+#include "include/nvx/drivers/video/nvidia/nvdisp.h"
+void nvw32(u32 off,u32 v){ if(g_nv_bar0)*(volatile u32*)(u64)(g_nv_bar0+off)=v; }
+void nv_udelay(u32 us){ rtw_delay_us(us); }
 
 /* ============================================================
    EDID via DDC/I2C over the GPU GPIO (Turing PMGR i2c ports)
@@ -24,7 +29,7 @@ static int i2c_wbyte(u8 b){ for(int i=0;i<8;i++){ i2c_set(0,(b>>(7-i))&1); i2c_s
 static u8 i2c_rbyte(int ack){ u8 b=0; i2c_set(0,1); for(int i=0;i<8;i++){ i2c_set(1,1); b=(b<<1)|i2c_get_sda(); i2c_set(0,1); }
     i2c_set(0,!ack); i2c_set(1,!ack); i2c_set(0,!ack); return b; }
 
-static u8 g_edid[128]; static int g_edid_ok=0;
+u8 g_edid[128]; int g_edid_ok=0;
 static int edid_read_ddc(void){
     i2c_start();
     if(!i2c_wbyte(0xA0)){ i2c_stop(); return 0; }   /* DDC addr write */
@@ -39,8 +44,8 @@ static int edid_read_ddc(void){
 }
 
 /* ---- parsed mode from EDID detailed timing descriptor ---- */
-static nv_mode g_mode; static int g_mode_ok=0;
-static char g_edid_name[16];
+nv_mode g_mode; int g_mode_ok=0;
+char g_edid_name[16];
 static int edid_parse(void){
     if(!g_edid_ok)return 0;
     int d=54;                                   /* first detailed timing descriptor */
@@ -101,7 +106,7 @@ static int nv_modeset_scaffold(void){
 
 static int g_nv_modeset_enable=0;   /* keep the speculative modeset OFF unless explicitly turned on */
 
-static int nv_display_probe(void){
+int nv_display_probe(void){
     if(!nv_probe())return 0;
     nv_read_id();
     if(!g_nv_vbios_len)nv_load_vbios();

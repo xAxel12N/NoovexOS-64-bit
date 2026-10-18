@@ -12,6 +12,7 @@ static int lookup_name(const char* file,const char* nm){ char buf[2048]; int fd=
         if(!strcmp(f[0],nm))return atoi(f[2]); l=*e?e+1:e; }
     return -1; }
 static void modestr(unsigned m,char* s){ s[0]=S_ISDIR(m)?'d':S_ISLNK(m)?'l':((m&0170000)==0020000)?'c':'-'; const char* r="rwxrwxrwx"; for(int i=0;i<9;i++)s[1+i]=(m&(1u<<(8-i)))?r[i]:'-'; s[10]=0; }
+static int cmpstrp(const void* a,const void* b){ return strcmp(*(char* const*)a,*(char* const*)b); }
 static int cmpstr(const void* a,const void* b,void* c){ (void)c; return strcmp((const char*)a,(const char*)b); }
 static void ls_one(const char* dir,const char* name,int lng){
     char p[256]; if(dir)join(p,dir,name); else strcpy(p,name);
@@ -32,15 +33,17 @@ static int do_ls(int argc,char** argv){
         if(!S_ISDIR(st.st_mode)){ ls_one(0,p,lng); continue; }
         if(np>1)printf("%s:\n",p);
         DIR* d=opendir(p); if(!d){ err("ls",p,"cannot open"); continue; }
-        static char names[128][64]; int n=0; struct dirent* e; while((e=readdir(d))&&n<128){ if(!all&&e->d_name[0]=='.')continue; strncpy(names[n],e->d_name,63); names[n][63]=0; n++; } closedir(d);
-        qsort_r(names,(size_t)n,64,cmpstr,0);
+        char** names=0; int n=0, cap=0; struct dirent* e; while((e=readdir(d))){ if(!all&&e->d_name[0]=='.')continue; if(n==cap){ cap=cap?cap*2:64; names=realloc(names,(size_t)cap*sizeof(char*)); } names[n++]=strdup(e->d_name); } closedir(d);
+        qsort(names,(size_t)n,sizeof(char*),cmpstrp);
         if(lng) for(int i=0;i<n;i++)ls_one(p,names[i],1);
-        else { int col=0; for(int i=0;i<n;i++){ int L=(int)strlen(names[i]); if(col+L+2>88){ printf("\n"); col=0; } printf("%s  ",names[i]); col+=L+2; } if(n)printf("\n"); }
+        else if(!isatty(1)) for(int i=0;i<n;i++)printf("%s\n",names[i]);
+        else { int col=0; for(int i=0;i<n;i++){ int L=(int)strlen(names[i]); if(col&&col+L+2>88){ printf("\n"); col=0; } printf("%s  ",names[i]); col+=L+2; } if(n)printf("\n"); }
+        for(int i=0;i<n;i++)free(names[i]); free(names);
         if(np>1&&pi<np-1)printf("\n"); }
     return rc;
 }
 static int each_input(int argc,char** argv,int first,void(*fn)(int,const char*)){
-    int any=0; for(int i=first;i<argc;i++){ if(argv[i][0]=='-'&&argv[i][1])continue; any=1; if(!strcmp(argv[i],"-")){ fn(0,"-"); continue; } int fd=open(argv[i],O_RDONLY); if(fd<0){ err("",argv[i],"No such file or directory"); continue; } fn(fd,argv[i]); close(fd); }
+    int any=0; for(int i=first;i<argc;i++){ if(argv[i][0]=='-'&&argv[i][1])continue; any=1; if(!strcmp(argv[i],"-")){ fn(0,"-"); continue; } int fd=open(argv[i],O_RDONLY); if(fd<0){ err(base(argv[0]),argv[i],"No such file or directory"); continue; } fn(fd,argv[i]); close(fd); }
     if(!any)fn(0,"-"); return rc; }
 static void f_cat(int fd,const char* n){ (void)n; char b[512]; long r; while((r=read(fd,b,sizeof(b)))>0)write(1,b,(size_t)r); }
 static int readline_fd(int fd,char* out,int cap){ static char buf[1024]; static int bl=0,bp=0,lastfd=-1; if(fd!=lastfd){ bl=bp=0; lastfd=fd; } int n=0;
@@ -88,8 +91,10 @@ static int do_stat(int argc,char** argv){ for(int i=1;i<argc;i++){ struct stat s
         printf("  File: %s\n  Size: %lu\tType: %s\n Inode: %lu\tLinks: %u\nAccess: (%04o/%s)  Uid: (%u/%s)  Gid: (%u/%s)\n",argv[i],st.st_size,ty,st.st_ino,st.st_nlink,st.st_mode&07777,m,st.st_uid,u,st.st_gid,g);
         if(st.st_mtime){ time_t t=(time_t)st.st_mtime; printf("Modify: %s\n",ctime(&t)); } } return rc; }
 static int do_id(void){ int u=getuid(),g=getgid(); char un[20],gn[20]; if(!lookup_id("/etc/passwd",u,un,20))strcpy(un,"?"); if(!lookup_id("/etc/group",g,gn,20))strcpy(gn,"?"); printf("uid=%d(%s) gid=%d(%s)\n",u,un,g,gn); return 0; }
+int coreutils_main(int argc,char** argv);
 int main(int argc,char** argv){
     const char* c=base(argv[0]);
+    if(strcmp(c,"nvxbox")){ int r=coreutils_main(argc,argv); if(r!=-1000)return r; }
     if(!strcmp(c,"nvxbox")){ if(argc>1){ return main(argc-1,argv+1); } printf("nvxbox: ls cat grep wc head tail echo mkdir rmdir rm mv cp touch ln chmod chown stat pwd hostname whoami id uname date sleep mount umount readlink tee sort true false\n"); return 0; }
     if(!strcmp(c,"ls"))return do_ls(argc,argv);
     if(!strcmp(c,"cat"))return each_input(argc,argv,1,f_cat);
@@ -112,7 +117,7 @@ int main(int argc,char** argv){
     if(!strcmp(c,"hostname")){ if(argc>1){ if(sethostname(argv[1],strlen(argv[1]))<0){ err("hostname",argv[1],"Operation not permitted"); return 1; } int fd=open("/etc/hostname",O_CREAT|O_WRONLY|O_TRUNC); if(fd>=0){ write(fd,argv[1],strlen(argv[1])); write(fd,"\n",1); close(fd); } return 0; } char b[64]; gethostname(b,sizeof(b)); printf("%s\n",b); return 0; }
     if(!strcmp(c,"whoami")){ char u[20]; if(!lookup_id("/etc/passwd",getuid(),u,20))sprintf(u,"%d",getuid()); printf("%s\n",u); return 0; }
     if(!strcmp(c,"id"))return do_id();
-    if(!strcmp(c,"uname")){ char h[64]; gethostname(h,sizeof(h)); if(argc>1&&!strcmp(argv[1],"-a"))printf("NoovexOS %s 8.13 nvx64 x86_64\n",h); else printf("NoovexOS\n"); return 0; }
+    if(!strcmp(c,"uname")){ char h[64]; gethostname(h,sizeof(h)); char r[32]="?"; int fd=open("/sys/kernel/osrelease",O_RDONLY); if(fd>=0){ int n=(int)read(fd,r,sizeof(r)-1); close(fd); if(n<0)n=0; r[n]=0; for(int i=0;r[i];i++)if(r[i]=='\n'){ r[i]=0; break; } } if(argc>1&&!strcmp(argv[1],"-a"))printf("NoovexOS %s %s nvx64 x86_64\n",h,r); else if(argc>1&&!strcmp(argv[1],"-r"))printf("%s\n",r); else printf("NoovexOS\n"); return 0; }
     if(!strcmp(c,"date")){ time_t t=time(0); printf("%s\n",ctime(&t)); return 0; }
     if(!strcmp(c,"sleep")){ if(argc<2)return 1; sleep((unsigned)atoi(argv[1])); return 0; }
     if(!strcmp(c,"mount")){ if(argc<3){ int fd=open("/proc/mounts",O_RDONLY); char b[512]; long n; while(fd>=0&&(n=read(fd,b,sizeof(b)))>0)write(1,b,(size_t)n); if(fd>=0)close(fd); return 0; }

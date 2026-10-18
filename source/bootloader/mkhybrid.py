@@ -28,6 +28,63 @@ def to83(name):
     return bytes(out)
 
 # ------------------------------------------------------------ FAT32 with folders
+def build_fat16(files, label='NVXEFI'):
+    content = sum(len(d) for _, d in files)
+    sectors = max(8192, ((content * 12 // 10) // S512 + 1024 + 2047) & ~2047)
+    spc = 1
+    while sectors // spc >= 65000: spc *= 2
+    assert spc <= 128, "EFI image too large for FAT16"
+    rsv, nf, rootent = 1, 2, 512
+    rootsec = rootent * 32 // S512
+    fatsz = 1
+    while True:
+        clus = (sectors - rsv - nf * fatsz - rootsec) // spc
+        need = ((clus + 2) * 2 + S512 - 1) // S512
+        if need <= fatsz: break
+        fatsz = need
+    assert 4085 <= clus < 65525, "EFI image cluster count is not FAT16"
+    img = bytearray(sectors * S512)
+    bs = bytearray(512)
+    bs[0:3] = b'\xEB\x3C\x90'; bs[3:11] = b'NOOVEXOS'
+    struct.pack_into('<HBHBHHBHHHII', bs, 11, S512, spc, rsv, nf, rootent, sectors if sectors <= 0xFFFF else 0, 0xF8, fatsz, 63, 255, 0, sectors if sectors > 0xFFFF else 0)
+    struct.pack_into('<BBBI', bs, 36, 0x80, 0, 0x29, 0x4E565845)
+    bs[43:54] = label.encode().ljust(11)[:11]; bs[54:62] = b'FAT16   '; bs[510:512] = b'\x55\xAA'
+    img[0:512] = bs
+    fat = [0] * (clus + 2); fat[0] = 0xFFF8; fat[1] = 0xFFFF
+    root_off = (rsv + nf * fatsz) * S512; data_sec = rsv + nf * fatsz + rootsec
+    nxt = [2]
+    def alloc(n):
+        c0 = nxt[0]; assert c0 + n <= clus + 2, "EFI image full"
+        for i in range(n): fat[c0 + i] = (c0 + i + 1) if i < n - 1 else 0xFFFF
+        nxt[0] += n; return c0
+    def coff(c): return (data_sec + (c - 2) * spc) * S512
+    def dent(name83, attr, clus_, size):
+        e = bytearray(32); e[0:11] = name83; e[11] = attr
+        struct.pack_into('<HHHHHHHI', e, 14, 0, 0x5C21, 0x5C21, 0, 0, 0x5C21, clus_, size); return bytes(e)
+    def n83(n):
+        b, _, x = n.upper().partition('.'); return (b.ljust(8)[:8] + x.ljust(3)[:3]).encode()
+    dirs = {'': None}; ents = {'': []}
+    for path, data in files:
+        parts = path.split('/')
+        for i in range(1, len(parts)):
+            d = '/'.join(parts[:i])
+            if d not in dirs:
+                c = alloc(1); dirs[d] = c; par = '/'.join(parts[:i - 1])
+                ents[par].append(dent(n83(parts[i - 1]), 0x10, c, 0))
+                ents[d] = [dent(b'.          ', 0x10, c, 0), dent(b'..         ', 0x10, dirs[par] or 0, 0)]
+        n = (len(data) + spc * S512 - 1) // (spc * S512); c = alloc(n) if n else 0
+        if n: img[coff(c):coff(c) + len(data)] = data
+        ents['/'.join(parts[:-1])].append(dent(n83(parts[-1]), 0x20, c, len(data)))
+    assert len(ents['']) <= rootent
+    for i, e in enumerate(ents['']): img[root_off + i * 32:root_off + i * 32 + 32] = e
+    for d, c in dirs.items():
+        if d == '': continue
+        assert len(ents[d]) * 32 <= S512 * spc; o = coff(c)
+        for i, e in enumerate(ents[d]): img[o + i * 32:o + i * 32 + 32] = e
+    fb = b''.join(struct.pack('<H', v) for v in fat).ljust(fatsz * S512, b'\0')
+    for k in range(nf): img[(rsv + k * fatsz) * S512:(rsv + (k + 1) * fatsz) * S512] = fb
+    return bytes(img), sectors, clus
+
 def build_fat32(part_lba, part_sectors, tree, label='NOOVEXOS'):
     bps, spc, reserved, nfats, root_clus = S512, 1, 32, 2, 2
     tmp1 = part_sectors - reserved; tmp2 = (256 * spc + nfats) // 2
@@ -132,8 +189,18 @@ def main():
 
     # --- FAT32 partition sized to contents (+ 8 MB slack), min 16 MB ---
     total_bytes = sum(len(d) for _, d in tree)
-    part_sectors = max(32768, ((total_bytes + 8 * 1024 * 1024) // S512 + 2048) & ~2047)
+    part_sectors = max(69632, ((total_bytes + 8 * 1024 * 1024) // S512 + 2048) & ~2047)
     fat, used = build_fat32(PART_LBA, part_sectors, tree, volid)
+    _bs = fat[0:512]; _fz = struct.unpack_from('<I', _bs, 36)[0]; _rsv = struct.unpack_from('<H', _bs, 14)[0]
+    _ncl = (part_sectors - _rsv - _bs[16] * _fz) // _bs[13]
+    assert _ncl >= 65525, f"FAT32 partition has only {_ncl} clusters; UEFI would read it as FAT16"
+    _efi_files = []
+    _efi_bin = [d for fp, d in tree if fp.upper() == 'EFI/BOOT/BOOTX64.EFI']
+    _kern = [d for fp, d in tree if fp.lower() in ('boot/kernel64.bin', 'kernel64.bin')]
+    efi_img = None
+    if _efi_bin and _kern and os.environ.get('NVX_EFI_FAT16') == '1':
+        efi_img, efi_img_sectors, efi_clus = build_fat16([('EFI/BOOT/BOOTX64.EFI', _efi_bin[0]), ('KERNEL64.BIN', _kern[0])])
+        print(f"  + UEFI CD image: FAT16, {efi_img_sectors} sectors, {efi_clus} clusters (El Torito EFI entry)")
 
     # --- MBR: myboot stage1 + partition entry ---
     mbr = bytearray(boot)
@@ -142,7 +209,8 @@ def main():
     struct.pack_into('<I', mbr, 0x1BE + 8, PART_LBA); struct.pack_into('<I', mbr, 0x1BE + 12, part_sectors)
     struct.pack_into('<H', mbr, 510, 0xAA55)
 
-    total_512 = PART_LBA + part_sectors
+    efi_lba = PART_LBA + part_sectors
+    total_512 = efi_lba + (((efi_img_sectors + 3) & ~3) if efi_img else 0)
     total_2k = total_512 // 4
 
     # --- ISO9660 area (LBA 16..) : README lives in the ISO tree so a mounted CD shows something ---
@@ -169,8 +237,8 @@ def main():
     efi_hdr = struct.pack('<BBH', 0x91, 0xEF, 1) + b'\0' * 28
     # EFI entry: boot indicator 0x88, media 0 (no emulation), load the FAT partition.
     # sector_count in virtual 512 sectors of the ESP; load RBA in 2K CD sectors = PART_LBA/4.
-    efi_sectors = min(0xFFFF, part_sectors)
-    efi_entry = struct.pack('<BBHBBHI', 0x88, 0x00, 0, 0, 0, efi_sectors & 0xFFFF, PART_LBA // 4) + b'\0' * 20
+    if efi_img: efi_entry = struct.pack('<BBHBBHI', 0x88, 0x00, 0, 0, 0, efi_img_sectors if efi_img_sectors <= 0xFFFF else 0, efi_lba // 4) + b'\0' * 20
+    else: efi_entry = struct.pack('<BBHBBHI', 0x88, 0x00, 0, 0, 0, part_sectors if part_sectors <= 0xFFFF else 0, PART_LBA // 4) + b'\0' * 20
     cat = pad(val + default + efi_hdr + efi_entry, S2K)
 
     iso = bytearray(total_512 * S512)
@@ -179,6 +247,7 @@ def main():
     for lba, blk in ((L_PVD, pvd), (L_BR, br), (L_TERM, term), (L_CAT, cat), (L_PTL, ptl), (L_PTM, ptm), (L_ROOT, root), (L_README, pad(readme, S2K))):
         iso[lba * S2K:lba * S2K + S2K] = blk
     iso[PART_LBA * S512:PART_LBA * S512 + len(fat)] = fat
+    if efi_img: iso[efi_lba * S512:efi_lba * S512 + len(efi_img)] = efi_img
     open(out, 'wb').write(iso)
     print(f"wrote {out}: {len(iso)} bytes ({total_2k} CD sectors); FAT32 @LBA {PART_LBA}, {part_sectors} sectors, {used} clusters used")
     for fp, d in tree: print(f"  /{fp}: {len(d)} bytes")

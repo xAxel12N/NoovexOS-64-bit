@@ -1,0 +1,72 @@
+@@HDR@@
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/mman.h>
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
+#define BAR 0x50000000u
+#define DMW_FIXED 0x09A00000u
+static u32 g_devbuf=DMW_FIXED;
+#define DMW(off) (g_devbuf+(u32)(off))
+static u64 acpi_hi_map(u64 pa){ return pa; }
+static u8* disk; static u32 sim_ns=1, sim_bad_ns1=0, sim_mqes=15, sim_flushes=0, sim_ncmd=0, sim_stale_at=0, sim_drop_at=0, sim_rdy_delay=0;
+static u32 sim_ah=0, sim_acq_t=0, sim_acq_p=1, sim_ih=0, sim_icq_t=0, sim_icq_p=1, sim_iosq=0, sim_iocq=0, sim_qs=0;
+static volatile u32* R32(u32 off){ return (volatile u32*)(u64)(BAR+off); }
+static void post(u32 cqb,u32* t,u32* p,u32 qsz,u16 cid,u32 st,u16 sqid,u16 sqh){ volatile u32* c=(volatile u32*)(u64)(cqb+*t*16); c[0]=0; c[1]=0; c[2]=sqh|((u32)sqid<<16); c[3]=cid|((*p&1)<<16)|(st<<17); *t=(*t+1)%qsz; if(*t==0)*p^=1; }
+static void sim_identify(u32 nsid,u32 cns,u32 prp){ u8* d=(u8*)(u64)prp; memset(d,0,4096);
+    if(cns==0){ u32 act=sim_bad_ns1?2:1; if(nsid!=act)return; u64 nsze=1024; memcpy(d,&nsze,8); d[26]=0; d[128+2]=12; }
+    else if(cns==2){ u32 act=sim_bad_ns1?2:1; memcpy(d,&act,4); } }
+static void io_wait(void){
+    u32 cc=*R32(0x14), cs=*R32(0x1C);
+    if((cc&1)&&!(cs&1)){ if(sim_rdy_delay){ sim_rdy_delay--; return; } *R32(0x1C)=cs|1; sim_ah=0; sim_acq_t=0; sim_acq_p=1; sim_ih=0; sim_icq_t=0; sim_icq_p=1; sim_iosq=0; sim_iocq=0; return; }
+    if(!(cc&1)&&(cs&1)){ *R32(0x1C)=cs&~1u; return; }
+    if(!(cs&1))return;
+    u32 aqa=*R32(0x24); u32 asz=(aqa&0xFFF)+1; u32 asq=*R32(0x28), acq=*R32(0x30);
+    u32 at=*R32(0x1000);
+    while(sim_ah!=at){ volatile u32* e=(volatile u32*)(u64)(asq+sim_ah*64); u8 op=e[0]&0xFF; u16 cid=(u16)(e[0]>>16); u32 st=0; sim_ah=(sim_ah+1)%asz;
+        if(op==0x06)sim_identify(e[1],e[10]&0xFF,e[6]);
+        else if((op==0x05||op==0x01)&&(e[10]>>16)+1>sim_mqes+1)st=0x102;
+        else if(op==0x05){ sim_iocq=e[6]; sim_qs=(e[10]>>16)+1; }
+        else if(op==0x01){ sim_iosq=e[6]; }
+        else st=1;
+        post(acq,&sim_acq_t,&sim_acq_p,asz,cid,st,0,(u16)sim_ah); }
+    if(!sim_iosq)return;
+    u32 it=*R32(0x1008);
+    while(sim_ih!=it){ volatile u32* e=(volatile u32*)(u64)(sim_iosq+sim_ih*64); u8 op=e[0]&0xFF; u16 cid=(u16)(e[0]>>16); u32 st=0; sim_ih=(sim_ih+1)%sim_qs; sim_ncmd++;
+        if(sim_drop_at&&sim_ncmd==sim_drop_at)continue;
+        u32 lba=e[10]; u8* buf=(u8*)(u64)e[6];
+        if(e[1]!=(sim_bad_ns1?2u:1u))st=0x0B;
+        else if(op==0x02){ if(lba<1024)memcpy(buf,disk+(u64)lba*4096,4096); else st=0x80; }
+        else if(op==0x01){ if(lba<1024)memcpy(disk+(u64)lba*4096,buf,4096); else st=0x80; }
+        else if(op==0x00){ sim_flushes++; }
+        else st=1;
+        if(sim_stale_at&&sim_ncmd==sim_stale_at)post(sim_iocq,&sim_icq_t,&sim_icq_p,sim_qs,(u16)(cid+7),0,1,(u16)sim_ih);
+        post(sim_iocq,&sim_icq_t,&sim_icq_p,sim_qs,cid,st,1,(u16)sim_ih); } }
+static int pci_find(int c,int s,int pi,int* b,int* d,int* f){ (void)c;(void)s;(void)pi; *b=1;*d=0;*f=0; return 1; }
+static u32 pci_cfg(int b,int d,int f,int off){ (void)b;(void)d;(void)f; if(off==0x10)return BAR; if(off==0x14)return 0; return 6; }
+static void pci_cfgw(int b,int d,int f,int off,u32 v){ (void)b;(void)d;(void)f;(void)off;(void)v; }
+static void sim_reset_regs(void){ memset((void*)(u64)BAR,0,0x2000); u64 cap=(u64)sim_mqes|(1ULL<<16)|(20ULL<<24)|(1ULL<<37); *R32(0)=(u32)cap; *R32(4)=(u32)(cap>>32); }
+@@TEST@@
+static int ok=1; static void chk(const char* w,int c){ printf("    %-62s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+static void pat(u8* b,u32 lba){ for(int i=0;i<512;i++)b[i]=(u8)(lba*31+i*7); }
+int main(void){
+    if(mmap((void*)0x09BB0000,0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)==MAP_FAILED){ printf("mmap low failed\n"); return 1; }
+    mmap((void*)(u64)BAR,0x2000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    disk=calloc(1024,4096); sim_reset_regs(); sim_rdy_delay=50;
+    chk("init: controller ready, 4 KB sectors, 64-entry cap honoured (MQES 15)", nvme_init()==1&&g_nvme_bsz==4096&&nvme_ratio==8&&nvme_q==16&&nvme_sectors==8192);
+    u8 b[512],r[512]; int wok=1;
+    for(u32 l=0;l<80;l++){ pat(b,l); if(nvme_write1(l,b))wok=0; }
+    chk("80 single-sector writes on a 4 KB-sector drive (queue wraps 5 times)", wok);
+    int rok=1; for(u32 l=0;l<80;l++){ pat(b,l); if(nvme_read(l,1,r)||memcmp(b,r,512))rok=0; }
+    chk("read back every sector", rok);
+    { int dok=1; for(u32 l=0;l<80;l++){ pat(b,l); if(memcmp(disk+(u64)(l/8)*4096+(l%8)*512,b,512))dok=0; } chk("disk image holds the data at the right offsets", dok); }
+    sim_stale_at=sim_ncmd+2; nvme_cblk=0xFFFFFFFFu; pat(b,5); int s1=nvme_read(5,1,r); int s2=nvme_read(9,1,r); pat(b,9);
+    chk("a stray completion with another command id is skipped", s1==0&&s2==0&&!memcmp(b,r,512)); sim_stale_at=0;
+    chk("flush command reaches the drive", nvme_flush()==0&&sim_flushes==1);
+    nvme_cblk=0xFFFFFFFFu; sim_drop_at=sim_ncmd+1; int t1=nvme_read(17,1,r); sim_drop_at=0;
+    nvme_cblk=0xFFFFFFFFu; int t2=nvme_read(17,1,r); pat(b,17);
+    chk("lost command times out, next access resets the controller and works", t1==-1&&t2==0&&!memcmp(b,r,512));
+    sim_reset_regs(); sim_bad_ns1=1; sim_ncmd=0;
+    chk("namespace 1 empty: uses the first active namespace", nvme_init()==1&&nvme_nsid==2);
+    pat(b,3); chk("I/O on namespace 2", nvme_write1(3,b)==0&&nvme_read(3,1,r)==0&&!memcmp(b,r,512));
+    printf(ok?"ALL PASS\n":"FAILURES\n"); return !ok; }

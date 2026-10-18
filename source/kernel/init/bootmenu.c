@@ -1,15 +1,33 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/arch/x86_64/cpuinfo.h"
+#include "include/nvx/drivers/bus/pci.h"
+#include "include/nvx/drivers/net/nic_names.h"
+#include "include/nvx/drivers/usb/xhci.h"
+#include "include/nvx/net/http.h"
+#include "include/nvx/drivers/input/ps2.h"
+#include "include/nvx/gui/theme.h"
+#include "include/nvx/gui/wm.h"
+#include "include/nvx/drivers/storage/ata.h"
+#include "include/nvx/fs/nvxfs.h"
+#include "include/nvx/fs/fat_ata.h"
+#include "include/nvx/core/power.h"
+#include "include/nvx/apps/files_classic.h"
+#include "include/nvx/init/splash.h"
+#include "include/nvx/init/bootmenu.h"
 /* =========================================================================
    Interactive boot menu (synthwave)
    ========================================================================= */
-static const char* BM_ITEMS[5]={"NoovexOS Desktop","NoovexOS (Safe Mode)","Recovery Environment","Install NoovexOS","Boot Configuration"};
-static int g_bootsel=0, g_bootcfg=0, g_bootmsg=0;
-static int bm_bx,bm_by[5],bm_bw,bm_bh, cfg_tgx,cfg_tgy,cfg_tgw,cfg_tgh, cfg_bkx,cfg_bky,cfg_bkw,cfg_bkh, msg_okx,msg_oky,msg_okw,msg_okh;
+const char* BM_ITEMS[5]={"NoovexOS Desktop","NoovexOS (Safe Mode)","Recovery Environment","Install NoovexOS","Boot Configuration"};
+int g_bootsel=0, g_bootcfg=0, g_bootmsg=0;
+int bm_bx,bm_by[5],bm_bw,bm_bh, cfg_tgx,cfg_tgy,cfg_tgw,cfg_tgh, cfg_bkx,cfg_bky,cfg_bkw,cfg_bkh, msg_okx,msg_oky,msg_okw,msg_okh;
 /* =========================================================================
    Graphical Recovery Environment (Windows-style "Choose an option")
    ========================================================================= */
-static int g_recmode=0;              /* 0=menu, 1=diagnostics, 2=info panel */
-static int g_rec_openterm=0;         /* open a terminal once the desktop loads */
-static int g_recsel=0, g_recinfo=0;
+int g_recmode=0;              /* 0=menu, 1=diagnostics, 2=info panel */
+int g_rec_openterm=0;         /* open a terminal once the desktop loads */
+int g_recsel=0, g_recinfo=0;
 /* ---- Windows-style recovery menu tree ---- */
 enum { RM_MAIN, RM_TROUBLE, RM_ADVANCED, RM_STARTUP };
 enum { RA_CONTINUE, RA_RESTART, RA_TROUBLE, RA_STARTUPSET, RA_CMDPROMPT, RA_SHUTDOWN,
@@ -49,7 +67,7 @@ static void rec_glyph(int act,int cx,int cy){ u32 w=rgb(255,255,255);
     switch(act){
       case RA_CONTINUE: for(int i=-6;i<=6;i++){ int wd=6-((i<0)?-i:i); for(int j=-wd;j<=wd;j++)putpx(cx+i+2,cy+j,w);} break;               /* arrow/triangle */
       case RA_RESTART: for(int yy=-7;yy<=7;yy++){int xw=isqrt_i(49-yy*yy);putpx(cx-xw,cy+yy,w);putpx(cx-xw+1,cy+yy,w);} fill_rect(cx-1,cy-9,7,2,w); fill_rect(cx+4,cy-9,2,6,w); break;   /* refresh ring */
-      case RA_SHUTDOWN: for(int a=-60;a<=240;a+=8){ int x=cx+(isqrt_i(64)* (a>90?1:1)); (void)x; } for(int yy=-7;yy<=7;yy++){int xw=isqrt_i(49-yy*yy);putpx(cx-xw,cy+yy,w);putpx(cx+xw,cy+yy,w);} fill_rect(cx-1,cy-9,2,8,w); break;   /* power circle + stem */
+      case RA_SHUTDOWN: for(int yy=-7;yy<=7;yy++){int xw=isqrt_i(49-yy*yy);putpx(cx-xw,cy+yy,w);putpx(cx+xw,cy+yy,w);} fill_rect(cx-1,cy-9,2,8,w); break;   /* power circle + stem */
       case RA_CMDPROMPT: fill_round(cx-9,cy-7,18,14,3,15,w); dstr(cx-6,cy-4,">_",rgb(0,120,215),1); break;                                   /* console */
       case RA_SAFEMODE: fill_round(cx-7,cy-8,14,16,4,15,w); fill_round(cx-4,cy-5,8,10,2,15,rgb(0,120,215)); break;                            /* shield */
       case RA_RESETDISP: fill_round(cx-9,cy-7,18,12,2,15,w); fill_rect(cx-2,cy+5,4,3,w); fill_rect(cx-6,cy+8,12,2,w); break;                  /* monitor */
@@ -64,7 +82,7 @@ static void rec_glyph(int act,int cx,int cy){ u32 w=rgb(255,255,255);
       default: fill_circle(cx,cy,3,w); break;
     }
 }
-static void recovery_present(void){
+void recovery_present(void){
     if(g_recmode==1||g_recmode==2){   /* diagnostics / info panel */
         for(u32 yy=0;yy<H;yy++)for(u32 xx=0;xx<W;xx++)SCENE[(u64)yy*SW+xx]=rgb(0,120,215);
         int px=(int)W/2-320, py=(int)H/2-210, pw=640, ph=420; shadow_soft(px,py,pw,ph,16); fill_round(px,py,pw,ph,16,15,rgb(248,250,253));
@@ -112,9 +130,7 @@ static void recovery_present(void){
     }
     draw_cursor(); blit_all();
 }
-static void recovery_shutdown(void){ blit_all();
-    outw(0x604,0x2000); outw(0xB004,0x2000); outw(0x4004,0x3400);   /* QEMU / Bochs / VBox ACPI off */
-    for(;;) __asm__ volatile("cli; hlt"); }
+static void recovery_shutdown(void){ power_off(); }
 static void recovery_act(int act){
     switch(act){
       case RA_CONTINUE: g_state=ST_SETUP; break;
@@ -122,7 +138,7 @@ static void recovery_act(int act){
       case RA_CMDPROMPT: g_safemode=1; g_state=ST_SETUP; g_rec_openterm=1; break;
       case RA_DIAG: g_recmode=1; break;
       case RA_RESETDISP: FBB=(u8*)(*(volatile u64*)0x5000ULL); PITCHB=*(volatile u32*)0x5008ULL; W=*(volatile u16*)0x500CULL; H=*(volatile u16*)0x500EULL; BPP=*(volatile u8*)0x5020ULL; BYPP=(BPP>=32)?4:3; if(W>MAXW)W=MAXW; if(H>MAXH)H=MAXH; SW=W; break;
-      case RA_RESTART: blit_all(); outb(0x64,0xFE); break;
+      case RA_RESTART: power_reboot(); break;
       case RA_SHUTDOWN: recovery_shutdown(); break;
       case RA_STARTUPREPAIR: g_recmode=2; g_recinfo=0; break;
       case RA_SYSRESTORE: g_recmode=2; g_recinfo=1; break;
@@ -134,9 +150,9 @@ static void recovery_act(int act){
       case RA_BACK: if(g_recsp>0)g_recmenu=g_recstack[--g_recsp]; else g_recmenu=RM_MAIN; g_recsel=0; break;
     }
 }
-static int recovery_input(void){
+int recovery_input(void){
     int changed=0;
-    if(mouse_evt){ int dx,dy,btn; __asm__ volatile("cli"); dx=mouse_dx;dy=mouse_dy;mouse_dx=0;mouse_dy=0;btn=mouse_btn;mouse_evt=0; __asm__ volatile("sti");
+    if(mouse_evt){ int dx,dy,btn; cpu_irq_off(); dx=mouse_dx;dy=mouse_dy;mouse_dx=0;mouse_dy=0;btn=mouse_btn;mouse_evt=0; cpu_irq_on();
         if(dx||dy){ mx+=dx;my-=dy; if(mx<0)mx=0;if(my<0)my=0;if(mx>=(int)W)mx=W-1;if(my>=(int)H)my=H-1; changed=1; }
         if(btn&&!mouse_btn_prev){
             if(g_recmode==1||g_recmode==2){ if(in_rect(mx,my,rec_bx[0],rec_by[0],rec_bw2,rec_bh2)) g_recmode=0; changed=1; }

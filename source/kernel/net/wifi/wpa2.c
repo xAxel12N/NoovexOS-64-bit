@@ -1,10 +1,17 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/crypto/nvxwpa.h"
+#include "include/nvx/mm/pmm_vmm.h"
+#include "include/nvx/drivers/wifi/rtw_efuse.h"
+#include "include/nvx/drivers/wifi/rtw8821ce.h"
+#include "include/nvx/net/wifi/wpa2.h"
+#include "include/nvx/gui/desktop.h"
 /* ===================== WPA2 4-way handshake ===================== */
-static u8 g_ptk[48];      /* KCK(16)|KEK(16)|TK(16) */
-static u8 g_pmk[32];
-static int g_wpa_ok=0;
+u8 g_ptk[48];      /* KCK(16)|KEK(16)|TK(16) */
+u8 g_pmk[32];
+int g_wpa_ok=0;
 
 /* send an EAPOL-Key data frame to the AP (802.11 data + LLC/SNAP + EAPOL) */
-static void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int elen){
+void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int elen){
     static u8* pkt=0; if(!pkt)pkt=(u8*)dma_alloc(2048); if(!pkt)return;
     u8 fr[512]; int fl=0;
     fr[fl++]=0x08; fr[fl++]=0x01;                 /* FC: data, ToDS=1 */
@@ -29,13 +36,13 @@ static void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapo
     u32 psb=((total-1)/128)+1;
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
-    __asm__ volatile("sfence":::"memory");
+    cpu_wmb();
     rtw_w32(m,0x0328,(u32)(u64)g_bering); rtw_w16(m,0x0388,(u16)(g_benum&0x0FFF));
     g_beidx++; rtw_w16(m,0x03A8,(u16)(g_beidx&0x0FFF));
 }
 
 /* wait for an EAPOL-Key frame from the AP; returns body (the EAPOL payload) length */
-static int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms){
+int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms){
     if(g_eap_stashlen>0){ int n=g_eap_stashlen; if(n>maxout)n=maxout; for(int c=0;c<n;c++)out[c]=g_eap_stash[c]; g_eap_stashlen=0; return n; }
     for(int t=0;t<ms*10;t++){
         int wp=rtw_rx_hw_wp(m);
@@ -71,7 +78,7 @@ static int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms){
 }
 
 /* derive PTK: PRF-384(PMK, "Pairwise key expansion", min(AA,SPA)|max|min(ANonce,SNonce)|max) */
-static void wpa_derive_ptk(const u8* pmk,const u8* aa,const u8* spa,const u8* anonce,const u8* snonce,u8* ptk){
+void wpa_derive_ptk(const u8* pmk,const u8* aa,const u8* spa,const u8* anonce,const u8* snonce,u8* ptk){
     u8 data[76]; int p=0; int i;
     const u8 *a1=aa,*a2=spa; int c=0; for(i=0;i<6;i++){ if(aa[i]!=spa[i]){ c=aa[i]<spa[i]?-1:1; break; } }
     if(c>0){ a1=spa; a2=aa; }
@@ -85,7 +92,7 @@ static void wpa_derive_ptk(const u8* pmk,const u8* aa,const u8* spa,const u8* an
 }
 
 /* Build an RSN IE (WPA2-PSK, CCMP) into buf, return length */
-static int wpa_rsn_ie(u8* b){
+int wpa_rsn_ie(u8* b){
     int n=0;
     b[n++]=48; b[n++]=20;                 /* RSN IE, len 20 */
     b[n++]=0x01; b[n++]=0x00;             /* version 1 */

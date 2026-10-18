@@ -45,6 +45,7 @@ void cfg_parse(char* text, struct cfg* out){
         } else if(strcmp(key, "bootlog") == 0){
             out->bootlog = str_to_int(val);
         } else if(strcmp(key, "video") == 0){
+            if(strcmp(val, "auto") == 0){ out->video_w = 0xFFFF; out->video_h = 0xFFFF; continue; }
             out->video_w = str_to_int(val);
             char* x = strchr(val, 'x');
             if(!x) x = strchr(val, 'X');

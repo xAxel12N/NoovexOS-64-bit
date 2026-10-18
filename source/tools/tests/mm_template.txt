@@ -1,0 +1,31 @@
+@@HDR@@
+#include <stdio.h>
+#include <sys/mman.h>
+#include <stdint.h>
+typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
+static u64 hp_alloc_run(u32 pages){ (void)pages; return 0; }
+@@TEST@@
+static void add(u64 s,u64 e,u32 t){ g_mmr[g_mmr_n].s=s; g_mmr[g_mmr_n].e=e; g_mmr[g_mmr_n].t=t; g_mmr_n++; }
+static int ok=1; static void chk(const char* w,int c){ printf("  %-60s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+int main(void){
+  add(0,0x9F000,7); add(0x9F000,0x100000,0); add(0x100000,0x09D1F000,7); add(0x09D1F000,0x0A000000,0); add(0x0A000000,0x0A200000,7);
+  add(0x0A200000,0x0A20E000,10); add(0x0A20E000,0x0B000000,7); add(0x0B000000,0x0B020000,0); add(0x0B020000,0xC0000000,7); add(0xC0000000,0x100000000ULL,11);
+  u64 bs,be; u32 bt;
+  chk("bss 0xC00000-0x093CA0A0 is usable", !mm_first_bad(0xC00000,0x093CA0A0,&bs,&be,&bt));
+  chk("old bss to 0x0ABC90A0 hits reserved 0x09D1F000", mm_first_bad(0xC00000,0x0ABC90A0,&bs,&be,&bt)&&bs==0x09D1F000&&be==0x0A000000&&bt==0);
+  chk("ACPI NVS reported", mm_first_bad(0x0A000000,0x0A300000,&bs,&be,&bt)&&bs==0x0A200000&&bt==10);
+  chk("DMA arena skips the reserved first 128 KB", mm_skip_bad(0x0B000000,4096,0x0C000000)==0x0B020000);
+  chk("usable end from 256 MB is 0xC0000000", mm_usable_end(0x10000000)==0xC0000000ULL);
+  chk("gap (not in map) detected", (g_mmr[1].t=7, mm_usable_end(0x9F000)==0x09D1F000));
+  g_mmr[1].t=0;
+  mmap((void*)0x18000000,0x400000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+  heap_init(3000); chk("heap limited to usable RAM", heap_base==0x18000000ULL&&heap_top==0xC0000000ULL-0x100000ULL&&g_heap_mapped);
+  void* a=kmalloc(100); void* b=kmalloc(2000000); kfree(a); void* c=kmalloc(50);
+  chk("heap blocks reuse and keep magic", c==a&&((hblk*)((u8*)b-sizeof(hblk)))->magic==HBLK_MAGIC);
+  g_mmr_n=0; add(0,0x18800000,7); add(0x18800000,0x18900000,6); add(0x18900000,0x28000000,7);
+  heap_init(640); chk("heap moves past firmware data right after 384 MB", heap_base>=0x18900000ULL&&heap_top==0x28000000ULL-0x100000ULL);
+  g_mmr_n=0; add(0,0x18100000,7); add(0x18100000,0x18200000,4); add(0x18200000,0xC0000000,7);
+  heap_init(3000); chk("heap avoids memory the firmware used before boot (0x18100000)", heap_base==0x18200000ULL&&heap_top==0xC0000000ULL-0x100000ULL&&g_heap_mapped==2);
+  chk("firmware-used memory still counts as usable RAM", mm_usable_end(0x100000)==0xC0000000ULL);
+  chk("DMA placement skips firmware-used memory", mm_skip_bad(0x18100000,4096,0x18400000)==0x18200000);
+  printf(ok?"ALL PASS\n":"FAILURES\n"); return !ok; }

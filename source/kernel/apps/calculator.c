@@ -1,11 +1,13 @@
+#include "include/nvx/base.h"
+#include "include/nvx/apps/calculator.h"
 /* =========================================================================
    Calculator
    ========================================================================= */
-static i64 calc_acc=0, calc_cur=0; static char calc_op=0; static int calc_fresh=1, calc_err=0;
-static int cb_x[20],cb_y[20],cb_w,cb_h; static const char *CBL[20]={"C","/","*","<","7","8","9","-","4","5","6","+","1","2","3","=","0","0",".","="};
+i64 calc_acc=0, calc_cur=0; char calc_op=0; int calc_fresh=1, calc_err=0;
+int cb_x[20],cb_y[20],cb_w,cb_h; const char *CBL[20]={"C","/","*","<","7","8","9","-","4","5","6","+","1","2","3","=","0","0",".","="};
 static void calc_apply(void){ if(calc_op=='+')calc_acc+=calc_cur; else if(calc_op=='-')calc_acc-=calc_cur;
     else if(calc_op=='*')calc_acc*=calc_cur; else if(calc_op=='/'){ if(calc_cur==0)calc_err=1; else calc_acc/=calc_cur; } else calc_acc=calc_cur; }
-static void calc_press(const char*b){
+void calc_press(const char*b){
     if(calc_err){ calc_err=0; calc_acc=0; calc_cur=0; calc_op=0; calc_fresh=1; if(b[0]=='C')return; }
     char k=b[0];
     if(k>='0'&&k<='9'){ if(calc_fresh){calc_cur=0;calc_fresh=0;} calc_cur=calc_cur*10+(k-'0'); }

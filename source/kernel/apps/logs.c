@@ -1,3 +1,24 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/drivers/net/nic.h"
+#include "include/nvx/net/http.h"
+#include "include/nvx/gui/theme.h"
+#include "include/nvx/gui/wm.h"
+#include "include/nvx/shell/terminal.h"
+#include "include/nvx/fs/nvxfs.h"
+#include "include/nvx/core/buildsig.h"
+#include "include/nvx/shell/commands.h"
+#include "include/nvx/apps/editor.h"
+#include "include/nvx/apps/chatgpt.h"
+#include "include/nvx/apps/browser.h"
+#include "include/nvx/apps/settings.h"
+#include "include/nvx/apps/files_classic.h"
+#include "include/nvx/apps/file_explorer.h"
+#include "include/nvx/apps/small_apps.h"
+#include "include/nvx/apps/doom.h"
+#include "include/nvx/apps/logs.h"
+#include "include/nvx/apps/videoplayer.h"
 /* ================= Logs app: live low-level system activity ================= */
 static void logs_draw(int i){
     win_frame(i,"Logs - System Activity Monitor");
@@ -10,10 +31,10 @@ static void logs_draw(int i){
     dstr(lx,ly,"NoovexOS live activity  (byte/address level)",rgb(120,255,180),1); ly+=22;
     /* memory map */
     p=b;p=scopy(p,"KERNEL   base=0x00100000  size=");p=udec(p,g_buildsig.image_size);p=scopy(p," bytes");*p=0; dstr(lx,ly,b,rgb(180,200,255),1); ly+=16;
-    p=b;p=scopy(p,"DMA arena 0x09000000-0x0A000000   RAM=");p=udec(p,g_ram_mb);p=scopy(p," MB");*p=0; dstr(lx,ly,b,rgb(180,200,255),1); ly+=16;
-    { u64 cr3; __asm__ volatile("mov %%cr3,%0":"=r"(cr3));
+    p=b;p=scopy(p,"DMA arena 0x0B000000-0x0C000000   RAM=");p=udec(p,g_ram_mb);p=scopy(p," MB");*p=0; dstr(lx,ly,b,rgb(180,200,255),1); ly+=16;
+    { u64 cr3; cr3=cpu_get_pt();
       p=b;p=scopy(p,"CR3 (page dir) = 0x");p=hx(p,(u32)(cr3>>32),8);p=hx(p,(u32)cr3,8);*p=0; dstr(lx,ly,b,rgb(255,220,150),1); ly+=16; }
-    { u64 sp; __asm__ volatile("mov %%rsp,%0":"=r"(sp));
+    { u64 sp; sp=cpu_sp();
       p=b;p=scopy(p,"kernel RSP     = 0x");p=hx(p,(u32)(sp>>32),8);p=hx(p,(u32)sp,8);*p=0; dstr(lx,ly,b,rgb(255,220,150),1); ly+=16; }
     p=b;p=scopy(p,"uptime ticks   = ");p=udec(p,(u32)g_ticks);*p=0; dstr(lx,ly,b,rgb(200,255,200),1); ly+=16;
     ly+=6; dstr(lx,ly,"-- memory hexdump @ 0x00100000 --",rgb(120,140,180),1); ly+=18;
@@ -64,16 +85,16 @@ static void tfind_draw(int i){
     }
 }
 
-static void draw_app(int i){
+void draw_app(int i){
     if(i==W_WELCOME)welcome_draw(i); else if(i==W_TERM)term_draw(i); else if(i==W_FILES)files_draw(i);
     else if(i==W_EDITOR)editor_draw(i); else if(i==W_CALC)calc_draw(i); else if(i==W_BROWSER)browser_draw(i);
     else if(i==W_CLOCK)clock_draw(i); else if(i==W_SYSMON)sysmon_draw(i);
     else if(i==W_CALENDAR)calendar_draw(i); else if(i==W_SNAKE)snake_draw(i); else if(i==W_FLAPPY)flappy_draw(i);
     else if(i==W_NEOFETCH)neofetch_draw(i); else if(i==W_PAINT)paint_draw(i);
     else if(i==W_DOOM)doom_draw(i);
-    else if(i==W_SETTINGS)settings_draw(i); else if(i==W_CHATGPT)chatgpt_draw(i); else if(i==W_PPTX)pptx_draw(i); else if(i==W_LOGS)logs_draw(i); else if(i==W_TFIND)tfind_draw(i); else about_draw(i);
+    else if(i==W_SETTINGS)settings_draw(i); else if(i==W_CHATGPT)chatgpt_draw(i); else if(i==W_PPTX)pptx_draw(i); else if(i==W_LOGS)logs_draw(i); else if(i==W_TFIND)tfind_draw(i); else if(i==W_VIDEO)video_draw(i); else if(i==W_CAMERA){ extern void camera_draw(int); camera_draw(i); } else if(i==W_GPU3D){ extern void gpu3d_draw(int); gpu3d_draw(i); } else if(i==W_BENCH){ extern void bench_draw(int); bench_draw(i); } else if(i==W_RECORDER){ extern void recorder_draw(int); recorder_draw(i); } else if(i==W_WRITER){ extern void writer_draw(int); writer_draw(i); } else if(i==W_QUAKE){ extern void quake_draw(int); quake_draw(i); } else if(i==W_XDISP){ extern void xdisp_draw(int); xdisp_draw(i); } else about_draw(i);
 }
-static void app_click(int i,int px,int py){
+void app_click(int i,int px,int py){
     if(i==W_WELCOME){ if(in_rect(px,py,gb_x,gb_y,gb_w,gb_h)) open_win(W_TERM); }
     else if(i==W_FILES) files_click(px,py);
     else if(i==W_EDITOR){ if(in_rect(px,py,eb_save_x,eb_save_y,eb_bw,eb_bh)) editor_save();
@@ -86,6 +107,13 @@ static void app_click(int i,int px,int py){
     else if(i==W_BROWSER) browser_click(px,py);
     else if(i==W_CHATGPT) chatgpt_click(px,py);
     else if(i==W_PPTX) pptx_click(px,py);
+    else if(i==W_VIDEO) video_click(px,py);
+    else if(i==W_CAMERA){ extern void camera_click(int,int); camera_click(px,py); }
+    else if(i==W_BENCH){ extern void bench_click(int,int); bench_click(px,py); }
+    else if(i==W_RECORDER){ extern void recorder_click(int,int); recorder_click(px,py); }
+    else if(i==W_WRITER){ extern void writer_click(int,int); writer_click(px,py); }
+    else if(i==W_QUAKE){ extern void quake_click(void); quake_click(); }
+    else if(i==W_GPU3D){ extern void gpu3d_click(void); gpu3d_click(); }
     else if(i==W_CALENDAR){ if(in_rect(px,py,cal_lx,cal_ly,cal_aw2,30)) cal_key(17); else if(in_rect(px,py,cal_rx,cal_ry,cal_aw2,30)) cal_key(18); }
     else if(i==W_FLAPPY) flappy_flap();
     else if(i==W_PAINT){

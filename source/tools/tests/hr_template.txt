@@ -1,0 +1,112 @@
+@@HDR@@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+typedef unsigned char u8; typedef unsigned short u16; typedef unsigned int u32; typedef unsigned long long u64;
+static long double g_sns; static u64 g_ticks;
+static struct { u64 tsc_khz; int tsc, inv; int hpet; u64 hpet_pa, fs; int h64, hstuck, hntim; u64 hconf; long double hen; u32 maxl; u32 c15[3]; u32 c16;
+    int apic_en, x2; u64 apic_pa; u32 svr, lvt, div, init, lint0, lint1, tpr, id; long double armed; u64 bus_hz; u32 eoi;
+    int pit_dead; u8 p61; u16 pcount; int pbyte; long double pstart; int smi; unsigned rng; u64 mmio_reads; } M;
+static void adv(long double ns){ g_sns+=ns; if(M.smi){ M.rng=M.rng*1103515245u+12345u; if((M.rng>>16)%997==0)g_sns+=(long double)((M.rng>>8)%200000); } g_ticks=(u64)(g_sns/10000000.0L); }
+static u64 sim_tsc(void){ adv(20); return (u64)(g_sns*(long double)M.tsc_khz/1000000.0L); }
+static u64 hpet_cnt(void){ if(!(M.hconf&1)||M.hstuck)return 1234; long double c=(g_sns-M.hen)*1000000.0L/(long double)M.fs; u64 v=(u64)c; return M.h64?v:(v&0xFFFFFFFFULL); }
+static int apic_div(void){ static const int d[8]={2,4,8,16,32,64,128,1}; int k=(int)((M.div&3)|((M.div>>1)&4)); return d[k]; }
+static u32 apic_cur(void){ if(!M.init)return 0; long double t=(g_sns-M.armed)*(long double)M.bus_hz/1e9L/apic_div(); if(t>=M.init)return 0; return M.init-(u32)t; }
+static u32 apic_reg_rd(u32 off){ switch(off){ case 0x20: return M.x2?M.id:(M.id<<24); case 0x80: return M.tpr; case 0xF0: return M.svr; case 0x320: return M.lvt; case 0x350: return M.lint0; case 0x360: return M.lint1; case 0x380: return M.init; case 0x390: return apic_cur(); case 0x3E0: return M.div; } return 0; }
+static void apic_reg_wr(u32 off,u32 v){ switch(off){ case 0x80: M.tpr=v; break; case 0xB0: M.eoi++; break; case 0xF0: M.svr=v; break; case 0x320: M.lvt=v; break; case 0x350: M.lint0=v; break; case 0x360: M.lint1=v; break; case 0x380: M.init=v; M.armed=g_sns; break; case 0x3E0: M.div=v; break; } }
+static u64 sim_rd64(u64 a){ adv(300); M.mmio_reads++;
+    if(M.hpet&&a==M.hpet_pa)return ((u64)M.fs<<32)|((u64)(M.h64?1:0)<<13)|((u64)(M.hntim-1)<<8)|0x80868001ULL;
+    if(M.hpet&&a==M.hpet_pa+0x10)return M.hconf; if(M.hpet&&a==M.hpet_pa+0xF0)return hpet_cnt(); return ~0ULL; }
+static u32 sim_rd32(u64 a){ if(M.apic_en&&!M.x2&&a>=M.apic_pa&&a<M.apic_pa+0x1000){ adv(50); return apic_reg_rd((u32)(a-M.apic_pa)); } return (u32)sim_rd64(a); }
+static void sim_wr64(u64 a,u64 v){ adv(300); if(M.hpet&&a==M.hpet_pa+0x10){ if((v&1)&&!(M.hconf&1))M.hen=g_sns; M.hconf=v; } }
+static void sim_wr32(u64 a,u32 v){ adv(50); if(M.apic_en&&!M.x2&&a>=M.apic_pa&&a<M.apic_pa+0x1000)apic_reg_wr((u32)(a-M.apic_pa),v); }
+static void sim_cpuid(u32 leaf,u32 sub,u32* r){ (void)sub; adv(100); r[0]=r[1]=r[2]=r[3]=0;
+    if(leaf==0)r[0]=M.maxl; else if(leaf==1)r[3]=M.tsc?0x10:0; else if(leaf==0x80000000u)r[0]=0x80000008u; else if(leaf==0x80000007u)r[3]=M.inv?0x100:0;
+    else if(leaf==0x15&&M.maxl>=0x15){ r[0]=M.c15[0]; r[1]=M.c15[1]; r[2]=M.c15[2]; } else if(leaf==0x16&&M.maxl>=0x16)r[0]=M.c16; }
+static u64 sim_rdmsr(u32 m){ adv(50); if(m==0x1B)return M.apic_pa|(M.apic_en?(1ULL<<11):0)|(M.x2?(1ULL<<10):0)|0x100; if(M.x2&&m>=0x800&&m<0x900)return apic_reg_rd((m-0x800)<<4); return 0; }
+static void sim_wrmsr(u32 m,u64 v){ adv(50); if(M.x2&&m>=0x800&&m<0x900)apic_reg_wr((m-0x800)<<4,(u32)v); }
+static u8 inb(u16 p){ adv(1000); if(p==0x61){ u8 v=M.p61&~0x20; if(!M.pit_dead&&(M.p61&1)&&M.pstart>0&&g_sns>=M.pstart+(long double)M.pcount*3e9L/3579545.0L)v|=0x20; return v; } return 0xFF; }
+static void outb(u16 p,u8 v){ adv(1000); if(p==0x61){ if((v&1)&&!(M.p61&1))M.pstart=g_sns; if(!(v&1))M.pstart=0; M.p61=v; } else if(p==0x43){ M.pbyte=0; } else if(p==0x42){ if(M.pbyte++==0)M.pcount=(u16)((M.pcount&0xFF00)|v); else M.pcount=(u16)((M.pcount&0x00FF)|(v<<8)); } }
+static long g_iow; static void io_wait(void){ g_iow++; adv(1000); }
+static char g_klog[2048]; static void klog(const char* s){ strncat(g_klog,s,sizeof g_klog-strlen(g_klog)-2); strcat(g_klog,"|"); }
+static u8 g_tbl[256];
+static u32 acpi_r32(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
+static u64 acpi_r64(const u8* p){ return (u64)acpi_r32(p)|((u64)acpi_r32(p+4)<<32); }
+static u8 g_madt[256]; static int g_madt_on;
+static const u8* acpi_find_table(const char* sig,int nth){ if(nth)return 0; if(!memcmp(sig,"HPET",4)&&M.hpet)return g_tbl; if(!memcmp(sig,"APIC",4)&&g_madt_on)return g_madt; return 0; }
+static u64 acpi_hi_map(u64 pa){ return pa<0x8000000000ULL?pa:0; }
+static u64 g_lapic_base=0xFEE00000ULL;
+@@TEST@@
+static int ok=1, nchk=0; static void chk(const char* w,int c){ nchk++; printf("    %-70s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+static long double ppm(long double a,long double b){ long double d=(a-b)/b*1e6L; return d<0?-d:d; }
+static void machine(void){ memset(&M,0,sizeof M); memset(&g_hr,0,sizeof g_hr); g_sns=1e9L; g_ticks=100; g_klog[0]=0; M.rng=7; M.hntim=3; M.tsc=1; M.maxl=0x16; M.apic_en=1; M.apic_pa=0xFEE00000ULL; M.svr=0x1FF; M.lint0=0x700; M.lint1=0x400; M.lvt=0x10000; M.bus_hz=38400000ULL; g_lapic_base=0xFEE00000ULL; }
+static void hpet(u64 pa,u64 fs,int h64){ M.hpet=1; M.hpet_pa=pa; M.fs=fs; M.h64=h64; memset(g_tbl,0,sizeof g_tbl); memcpy(g_tbl,"HPET",4); g_tbl[4]=56; g_tbl[40]=0; memcpy(g_tbl+44,&pa,8); }
+static void common_checks(const char* tag,u64 truth_hz,int want_src){
+    char b[120];
+    snprintf(b,sizeof b,"%s: TSC %llu Hz, error %.1f ppm",tag,(unsigned long long)g_hr.tsc_hz,(double)ppm(g_hr.tsc_hz,truth_hz)); chk(b,g_hr.tsc_hz&&ppm(g_hr.tsc_hz,truth_hz)<150);
+    snprintf(b,sizeof b,"%s: clock source %d",tag,g_hr.src); chk(b,g_hr.src==want_src);
+    long double s0=g_sns; u64 n0=hr_ns(); g_sns+=1e9L; u64 n1=hr_ns(); long double real=g_sns-s0;
+    snprintf(b,sizeof b,"%s: hr_ns over 1 s off by %.2f us",tag,(double)(((long double)(n1-n0)-real)/1000.0L)); chk(b,fabsl((long double)(n1-n0)-real)<20000.0L);
+    s0=g_sns; hr_delay_us(250); long double el=(g_sns-s0)/1000.0L; snprintf(b,sizeof b,"%s: hr_delay_us(250) took %.2f us",tag,(double)el); chk(b,el>=249.9L&&el<=262.0L); }
+static void lapic_checks(const char* tag,u64 bus){
+    char b[120]; long double want=(long double)bus/16.0L;
+    snprintf(b,sizeof b,"%s: APIC timer %llu Hz (true %.0f), error %.1f ppm",tag,(unsigned long long)g_hr.lapic_hz,(double)want,(double)ppm(g_hr.lapic_hz,want)); chk(b,g_hr.lapic_ok&&ppm(g_hr.lapic_hz,want)<1500);
+    u64 now=hr_ns(); int a=hr_wake_at(now+5000000ULL); long double cnt=5e6L*(long double)g_hr.lapic_hz/1e9L;
+    snprintf(b,sizeof b,"%s: wake in 5 ms -> one-shot vector 0x40, count %u (expect ~%.0f)",tag,M.init,(double)cnt); chk(b,a&&(M.lvt&0x300FF)==0x40&&M.div==3&&fabsl((long double)M.init-cnt)<=(cnt*0.002L+3));
+    long double fire=M.armed+(long double)M.init*16.0L*1e9L/(long double)bus; long double err=(fire-(1e9L+0)-0); (void)err;
+    long double target=g_sns; (void)target;
+    hr_wake_cancel(); chk("  cancel masks the timer and clears the count", (M.lvt&0x10000)&&M.init==0);
+    chk("  wake in the past arms nothing", hr_wake_at(hr_ns()-1)==0&&M.init==0);
+    chk("  periodic 1000 Hz sets mode bit 17", hr_lapic_periodic(1000)&&(M.lvt&(1u<<17))&&fabsl((long double)M.init-(long double)g_hr.lapic_hz/1000.0L)<=1);
+    u32 e0=M.eoi; hr_lapic_isr(); chk("  interrupt handler sends EOI", M.eoi==e0+1&&g_hr.lapic_irqs>0); hr_wake_cancel(); }
+int main(void){
+    setvbuf(stdout,0,_IONBF,0);
+    printf("== 1. Intel laptop: invariant TSC 2.904 GHz, 64-bit HPET 14.318 MHz, xAPIC, 38.4 MHz crystal ==\n");
+    machine(); M.tsc_khz=2904000; M.inv=1; hpet(0xFED00000ULL,69841279ULL,1); M.bus_hz=38400000ULL; hr_init();
+    chk("HPET accepted (64-bit, 3 comparators)", g_hr.hpet_ok&&g_hr.hpet_64&&g_hr.hpet_ntim==3&&g_hr.hpet_fs==69841279ULL);
+    chk("calibrated against HPET", g_hr.ref==1);
+    common_checks("intel",2904000000ULL,2); lapic_checks("intel",38400000ULL);
+    printf("== 2. AMD laptop: 32-bit HPET, TSC not marked invariant -> HPET is the clock, counter wraps ==\n");
+    machine(); M.tsc_khz=3200000; M.inv=0; hpet(0xFED00000ULL,69841279ULL,0); M.bus_hz=100000000ULL; hr_init();
+    common_checks("amd",3200000000ULL,1); lapic_checks("amd",100000000ULL);
+    { long double wrap=4294967296.0L*69841279.0L/1e6L; int mono=1; u64 prev=hr_ns(); long double s0=g_sns; u64 n0=prev;
+      for(int i=0;i<5;i++){ g_sns+=wrap*0.45L; u64 n=hr_ns(); if(n<prev)mono=0; prev=n; }
+      long double real=g_sns-s0; char b[120]; snprintf(b,sizeof b,"32-bit counter wrapped twice (%.0f s): monotonic, error %.1f us",(double)(real/1e9L),(double)(fabsl((long double)(prev-n0)-real)/1000.0L));
+      chk(b,mono&&fabsl((long double)(prev-n0)-real)<5000.0L); }
+    printf("== 3. no HPET (disabled by firmware): calibrate with PIT channel 2 ==\n");
+    machine(); M.tsc_khz=2419200; M.inv=1; hr_init();
+    chk("no HPET reported with reason", !g_hr.hpet_ok&&strstr(g_hr.why,"no HPET")!=0);
+    chk("calibrated against PIT channel 2", g_hr.ref==2);
+    common_checks("pit",2419200000ULL,2); lapic_checks("pit",38400000ULL);
+    printf("== 4. HPET present but its counter is stuck ==\n");
+    machine(); M.tsc_khz=1800000; M.inv=1; hpet(0xFED00000ULL,69841279ULL,1); M.hstuck=1; hr_init();
+    chk("stuck HPET rejected, falls back to PIT", !g_hr.hpet_ok&&strstr(g_hr.why,"does not run")&&g_hr.ref==2);
+    common_checks("stuck",1800000000ULL,2);
+    printf("== 5. HPET with an impossible period, firmware SMIs during calibration ==\n");
+    machine(); M.tsc_khz=2100000; M.inv=1; hpet(0xFED00000ULL,0,1); M.smi=1; hr_init(); M.smi=0;
+    chk("HPET with period 0 rejected", !g_hr.hpet_ok&&strstr(g_hr.why,"period"));
+    common_checks("smi",2100000000ULL,2);
+    printf("== 6. x2APIC mode, APIC left software-disabled by firmware ==\n");
+    machine(); M.tsc_khz=2600000; M.inv=1; hpet(0xFED00000ULL,10000000ULL,1); M.x2=1; M.svr=0x0FF; M.lint0=0x10000; M.lint1=0x10000; M.id=7; M.bus_hz=25000000ULL; hr_init();
+    chk("x2APIC detected, id read through the MSR (7)", g_hr.lapic_x2&&g_hr.lapic_id==7);
+    chk("virtual-wire set up: SVR enabled, LINT0 ExtINT, LINT1 NMI", (M.svr&0x100)&&M.lint0==0x700&&M.lint1==0x400);
+    common_checks("x2apic",2600000000ULL,2); lapic_checks("x2apic",25000000ULL);
+    printf("== 7. APIC globally disabled, no HPET, dead PIT: CPUID 0x15 crystal fallback ==\n");
+    machine(); M.tsc_khz=1996800; M.inv=1; M.apic_en=0; M.pit_dead=1; M.c15[0]=2; M.c15[1]=104; M.c15[2]=38400000; hr_init();
+    chk("APIC timer not used, wake requests refused", !g_hr.lapic_ok&&hr_wake_at(hr_ns()+1000000)==0);
+    chk("TSC frequency from CPUID 0x15 (38.4 MHz x 104/2)", g_hr.ref==3&&g_hr.tsc_hz==1996800000ULL);
+    common_checks("cpuid",1996800000ULL,2);
+    printf("== 8. nothing usable: old CPU, no TSC, no HPET, dead PIT ==\n");
+    machine(); M.tsc=0; M.maxl=1; M.pit_dead=1; M.apic_en=0; long double t0=g_sns; hr_init(); long double took=(g_sns-t0)/1e9L;
+    chk("falls back to 100 Hz ticks, boot delay under 0.5 s", g_hr.src==0&&!hr_precise()&&took<0.5L);
+    { long w=g_iow; hr_delay_us(50); chk("delays fall back to io_wait loops", g_iow-w==50); }
+    printf("== 9. MADT parsing for SMP (xAPIC + x2APIC entries, disabled cores) ==\n");
+    { memset(g_madt,0,sizeof g_madt); memcpy(g_madt,"APIC",4); int p=44;
+      u8 e0[8]={0,8,0,0,1,0,0,0}, e1[8]={0,8,1,2,1,0,0,0}, e2[8]={0,8,2,4,0,0,0,0}, e3[8]={0,8,3,6,1,0,0,0};
+      memcpy(g_madt+p,e0,8); p+=8; memcpy(g_madt+p,e1,8); p+=8; memcpy(g_madt+p,e2,8); p+=8; memcpy(g_madt+p,e3,8); p+=8;
+      u8 x[16]={9,16,0,0, 8,0,0,0, 1,0,0,0, 4,0,0,0}; memcpy(g_madt+p,x,16); p+=16; u8 xd[16]={9,16,0,0, 2,0,0,0, 1,0,0,0, 1,0,0,0}; memcpy(g_madt+p,xd,16); p+=16;
+      u8 bad[2]={5,0}; memcpy(g_madt+p,bad,2); p+=2; g_madt[4]=(u8)p; g_madt_on=1;
+      u8 ids[8]; int n=madt_apic_ids(ids,8);
+      chk("enabled cores 0,2,6 + x2APIC core 8, duplicate and disabled skipped", n==4&&ids[0]==0&&ids[1]==2&&ids[2]==6&&ids[3]==8);
+      g_madt[4]=200; n=madt_apic_ids(ids,8); chk("zero-length entry stops the walk safely", n==4); g_madt_on=0; chk("no MADT -> 0 cores", madt_apic_ids(ids,8)==0); }
+    printf(ok?"ALL PASS (%d checks)\n":"FAILURES (%d checks)\n",nchk); return ok?0:1; }

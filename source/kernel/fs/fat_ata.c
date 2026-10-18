@@ -1,11 +1,14 @@
+#include "include/nvx/base.h"
+#include "include/nvx/drivers/storage/ata.h"
+#include "include/nvx/fs/fat_ata.h"
 /* FAT state */
-static int   fat_ok=0, fat_is32=0;
-static u32   fat_part_lba, fat_fatstart, fat_datastart, fat_rootlba, fat_rootclus;
-static int   fat_spc, fat_rootents, fat_bps;
+int   fat_ok=0, fat_is32=0;
+u32   fat_part_lba, fat_fatstart, fat_datastart, fat_rootlba, fat_rootclus;
+int   fat_spc, fat_rootents, fat_bps;
 static u8    fat_sec[512];
 static u32 fr16(const u8*p){ return p[0]|(p[1]<<8); }
-static u32 fr32(const u8*p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
-static int fat_mount(void){
+u32 fr32(const u8*p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
+int fat_mount(void){
     fat_ok=0; if(g_ata_drv<0 && !ata_detect())return 0;
     if(ata_read(0,1,fat_sec)<0)return 0;
     u32 vbr=0;                                               /* find FAT: MBR partition or superfloppy */
@@ -34,18 +37,18 @@ static u32 fat_next(u32 clus){
 static int fat_eoc(u32 c){ return fat_is32?(c>=0x0FFFFFF8):(c>=0xFFF8); }
 static void fat_name83(const char* in,char* out){ for(int i=0;i<11;i++)out[i]=' '; int i=0,o=0; while(in[i]&&in[i]!='.'&&o<8){ char c=in[i++]; if(c>='a'&&c<='z')c-=32; out[o++]=c; } while(in[i]&&in[i]!='.')i++; if(in[i]=='.')i++; o=8; while(in[i]&&o<11){ char c=in[i++]; if(c>='a'&&c<='z')c-=32; out[o++]=c; } }
 /* iterate root directory; cb(name8.3-raw11, size, attr) */
-static void fat_listdir(void (*cb)(const u8* ent)){
+void fat_listdir(void (*cb)(const u8* ent)){
     if(!fat_ok && !fat_mount())return;
     if(!fat_is32){ u32 sec=fat_rootlba; int ents=fat_rootents; for(int s=0; s*16<ents; s++){ if(ata_read(sec+s,1,fat_sec)<0)return; for(int e=0;e<16;e++){ const u8* ent=fat_sec+e*32; if(ent[0]==0)return; if(ent[0]==0xE5||(ent[11]&0x0F)==0x0F||(ent[11]&0x08))continue; cb(ent); } } }
     else { u32 c=fat_rootclus; int guard=0; while(!fat_eoc(c)&&c>=2&&guard++<4096){ u32 base=fat_datastart+(c-2)*fat_spc; for(int s=0;s<fat_spc;s++){ if(ata_read(base+s,1,fat_sec)<0)return; for(int e=0;e<16;e++){ const u8* ent=fat_sec+e*32; if(ent[0]==0)return; if(ent[0]==0xE5||(ent[11]&0x0F)==0x0F||(ent[11]&0x08))continue; cb(ent); } } c=fat_next(c); } }
 }
-static int fat_read_file(const char* name,u8* out,int cap){    /* returns bytes read or -1 */
+int fat_read_file(const char* name,u8* out,int cap){    /* returns bytes read or -1 */
     if(!fat_ok && !fat_mount())return -1;
     char want[11]; fat_name83(name,want);
     u32 fclus=0; int fsize=-1;
     /* scan root for the entry */
-    if(!fat_is32){ u32 sec=fat_rootlba; int ents=fat_rootents; for(int s=0; s*16<ents && fsize<0; s++){ if(ata_read(sec+s,1,fat_sec)<0)return -1; for(int e=0;e<16;e++){ const u8* ent=fat_sec+e*32; if(ent[0]==0){fsize=-2;break;} if(ent[0]==0xE5||(ent[11]&0x0F)==0x0F)continue; int m=1; for(int q=0;q<11;q++)if(ent[q]!=want[q]){m=0;break;} if(m){ fclus=(fr16(ent+20)<<16)|fr16(ent+26); fsize=(int)fr32(ent+28); break; } } } }
-    else { u32 c=fat_rootclus; int g=0; while(!fat_eoc(c)&&c>=2&&g++<4096&&fsize<0){ u32 base=fat_datastart+(c-2)*fat_spc; for(int s=0;s<fat_spc&&fsize<0;s++){ if(ata_read(base+s,1,fat_sec)<0)return -1; for(int e=0;e<16;e++){ const u8* ent=fat_sec+e*32; if(ent[0]==0){fsize=-2;break;} if(ent[0]==0xE5||(ent[11]&0x0F)==0x0F)continue; int m=1; for(int q=0;q<11;q++)if(ent[q]!=want[q]){m=0;break;} if(m){ fclus=(fr16(ent+20)<<16)|fr16(ent+26); fsize=(int)fr32(ent+28); break; } } } c=fat_next(c); } }
+    if(!fat_is32){ u32 sec=fat_rootlba; int ents=fat_rootents; for(int s=0; s*16<ents && fsize<0; s++){ if(ata_read(sec+s,1,fat_sec)<0)return -1; for(int e=0;e<16;e++){ const u8* ent=fat_sec+e*32; if(ent[0]==0){fsize=-2;break;} if(ent[0]==0xE5||(ent[11]&0x0F)==0x0F)continue; int m=1; for(int q=0;q<11;q++)if(ent[q]!=(u8)want[q]){m=0;break;} if(m){ fclus=(fr16(ent+20)<<16)|fr16(ent+26); fsize=(int)fr32(ent+28); break; } } } }
+    else { u32 c=fat_rootclus; int g=0; while(!fat_eoc(c)&&c>=2&&g++<4096&&fsize<0){ u32 base=fat_datastart+(c-2)*fat_spc; for(int s=0;s<fat_spc&&fsize<0;s++){ if(ata_read(base+s,1,fat_sec)<0)return -1; for(int e=0;e<16;e++){ const u8* ent=fat_sec+e*32; if(ent[0]==0){fsize=-2;break;} if(ent[0]==0xE5||(ent[11]&0x0F)==0x0F)continue; int m=1; for(int q=0;q<11;q++)if(ent[q]!=(u8)want[q]){m=0;break;} if(m){ fclus=(fr16(ent+20)<<16)|fr16(ent+26); fsize=(int)fr32(ent+28); break; } } } c=fat_next(c); } }
     if(fsize<0)return -1;
     int got=0; u32 c=fclus; int guard=0;
     while(!fat_eoc(c)&&c>=2&&got<fsize&&guard++<1000000){ u32 base=fat_datastart+(c-2)*fat_spc;

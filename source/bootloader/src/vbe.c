@@ -72,3 +72,25 @@ int vbe_set_mode(uint16_t w, uint16_t h, struct fb_info* out){
     if((r->eax & 0xFFFF) != 0x004F) return -1;
     return 0;
 }
+
+#define EDID_BUF 0x4400u
+int vbe_edid_native(uint16_t* w, uint16_t* h){
+    volatile struct rmregs* r = (volatile struct rmregs*)RMREGS;
+    uint8_t* e = (uint8_t*)EDID_BUF;
+    for(int i = 0; i < 128; i++) e[i] = 0;
+    r->eax = 0x4F15; r->ebx = 0; r->ecx = 0; r->edx = 0; r->esi = 0; r->edi = 0; r->es = 0;
+    bios_int10();
+    if((r->eax & 0xFFFF) != 0x004F) return -1;
+    r->eax = 0x4F15; r->ebx = 1; r->ecx = 0; r->edx = 0; r->esi = 0; r->edi = EDID_BUF; r->es = 0;
+    bios_int10();
+    if((r->eax & 0xFFFF) != 0x004F) return -2;
+    if(!(e[0] == 0x00 && e[1] == 0xFF && e[2] == 0xFF && e[7] == 0x00)) return -3;
+    uint8_t sum = 0; for(int i = 0; i < 128; i++) sum = (uint8_t)(sum + e[i]);
+    if(sum != 0) return -4;
+    const uint8_t* d = e + 54;
+    if(d[0] == 0 && d[1] == 0) return -5;
+    uint16_t hw = (uint16_t)(d[2] | ((d[4] & 0xF0) << 4));
+    uint16_t vh = (uint16_t)(d[5] | ((d[7] & 0xF0) << 4));
+    if(hw < 640 || vh < 400) return -6;
+    *w = hw; *h = vh; return 0;
+}

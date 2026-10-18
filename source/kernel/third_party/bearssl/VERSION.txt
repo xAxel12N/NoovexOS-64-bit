@@ -1,0 +1,1 @@
+BearSSL upstream master, commit 3c040368f6791553610e362401db1efff4b4c5b8 (2024-06-12, Thomas Pornin). Only src/, inc/, LICENSE.txt and README.txt are kept.

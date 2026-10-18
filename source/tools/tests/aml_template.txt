@@ -1,0 +1,253 @@
+@@HDR@@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+typedef unsigned char u8; typedef unsigned short u16; typedef unsigned int u32; typedef unsigned long long u64; typedef signed char int8_t;
+static long g_live=0, g_allocs=0, g_fail_after=-1;
+static unsigned char* g_lo; static unsigned long g_lo_off, g_lo_cap=0x60000000UL; static void* g_lo_free[257];
+static void* lo_alloc(unsigned long n){ if(!g_lo){ g_lo=mmap((void*)0x80000000ULL,0x60000000UL,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE|MAP_NORESERVE,-1,0); if(g_lo==MAP_FAILED){ g_lo_cap=0x1FF00000UL; g_lo=mmap((void*)0x60000000ULL,g_lo_cap,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE|MAP_NORESERVE,-1,0); } if(g_lo==MAP_FAILED){ g_lo=0; return 0; } } unsigned long sz=(n+16+15)&~15UL; unsigned long b=sz/16; if(b<=256&&g_lo_free[b]){ void* p=g_lo_free[b]; g_lo_free[b]=*(void**)((char*)p+16); return p; } if(g_lo_off+sz>g_lo_cap)return 0; void* p=g_lo+g_lo_off; g_lo_off+=sz; return p; }
+static void* kmalloc(unsigned long n){ if(g_fail_after==0)return 0; if(g_fail_after>0)g_fail_after--; void* p=lo_alloc(n); if(!p)return 0; *(unsigned long*)p=n; g_live++; g_allocs++; return (char*)p+16; }
+static void kfree(void* p){ if(!p)return; g_live--; char* h=(char*)p-16; unsigned long sz=(*(unsigned long*)h+16+15)&~15UL, b=sz/16; if(b<=256){ *(void**)(h+16)=g_lo_free[b]; g_lo_free[b]=h; } }
+static u64 g_clk=1000000000ULL; static long g_iow=0; static void io_wait(void){ g_iow++; g_clk+=1000; }
+static u64 g_ticks=1000; static char g_klog[4096]; static int g_kln=0;
+static void klog(const char* s){ int n=(int)strlen(s); if(g_kln+n+2<(int)sizeof g_klog){ memcpy(g_klog+g_kln,s,n); g_kln+=n; g_klog[g_kln++]='|'; g_klog[g_kln]=0; } }
+static void* dma_alloc_pages(unsigned long n){ (void)n; return 0; }
+static u64 cpu_get_pt(void){ return 0; } static void cpu_set_pt(u64 v){ (void)v; }
+static int g_hrp=1; static int hr_precise(void){ return g_hrp; } static u64 hr_ns(void){ g_clk+=50; return g_clk; } static void hr_delay_us(u32 us){ g_clk+=(u64)us*1000ULL; }
+static char g_toast[64]; static void toast(const char* m){ strncpy(g_toast,m,63); }
+static unsigned long long heap_base=0x50000000ULL, heap_top=0x60000000ULL;
+static volatile u32* g_test_facs_lock; static int g_need_gl; static u32 g_gl_viol;
+static u8* sim_mem(u64 a,int w){ u64 e=a+(u64)w; if(a>=0x20000000&&e<=0x20001000)return (u8*)a; if(a>=0x30000000&&e<=0x30100000)return (u8*)a; if(a>=0x40000000&&e<=0x40100000)return (u8*)a; return 0; }
+static int g_mm_on=1; static int mm_known(void){ return g_mm_on; }
+static int mm_first_bad(u64 s,u64 e,u64* bs,u64* be,u32* bt){ const u64 U0=0x100000, U1=0x1F000000;
+    if(s>=U0&&e<=U1)return 0; if(s<U0){ *bs=s; *be=e<U0?e:U0; *bt=0; return 1; } if(s>=U1){ *bs=s; *be=e; *bt=10; return 1; } *bs=U1; *be=e; *bt=10; return 1; }
+static int mm_is_usable(u64 s,u64 e){ u64 a,b; u32 t; return !mm_first_bad(s,e,&a,&b,&t); }
+static struct { u16 data,cmd; u8 ram[256]; int st; u8 addr, out; int obf; u8 q[16]; int qn; int stuck; int smb_pend, smb_fail; u8 smb_final; u32 reads, writes, cmds; } ec;
+static u16 smb_word(u8 bat,u8 cmd){
+    if(bat==0x0A){ switch(cmd){ case 0x18: return 4000; case 0x10: return 3600; case 0x19: return 11550; case 0x0B: return 1200; case 0x0F: return 1800; case 0x09: return 11400; } }
+    if(bat==0x0B){ switch(cmd){ case 0x18: return 2000; case 0x10: return 2000; case 0x19: return 11550; case 0x0B: return 300; case 0x0F: return 1500; case 0x09: return 11300; } }
+    return 0xFFFF; }
+static void ec_after_write(u8 a,u8 v){
+    if(ec.data==0x68&&a==0&&v==0x09){ ec.ram[1]=0; ec.smb_pend=2;
+        if(ec.smb_fail>0){ ec.smb_fail--; ec.smb_final=0x9A; ec.ram[4]=0xEE; ec.ram[5]=0xEE; }
+        else { u16 w=smb_word((u8)(ec.ram[2]>>1),ec.ram[3]); ec.ram[4]=(u8)w; ec.ram[5]=(u8)(w>>8); ec.smb_final=0x80; } } }
+static u8 ec_read_ram(u8 a){ if(ec.data==0x68&&a==1&&ec.smb_pend){ if(--ec.smb_pend==0)ec.ram[1]=ec.smb_final; } ec.reads++; return ec.ram[a]; }
+static u8 g_pci[4][32][8][256]; static u32 g_cf8; static u8 g_cmos[2][256]; static u8 g_cmi[2]; static u8 g_bank[4][4]; static u8 g_bsel;
+static u16 g_pm1_sts, g_pm1_cnt; static int g_smi_hits, g_gblrls;
+static u8* pcis(int b,int d,int f){ return g_pci[b&3][d&31][f&7]; }
+static u8 inb(u16 p){
+    g_clk+=500;
+    if(p==ec.cmd){ if(ec.stuck)return 0x02; return (u8)((ec.obf?1:0)|(ec.qn?0x20:0)); }
+    if(p==ec.data){ if(ec.obf){ ec.obf=0; return ec.out; } return 0; }
+    if(p>=0xCFC&&p<0xD00){ if(!(g_cf8>>31))return 0xFF; int b=(g_cf8>>16)&0xFF; if(b>3)return 0xFF; u8* s=pcis(b,(g_cf8>>11)&31,(g_cf8>>8)&7); if(s[0]==0&&s[1]==0)return 0xFF; return s[(g_cf8&0xFC)+(p-0xCFC)]; }
+    if(p==0x71)return g_cmos[0][g_cmi[0]]; if(p==0x73)return g_cmos[1][g_cmi[1]]; if(p==0x72)return g_cmi[1];
+    if(p==0x500)return g_bsel; if(p>=0x501&&p<0x504)return g_bank[g_bsel&3][p-0x500];
+    return 0xFF; }
+static void outb(u16 p,u8 v){
+    if(p==ec.cmd&&g_need_gl&&g_test_facs_lock&&!(*g_test_facs_lock&2))g_gl_viol++;
+    if(p==ec.cmd&&!ec.stuck){ ec.cmds++; if(v==0x80)ec.st=1; else if(v==0x81)ec.st=2; else if(v==0x84){ if(ec.qn){ ec.out=ec.q[0]; for(int i=1;i<ec.qn;i++)ec.q[i-1]=ec.q[i]; ec.qn--; } else ec.out=0; ec.obf=1; } return; }
+    if(p==ec.data&&!ec.stuck){ if(ec.st==1){ ec.out=ec_read_ram(v); ec.obf=1; ec.st=0; } else if(ec.st==2){ ec.addr=v; ec.st=3; } else if(ec.st==3){ ec.ram[ec.addr]=v; ec.writes++; ec.st=0; ec_after_write(ec.addr,v); } return; }
+    if(p>=0xCFC&&p<0xD00){ int b=(g_cf8>>16)&0xFF; if(b>3)return; u8* s=pcis(b,(g_cf8>>11)&31,(g_cf8>>8)&7); s[(g_cf8&0xFC)+(p-0xCFC)]=v; return; }
+    if(p==0x70){ g_cmi[0]=v; return; } if(p==0x71){ g_cmos[0][g_cmi[0]]=v; return; } if(p==0x72){ g_cmi[1]=v; return; } if(p==0x73){ g_cmos[1][g_cmi[1]]=v; return; }
+    if(p==0x500){ g_bsel=v; return; } if(p>=0x501&&p<0x504){ g_bank[g_bsel&3][p-0x500]=v; return; }
+    if(p==0xB2&&v==0xA0){ g_smi_hits++; g_pm1_cnt|=1; } }
+static u16 inw(u16 p){ if(p==0x400)return g_pm1_sts; if(p==0x404)return g_pm1_cnt; return (u16)(inb(p)|(inb((u16)(p+1))<<8)); }
+static void outw(u16 p,u16 v){ if(p==0x400){ g_pm1_sts&=(u16)~v; return; } if(p==0x404){ if(v&4)g_gblrls++; g_pm1_cnt=(u16)(v&~4u); return; } outb(p,(u8)v); outb((u16)(p+1),(u8)(v>>8)); }
+static u32 inl(u16 p){ if(p==0xCFC){ u32 v=0; for(int k=0;k<4;k++)v|=(u32)inb((u16)(0xCFC+k))<<(8*k); return v; } if(p==0xCF8)return g_cf8; return (u32)inw(p)|((u32)inw((u16)(p+2))<<16); }
+static void outl(u16 p,u32 v){ if(p==0xCF8){ g_cf8=v; return; } if(p==0xCFC){ for(int k=0;k<4;k++)outb((u16)(0xCFC+k),(u8)(v>>(8*k))); return; } outw(p,(u16)v); outw((u16)(p+2),(u16)(v>>16)); }
+
+@@TEST@@
+void hk_push(int id){ (void)id; }
+void klog_key(u32 v){ (void)v; }
+void osd_show(int kind,int val,const char* txt){ (void)kind; (void)val; (void)txt; }
+int laptop_notify(anode* n,u32 v){ (void)n; (void)v; return 0; }
+void power_off(void){}
+void smp_tlb_shootdown(void){}
+static int ok=1, nchk=0; static void chk(const char* w,int c){ nchk++; printf("    %-66s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+static void show(const aobj* o,char* s,int cap){
+    int n=0; s[0]=0;
+    if(o->type==AT_INT)snprintf(s,cap,"INT %llx",(unsigned long long)o->i);
+    else if(o->type==AT_STR)snprintf(s,cap,"STR %.*s",(int)o->len,(const char*)o->p);
+    else if(o->type==AT_BUF){ n=snprintf(s,cap,"BUF "); for(u32 k=0;k<o->len&&n<cap-3;k++)n+=snprintf(s+n,cap-n,"%02x",o->p[k]); }
+    else if(o->type==AT_PKG)snprintf(s,cap,"PKG %u",o->len);
+    else snprintf(s,cap,"TYPE%d",o->type); }
+static int load_file(const unsigned char* a,unsigned n){ return aml_load_table(a+36,n-36); }
+static void calc_tests(const unsigned char* aml,unsigned n,const char* exp){
+    printf("== 1. AML interpreter vs ACPICA acpiexec (90 methods: math, control flow, strings, buffers, packages, refs, fields) ==\n");
+    chk("calc table loads without parse errors", load_file(aml,n)==0);
+    int same=0, total=0, errs=0; long live0=g_live;
+    const char* p=exp;
+    while(*p){ char name[8], kind[8], val[256]; int k=0; while(*p&&*p!=' ')name[k++]=*p++; name[k]=0; p++;
+        k=0; while(*p&&*p!=' '&&*p!='\n')kind[k++]=*p++; kind[k]=0; if(*p==' ')p++;
+        k=0; while(*p&&*p!='\n'&&k<255)val[k++]=*p++; val[k]=0; if(*p=='\n')p++;
+        char path[16]; snprintf(path,sizeof path,"\\%s",name); anode* m=aml_find(path); aobj r; int rc=m?aml_eval(m,0,0,&r):-1; char got[512];
+        if(rc==0)show(&r,got,sizeof got); else snprintf(got,sizeof got,"ERR");
+        if(rc==0)aobj_free(&r);
+        if(!strcmp(kind,"ERR")){ errs++; continue; }
+        char want[300]; snprintf(want,sizeof want,"%s %s",kind,val); total++;
+        if(!strcmp(want,got))same++; else printf("      %s: want [%s] got [%s]%s\n",name,want,got,g_aml_lasterr[0]?g_aml_lasterr:"");
+        g_aml_lasterr[0]=0; }
+    char b[96]; snprintf(b,sizeof b,"every result matches ACPICA (%d/%d, %d error cases skipped)",same,total,errs); chk(b,same==total&&total>80);
+    chk("method calls free all their temporaries (no heap growth)", g_live==live0); }
+static u64 g_clock=1000; static u64 t_timer(void){ return g_clock+=10; }
+
+static u8* TB; static u32 tboff; static u64 g_test_rsdp;
+static u8* tput(const u8* raw,u32 len){ u8* d=TB+tboff; memcpy(d,raw,len); memcpy(d+4,&len,4); d[9]=0; u8 s=0; for(u32 i=0;i<len;i++)s+=d[i]; d[9]=(u8)(0-s); tboff+=(len+15)&~15u; return d; }
+static u8* tmk(const char* sig,const u8* body,u32 blen){ u8 h[512]; memset(h,0,36); memcpy(h,sig,4); h[8]=2; memcpy(h+36,body,blen); return tput(h,36+blen); }
+static void tables(const u8* dsdt,u32 dl,const u8* ssdt,u32 sl,const u8* ecdt_body,u32 el){
+    tboff=0; memset(TB,0,1<<20);
+    u8* D=tput(dsdt,dl); u8 fb[244-36]; memset(fb,0,sizeof fb); u32 d32=(u32)(u64)D; memcpy(fb+40-36,&d32,4); u32 smi=0xB2; memcpy(fb+48-36,&smi,4); fb[52-36]=0xA0;
+    u32 ev=0x400, cn=0x404; memcpy(fb+56-36,&ev,4); memcpy(fb+64-36,&cn,4); fb[88-36]=4; u64 d64=(u64)D; memcpy(fb+140-36,&d64,8);
+    { u8* fa=TB+tboff; memset(fa,0,64); memcpy(fa,"FACS",4); fa[4]=64; tboff+=64; u32 fa32=(u32)(u64)fa; memcpy(fb+36-36,&fa32,4); g_test_facs_lock=(volatile u32*)(fa+16); }
+    u64 ents[4]; int n=0; ents[n++]=(u64)tmk("FACP",fb,sizeof fb); if(ssdt)ents[n++]=(u64)tput(ssdt,sl); if(ecdt_body)ents[n++]=(u64)tmk("ECDT",ecdt_body,el);
+    u8* X=tmk("XSDT",(u8*)ents,(u32)(8*n));
+    u8* r=TB+tboff; memset(r,0,36); memcpy(r,"RSD PTR ",8); r[15]=2; u32 l=36; memcpy(r+20,&l,4); u64 xa=(u64)X; memcpy(r+24,&xa,8);
+    u8 s=0; for(int i=0;i<20;i++)s+=r[i]; r[8]=(u8)(0-s); s=0; for(int i=0;i<36;i++)s+=r[i]; r[32]=(u8)(0-s); g_test_rsdp=(u64)r; tboff+=48;
+    memset(&g_acpi,0,sizeof g_acpi); g_acpi.pm1a_cnt=0x404; g_acpi.pm1a_evt=0x400; g_acpi.smi_cmd=0xB2; g_acpi.acpi_en=0xA0; }
+static u8* GN; static u8* GPU; static int g_pwrbtn=0; static void on_pwrbtn(void){ g_pwrbtn++; }
+static void sim_reset(void){
+    memset(&ec,0,sizeof ec); memset(g_pci,0,sizeof g_pci); memset(g_cmos,0,sizeof g_cmos); memset(g_bank,0,sizeof g_bank); g_bsel=0; g_pm1_sts=0; g_pm1_cnt=0; g_smi_hits=0; g_pwrbtn=0;
+    memset(GN,0,0x100); memset(GPU,0,1<<20); g_kln=0; g_klog[0]=0; }
+static void acpi_test_reset(void){
+    aml_reset(); for(int i=0;i<g_acpi_ncopies;i++)kfree(g_acpi_copies[i]); g_acpi_ncopies=0; g_glock=0; g_gl_fail=g_gl_waits=g_gl_held=0; g_acb_dirty=0; g_need_gl=0; g_gl_viol=0; g_mm_on=1; g_hrp=1; memset(&g_aec,0,sizeof g_aec); memset(&g_acs,0,sizeof g_acs); memset(&g_bl,0,sizeof g_bl); memset(g_acb,0,sizeof g_acb); g_acb_n=0; g_acad=0; g_ac_online=-1; g_acb_pct=-1; g_acb_charging=0; g_acb_mins=-1; g_acb_t=0; g_acpi_pwrbtn_cb=on_pwrbtn; }
+static void pcidev(int b,int d,int f,u16 ven,u16 dev,u32 cls){ u8* s=pcis(b,d,f); s[0]=(u8)ven; s[1]=(u8)(ven>>8); s[2]=(u8)dev; s[3]=(u8)(dev>>8); s[9]=(u8)cls; s[10]=(u8)(cls>>8); s[11]=(u8)(cls>>16); s[4]=7; }
+static void w16(u8* r,int a,u16 v){ r[a]=(u8)v; r[a+1]=(u8)(v>>8); }
+static void wr32(u8* m,u32 o,u32 v){ memcpy(m+o,&v,4); } static u32 rd32(u8* m,u32 o){ u32 v; memcpy(&v,m+o,4); return v; }
+static u64 nameval(const char* p){ anode* n=aml_find(p); if(!n||n->kind!=K_NAME)return 0xDEAD; return n->v.i; }
+static void lenovo_tests(const unsigned char* dsdt,unsigned dl){
+    printf("== 2. Lenovo-style firmware: EC from _CRS, _REG, _INI, PCI_Config, _BIX battery, AC, _BCL backlight, EC events ==\n");
+    sim_reset(); acpi_test_reset(); tables(dsdt,dl,0,0,0,0);
+    ec.data=0x62; ec.cmd=0x66; ec.ram[0x30]=0x11; ec.ram[0x31]=0x02; w16(ec.ram,0xA0,4500); w16(ec.ram,0xA2,6000); w16(ec.ram,0xA8,1500); w16(ec.ram,0xAA,11520); w16(ec.ram,0xC0,6100); w16(ec.ram,0xC2,11520); w16(ec.ram,0xC4,87);
+    pcidev(0,2,0,0x8086,0x9A49,0x030000); { u8* s=pcis(0,2,0); u32 bar=(u32)(u64)GPU|4; memcpy(s+0x10,&bar,4); }
+    pcidev(0,0x1C,0,0x8086,0xA0B8,0x060400); pcis(0,0x1C,0)[0x19]=3; pcidev(3,0,0,0x10EC,0x8168,0x020000);
+    wr32(GPU,0xC8250,0x80000000u); wr32(GPU,0xC8254,(7500u<<16)|3750u);
+    GN[2]=60; g_pm1_sts=0x100;
+    long live0=g_live; acpi_aml_init(); long live1=g_live;
+    chk("DSDT loads cleanly, no AML errors", g_acs.up&&g_acs.tables==1&&g_acs.bad_tables==0&&g_aml_err==0);
+    if(g_aml_err)printf("      last AML error: %s\n",g_aml_lasterr);
+    chk("ACPI mode enabled through SMI_CMD (SCI_EN set)", g_smi_hits==1&&(g_pm1_cnt&1)&&g_acs.acpi_mode);
+    chk("stale power-button status from switch-on cleared, no shutdown", !(g_pm1_sts&0x100)&&g_pwrbtn==0);
+    chk("EC found in the namespace, ports 0x62/0x66 from _CRS, _GPE 0x16", g_aec.ok&&!g_aec.from_ecdt&&g_aec.data==0x62&&g_aec.cmd==0x66&&g_aec.gpe==0x16);
+    chk("EC _REG(3,1) ran exactly once (ECON=1)", nameval("\\ECON")==1&&GN[5]==1);
+    chk("\\_SB._INI saw _OSI(\"Windows 2015\") but not Linux (OSYS=0x7DF)", (GN[0]|(GN[1]<<8))==0x7DF&&GN[4]==1);
+    chk("_INI skipped for a device whose _STA says absent", GN[10]==0);
+    chk("PCI_Config field read the iGPU vendor (bus 0, dev 2)", (GN[6]|(GN[7]<<8))==0x8086);
+    chk("PCI_Config behind a bridge used its secondary bus (3:0.0 = 0x10EC)", (GN[8]|(GN[9]<<8))==0x10EC&&GN[13]==1);
+    if((GN[8]|(GN[9]<<8))!=0x10EC)printf("      RPDV=%04x PCIR=%d err=%s\n",GN[8]|(GN[9]<<8),GN[14],g_aml_lasterr);
+    chk("one battery present (BAT1 slot empty), AC adapter found", g_acb_n==2&&g_acb[0].present+g_acb[1].present==1&&g_acad!=0&&g_ac_online==1);
+    acbat* b=g_acb[0].present?&g_acb[0]:&g_acb[1];
+    chk("_BIX parsed: mWh, design 61000, full 60000, 87 cycles", b->mwh&&b->design==61000&&b->full==60000&&b->cycles==87);
+    chk("_BIX strings built by AML (model L19M3, serial 0x2A51, LION)", !strcmp(b->model,"L19M3")&&!strcmp(b->serial,"0x2A51")&&!strcmp(b->type,"LION"));
+    chk("75 % and charging, 52 min to full (rate from signed EC current)", g_acb_pct==75&&g_acb_charging==1&&b->rate==17280&&g_acb_mins==52);
+    chk("backlight: 11 levels from _BCL, current 60 from _BQC, min 10", g_bl.ok&&g_bl.nlv==11&&g_bl.cur==60&&g_bl.minlv==10&&g_bl.out&&g_bl.bqc);
+    chk("_DOS(4) told firmware the OS handles brightness keys", GN[3]==4);
+    chk("Intel PWM found (LPT/SPT layout, max 7500)", g_bl.pwm_kind==2&&g_bl.pwm_max==7500&&g_bl.mode==3);
+    ec.q[ec.qn++]=0x11; g_ticks+=2; acpi_poll();
+    chk("Fn+Brightness-Up: EC query 0x11 -> _Q11 -> Notify 0x86 -> _BCM(70)", GN[2]==70&&g_bl.cur==70&&g_aec.lastq==0x11);
+    chk("PWM duty follows (70 % of 7500)", (rd32(GPU,0xC8254)&0xFFFF)==5250&&(rd32(GPU,0xC8254)>>16)==7500);
+    ec.q[ec.qn++]=0x12; ec.q[ec.qn++]=0x12; ec.q[ec.qn++]=0x12; acpi_poll();
+    chk("three Brightness-Down presses in one poll -> 40", GN[2]==40&&g_bl.cur==40);
+    for(int i=0;i<8;i++){ ec.q[ec.qn++]=0x12; acpi_poll(); }
+    chk("brightness never goes below the lowest non-zero level (10)", GN[2]==10&&g_bl.cur==10);
+    bl_set(100); chk("bl_set(100) -> _BCM(100)", GN[2]==100); bl_set(47); chk("bl_set(47) snaps to the nearest level 50", GN[2]==50&&g_bl.cur==50);
+    ec.ram[0x30]=0x10; ec.ram[0x31]=0x01; w16(ec.ram,0xA8,(u16)(0x10000-2000)); ec.q[ec.qn++]=0x26; acpi_poll();
+    chk("AC unplugged: _Q26 -> Notify(AC), Notify(BAT0) -> on battery", GN[12]==1&&g_ac_online==0&&g_acb_charging==0);
+    chk("discharge rate 23040 mW, 117 min left", b->rate==23040&&g_acb_mins==117);
+    ec.q[ec.qn++]=0x77; acpi_poll(); chk("unknown EC query (no _Q77 method) is ignored safely", g_aec.lastq==0x77&&g_aec.events>=14);
+    g_pm1_sts|=0x100; g_ticks+=300; acpi_poll(); acpi_poll(); chk("power button press -> one shutdown request, status cleared", g_pwrbtn==1&&!(g_pm1_sts&0x100));
+    long l2=g_live; for(int i=0;i<300;i++){ g_ticks+=600; if(i%7==0)ec.q[ec.qn++]=(u8)(i&1?0x11:0x12); if(i%11==0)ec.q[ec.qn++]=0x26; acpi_poll(); }
+    chk("300 polls with battery refresh and events: no heap growth", g_live==l2);
+    (void)live0; (void)live1;
+    ec.stuck=1; long w0=g_iow; u8 v; int r=aec_read(0x30,&v); acpi_battery_update(0); long dw=g_iow-w0; ec.stuck=0;
+    chk("EC that never answers: reads fail, bounded wait (no hang)", r!=0&&dw<200000&&g_aec.timeouts>0);
+    u32 mb=g_acpi_memblock; int w1=acpi_wr(0,0x00200000,4,0x1234,0), w2=acpi_wr(0,0x1EFFFFFE,4,0x1234,0), w3=acpi_wr(0,0x20000020,1,0x5A,0);
+    chk("AML writes into usable RAM (kernel memory) are refused, firmware NVS allowed", w1!=0&&w2!=0&&w3==0&&GN[0x20]==0x5A&&g_acpi_memblock==mb+2); }
+static void hp_tests(const unsigned char* dsdt,unsigned dl,const unsigned char* ssdt,unsigned sl){
+    printf("== 3. HP-style firmware: ECDT on 0x68/0x6C, SMBus-over-EC with retries, two _BIF batteries, SSDT backlight ==\n");
+    sim_reset(); acpi_test_reset();
+    u8 ecdt[64]; memset(ecdt,0,sizeof ecdt); ecdt[0]=1; ecdt[1]=8; u64 c=0x6C, d=0x68; memcpy(ecdt+4,&c,8); ecdt[12]=1; ecdt[13]=8; memcpy(ecdt+16,&d,8); ecdt[28]=3; strcpy((char*)ecdt+29,"\\_SB.PCI0.LPCB.EC0");
+    tables(dsdt,dl,ssdt,sl,ecdt,29+19);
+    ec.data=0x68; ec.cmd=0x6C; ec.ram[0x40]=0x07; ec.ram[0x41]=0x01; ec.ram[0x42]=0x01; ec.ram[0x2A]=4*23; ec.smb_fail=1;
+    g_cmos[1][0x40]=0x41; pcidev(0,8,1,0x1002,0x1638,0x030000);
+    acpi_aml_init();
+    chk("DSDT + SSDT load cleanly", g_acs.up&&g_acs.tables==2&&g_acs.bad_tables==0&&g_aml_err==0);
+    if(g_aml_err)printf("      last AML error: %s\n",g_aml_lasterr);
+    chk("EC taken from ECDT (ports 0x68/0x6C, GPE 3, path resolved)", g_aec.ok&&g_aec.from_ecdt&&g_aec.data==0x68&&g_aec.cmd==0x6C&&g_aec.gpe==3&&g_aec.dev==aml_find("\\_SB.PCI0.LPCB.EC0"));
+    chk("EC _REG ran (ECRG=1)", nameval("\\ECRG")==1);
+    chk("IndexField over CMOS bank 2 read 0x41 and wrote 0xBEEF", nameval("\\IXRS")==0x42&&g_cmos[1][0x41]==0xEF&&g_cmos[1][0x42]==0xBE);
+    chk("BankField selected bank 2 before writing 0x1234", nameval("\\BNKR")==2&&g_bank[2][2]==0x34&&g_bank[2][3]==0x12);
+    chk("two batteries present via SMBus-over-EC", g_acb_n==2&&g_acb[0].present&&g_acb[1].present);
+    acbat* b1=aml_find("\\_SB.BAT1")==g_acb[0].dev?&g_acb[0]:&g_acb[1]; acbat* b2=b1==&g_acb[0]?&g_acb[1]:&g_acb[0];
+    chk("_BIF in mAh: BAT1 design 4000 full 3600, OEM string", !b1->mwh&&b1->design==4000&&b1->full==3600&&b1->volt==11550&&!strcmp(b1->oem,"Hewlett-Packard")&&!strcmp(b1->model,"Primary10"));
+    chk("failed first SMBus transfer was retried by the firmware loop", ec.smb_fail==0&&b1->design==4000);
+    chk("combined charge 59 % (1800+1500 of 3600+2000), discharging", g_acb_pct==59&&g_acb_charging==0&&b2->remain==1500);
+    chk("time left 132 min at 1500 mA total", g_acb_mins==132);
+    chk("backlight from the SSDT device DD1F, no Intel PWM on AMD", g_bl.ok&&g_bl.mode==1&&g_bl.out==aml_find("\\_SB.PCI0.GFX0.DD1F")&&g_bl.nlv==11&&g_bl.cur==32);
+    ec.q[ec.qn++]=0x0A; acpi_poll(); chk("Fn key event _Q0A -> _BCM(40) -> EC brightness register 5*23", g_bl.cur==40&&ec.ram[0x2A]==5*23);
+    ec.q[ec.qn++]=0x0B; ec.q[ec.qn++]=0x0B; acpi_poll(); chk("_Q0B twice -> 24 (EC register 3*23)", g_bl.cur==24&&ec.ram[0x2A]==3*23);
+    ec.ram[0x40]=0x03; ec.q[ec.qn++]=0x03; acpi_poll(); chk("second battery removed (_Q03) -> only BAT1 counts: 50 %", !b2->present&&g_acb_pct==50); }
+static void fuzz_tests(const unsigned char* dsdt,unsigned dl){
+    printf("== 4. robustness: 400 corrupted firmware tables, allocation failures ==\n");
+    unsigned seed=12345; u8* m=(u8*)malloc(dl); int done=0; long iow0=g_iow;
+    for(int it=0;it<400;it++){
+        memcpy(m,dsdt,dl); unsigned len=dl; int k=1+(int)((seed=seed*1103515245u+12345u)>>16)%8;
+        for(int j=0;j<k;j++){ seed=seed*1103515245u+12345u; unsigned pos=36+(seed>>8)%(dl-36); seed=seed*1103515245u+12345u; u8 how=(u8)(seed>>24);
+            if(how<160)m[pos]=(u8)(seed>>4); else if(how<200)m[pos]^=(u8)(1u<<((seed>>9)&7)); else if(how<230)len=pos>40?pos:len; else m[pos]=0xFF; }
+        sim_reset(); acpi_test_reset(); tables(m,len,0,0,0,0); ec.data=0x62; ec.cmd=0x66; ec.ram[0x30]=0x11; w16(ec.ram,0xA2,6000);
+        g_fail_after=(it%5==4)?(long)((seed>>3)%400):-1;
+        acpi_aml_init(); g_fail_after=-1;
+        for(int p=0;p<6;p++){ ec.q[ec.qn++]=(u8)(p&1?0x11:0x26); g_ticks+=600; acpi_poll(); } bl_step(1); bl_set(30);
+        done++; }
+    chk("400 corrupted DSDTs: no crash, no memory error, every run finishes", done==400);
+    chk("total simulated wait stays bounded", g_iow-iow0<400L*2000000L);
+    free(m);
+    sim_reset(); acpi_test_reset(); }
+
+static void edge_tests(const unsigned char* dsdt,unsigned dl){
+    printf("== 5. review fixes: time limits, Timer at boot, EC circuit breaker, global lock, root-bridge PCI_Config, guards ==\n");
+    sim_reset(); acpi_test_reset(); tables(dsdt,dl,0,0,0,0); ec.data=0x62; ec.cmd=0x66; ec.ram[0x10]=5; ec.ram[0x11]=6;
+    pcidev(0,0,0,0x8086,0x9B61,0x060000); { u8* s=pcis(0,0,0); u32 mch=0xFED10001u; memcpy(s+0x48,&mch,4); }
+    acpi_aml_init();
+    chk("FACS global lock found, EC _GLK=1 honoured", g_glock!=0&&g_aec.glk==1);
+    chk("PCI_Config region directly in the root bridge reads MCHBAR (0xFED10000)", nameval("\\MHB0")==0xFED10000ULL);
+    g_need_gl=1; anode* m=aml_find("\\_SB.PCI0.LPCB.EC0.RDEC"); u64 v=0; int r=aml_eval_int(m,&v);
+    chk("every EC command issued while holding the global lock", r==0&&v==11&&g_gl_viol==0&&ec.cmds>0);
+    chk("lock released afterwards", (*g_test_facs_lock&3)==0);
+    ec.q[ec.qn++]=0x20; acpi_poll(); chk("EC event _Q20 writes through the lock", ec.ram[0x11]==0x33&&g_gl_viol==0&&(*g_test_facs_lock&3)==0);
+    m=aml_find("\\GLCK"); r=aml_eval_int(m,&v); chk("Acquire(\\_GL)/Release(\\_GL) nest with the EC lock", r==0&&v==5&&g_gl_viol==0&&(*g_test_facs_lock&3)==0);
+    *g_test_facs_lock=2; u64 c0=g_clk; u8 b=0; int rr=aec_read(0x10,&b); u64 waited=g_clk-c0;
+    chk("firmware holds the lock: OS gives up after ~50 ms, pending bit not left set", g_gl_fail>=1&&waited<200000000ULL&&(*g_test_facs_lock&1)==0);
+    (void)rr; *g_test_facs_lock=0;
+    *g_test_facs_lock=0; acpi_gl_hook(1); *g_test_facs_lock|=1; int rl0=g_gblrls; acpi_gl_hook(0);
+    chk("release with firmware waiting writes GBL_RLS to PM1_CNT", g_gblrls==rl0+1&&(*g_test_facs_lock&3)==0);
+    g_need_gl=0;
+    c0=g_clk; m=aml_find("\\HANG"); aobj o; r=aml_eval(m,0,0,&o); aobj_free(&o); u64 took=g_clk-c0;
+    chk("While(One){Stall(100)} stops at the time limit (about 1 s)", r!=0&&took<1600000000ULL);
+    g_aml_hard_deadline=g_clk+500000000ULL; g_aml_sleep_pool=300; g_aml_time_ms=300; c0=g_clk; m=aml_find("\\SLPS"); r=aml_eval(m,0,0,&o); aobj_free(&o); took=g_clk-c0; g_aml_hard_deadline=0;
+    chk("While(One){Sleep(10)} inside a poll stays under 0.5 s", r!=0&&took<600000000ULL);
+    m=aml_find("\\TMRL"); r=aml_eval_int(m,&v); chk("Timer advances during evaluation, 20 ms timeout loop ends normally", r==0&&v>10&&v<100000);
+    m=aml_find("\\RETI"); r=aml_eval_int(m,&v); chk("Return(Index(Local0,1)) returns 2 without touching freed memory", r==0&&v==2);
+    ec.stuck=1; long w0=g_iow; for(int i=0;i<40;i++){ aec_read(0x10,&b); } long dw=g_iow-w0;
+    chk("stuck EC trips the circuit breaker: 40 reads cost only 8 timeouts", g_aec.trips==1&&dw<9*20000+1000);
+    g_clk+=6000000000ULL; ec.stuck=0; int ok2=aec_read(0x10,&b)==0&&b==5; chk("EC retried after 5 s and works again", ok2);
+    g_mm_on=0; int w1=acpi_wr(0,0x5000,4,1,0), w2=acpi_wr(0,0x55000000,4,1,0), w3=acpi_wr(0,0x20000040,1,0x77,0);
+    chk("no memory map: writes below 256 MB and into the heap are refused, NVS allowed", w1!=0&&w2!=0&&w3==0&&GN[0x40]==0x77); g_mm_on=1;
+    memset(&g_bl,0,sizeof g_bl); pcidev(0,2,0,0x8086,0x0126,0x030000); { u8* s=pcis(0,2,0); u32 bar=(u32)(u64)GPU|4; memcpy(s+0x10,&bar,4); }
+    memset(GPU,0,1<<20); wr32(GPU,0x48250,0x80000000u); wr32(GPU,0xC8254,(4882u<<16)); wr32(GPU,0x48254,2441u); bl_intel_probe();
+    chk("Sandy/Ivy Bridge: duty in CPU register 0x48254", g_bl.pwm_kind==3&&g_bl.pwm_max==4882); bl_pwm_set(25); chk("  25 % writes 1220 to 0x48254", (rd32(GPU,0x48254)&0xFFFF)==1220);
+    memset(&g_bl,0,sizeof g_bl); memset(GPU,0xFF,1<<20); bl_intel_probe(); chk("GPU registers reading all ones: no PWM", g_bl.pwm_kind==0&&g_bl.mmio==0);
+    g_hrp=1; }
+int main(void){
+    setvbuf(stdout,0,_IONBF,0);
+    aml_timer_hook=t_timer;
+    GN=mmap((void*)0x20000000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+    TB=mmap((void*)0x30000000,1<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+    GPU=mmap((void*)0x40000000,1<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+    calc_tests(CALC_AML,sizeof CALC_AML,CALC_EXP);
+    acpi_test_reset();
+    lenovo_tests(LENOVO_AML,sizeof LENOVO_AML);
+    hp_tests(HP_AML,sizeof HP_AML,HPS_AML,sizeof HPS_AML);
+    edge_tests(EDGE_AML,sizeof EDGE_AML);
+    fuzz_tests(LENOVO_AML,sizeof LENOVO_AML);
+    printf(ok?"ALL PASS (%d checks)\n":"FAILURES (%d checks)\n",nchk); return ok?0:1; }

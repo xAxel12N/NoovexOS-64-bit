@@ -1,3 +1,18 @@
+#include "include/nvx/base.h"
+#include "include/nvx/arch/x86_64/percpu.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/gui/theme.h"
+#include "include/nvx/fs/ramfs.h"
+#include "include/nvx/shell/terminal.h"
+#include "include/nvx/fs/nvxfs.h"
+#include "include/nvx/fs/dirtree.h"
+#include "include/nvx/core/proc/jobs.h"
+#include "include/nvx/fs/nvx4.h"
+#include "include/nvx/fs/unixfs.h"
+#include "include/nvx/shell/commands.h"
+#include "include/nvx/apps/browser.h"
+#include "include/nvx/fs/pkg.h"
 u8 g_pkg_raw[8u*1024u*1024u];
 static u8 g_pkg_inf[8u*1024u*1024u];
 char g_pkg_name[64], g_pkg_ver[48], g_pkg_arch[24], g_pkg_desc[128];
@@ -7,7 +22,7 @@ static long pkg_octal(const char* s,int n){ long v=0; for(int i=0;i<n&&s[i];i++)
 static int pkg_streq(const char* a,const char* b){ while(*a&&*b){ if(*a!=*b)return 0; a++;b++; } return *a==*b; }
 
 /* ---- tar (ustar) walker: calls cb(name,mode,data,len,is_dir,ctx) ---- */
-static int tar_walk(const u8* t,long n,void(*cb)(const char*,unsigned,const u8*,long,int,void*),void* ctx){
+int tar_walk(const u8* t,long n,void(*cb)(const char*,unsigned,const u8*,long,int,void*),void* ctx){
     long off=0; int count=0;
     while(off+512<=n){
         const char* h=(const char*)(t+off);
@@ -61,14 +76,14 @@ static void pkg_field(const char* ctrl,long n,const char* key,char* out,int cap)
 static void pkg_count_cb(const char* name,unsigned mode,const u8* data,long len,int isdir,void* ctx){
     (void)mode;(void)data;(void)ctx; if(isdir)return; g_pkg_nfiles++; g_pkg_total+=len;
 }
-static void pkg_print_cb(const char* name,unsigned mode,const u8* data,long len,int isdir,void* ctx){
+void pkg_print_cb(const char* name,unsigned mode,const u8* data,long len,int isdir,void* ctx){
     (void)mode;(void)data; struct pkg_list_ctx* c=(struct pkg_list_ctx*)ctx; if(isdir)return; if(c->shown>=c->max)return;
     char b[96],*p=b; p=scopy(p,"    "); int nn=0; for(const char* q=name;*q&&nn<52;q++,nn++)*p++=*q; if(!isdir){ *p++=' '; *p++=' '; p=udec(p,(u32)len); } *p=0;
     tcol(rgb(150,158,176)); term_puts(b); term_putc('\n'); tcol(WHT); c->shown++;
 }
 
 /* ---- detect + parse metadata; returns 1 deb, 2 apk-tar, 3 zip-apk, 0 unknown ---- */
-static int pkg_open(const u8* file,long n,const u8** tar,long* tarlen){
+int pkg_open(const u8* file,long n,const u8** tar,long* tarlen){
     g_pkg_name[0]=g_pkg_ver[0]=g_pkg_arch[0]=g_pkg_desc[0]=0; g_pkg_nfiles=0; g_pkg_total=0;
     if(n>8&&file[0]=='!'&&file[1]=='<'&&file[2]=='a'&&file[3]=='r'){
         const u8* ctrl; long cl;
@@ -107,14 +122,14 @@ static void pkg_extract_cb(const char* name,unsigned mode,const u8* data,long le
     for(;;){ if(*p=='/'||*p==0){ comp[ci]=0;
             if(ci){ if(*p==0&&!isdir){ /* final = file */
                     int slot=-1; for(int i=0;i<FS_N;i++) if(!FS[i].used){ slot=i; break; }
-                    if(slot>=0){ int k=0; while(comp[k]&&k<63){FS[slot].name[k]=comp[k];k++;} FS[slot].name[k]=0;
-                        long L=len; if(L>FS_CAP-1)L=FS_CAP-1; for(long i=0;i<L;i++)FS[slot].data[i]=(char)data[i]; FS[slot].data[L]=0;
-                        FS[slot].len=(int)L; FS[slot].used=1; FS[slot].dir=dir; FS[slot].folder=0; FS[slot].mode=0100000u|(mode?(mode&0777):0644u); FS[slot].uid=g_uid; FS[slot].gid=g_uid; FS[slot].nlink=1; if(disk_ok)nvx3_sync(slot); }
+                    if(slot>=0){ fs_newslot(slot); int k=0; while(comp[k]&&k<63){FS[slot].name[k]=comp[k];k++;} FS[slot].name[k]=0;
+                        long L=len; if(L>FS_CAP-1)L=FS_CAP-1; if(fs_set(slot,(const char*)data,L))return;
+                        FS[slot].used=1; FS[slot].dir=dir; FS[slot].folder=0; FS[slot].mode=0100000u|(mode?(mode&0777):0644u); FS[slot].uid=g_uid; FS[slot].gid=g_uid; FS[slot].nlink=1; if(disk_ok)nvx3_sync(slot); }
                 } else { int nd=dt_mkdir_at(dir,comp); if(nd>=0){ dt_setmode(nd,0040755u); dir=nd; } } }
             if(*p==0)break; ci=0; p++; continue; }
         if(ci<63)comp[ci++]=*p; p++; }
 }
-static int pkg_install(const u8* file,long n,int extract){
+int pkg_install(const u8* file,long n,int extract){
     const u8* tar=0; long tarlen=0;
     int kind=pkg_open(file,n,&tar,&tarlen);
     if(!kind)return -1;

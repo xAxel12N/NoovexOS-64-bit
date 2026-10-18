@@ -75,8 +75,39 @@ start32:
     movb    108(%ebx), %al              /* framebuffer_bpp            */
     movb    %al,  0x5020
 
+    movl    $0, 0x7004
+    testl   $0x40, 0(%ebx)
+    jz      3f
+    movl    48(%ebx), %esi
+    movl    44(%ebx), %ebp
+    addl    %esi, %ebp
+    movl    $0x7008, %edi
+    xorl    %ecx, %ecx
+2:  cmpl    %ebp, %esi
+    jae     3f
+    cmpl    $40, %ecx
+    jae     3f
+    movl    4(%esi), %eax
+    movl    %eax, 0(%edi)
+    movl    8(%esi), %eax
+    movl    %eax, 4(%edi)
+    movl    12(%esi), %eax
+    movl    %eax, 8(%edi)
+    movl    16(%esi), %eax
+    movl    %eax, 12(%edi)
+    movl    20(%esi), %eax
+    movl    %eax, 16(%edi)
+    movl    $0, 20(%edi)
+    addl    $24, %edi
+    incl    %ecx
+    movl    0(%esi), %eax
+    leal    4(%esi,%eax), %esi
+    jmp     2b
+3:  movl    %ecx, 0x7004
+    movl    $0x4558564E, 0x7000
+
     /* ---- Multiboot module (the WAD): copy the first module clear of the kernel
-            (to 0x5800000 = 88 MiB, above .bss) and record addr+size for kmain. ---- */
+            (to 0x0E000000, the module area between the frame pool and the heap) and record addr+size for kmain. ---- */
     movl    20(%ebx), %ecx              /* mods_count */
     testl   %ecx, %ecx
     jz      1f
@@ -87,7 +118,7 @@ start32:
     jle     1f
     movl    %edx, 0x5018                /* store size */
     movl    %eax, %esi                  /* src = mod_start */
-    movl    $0x5800000, %edi            /* dst = 88 MiB */
+    movl    $0x0E000000, %edi
     movl    %edx, %ebp                  /* save size (no stack yet) */
     movl    %edx, %ecx
     shrl    $2, %ecx
@@ -95,7 +126,7 @@ start32:
     movl    %ebp, %ecx
     andl    $3, %ecx
     rep     movsb                       /* copy remainder */
-    movl    $0x5800000, 0x5010          /* WAD now lives at 88 MiB */
+    movl    $0x0E000000, 0x5010
 1:
 
     /* ---- zero the six page-table pages (PML4, PDPT, PD0..PD3) ---- */
@@ -172,7 +203,7 @@ long_entry:
     movw    %ax, %ss
     movw    %ax, %fs
     movw    %ax, %gs
-    movq    $0x700000, %rsp             /* proven-free stack top */
+    movq    $0x09A00000, %rsp             /* proven-free stack top */
     xorq    %rbp, %rbp
     call    kmain
 1:  hlt
@@ -183,7 +214,7 @@ long_entry:
    We load our own GDT, reload segments, set a stack, and call kmain. ---- */
 .global uefi_entry
 uefi_entry:
-    lgdt    gdt64_ptr(%rip)
+    lgdt    gdt64_ptr64(%rip)
     /* reload CS via a far return */
     lea     .Luefi_cs(%rip), %rax
     pushq   $0x08
@@ -196,11 +227,127 @@ uefi_entry:
     movw    %ax, %ss
     movw    %ax, %fs
     movw    %ax, %gs
-    movq    $0x700000, %rsp
+    movq    $0x09A00000, %rsp
     xorq    %rbp, %rbp
+    cli
+    cld
+    movq    %cr4, %rax
+    btrq    $23, %rax
+    movq    %rax, %cr4
+    movl    $2, %edi
+    movl    $0x00FFD700, %esi
+    call    uefi_mark
+    movabsq $__bss_start, %rdi
+    movabsq $__bss_end, %rcx
+    subq    %rdi, %rcx
+    addq    $7, %rcx
+    shrq    $3, %rcx
+    xorl    %eax, %eax
+    rep     stosq
+    movl    $3, %edi
+    movl    $0x0030C030, %esi
+    call    uefi_mark
+    movabsq $pdpt, %rax
+    orq     $3, %rax
+    movabsq $pml4, %rdi
+    movq    %rax, (%rdi)
+    movabsq $pdpt, %rdi
+    movabsq $pd0, %rax
+    orq     $3, %rax
+    movl    $4, %ecx
+2:  movq    %rax, (%rdi)
+    addq    $8, %rdi
+    addq    $4096, %rax
+    decl    %ecx
+    jnz     2b
+    movabsq $pd0, %rdi
+    xorq    %rax, %rax
+    orq     $0x83, %rax
+    movl    $2048, %ecx
+3:  movq    %rax, (%rdi)
+    addq    $8, %rdi
+    addq    $0x200000, %rax
+    decl    %ecx
+    jnz     3b
+    movq    0x5000, %rax
+    movq    $0x100000000, %rdx
+    cmpq    %rdx, %rax
+    jb      5f
+    movq    $0x8000000000, %rdx
+    cmpq    %rdx, %rax
+    jae     5f
+    shrq    $30, %rax
+    movq    %rax, %r8
+    movabsq $pdfb, %r9
+    xorl    %r10d, %r10d
+4:  movq    %r8, %rax
+    addq    %r10, %rax
+    cmpq    $512, %rax
+    jae     5f
+    movq    %r10, %rsi
+    shlq    $12, %rsi
+    addq    %r9, %rsi
+    movq    %rsi, %rdx
+    orq     $3, %rdx
+    movabsq $pdpt, %rdi
+    movq    %rdx, (%rdi,%rax,8)
+    shlq    $30, %rax
+    orq     $0x83, %rax
+    movl    $512, %ecx
+6:  movq    %rax, (%rsi)
+    addq    $8, %rsi
+    addq    $0x200000, %rax
+    decl    %ecx
+    jnz     6b
+    incq    %r10
+    cmpq    $2, %r10
+    jb      4b
+5:  movabsq $pml4, %rax
+    movq    %rax, %cr3
+    movl    $4, %edi
+    movl    $0x003080FF, %esi
+    call    uefi_mark
     call    kmain
 1:  hlt
     jmp     1b
+
+uefi_mark:
+    pushq   %rax
+    pushq   %rcx
+    pushq   %rdx
+    pushq   %r8
+    pushq   %r9
+    movq    0x5000, %r8
+    testq   %r8, %r8
+    jz      9f
+    movl    0x5008, %r9d
+    movzwl  0x500E, %eax
+    cmpl    $40, %eax
+    jb      9f
+    subl    $36, %eax
+    imulq   %r9, %rax
+    addq    %rax, %r8
+    movl    %edi, %eax
+    imull   $28, %eax
+    addl    $16, %eax
+    shll    $2, %eax
+    addq    %rax, %r8
+    movl    $24, %edx
+7:  movl    $24, %ecx
+    movq    %r8, %rax
+8:  movl    %esi, (%rax)
+    addq    $4, %rax
+    decl    %ecx
+    jnz     8b
+    addq    %r9, %r8
+    decl    %edx
+    jnz     7b
+9:  popq    %r9
+    popq    %r8
+    popq    %rdx
+    popq    %rcx
+    popq    %rax
+    ret
 
 /* --------------------------------------------------------------------------- */
     .align 8
@@ -212,15 +359,23 @@ gdt64_end:
 gdt64_ptr:
     .word   gdt64_end - gdt64 - 1
     .long   gdt64                        /* 32-bit base (GDT lives < 4 GiB)   */
+    .align 8
+gdt64_ptr64:
+    .word   gdt64_end - gdt64 - 1
+    .quad   gdt64
 
 /* --------------------------------------------------------------------------- */
-.section .bss
+.section .data
     .align 4096
-pml4:   .space 4096
-pdpt:   .space 4096
-pd0:    .space 4096
-pd1:    .space 4096
-pd2:    .space 4096
-pd3:    .space 4096
+pml4:   .fill 4096, 1, 0
+pdpt:   .fill 4096, 1, 0
+pd0:    .fill 4096, 1, 0
+pd1:    .fill 4096, 1, 0
+pd2:    .fill 4096, 1, 0
+pd3:    .fill 4096, 1, 0
+pdfb:   .fill 8192, 1, 0
+.section .bss
+.global boot_pt_end
+boot_pt_end:
 
 .section .note.GNU-stack,"",@progbits

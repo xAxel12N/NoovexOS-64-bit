@@ -1,20 +1,30 @@
+#include "include/nvx/mm/pmm_vmm.h"
+#include "include/nvx/base.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/drivers/input/ps2.h"
+#include "include/nvx/gui/theme.h"
+#include "include/nvx/gui/wm.h"
+#include "include/nvx/fs/ramfs.h"
+#include "include/nvx/apps/browser.h"
+#include "include/nvx/apps/files_classic.h"
 /* =========================================================================
    Files / About / Welcome
    ========================================================================= */
-static void mini_doc(int x,int y){ fill_round(x+4,y+1,12,18,2,15,rgb(244,246,251)); for(int k=0;k<4;k++)fill_rect(x+7,y+5+k*3,7,1,rgb(184,192,208)); }
-static int fl_y[FS_N],fl_idx[FS_N],fl_n=0,fl_x,fl_w; static int g_fsel=-1; static int fpv_edx,fpv_edy,fpv_edw,fpv_edh; static int g_filesnav=2;
+void mini_doc(int x,int y){ fill_round(x+4,y+1,12,18,2,15,rgb(244,246,251)); for(int k=0;k<4;k++)fill_rect(x+7,y+5+k*3,7,1,rgb(184,192,208)); }
+int fl_y[FS_N],fl_idx[FS_N],fl_n=0,fl_x,fl_w; int g_fsel=-1; int fpv_edx,fpv_edy,fpv_edw,fpv_edh; int g_filesnav=2;
 /* ---- Windows-style folder tree (navigable) ---- */
-static const struct { const char* name; short parent; } FTREE[]={
+const struct nvx_FTREE_t FTREE[]={
   {"Local Disk (C:)",-1}, {"System",0}, {"Programs",0}, {"Users",0}, {"Drivers",0}, {"Documents",0}, {"Downloads",0}, {"Recovery",0},
   {"Drivers",1}, {"Recover",1}, {"Tools",1}, {"Config",1},
   {"NoovexApps",2}, {"Rune",2}, {"Web Browser",2},
   {"noovex",3},
   {"Display",4}, {"Storage",4}, {"USB",4}, {"Network",4} };
-#define FTREE_N ((int)(sizeof(FTREE)/sizeof(FTREE[0])))
-static int g_files_tree=0, g_cwd=0;       /* tree mode + current folder node */
-static int ftrow_y[24], ftrow_node[24], ftrow_isfile[24], ftrow_n=0;   /* clickable rows */
+
+int g_files_tree=0, g_cwd=0;       /* tree mode + current folder node */
+int ftrow_y[24], ftrow_node[24], ftrow_isfile[24], ftrow_n=0;   /* clickable rows */
 /* curated real files placed in the folder tree (node index refers to FTREE[]) */
-static const struct { short node; const char* name; const char* text; } FFILE[]={
+const struct nvx_FFILE_t FFILE[]={
  {0,"README.txt",
   "NoovexOS 64  -  a 64-bit operating system written from scratch.\r\n"
   "================================================================\r\n\r\n"
@@ -33,7 +43,7 @@ static const struct { short node; const char* name; const char* text; } FFILE[]=
   "timeout=2\r\n" "default=0\r\n" "video=1280x720\r\n" "bootlog=4\r\n\r\n"
   "entry=NoovexOS 64\r\n" "kernel=/KERNEL.ELF\r\n" "cmdline=noovexos\r\n"},
  {0,"VERSION.txt",
-  "NoovexOS 64\r\n" "Version 8.13\r\n" "Architecture: x86-64 (long mode)\r\n"
+  "NoovexOS 64\r\n" "Version 9.82\r\n" "Architecture: x86-64 (long mode)\r\n"
   "Bootloader: myboot (BIOS + UEFI)\r\n" "Filesystem: NVXFS (disk) + FAT16/32 (USB)\r\n"
   "Toolchain: gcc -m64 -Os -ffreestanding\r\n" "Built from scratch - no external OS.\r\n"},
  {0,"LICENSE.txt",
@@ -91,19 +101,19 @@ static const struct { short node; const char* name; const char* text; } FFILE[]=
   "rune-compiler/                  the Rune language compiler\r\n\r\n"
   "The full source is in the NoovexOS source.zip release.\r\n"},
 };
-#define FFILE_N ((int)(sizeof(FFILE)/sizeof(FFILE[0])))
-static int files_show(int folder){ if(g_filesnav==2)return folder==0; if(g_filesnav==3)return folder==1; if(g_filesnav==4)return 0; return folder!=2; }
-static u8 viewbuf[6*1024*1024]; static int view_w=0, view_h=0, view_slot=-1; static int g_imgview=-1;
-static int fext_eq(const char*name,const char*e){ const char*dot=0; for(const char*q=name;*q;q++)if(*q=='.')dot=q; if(!dot)return 0; dot++; int i=0; for(;e[i];i++){ char a=dot[i]; if(a>='A'&&a<='Z')a+=32; if(a!=e[i])return 0; } return dot[i]==0; }
+
+int files_show(int folder){ if(g_filesnav==2)return folder==0; if(g_filesnav==3)return folder==1; if(g_filesnav==4)return 0; return folder!=2; }
+u8 viewbuf[6*1024*1024]; int view_w=0, view_h=0, view_slot=-1; int g_imgview=-1;
+int fext_eq(const char*name,const char*e){ const char*dot=0; for(const char*q=name;*q;q++)if(*q=='.')dot=q; if(!dot)return 0; dot++; int i=0; for(;e[i];i++){ char a=dot[i]; if(a>='A'&&a<='Z')a+=32; if(a!=e[i])return 0; } return dot[i]==0; }
 /* ---- ZIP (central-directory reader, DEFLATE via pz_inflate_raw) ---- */
-#define ZIP_MAXE 128
-static struct { char name[64]; u32 usize, csize, off; int method; } zent[ZIP_MAXE]; static int znent=0, zip_slot=-1, zsel=0, ze_y[ZIP_MAXE], ze_n=0;
+
+struct nvx_zent_t zent[ZIP_MAXE]; int znent=0, zip_slot=-1, zsel=0, ze_y[ZIP_MAXE], ze_n=0;
 static u32 zr16(const u8*p){ return (u32)p[0]|((u32)p[1]<<8); }
 static u32 zr32(const u8*p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
-static void zip_open(int slot){
+void zip_open(int slot){
     if(slot==zip_slot) return; zip_slot=slot; znent=0; zsel=0;
     if(slot<0||!FS[slot].used) return;
-    const u8* d=(const u8*)FS[slot].data; int n=FS[slot].len;
+    const u8* d=(const u8*)fsd(slot); int n=FS[slot].len;
     int eo=-1; for(int i=n-22;i>=0 && i>n-22-65536;i--) if(d[i]==0x50&&d[i+1]==0x4B&&d[i+2]==0x05&&d[i+3]==0x06){ eo=i; break; }
     if(eo<0) return;
     int cnt=(int)zr16(d+eo+10); int p=(int)zr32(d+eo+16);
@@ -115,9 +125,9 @@ static void zip_open(int slot){
         znent++; p += 46+fnl+exl+cml;
     }
 }
-static int zip_extract(int slot,int idx,u8* out,int cap){
+int zip_extract(int slot,int idx,u8* out,int cap){
     if(slot<0||!FS[slot].used||idx<0||idx>=znent) return -1;
-    const u8* d=(const u8*)FS[slot].data; int n=FS[slot].len; int p=(int)zent[idx].off;
+    const u8* d=(const u8*)fsd(slot); int n=FS[slot].len; int p=(int)zent[idx].off;
     if(p<0||p+30>n||!(d[p]==0x50&&d[p+1]==0x4B&&d[p+2]==0x03&&d[p+3]==0x04)) return -1;
     int fnl=(int)zr16(d+p+26), exl=(int)zr16(d+p+28); int doff=p+30+fnl+exl;
     if(doff>n) return -1; int cs=(int)zent[idx].csize; if(doff+cs>n)cs=n-doff;
@@ -150,7 +160,7 @@ static void pptx_blit(const u8* rgba,int iw,int ih,int dx,int dy,int dw,int dh){
     for(int y=0;y<dh;y++){ int sy=ih*y/dh; if(sy>=ih)sy=ih-1; const u8* srow=rgba+(u64)sy*iw*4;
         for(int x=0;x<dw;x++){ int sx=iw*x/dw; if(sx>=iw)sx=iw-1; const u8* p=srow+sx*4; if(p[3]>16) putpx(dx+x,dy+y,rgb(p[0],p[1],p[2])); } }
 }
-static void pptx_load(int slot){
+void pptx_load(int slot){
     if(slot==pptx_slot) return; pptx_slot=slot; pptx_ns=0; pptx_cur=0;
     if(slot<0||!FS[slot].used) return;
     int prev=zip_slot; zip_slot=-1; zip_open(slot); (void)prev;
@@ -245,7 +255,7 @@ static void pptx_decode_cur(void){
     }
     pptx_ncached=pptx_nimg[s];
 }
-static void pptx_draw(int i){
+void pptx_draw(int i){
     win_frame(i,"Presentation");
     int wx=WN[i].x, wy=WN[i].y+TITLEH, ww=WN[i].w, wh=WN[i].h-TITLEH;
     fill_rect(wx+1,wy,ww-2,wh-1,rgb(28,30,40));
@@ -284,13 +294,13 @@ static void pptx_draw(int i){
     fill_round(wx+ww-70,wy+wh-34,28,24,6,15,rgb(60,64,84)); dstr(wx+ww-62,wy+wh-30,">",rgb(255,255,255),1);
     fill_round(wx+ww-104,wy+wh-34,28,24,6,15,rgb(60,64,84)); dstr(wx+ww-96,wy+wh-30,"<",rgb(255,255,255),1);
 }
-static void pptx_key(int c){ if(c==19||c==' '||c=='\r'||c=='\n'){ if(pptx_cur<pptx_ns-1)pptx_cur++; } else if(c==18||c==8){ if(pptx_cur>0)pptx_cur--; } }
-static void pptx_click(int px,int py){ int wx=WN[W_PPTX].x, wy=WN[W_PPTX].y+TITLEH, ww=WN[W_PPTX].w, wh=WN[W_PPTX].h-TITLEH;
+void pptx_key(int c){ if(c==19||c==' '||c=='\r'||c=='\n'){ if(pptx_cur<pptx_ns-1)pptx_cur++; } else if(c==18||c==8){ if(pptx_cur>0)pptx_cur--; } }
+void pptx_click(int px,int py){ int wx=WN[W_PPTX].x, wy=WN[W_PPTX].y+TITLEH, ww=WN[W_PPTX].w, wh=WN[W_PPTX].h-TITLEH;
     if(in_rect(px,py,wx+ww-70,wy+wh-34,28,24)){ if(pptx_cur<pptx_ns-1)pptx_cur++; return; }
     if(in_rect(px,py,wx+ww-104,wy+wh-34,28,24)){ if(pptx_cur>0)pptx_cur--; return; }
     if(px>wx+ww/2){ if(pptx_cur<pptx_ns-1)pptx_cur++; } else { if(pptx_cur>0)pptx_cur--; }   /* click right half = next */
 }
-static const char* file_type_name(const char*name){
+const char* file_type_name(const char*name){
     if(fext_eq(name,"c"))return "C source"; if(fext_eq(name,"h"))return "C header";
     if(fext_eq(name,"cpp")||fext_eq(name,"cc")||fext_eq(name,"cxx"))return "C++ source"; if(fext_eq(name,"hpp"))return "C++ header";
     if(fext_eq(name,"json"))return "JSON"; if(fext_eq(name,"js"))return "JavaScript"; if(fext_eq(name,"ts"))return "TypeScript";
@@ -306,32 +316,32 @@ static const char* file_type_name(const char*name){
     if(fext_eq(name,"pdf"))return "PDF"; if(fext_eq(name,"iso")||fext_eq(name,"img"))return "Disk image"; if(fext_eq(name,"exe"))return "Executable";
     return "File";
 }
-static int file_kind(const char*name){                    /* 0 text/code  1 image  2 html  3 binary  4 archive */
+int file_kind(const char*name){                    /* 0 text/code  1 image  2 html  3 binary  4 archive */
     if(fext_eq(name,"png")||fext_eq(name,"jpg")||fext_eq(name,"jpeg")) return 1;
     if(fext_eq(name,"html")||fext_eq(name,"htm")) return 2;
     if(fext_eq(name,"zip")||fext_eq(name,"jar")||fext_eq(name,"apk")) return 4;
     if(fext_eq(name,"iso")||fext_eq(name,"img")||fext_eq(name,"bin")||fext_eq(name,"exe")||fext_eq(name,"gz")||fext_eq(name,"tgz")||fext_eq(name,"tar")||fext_eq(name,"pdf")||fext_eq(name,"mp3")||fext_eq(name,"mp4")||fext_eq(name,"dmg")||fext_eq(name,"deb")||fext_eq(name,"rpm")||fext_eq(name,"gif")||fext_eq(name,"bmp")||fext_eq(name,"o")||fext_eq(name,"so")) return 3;
     return 0;
 }
-static int fkind(int slot){   /* content-aware kind for an FS slot (magic bytes beat the name) */
+int fkind(int slot){   /* content-aware kind for an FS slot (magic bytes beat the name) */
     if(slot<0||!FS[slot].used) return 3;
-    const unsigned char* d=(const unsigned char*)FS[slot].data; int n=FS[slot].len;
+    const unsigned char* d=(const unsigned char*)fsd(slot); int n=FS[slot].len;
     if(n>=4 && d[0]==0x89&&d[1]==0x50&&d[2]==0x4E&&d[3]==0x47) return 1;   /* PNG */
     if(n>=12 && d[0]=='R'&&d[1]=='I'&&d[2]=='F'&&d[3]=='F'&&d[8]=='W'&&d[9]=='E'&&d[10]=='B'&&d[11]=='P') return 1; /* WebP */
     if(n>=3 && d[0]==0xFF&&d[1]==0xD8&&d[2]==0xFF) return 1;               /* JPEG */
     if(n>=4 && d[0]==0x50&&d[1]==0x4B&&d[2]==0x03&&d[3]==0x04) return 4;   /* ZIP */
     return file_kind(FS[slot].name);
 }
-static int ensure_img(int slot){
+int ensure_img(int slot){
     if(slot==view_slot) return view_w>0;
     view_slot=slot; view_w=0; view_h=0; if(slot<0||!FS[slot].used) return 0;
-    const u8* d=(const u8*)FS[slot].data; int n=FS[slot].len, w=0,h=0,r=-1;
+    const u8* d=(const u8*)fsd(slot); int n=FS[slot].len, w=0,h=0,r=-1;
     if(n>=4 && d[0]==0x89 && d[1]==0x50) r=png_decode(d,n,PNG_RAW,PNG_RAW_SZ,viewbuf,(int)sizeof(viewbuf),&w,&h);
     else if(n>=3 && d[0]==0xFF && d[1]==0xD8) r=jpeg_decode(d,n,viewbuf,(int)sizeof(viewbuf),&w,&h);
     else if(is_webp(d,n)) r=webp_decode(d,n,viewbuf,(int)sizeof(viewbuf),&w,&h);
     if(r==0 && w>0 && h>0){ view_w=w; view_h=h; return 1; } return 0;
 }
-static void blit_img_fit(int ox,int oy,int aw,int ah){    /* scale viewbuf into aw x ah, keep aspect, centred */
+void blit_img_fit(int ox,int oy,int aw,int ah){    /* scale viewbuf into aw x ah, keep aspect, centred */
     if(view_w<=0||view_h<=0||aw<=0||ah<=0)return; int scn=1000;
     if((u32)view_w*(u32)scn/1000>(u32)aw) scn=aw*1000/view_w; if((u32)view_h*(u32)scn/1000>(u32)ah) scn=ah*1000/view_h;
     int dw=view_w*scn/1000, dh=view_h*scn/1000; if(dw<1)dw=1; if(dh<1)dh=1; int x0=ox+(aw-dw)/2, y0=oy+(ah-dh)/2;
@@ -339,7 +349,7 @@ static void blit_img_fit(int ox,int oy,int aw,int ah){    /* scale viewbuf into 
         for(int c=0;c<dw;c++){ int sx=c*view_w/dw; u8* p=srow+sx*4; putpx(x0+c,y0+r,rgb(p[0],p[1],p[2])); } }
 }
 static int ivx,ivy,ivw,ivh;
-static void img_viewer_draw(void){
+void img_viewer_draw(void){
     if(g_imgview<0)return; int ok=ensure_img(g_imgview);
     for(u32 y=0;y<H;y++)for(u32 x=0;x<W;x++){ u32*p=&SCENE[(u64)y*SW+x]; *p=mix(*p,rgb(8,10,18),150); }
     ivw=(int)W*72/100; ivh=(int)H*74/100; ivx=((int)W-ivw)/2; ivy=((int)H-ivh)/2;
@@ -351,21 +361,23 @@ static void img_viewer_draw(void){
         blit_img_fit(ivx+14,ivy+38,ivw-28,ivh-64); }
     else dstr_ctr(ivx+ivw/2,ivy+ivh/2-6,"Cannot display this image",rgb(210,150,150),1);
 }
-static u32 g_ram_mb=0;
-static u32 detect_ram_mb(void){
+u32 g_ram_mb=0;
+u32 detect_ram_mb(void){
+    if(mm_known()){ u64 t=mm_ram_total()>>20; if(t>=64){ if(t>0x7FFFFFFFULL)t=0x7FFFFFFFULL; return (u32)t; } }
+    if(g_uefi_ram_mb>=64)return g_uefi_ram_mb>4032?4032:g_uefi_ram_mb;
     u32 top=64;
     for(u32 mb=128; mb<=4032; mb+=64){
         volatile u32* p=(volatile u32*)((u64)mb<<20);
         u32 save=*p; u32 pat=0x51A5C3E7u ^ (mb*2654435761u);
-        *p=pat; __asm__ volatile("wbinvd":::"memory");
+        *p=pat; cpu_cache_flush();
         int ok=(*p==pat); *p=save;
         if(ok) top=mb+64; else break;
     }
     return top;
 }
-static char* fmt_size(char* p,long b){ if(b>=1073741824L){ p=udec(p,(u32)(b/1073741824L)); *p++='.'; *p++=(char)('0'+(int)((b%1073741824L)/107374183L)); p=scopy(p," GB"); } else if(b>=1048576){ p=udec(p,(u32)(b/1048576)); *p++='.'; *p++=(char)('0'+(int)((b%1048576)*10/1048576)); p=scopy(p," MB"); } else if(b>=1024){ p=udec(p,(u32)(b/1024)); p=scopy(p," KB"); } else { p=udec(p,(u32)b); p=scopy(p," B"); } return p; }
-static int g_drv_x[3],g_drv_y[3],g_drv_w,g_drv_tgt[3],g_drv_n;
-static void draw_drive_tile(int x,int y,int w,int h,const char* name,long used,long total,int cloud,int hov){
+char* fmt_size(char* p,long b){ if(b>=1073741824L){ p=udec(p,(u32)(b/1073741824L)); *p++='.'; *p++=(char)('0'+(int)((b%1073741824L)/107374183L)); p=scopy(p," GB"); } else if(b>=1048576){ p=udec(p,(u32)(b/1048576)); *p++='.'; *p++=(char)('0'+(int)((b%1048576)*10/1048576)); p=scopy(p," MB"); } else if(b>=1024){ p=udec(p,(u32)(b/1024)); p=scopy(p," KB"); } else { p=udec(p,(u32)b); p=scopy(p," B"); } return p; }
+int g_drv_x[3],g_drv_y[3],g_drv_w,g_drv_tgt[3],g_drv_n;
+void draw_drive_tile(int x,int y,int w,int h,const char* name,long used,long total,int cloud,int hov){
     fill_round(x,y,w,h,9,15,hov?rgb(238,242,249):rgb(250,251,253));
     for(int t=0;t<w;t++){ if(!cut(t,0,w,h,9,3)){u32*p=&SCENE[(u64)y*SW+x+t];*p=mix(*p,rgb(220,224,232),200);} if(!cut(t,h-1,w,h,9,12)){u32*p=&SCENE[(u64)(y+h-1)*SW+x+t];*p=mix(*p,rgb(220,224,232),200);} }
     int ix=x+16, iy=y+h/2-16;                          /* drive icon */

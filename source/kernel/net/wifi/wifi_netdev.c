@@ -1,19 +1,28 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/crypto/nvxwpa.h"
+#include "include/nvx/mm/pmm_vmm.h"
+#include "include/nvx/drivers/net/nic.h"
+#include "include/nvx/drivers/storage/ahci.h"
+#include "include/nvx/net/tcpip.h"
+#include "include/nvx/drivers/wifi/rtw_efuse.h"
+#include "include/nvx/drivers/wifi/rtw8821ce.h"
+#include "include/nvx/net/wifi/wifi_netdev.h"
 static u8  g_wnd_mac[6], g_wnd_bssid[6];
-static int g_wnd_up=0, g_wnd_qos=0;
+int g_wnd_up=0; static int g_wnd_qos=0;
 static u64 g_wnd_tx_pn=1;
 static u64 g_wnd_rx_pn_uni=0, g_wnd_rx_pn_grp=0;
-static u8  g_wnd_tk[16], g_wnd_gtk[16]; static int g_wnd_have_gtk=0, g_wnd_gtk_id=1;
+static u8  g_wnd_tk[16], g_wnd_gtk[16]; int g_wnd_have_gtk=0, g_wnd_gtk_id=1;
 static u32 g_wnd_mmio=0;
 static int g_wnd_txfail=0;
-static u32 g_wnd_rx_frames=0, g_wnd_rx_drop=0, g_wnd_tx_frames=0;
+u32 g_wnd_rx_frames=0, g_wnd_rx_drop=0, g_wnd_tx_frames=0;
 
-static void wnd_setup(u32 m,const u8* bssid,const u8* mac,const u8* tk,int qos){
+void wnd_setup(u32 m,const u8* bssid,const u8* mac,const u8* tk,int qos){
     g_wnd_mmio=m; for(int i=0;i<6;i++){ g_wnd_bssid[i]=bssid[i]; g_wnd_mac[i]=mac[i]; }
     for(int i=0;i<16;i++)g_wnd_tk[i]=tk[i];
     g_wnd_tx_pn=1; g_wnd_rx_pn_uni=0; g_wnd_rx_pn_grp=0; g_wnd_qos=qos; g_wnd_up=1; g_wnd_txfail=0;
     g_wnd_rx_frames=g_wnd_rx_drop=g_wnd_tx_frames=0;
 }
-static void wnd_set_gtk(const u8* gtk,int keyid){ for(int i=0;i<16;i++)g_wnd_gtk[i]=gtk[i]; g_wnd_gtk_id=keyid; g_wnd_have_gtk=1; }
+void wnd_set_gtk(const u8* gtk,int keyid){ for(int i=0;i<16;i++)g_wnd_gtk[i]=gtk[i]; g_wnd_gtk_id=keyid; g_wnd_have_gtk=1; }
 static void wnd_down(void){ g_wnd_up=0; g_wnd_have_gtk=0; }
 
 static void ccmp_nonce(u8* nonce,const u8* a2,u64 pn,u8 prio){
@@ -26,9 +35,14 @@ static void ccmp_hdr(u8* h,u64 pn,int keyid){
     h[4]=(u8)(pn>>16); h[5]=(u8)(pn>>24); h[6]=(u8)(pn>>32); h[7]=(u8)(pn>>40);
 }
 
+u32 g_wnd_dead=0, g_wnd_txfull=0;
 static int wnd_tx_eth(const u8* eth,int len){
     if(!g_wnd_up||len<14) return -1;
-    static u8* pkt=0; if(!pkt){ pkt=(u8*)dma_alloc(2048); if(!pkt)return -1; }
+    if(!g_benum)return -1;
+    { u32 raw=rtw_r32(g_wnd_mmio,0x03A8); if(raw==0xFFFFFFFFu){ g_wnd_dead++; return -1; }
+      u32 nx=(g_beidx+1u)%g_benum; int full=1; for(int w=0;w<200;w++){ u32 hr=((rtw_r32(g_wnd_mmio,0x03A8)>>16)&0x0FFFu)%g_benum; if(nx!=hr){ full=0; break; } io_wait(); io_wait(); io_wait(); io_wait(); io_wait(); }
+      if(full){ g_wnd_txfull++; return -1; } }
+    static u8* pkts[128]; u32 slot=(g_beidx%g_benum)&127u; if(!pkts[slot]){ pkts[slot]=(u8*)dma_alloc(2048); if(!pkts[slot])return -1; } u8* pkt=pkts[slot];
     const u8* dst=eth; const u8* src=eth+6; u16 etype=((u16)eth[12]<<8)|eth[13];
     const u8* payload=eth+14; int plen=len-14;
 
@@ -78,7 +92,7 @@ static int wnd_tx_eth(const u8* eth,int len){
     u32 psb=((total-1)/128)+1;
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
-    __asm__ volatile("sfence":::"memory");
+    cpu_wmb();
     rtw_w32(g_wnd_mmio,0x0328,(u32)(u64)g_bering); rtw_w16(g_wnd_mmio,0x0388,(u16)(g_benum&0x0FFF));
     g_beidx++; rtw_w16(g_wnd_mmio,0x03A8,(u16)(g_beidx&0x0FFF));
     g_wnd_tx_frames++;
@@ -86,9 +100,10 @@ static int wnd_tx_eth(const u8* eth,int len){
 }
 
 static int wnd_rx_eth(u8* out,int max){
-    if(!g_wnd_up)return 0;
+    if(!g_wnd_up||!g_rxnum)return 0;
     u32 m=g_wnd_mmio;
-    int wp=rtw_rx_hw_wp(m);
+    { u32 raw=rtw_r32(m,0x03B4); if(raw==0xFFFFFFFFu){ g_wnd_dead++; return 0; } }
+    int wp=rtw_rx_hw_wp(m); if(wp<0||(u32)wp>=0x1000u)return 0;
     while((int)(g_rxidx%g_rxnum)!=(wp%(int)g_rxnum)){
         u32 ri=g_rxidx % g_rxnum; u8* base=g_rxbuf+ri*2048;
         u32 rw0=*(volatile u32*)(u64)base; u32 plen=rw0&0x3FFFu;
@@ -154,9 +169,8 @@ static int wnd_rx_eth(u8* out,int max){
     return 0;
 }
 
-enum { NETDEV_ETH=0, NETDEV_WIFI=1 };
 static int g_netdev=NETDEV_ETH;
-extern void (*g_tx)(const u8*,int); extern int (*g_rx)(u8*,int); extern const u8* (*g_mac)(void); extern int (*g_linkok)(void); extern int (*g_bcastf)(void);
+    
 static int wnd_bcast_flag(void){ return g_wnd_have_gtk?0x8000:0x0000; }
 static void wnd_tx_ptr(const u8* d,int n){ if(wnd_tx_eth(d,n)<0)g_wnd_txfail++; }
 static void eth_tx_ptr(const u8* d,int n){ nic_send(d,n); }
@@ -165,7 +179,9 @@ static const u8* eth_mac_ptr(void){ return my_mac; }
 static int eth_link_ptr(void){ return net_ok; }
 static const u8* wnd_mac_ptr(void){ return g_wnd_mac; }
 static int wnd_link_ptr(void){ return g_wnd_up; }
-static void netdev_set(int d){
+
+void netdev_set(int d){
+    g_netdev_wifi=(d==NETDEV_WIFI);
     g_netdev=d;
     if(d==NETDEV_WIFI){ g_tx=wnd_tx_ptr; g_rx=wnd_rx_eth; g_mac=wnd_mac_ptr; g_linkok=wnd_link_ptr; g_bcastf=wnd_bcast_flag; }
     else { g_tx=eth_tx_ptr; g_rx=eth_rx_ptr; g_mac=eth_mac_ptr; g_linkok=eth_link_ptr; g_bcastf=0; }

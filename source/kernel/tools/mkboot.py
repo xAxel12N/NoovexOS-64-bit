@@ -36,7 +36,7 @@ stage2 = bytearray(open("boot/stage2.bin", "rb").read())
 assert len(stage2) <= STAGE2_MAX, f"stage2 is {len(stage2)} bytes > {STAGE2_MAX}"
 
 # --- patch kern_secs (and confirm kern_lba) into stage2 ---
-kern = open("kernel64.bin", "rb").read()
+kern = open("build/kernel64.bin", "rb").read()
 ksecs = (len(kern) + 511) // 512
 ks_off = addr["kern_secs"] - 0x8000
 kl_off = addr["kern_lba"]  - 0x8000

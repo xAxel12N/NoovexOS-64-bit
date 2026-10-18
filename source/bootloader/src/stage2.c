@@ -314,9 +314,15 @@ void stage2_main(void){
     int graphics = 0;
     if(cfg.video_w && cfg.video_h){
         bios_get_font();
-        static const uint16_t fbk[][2] = {{1280,1024},{1024,768},{800,600},{640,480}};
-        int ok = (vbe_set_mode((uint16_t)cfg.video_w, (uint16_t)cfg.video_h, &g_fb) == 0);
-        for(int i = 0; !ok && i < 4; i++)
+        static const uint16_t fbk[][2] = {{1920,1080},{1600,900},{1366,768},{1280,1024},{1280,800},{1024,768},{800,600},{640,480}};
+        int ok = 0;
+        if(cfg.video_w == 0xFFFF){
+            uint16_t nw = 0, nh = 0;
+            if(vbe_edid_native(&nw, &nh) == 0 && nw <= 1920 && nh <= 1080) ok = (vbe_set_mode(nw, nh, &g_fb) == 0);
+            cfg.video_w = 1920; cfg.video_h = 1080;
+        }
+        if(!ok) ok = (vbe_set_mode((uint16_t)cfg.video_w, (uint16_t)cfg.video_h, &g_fb) == 0);
+        for(int i = 0; !ok && i < 8; i++)
             if(!(fbk[i][0] == cfg.video_w && fbk[i][1] == cfg.video_h))
                 ok = (vbe_set_mode(fbk[i][0], fbk[i][1], &g_fb) == 0);
         if(ok){ fb_init(&g_fb); vga_set_graphics(1); graphics = 1; }
@@ -328,9 +334,9 @@ void stage2_main(void){
     vga_setcolor(VGA_LGRAY, VGA_BLACK);
     vga_clear();
 
-    uint8_t* scratch = (uint8_t*)0x1000000;
+    uint8_t* scratch = (uint8_t*)0x18000000;
     uint32_t ksz = 0;
-    if(fat_read_file(e->kernel, scratch, 0x800000, &ksz) != 0) fail("cannot read kernel file");
+    if(fat_read_file(e->kernel, scratch, 0x6400000, &ksz) != 0) fail("cannot read kernel file");
 
     if(scratch[0] != 0x7F || scratch[1] != 'E' || scratch[2] != 'L' || scratch[3] != 'F'){
         /* flat binary (NoovexOS): show the boot animation, then Multiboot handoff with
@@ -339,8 +345,8 @@ void stage2_main(void){
         struct mb_info* mbi = mb_build_info(e->cmdline);
         if(graphics) mb_set_fb(mbi, &g_fb);
         { uint32_t wsz = 0;
-          if(fat_read_file("/doom/DOOM1.WAD", (uint8_t*)0x5800000, 32u*1024u*1024u, &wsz) == 0 && wsz > 1000000u)
-              mb_set_module(mbi, 0x5800000u, 0x5800000u + wsz); }
+          if(fat_read_file("/doom/DOOM1.WAD", (uint8_t*)0x0E000000, 32u*1024u*1024u, &wsz) == 0 && wsz > 1000000u)
+              mb_set_module(mbi, 0x0E000000u, 0x0E000000u + wsz); }
         raw_boot((uint32_t)(uint32_t*)scratch, ksz, (uint32_t)(uint32_t*)mbi);
         fail("kernel returned");
     }
