@@ -1,0 +1,81 @@
+@@HDR@@
+
+#include <stdio.h>
+#include <string.h>
+#include <setjmp.h>
+#include <sys/mman.h>
+typedef unsigned char u8; typedef unsigned short u16; typedef unsigned int u32; typedef unsigned long long u64;
+static jmp_buf g_jb; static int g_triple=0; static u32 W=640,H=480; static char g_log[4096]; static int g_ln=0;
+static u16 g_pm1a=0; static int g_sci_en=0; struct w { char t; u32 port; u32 v; } g_w[64]; static int g_nw=0;
+static void rec(char t,u32 p,u32 v){ if(g_nw<64){ g_w[g_nw].t=t; g_w[g_nw].port=p; g_w[g_nw].v=v; g_nw++; } }
+static void outb(u16 p,u8 v){ rec('b',p,v); if(p==0xB2&&v==0xA0)g_sci_en=1; }
+static void outw(u16 p,u16 v){ rec('w',p,v); }
+static int g_flushes=0; static int gdisk_flush(void){ g_flushes++; return 0; }
+static u16 inw(u16 p){ if(p==0x404||p==0x1004)return (u16)(g_sci_en?1:0); return 0; }
+static u8 inb(u16 p){ (void)p; return 0; }
+static void io_wait(void){}
+static void cpu_irq_off(void){} static void cpu_irq_on(void){} static void cpu_pause(void){} static void cpu_idle(void){} static unsigned short cpu_bios_ebda_seg(void){ return 0; }
+static void cpu_stop(void){ longjmp(g_jb,1); } static void cpu_triple_fault(void){ g_triple=1; longjmp(g_jb,2); } static void cpu_halt(void){ longjmp(g_jb,3); }
+static int hr_precise(void){ return 0; } static unsigned long long hr_ns(void){ return 0; }
+static void klog(const char* s){ g_ln+=sprintf(g_log+g_ln,"%s|",s); }
+static int nvxntfs_mounted(void){ return 0; } static void nvxntfs_umount(void){}
+static int vf_mounted(void){ return 0; } static void vf_umount(void){}
+static void fill_rect(int x,int y,int w,int h,u32 c){ (void)x;(void)y;(void)w;(void)h;(void)c; }
+static void dstr(int x,int y,const char* s,u32 c,int z){ (void)x;(void)y;(void)s;(void)c;(void)z; }
+static void blit_all(void){} static unsigned long slen(const char* s){ return strlen(s); }
+#define rgb(r,g,b) 0
+static int kpop(void){ return -1; }
+
+@@TEST@@
+
+static u8* M; static u32 off=0;
+static u8* put(const char* sig,const u8* body,u32 blen,u8 rev){ u8* t=M+off; u32 len=36+blen; memset(t,0,len); memcpy(t,sig,4); memcpy(t+4,&len,4); t[8]=rev; memcpy(t+36,body,blen); u8 s=0; for(u32 i=0;i<len;i++)s+=t[i]; t[9]=(u8)(0-s); off+=(len+15)&~15u; return t; }
+static u64 rsdp(u64 sdt,int rev2){ u8* r=M+off; memset(r,0,36); memcpy(r,"RSD PTR ",8); r[15]=rev2?2:0; if(rev2){ u32 l=36; memcpy(r+20,&l,4); memcpy(r+24,&sdt,8); } else { u32 a=(u32)sdt; memcpy(r+16,&a,4); }
+  u8 s=0; for(int i=0;i<20;i++)s+=r[i]; r[8]=(u8)(0-s); if(rev2){ s=0; for(int i=0;i<36;i++)s+=r[i]; r[32]=(u8)(0-s); } u64 a=(u64)r; off+=48; return a; }
+static void reset(void){ memset(&g_acpi,0,sizeof(g_acpi)); g_nw=0; g_ln=0; g_log[0]=0; g_pm1a=0; g_sci_en=0; g_triple=0; off=0; memset(M,0,1<<20); }
+static int ok=1; static void chk(const char* w,int c){ printf("    %-60s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+static int wrote(char t,u32 p,u32 v){ for(int i=0;i<g_nw;i++) if(g_w[i].t==t&&g_w[i].port==p&&g_w[i].v==v)return i+1; return 0; }
+static u8 fadt_body[244];
+static u8* mkfadt(u64 dsdt,u32 pm1a,u32 smi,u8 en,u32 flags,int xpm1){ memset(fadt_body,0,sizeof fadt_body); u32 d32=(u32)dsdt;
+  memcpy(fadt_body+40-36,&d32,4); memcpy(fadt_body+48-36,&smi,4); fadt_body[52-36]=en; fadt_body[88-36]=4; u32 ev=0x400; memcpy(fadt_body+56-36,&ev,4);
+  if(!xpm1)memcpy(fadt_body+64-36,&pm1a,4); else { fadt_body[172-36]=1; u64 x=pm1a; memcpy(fadt_body+176-36,&x,8); }
+  memcpy(fadt_body+112-36,&flags,4); fadt_body[116-36]=1; u64 ra=0xCF9; memcpy(fadt_body+120-36,&ra,8); fadt_body[128-36]=0x06; memcpy(fadt_body+140-36,&dsdt,8);
+  return put("FACP",fadt_body,208,4); }
+int main(){
+  M=mmap((void*)0x20000000,1<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
+  printf("== 1. ACPI 2.0 PC (XSDT), decoy _S5_ before the real one ==\n"); reset();
+  { u8 aml[]={0xA4,'_','S','5','_',  0x08,0x5C,'_','S','5','_',0x12,0x08,0x04,0x0A,0x05,0x0A,0x05,0x00,0x00,  0x08,'_','S','1','_',0x12,0x06,0x04,0x01,0x01,0x00,0x00};
+    u8* dsdt=put("DSDT",aml,sizeof aml,2); u8* f=mkfadt((u64)dsdt,0x404,0xB2,0xA0,1u<<10,0); u64 e=(u64)f; u8* x=put("XSDT",(u8*)&e,8,1); g_test_rsdp=rsdp((u64)x,1);
+    power_init(); chk("tables found, S5 parsed past the decoy (SLP_TYPa=5)", g_acpi.ok&&g_acpi.have_s5&&g_acpi.s5a==5);
+    chk("S1 found (SLP_TYPa=1, OneOp encoding)", g_acpi.have_s1&&g_acpi.s1a==1);
+    if(!setjmp(g_jb))power_off();
+    int en=wrote('b',0xB2,0xA0), pw=wrote('w',0x404,(5<<10)|(1<<13)|1);
+    chk("ACPI mode enabled via SMI_CMD first (SCI_EN was off)", en&&pw&&en<pw);
+    chk("PM1a_CNT <- SLP_TYP 5 | SLP_EN, SCI_EN preserved (0x3401)", pw);
+    reset(); { u8* dsdt2=put("DSDT",aml,sizeof aml,2); u8* f2=mkfadt((u64)dsdt2,0x404,0xB2,0xA0,1u<<10,0); u64 e2=(u64)f2; u8* x2=put("XSDT",(u8*)&e2,8,1); g_test_rsdp=rsdp((u64)x2,1); }
+    power_init(); int r=setjmp(g_jb); if(!r)power_reboot();
+    chk("restart uses the FADT reset register first (0xCF9 <- 6)", g_nw>0&&g_w[0].t=='b'&&g_w[0].port==0xCF9&&g_w[0].v==6); }
+  printf("== 2. ACPI 1.0 (RSDT), _S5 only in an SSDT, X_PM1a_CNT only, ZeroOp values ==\n"); reset();
+  { u8 dz[]={0x10,0x05,'_','S','B','_'}; u8 sz[]={0x08,'_','S','5','_',0x12,0x06,0x04,0x00,0x00,0x00,0x00};
+    u8* dsdt=put("DSDT",dz,sizeof dz,1); u8* ssdt=put("SSDT",sz,sizeof sz,1); u8* f=mkfadt((u64)dsdt,0x1004,0,0,0,1);
+    u32 e[2]={(u32)(u64)f,(u32)(u64)ssdt}; u8* r=put("RSDT",(u8*)e,8,1); g_test_rsdp=rsdp((u64)r,0);
+    power_init(); chk("found S5 in the SSDT (SLP_TYPa=0)", g_acpi.ok&&g_acpi.have_s5&&g_acpi.s5a==0);
+    chk("PM1a_CNT taken from X_PM1a_CNT_BLK", g_acpi.pm1a_cnt==0x1004);
+    if(!setjmp(g_jb))power_off(); chk("PM1a_CNT <- SLP_EN with type 0", wrote('w',0x1004,1<<13)); }
+  printf("== 3. hardware-reduced laptop (SLEEP_CONTROL_REG) ==\n"); reset();
+  { u8 aml[]={0x08,'_','S','5','_',0x12,0x08,0x04,0x0A,0x05,0x0A,0x05,0x00,0x00};
+    u8* dsdt=put("DSDT",aml,sizeof aml,2); u8 big[256-36]; memset(big,0,sizeof big); u8* f=mkfadt((u64)dsdt,0,0,0,(1u<<20),0);
+    u8 body[256-36]; memcpy(body,f+36,208); memset(body+208,0,sizeof body-208); u32 fl=1u<<20; memcpy(body+112-36,&fl,4); body[244-36]=1; u64 sa=0x900; memcpy(body+248-36,&sa,8);
+    u8* f2=put("FACP",body,sizeof body,6); u64 e=(u64)f2; u8* x=put("XSDT",(u8*)&e,8,1); g_test_rsdp=rsdp((u64)x,1);
+    power_init(); chk("hardware-reduced detected", g_acpi.hwred&&g_acpi.slp_addr==0x900);
+    if(!setjmp(g_jb))power_off(); chk("SLEEP_CONTROL_REG <- (5<<2)|SLP_EN = 0x34", wrote('b',0x900,0x34)); }
+  printf("== 4. corrupt FADT checksum ==\n"); reset();
+  { u8 aml[]={0x08,'_','S','5','_',0x12,0x06,0x04,0x00,0x00,0x00,0x00}; u8* dsdt=put("DSDT",aml,sizeof aml,2); u8* f=mkfadt((u64)dsdt,0x404,0xB2,0xA0,0,0); f[60]^=0x55;
+    u64 e=(u64)f; u8* x=put("XSDT",(u8*)&e,8,1); g_test_rsdp=rsdp((u64)x,1);
+    power_init(); chk("bad FADT rejected (no ACPI writes attempted)", !g_acpi.ok);
+    int r=setjmp(g_jb); if(!r)power_off(); chk("falls back to emulator ports, then 'safe to turn off' screen", r==1&&wrote('w',0x604,0x2000)&&!wrote('w',0x404,(0<<10)|(1<<13))); }
+  printf("== 5. ACPI already enabled ==\n"); reset();
+  { u8 aml[]={0x08,'_','S','5','_',0x12,0x06,0x04,0x0A,0x07,0x00,0x00}; u8* dsdt=put("DSDT",aml,sizeof aml,2); u8* f=mkfadt((u64)dsdt,0x404,0xB2,0xA0,0,0);
+    u64 e=(u64)f; u8* x=put("XSDT",(u8*)&e,8,1); g_test_rsdp=rsdp((u64)x,1); power_init(); g_sci_en=1; g_nw=0;
+    if(!setjmp(g_jb))power_off(); chk("no SMI_CMD write when SCI_EN is already set", !wrote('b',0xB2,0xA0)&&wrote('w',0x404,(7<<10)|(1<<13)|1)); }
+  printf("%s\n",ok?"ALL PASS":"FAILURES"); return !ok; }

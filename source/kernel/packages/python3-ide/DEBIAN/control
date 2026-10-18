@@ -1,0 +1,12 @@
+Package: python3-ide
+Version: 1.0-1
+Architecture: all
+Maintainer: NoovexOS <harald@vonkoch.one>
+Installed-Size: 12
+Depends: python3
+Provides: idle, idle3
+Section: devel
+Priority: optional
+Description: Python IDE for the NoovexOS desktop
+ Editor with Python syntax colors that runs programs with the real
+ CPython 3.13 interpreter. Appears in the start menu as "Python IDE".

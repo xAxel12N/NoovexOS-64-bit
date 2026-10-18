@@ -28,6 +28,7 @@ _start:
     orb     $0x02, %al
     outb    %al, $0x92
 1:
+    call    e820_scan
     /* ---- VBE linear-framebuffer mode ---- */
     movw    $0x118, %bx
     call    try_mode
@@ -103,6 +104,35 @@ kldone:
     movl    %eax, %cr0
     ljmp    $0x08, $pm32
 
+e820_scan:
+    pushal
+    pushw   %es
+    xorw    %ax, %ax
+    movw    %ax, %es
+    movw    $0x7008, %di
+    xorl    %ebx, %ebx
+    xorw    %bp, %bp
+8:  movl    $1, %es:20(%di)
+    movl    $0xE820, %eax
+    movl    $24, %ecx
+    movl    $0x534D4150, %edx
+    int     $0x15
+    jc      9f
+    cmpl    $0x534D4150, %eax
+    jne     9f
+    jcxz    7f
+    incw    %bp
+    addw    $24, %di
+7:  testl   %ebx, %ebx
+    jz      9f
+    cmpw    $40, %bp
+    jb      8b
+9:  movzwl  %bp, %eax
+    movl    %eax, 0x7004
+    movl    $0x4558564E, 0x7000
+    popw    %es
+    popal
+    ret
 try_mode:                          /* BX=mode; set LFB, store params @0x5000, CF=0 ok */
     pushw   %bx
     movw    $0x4F01, %ax

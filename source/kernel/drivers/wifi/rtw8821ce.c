@@ -1,4 +1,13 @@
-static int rtw_apply_one(u32 m,u32 off,u8 sz,u32 v){
+#include "include/nvx/base.h"
+#include "include/nvx/mm/pmm_vmm.h"
+#include "include/nvx/lib/js.h"
+#include "include/nvx/shell/terminal.h"
+#include "include/nvx/fs/fat_ata.h"
+#include "include/nvx/drivers/wifi/rtw_efuse.h"
+#include "include/nvx/drivers/wifi/rtw8821ce.h"
+#include "include/nvx/gui/desktop.h"
+#include "include/nvx/init/splash.h"
+int rtw_apply_one(u32 m,u32 off,u8 sz,u32 v){
     if(sz==5){
         if(off==0xFFEu){ rtw_delay_us(50000); return 1; }
         if(off==0xFEu){ rtw_delay_us(105); return 1; }
@@ -21,7 +30,7 @@ static int rtw_hw_ready(u32 m,u32 reg,u32 mask,u32 target){
     return 0;
 }
 static int rtw_iddma_wait(u32 m){ return rtw_hw_ready(m,0x1208,(1u<<31),0); }
-static int rtw_iddma_block(u32 m,u32 src,u32 dst,u32 len,int first){
+int rtw_iddma_block(u32 m,u32 src,u32 dst,u32 len,int first){
     if(!rtw_iddma_wait(m))return -1;
     u32 ctrl=(1u<<29)|(1u<<31)|(len & 0x3FFFFu);
     if(!first)ctrl|=(1u<<24);
@@ -43,7 +52,7 @@ static int rtw_fw_checksum_ok(u32 m,u32 dst){
     return 1;
 }
 static int rtw_bcnq_stage_pg(u32 m,const u8* payload,u32 plen,u32 pghead);
-static int rtw_bcnq_stage(u32 m,const u8* payload,u32 plen){ return rtw_bcnq_stage_pg(m,payload,plen,460); }
+int rtw_bcnq_stage(u32 m,const u8* payload,u32 plen){ return rtw_bcnq_stage_pg(m,payload,plen,460); }
 static int rtw_fw_last_ck=0, rtw_fw_last_stage_fail=0, rtw_fw_last_iddma_fail=0;
 static int rtw_fw_to_mem(u32 m,const u8* data,u32 dst,u32 size){
     u32 v=rtw_r32(m,0x1208); v|=(1u<<25); rtw_w32(m,0x1208,v);
@@ -51,15 +60,15 @@ static int rtw_fw_to_mem(u32 m,const u8* data,u32 dst,u32 size){
     while(size){
         u32 pk=(size>=0x1000)?0x1000:size;
         if(rtw_bcnq_stage_pg(m,data+off,pk,0)<0){ rtw_fw_last_stage_fail=1; }
-        __asm__ volatile("sfence":::"memory");
+        cpu_wmb();
         if(rtw_iddma_block(m,0x18780000u+48u,dst+off,pk,first)<0){ rtw_fw_last_iddma_fail=1; }
         first=0; off+=pk; size-=pk;
     }
     rtw_fw_last_ck=rtw_fw_checksum_ok(m,dst);
     return 0;
 }
-static int g_dmem_ck=0,g_imem_ck=0,g_emem_ck=2,g_dmem_sf=0,g_dmem_if=0,g_imem_sf=0,g_imem_if=0;
-static int rtw_fw_download_iddma(u32 m,const u8* fw,long fwsz){
+int g_dmem_ck=0,g_imem_ck=0,g_emem_ck=2,g_dmem_sf=0,g_dmem_if=0,g_imem_sf=0,g_imem_if=0;
+int rtw_fw_download_iddma(u32 m,const u8* fw,long fwsz){
     if(fwsz<64)return -10;
     u32 dmem_addr=fr32(fw+0x20), dmem_size=fr32(fw+0x24);
     u32 imem_size=fr32(fw+0x30), emem_size=fr32(fw+0x34), emem_addr=fr32(fw+0x38), imem_addr=fr32(fw+0x3C);
@@ -69,7 +78,6 @@ static int rtw_fw_download_iddma(u32 m,const u8* fw,long fwsz){
 
     rtw_w8(m,0x001D,(u8)(rtw_r8(m,0x001D)&~1u));
     rtw_w8(m,0x0003,(u8)(rtw_r8(m,0x0003)&~(1u<<2)));
-
 
     rtw_w8(m,0x1082,(u8)(rtw_r8(m,0x1082)&~( (1u<<16)>>16 )));
     rtw_w8(m,0x0009,(u8)(rtw_r8(m,0x0009)&~( (1u<<14)>>8 )));
@@ -115,7 +123,6 @@ static int rtw_fw_download_iddma(u32 m,const u8* fw,long fwsz){
     return 1;
 }
 
-
 static void rtw_desc_chksum(u8* d){
     d[14]=0; d[15]=0;
     u16 ck=0; for(int i=0;i<16;i++) ck^=(u16)(d[i*2]|(d[i*2+1]<<8));
@@ -124,7 +131,7 @@ static void rtw_desc_chksum(u8* d){
 static int rtw_bcnq_prep_done=0;
 static u8* rtw_bcn_bd=0;
 
-static int rtw_mac_trx_init(u32 m){
+int rtw_mac_trx_init(u32 m){
     u16 pqmap=0;
     pqmap|=((2u&3u)<<0);
     pqmap|=((2u&3u)<<6);
@@ -170,7 +177,7 @@ static int rtw_mac_trx_init(u32 m){
     rtw_w8(m,0x020D,(u8)((rtw_r8(m,0x020D)&0x7F)|0x80));
     return 0;
 }
-static int rtw_mac_trx_ok=0;
+int rtw_mac_trx_ok=0;
 static void rtw_bcnq_prep(u32 m,u8* bd){
     if(!rtw_mac_trx_ok){ if(rtw_mac_trx_init(m)==0)rtw_mac_trx_ok=1; }
     u8 pc=rtw_r8(m,0x0303); rtw_w8(m,0x0303,(u8)(pc|0xF7));
@@ -202,7 +209,7 @@ static int rtw_bcnq_stage_pg(u32 m,const u8* payload,u32 plen,u32 pghead){
     *(volatile u16*)(rtw_bcn_bd+8)=(u16)plen;
     *(volatile u16*)(rtw_bcn_bd+10)=0;
     *(volatile u32*)(rtw_bcn_bd+12)=(u32)(u64)(pkt+48);
-    __asm__ volatile("sfence":::"memory");
+    cpu_wmb();
     rtw_w32(m,0x0308,(u32)(u64)rtw_bcn_bd);
     u8 bw=rtw_r8(m,0x0383); rtw_w8(m,0x0383,(u8)(bw|(1u<<4)));
     int ok=0; for(int t=0;t<1000;t++){ if(rtw_r16(m,0x0204)&(1u<<15)){ok=1;break;} rtw_delay_us(10); }
@@ -210,8 +217,8 @@ static int rtw_bcnq_stage_pg(u32 m,const u8* payload,u32 plen,u32 pghead){
     rtw_delay_us(50);
     return ok?0:-2;
 }
-static u8* g_rxring=0; static u8* g_rxbuf=0; static u32 g_rxnum=0; static u32 g_rxidx=0;
-static u32 rtw_rf_read_a(u32 m,u32 addr){ return rtw_r32(m,0x2800u+((addr&0xFFu)<<2)) & 0x000FFFFFu; }
+u8* g_rxring=0; u8* g_rxbuf=0; u32 g_rxnum=0; u32 g_rxidx=0;
+u32 rtw_rf_read_a(u32 m,u32 addr){ return rtw_r32(m,0x2800u+((addr&0xFFu)<<2)) & 0x000FFFFFu; }
 static void rtw_rf_write_mask_a(u32 m,u32 addr,u32 mask,u32 val){
     if(mask==0x000FFFFFu){ rtw_rf_write_a(m,addr,val); return; }
     u32 sh=0; while(sh<20 && !((mask>>sh)&1u))sh++;
@@ -230,9 +237,9 @@ static void rtw_switch_to_wlg(u32 m){
     rtw_w32(m,0x0cb8,reg);
 }
 static int g_chstep=0;
-static int g_chquiet=0;
+int g_chquiet=0;
 static void chmark(const char* t){ if(g_chquiet)return; tcol(0x9AA0B0u); term_puts(t); term_putc('\n'); tcol(0xFFFFFFu); }
-static void rtw_set_channel_2g(u32 m,u8 ch){
+void rtw_set_channel_2g(u32 m,u8 ch){
     chmark("    ch.a read RF18 (0x2860)");
     u32 rf18=rtw_rf_read_a(m,0x18);
     g_chstep=2;
@@ -264,17 +271,17 @@ static int rtw_rx_enable_safe(u32 m){
     return 1;
 }
 static u32 rtw_rx_count(u32 m){ return rtw_r32(m,0x02B0); }
-static int rtw_rx_enable(u32 m){
+int rtw_rx_enable(u32 m){
     rtw_w32(m,0x0608,0xE400220Eu);   /* WLAN_RCR_CFG (no CBSSID_BCN filter) */
     rtw_w32(m,0x0608,rtw_r32(m,0x0608)|(1u<<28));
     u32 cr=rtw_r32(m,0x0100); cr|=(1u<<3)|(1u<<1); rtw_w32(m,0x0100,cr);
     return 1;
 }
-static int rtw_rx_ring_up(u32 m){
+int rtw_rx_ring_up(u32 m){
     if(!g_rxring||!g_rxbuf||!g_rxnum)return 0;
     for(u32 i=0;i<g_rxnum;i++){ u8* d=g_rxring+i*8; u64 pb=(u64)(g_rxbuf+i*2048);
         *(volatile u16*)(d)=2048; *(volatile u16*)(d+2)=0; *(volatile u32*)(d+4)=(u32)pb; }
-    __asm__ volatile("sfence":::"memory");
+    cpu_wmb();
     /* rtw88 rtw_pci_reset_buf_desc order: NUM, DESA, RWPTR_CLR, rp=0; THEN dma_reset (CTRL). */
     rtw_w16(m,0x0382,(u16)(g_rxnum & 0x0FFF));      /* RXBD_NUM_MPDUQ */
     rtw_w32(m,0x0338,(u32)(u64)g_rxring);           /* RXBD_DESA_MPDUQ */
@@ -289,9 +296,9 @@ static int rtw_rx_ring_up(u32 m){
     rtw_delay_us(2000);
     return 1;
 }
-static int rtw_rx_hw_wp(u32 m){ u32 t=rtw_r32(m,0x03B4); return (int)((t>>16)&0x0FFF); }
-typedef struct { u8 bssid[6]; char ssid[33]; u8 ch; int seen; u8 sec; } scan_ap;
-static scan_ap g_aps[24]; static int g_apn=0;
+int rtw_rx_hw_wp(u32 m){ u32 t=rtw_r32(m,0x03B4); return (int)((t>>16)&0x0FFF); }
+
+scan_ap g_aps[24]; int g_apn=0;
 static void scan_add(const u8* bssid,const char* ssid,u8 ch,u8 sec){
     for(int i=0;i<g_apn;i++){ int eq=1; for(int b=0;b<6;b++)if(g_aps[i].bssid[b]!=bssid[b])eq=0;
         if(eq){ g_aps[i].seen++; if(ch)g_aps[i].ch=ch; g_aps[i].sec=sec; return; } }
@@ -300,7 +307,7 @@ static void scan_add(const u8* bssid,const char* ssid,u8 ch,u8 sec){
     int j=0; while(ssid[j]&&j<32){g_aps[g_apn].ssid[j]=ssid[j];j++;} g_aps[g_apn].ssid[j]=0;
     g_aps[g_apn].ch=ch; g_aps[g_apn].seen=1; g_aps[g_apn].sec=sec; g_apn++;
 }
-static int rtw_scan_drain(u32 m,u8 ch){
+int rtw_scan_drain(u32 m,u8 ch){
     int found=0;
     for(int guard=0; guard<(int)g_rxnum && found<64; guard++){
         int wp=rtw_rx_hw_wp(m);
@@ -342,7 +349,7 @@ static int rtw_scan_drain(u32 m,u8 ch){
     }
     return found;
 }
-static int rtw_rx_poll_beacon(u32 m,char* ssid_out,int* rssi_out,u8* bssid_out){
+int rtw_rx_poll_beacon(u32 m,char* ssid_out,int* rssi_out,u8* bssid_out){
     (void)m;
     if(!g_rxring||!g_rxbuf||!g_rxnum)return -1;
     for(int spin=0;spin<60000;spin++){
@@ -374,10 +381,10 @@ static int rtw_rx_poll_beacon(u32 m,char* ssid_out,int* rssi_out,u8* bssid_out){
     }
     return 0;
 }
-static u8* g_bering=0; static u32 g_benum=0; static u32 g_beidx=0;
-static u8* g_mgring=0; static u32 g_mgnum=0; static u32 g_mgidx=0;
-static int g_probe_txok=0; static u32 g_probe_hwb=0, g_probe_hwa=0;
-static int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid){
+u8* g_bering=0; u32 g_benum=0; u32 g_beidx=0;
+u8* g_mgring=0; u32 g_mgnum=0; u32 g_mgidx=0;
+int g_probe_txok=0; u32 g_probe_hwb=0, g_probe_hwa=0;
+int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid){
     if(!g_bering||!g_benum)return -1;
     static u8* pkt=0; if(!pkt)pkt=(u8*)dma_alloc(2048);
     if(!pkt)return -1;
@@ -413,7 +420,7 @@ static int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid){
     u32 psb=((total-1)/128)+1;
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
-    __asm__ volatile("sfence":::"memory");
+    cpu_wmb();
     /* make sure BE ring regs are live (base/num/rwptr) */
     rtw_w32(m,0x0328,(u32)(u64)g_bering);
     rtw_w16(m,0x0388,(u16)(g_benum&0x0FFF));
@@ -452,7 +459,7 @@ static int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid){
     }
     return 0;
 }
-static int rtw_tx_mgmt(u32 m,const u8* frame,int fl){
+int rtw_tx_mgmt(u32 m,const u8* frame,int fl){
     if(!g_mgring||!g_mgnum)return -1;
     static u8* pkt=0; if(!pkt)pkt=(u8*)dma_alloc(2048); if(!pkt)return -1;
     u32 total=48+(u32)fl; for(u32 i=0;i<total;i++)pkt[i]=0;
@@ -468,13 +475,13 @@ static int rtw_tx_mgmt(u32 m,const u8* frame,int fl){
     u32 psb=((total-1)/128)+1;
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
-    __asm__ volatile("sfence":::"memory");
+    cpu_wmb();
     rtw_w32(m,0x0310,(u32)(u64)g_mgring); rtw_w16(m,0x0380,(u16)(g_mgnum&0x0FFF));
     g_mgidx++; rtw_w16(m,0x03B0,(u16)(g_mgidx&0x0FFF));   /* TXBD_IDX_MGMTQ */
     return 0;
 }
-static u8 g_eap_stash[512]; static int g_eap_stashlen=0;
-static int rtw_rx_wait_mgmt(u32 m,u8 want_fc,const u8* from_bssid,u8* body_out,int* body_len,int ms){
+u8 g_eap_stash[512]; int g_eap_stashlen=0;
+int rtw_rx_wait_mgmt(u32 m,u8 want_fc,const u8* from_bssid,u8* body_out,int* body_len,int ms){
     for(int t=0;t<ms*10;t++){
         int wp=rtw_rx_hw_wp(m);
         while((int)(g_rxidx%g_rxnum)!=(wp%(int)g_rxnum)){
@@ -506,8 +513,8 @@ static int rtw_rx_wait_mgmt(u32 m,u8 want_fc,const u8* from_bssid,u8* body_out,i
     }
     return 0;
 }
-static u16 g_seq=0x10;
-static int rtw_assoc(u32 m,const scan_ap* ap,const char* ssid){
+u16 g_seq=0x10;
+int rtw_assoc(u32 m,const scan_ap* ap,const char* ssid){
     u8 mac[6]; for(int i=0;i<6;i++)mac[i]=rtw_r8(m,0x0610+i);
     { int z=1; for(int i=0;i<6;i++) if(mac[i])z=0; if(z&&rtw_efuse_valid){ for(int i=0;i<6;i++){mac[i]=rtw_logmap[0xD0+i]; rtw_w8(m,0x0610+i,mac[i]);} } }
     /* program BSSID + infra net type so hw accepts the AP's replies */

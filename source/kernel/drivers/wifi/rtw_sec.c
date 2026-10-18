@@ -1,6 +1,19 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/crypto/nvxwpa.h"
+#include "include/nvx/lib/crypto/nvxcrypto2.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/drivers/usb/xhci.h"
+#include "include/nvx/gui/theme.h"
+#include "include/nvx/shell/terminal.h"
+#include "include/nvx/fs/fat_ata.h"
+#include "include/nvx/drivers/wifi/rtw_efuse.h"
+#include "include/nvx/drivers/wifi/rtw8821ce.h"
+#include "include/nvx/net/wifi/wpa2.h"
+#include "include/nvx/drivers/wifi/rtw_sec.h"
+#include "include/nvx/net/wifi/wifi_netdev.h"
 /* ===== hardware security CAM (WPA2 key install), ported from rtw88 sec.c ===== */
-static void wnd_setup(u32 m,const u8* bssid,const u8* mac,const u8* tk,int qos);
-static void wnd_set_gtk(const u8* gtk,int keyid);
+
 #define SEC_CMD_REG    0x670u
 #define SEC_WRITE_REG  0x674u
 #define SEC_CONFIG     0x680u
@@ -8,8 +21,8 @@ static void wnd_set_gtk(const u8* gtk,int keyid);
 #define SEC_CMD_POLLING      (1u<<31)
 #define SEC_CAM_ENTRY_SHIFT  3
 /* hw_key_type: 0=none 1=WEP40 2=TKIP 4=AES(CCMP) */
-static u8 g_gtk[32]; static int g_gtk_state=0, g_gtk_keyid=0, g_gtk_len=0;
-static const char* wpa_gtk_status(void){ switch(g_gtk_state){ case 1: return "group key (GTK) installed"; case 2: return "no GTK in msg3"; case 3: return "GTK unwrap failed";
+static u8 g_gtk[32]; int g_gtk_state=0, g_gtk_keyid=0, g_gtk_len=0;
+const char* wpa_gtk_status(void){ switch(g_gtk_state){ case 1: return "group key (GTK) installed"; case 2: return "no GTK in msg3"; case 3: return "GTK unwrap failed";
     case 4: return "msg3 MIC mismatch - GTK skipped"; case 5: return "group cipher is not CCMP - GTK skipped"; case 6: return "GTK key index 0 clashes with the pairwise slot - skipped"; default: return "GTK not processed"; } }
 static void wpa_gtk_extract(const u8* eap,int el){
     g_gtk_state=0; g_gtk_len=0;
@@ -57,7 +70,7 @@ static void rtw_sec_enable_engine(u32 m){
     cfg|=(1u<<0)|(1u<<1)|(1u<<6)|(1u<<7);    /* default-key search: TX/RX uni+bc use DK */
     rtw_w16(m,SEC_CONFIG,cfg);
 }
-static int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
+int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
     u8 mac[6]; for(int i=0;i<6;i++)mac[i]=rtw_r8(m,0x0610+i);
     { int z=1; for(int i=0;i<6;i++) if(mac[i])z=0; if(z&&rtw_efuse_valid){ for(int i=0;i<6;i++){mac[i]=rtw_logmap[0xD0+i]; rtw_w8(m,0x0610+i,mac[i]);} } }
     /* PMK = PBKDF2(pass, ssid, 4096, 32) */
@@ -149,7 +162,7 @@ static int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pa
     g_wpa_ok=1;
     return 0;   /* handshake complete - keys derived AND installed in hw */
 }
-static int rtw_h2c_send(u32 m,int box,u32 w0,u32 w1){
+int rtw_h2c_send(u32 m,int box,u32 w0,u32 w1){
     u32 boxreg,boxex;
     switch(box){ case 0:boxreg=0x01D0;boxex=0x01F0;break; case 1:boxreg=0x01D4;boxex=0x01F4;break;
                  case 2:boxreg=0x01D8;boxex=0x01F8;break; default:boxreg=0x01DC;boxex=0x01FC;break; }
@@ -159,7 +172,7 @@ static int rtw_h2c_send(u32 m,int box,u32 w0,u32 w1){
     rtw_w32(m,boxreg,w0);
     return 0;
 }
-static void rtw_phy_power_on(u32 m){
+void rtw_phy_power_on(u32 m){
     u8 v=rtw_r8(m,0x0002);
     v|=(u8)(1u<<6); rtw_w8(m,0x0002,v);
     v|=(u8)((1u<<0)|(1u<<1)); rtw_w8(m,0x0002,v);
@@ -172,7 +185,7 @@ static void rtw_phy_power_on(u32 m){
     rtw_w32(m,0x0808,rtw_r32(m,0x0808)&~((1u<<28)|(1u<<29)));
 }
 
-static void rtw_wmac_init(u32 m){
+void rtw_wmac_init(u32 m){
     rtw_w8(m,0x0455,0x70);
     rtw_w8(m,0x045E,(u8)(rtw_r8(m,0x045E)|(1u<<2)));
     u16 pre=(u16)(0x1E4u|(1u<<11));
@@ -213,7 +226,7 @@ static void rtw_wmac_init(u32 m){
     rtw_w8(m,0x0290,(u8)(rtw_r8(m,0x0290)&~(1u<<2)));
     rtw_w32(m,0x0608,rtw_r32(m,0x0608)|(1u<<28));
 }
-static void rtw_phy_post(u32 m,int have_xtal,u8 xtal){
+void rtw_phy_post(u32 m,int have_xtal,u8 xtal){
     if(have_xtal){
         u32 cap=(u32)(xtal&0x3Fu);
         u32 a=rtw_r32(m,0x0024); a=(a&~0x7E000000u)|((cap<<25)&0x7E000000u); rtw_w32(m,0x0024,a);
@@ -222,7 +235,7 @@ static void rtw_phy_post(u32 m,int have_xtal,u8 xtal){
     rtw_w32(m,0x0A2C,rtw_r32(m,0x0A2C)&~((1u<<18)|(1u<<22)));
     rtw_w32(m,0x0808,rtw_r32(m,0x0808)|((1u<<28)|(1u<<29)));
 }
-static int rtw_apply_built(u32 m,const rtw_bent* t,int n,const char* lbl,int verify){
+int rtw_apply_built(u32 m,const rtw_bent* t,int n,const char* lbl,int verify){
     char b[96],*p;
     p=b;p=scopy(p,"  [wifi ");p=scopy(p,lbl);p=scopy(p,"] applying built-in table (");p=udec(p,(u32)n);p=scopy(p," writes)");*p=0;
     tcol(rgb(255,210,90)); term_puts(b); term_putc('\n'); tcol(WHT);
@@ -248,7 +261,7 @@ static int rtw_apply_built(u32 m,const rtw_bent* t,int n,const char* lbl,int ver
     return mism;
 }
 
-static int rtw_read_table_file(const char* name,u8* out,int cap){
+int rtw_read_table_file(const char* name,u8* out,int cap){
     if(msd_autoinit()){
         ufat_mount();
         if(ufat_ok){
@@ -262,6 +275,6 @@ static int rtw_read_table_file(const char* name,u8* out,int cap){
     }
     return fat_read_file(name,out,cap);
 }
-static u8 fat_filebuf[65536];
-static void fatls_cb(const u8* ent){ char nm[14]; int o=0; for(int i=0;i<8;i++) if(ent[i]!=' ')nm[o++]=(char)ent[i]; if(ent[8]!=' '){ nm[o++]='.'; for(int i=8;i<11;i++) if(ent[i]!=' ')nm[o++]=(char)ent[i]; } nm[o]=0;
+u8 fat_filebuf[65536];
+void fatls_cb(const u8* ent){ char nm[14]; int o=0; for(int i=0;i<8;i++) if(ent[i]!=' ')nm[o++]=(char)ent[i]; if(ent[8]!=' '){ nm[o++]='.'; for(int i=8;i<11;i++) if(ent[i]!=' ')nm[o++]=(char)ent[i]; } nm[o]=0;
     u32 sz=fr32(ent+28); int dir=(ent[11]&0x10)?1:0; char b[64],*p=b; p=scopy(p,"  "); p=scopy(p,nm); while((p-b)<26)*p++=' '; if(dir)p=scopy(p,"<DIR>"); else { p=udec(p,sz); p=scopy(p," B"); } *p=0; tcol(dir?ACC:WHT); term_puts(b); tcol(WHT); term_putc('\n'); }

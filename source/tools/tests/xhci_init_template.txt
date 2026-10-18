@@ -1,0 +1,33 @@
+@@HDR@@
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/mman.h>
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
+#define XBAR 0x60000000u
+#define DMW_FIXED 0x09A00000u
+#define DMW_SIZE 0x00200000u
+#define DMW(off) (g_devbuf+(u32)(off))
+static u32 sim_spb=0;
+static volatile u32* XR(u32 off){ return (volatile u32*)(u64)(XBAR+off); }
+static void sim_step(void){ u32 cmd=*XR(0x20), sts=*XR(0x24); if(cmd&2u){ *XR(0x20)=cmd&~2u; } if(!(cmd&1u))sts|=1u; else sts&=~1u; sts&=~(1u<<11); *XR(0x24)=sts; }
+static void io_wait(void){ sim_step(); }
+static char g_klast[128]; static void klog(const char* s){ strncpy(g_klast,s,127); }
+static u32 pci_cfg(int b,int d,int f,int off){ (void)b;(void)d;(void)f; if(off==0)return 0x14391022u; if(off==0x10)return XBAR; if(off==0x14)return 0; return 6; }
+static void pci_cfgw(int b,int d,int f,int off,u32 v){ (void)b;(void)d;(void)f;(void)off;(void)v; }
+static void sim_regs(u32 spb){ memset((void*)(u64)XBAR,0,0x2000); *(volatile u8*)(u64)XBAR=0x20; *XR(0x04)=32u|(4u<<24); *XR(0x08)=((spb>>5)&0x1Fu)<<21|((spb&0x1Fu)<<27); *XR(0x10)=0; *XR(0x14)=0x100; *XR(0x18)=0x600; *XR(0x24)=1; sim_spb=spb; }
+@@TEST@@
+static int ok=1; static void chk(const char* w,int c){ printf("    %-62s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+static int scratch_ok(u32 spb){ u64 arr=*(volatile u32*)(u64)XHCI_DCBAA|((u64)*(volatile u32*)(u64)(XHCI_DCBAA+4)<<32); if(!arr||(arr&63))return 0; volatile u64* a=(volatile u64*)arr;
+    for(u32 i=0;i<spb;i++){ u64 b=a[i]; if(!b||(b&4095))return 0; if(b>=arr&&b<arr+4096)return 0; if(b>=g_xmem&&b<g_xmem+0x4000)return 0; for(u32 j=0;j<i;j++) if(a[j]==b)return 0; } return 1; }
+int main(void){
+    mmap((void*)0x09A10000,0x70000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    mmap((void*)(u64)XBAR,0x2000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    mmap((void*)0x0B000000,0x1000000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    memset((void*)0x09A14000,0xA5,0x1000);
+    sim_regs(8); xhci_init_one(0,0,0); chk("8 scratchpad pages: every pointer valid and distinct", xhci_init_ok&&scratch_ok(8));
+    memset((void*)0x09A14000,0xA5,0x1000);
+    sim_regs(63); xhci_init_one(0,0,0); chk("63 scratchpad pages (more than 32): every pointer valid and distinct", xhci_init_ok&&scratch_ok(63));
+    sim_regs(63); xhci_init_one(0,0,0); chk("re-initialising reuses the same scratchpad memory", xhci_init_ok&&scratch_ok(63)&&dma_cur<=0x0B000000ULL+64ULL*4096ULL+4096ULL);
+    sim_regs(1023); xhci_init_one(0,0,0); chk("1023 scratchpad pages (the maximum)", xhci_init_ok&&scratch_ok(1023));
+    printf(ok?"ALL PASS\n":"FAILURES\n"); return !ok; }

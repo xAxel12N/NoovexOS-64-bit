@@ -24,6 +24,7 @@ _start2:
     outb    %al, $0x92
 1:
 
+    call    e820_scan
     /* ---- 2. set a VBE mode with a linear framebuffer ---- */
     movw    $0x118, %bx            /* 1024x768 (x24/x32) */
     call    try_mode
@@ -91,7 +92,36 @@ kl_done:
     movl    %eax, %cr0
     ljmp    $0x08, $pm32
 
-/* try_mode: BX = VBE mode number.  On success sets the mode with a linear
+/* e820_scan:
+    pushal
+    pushw   %es
+    xorw    %ax, %ax
+    movw    %ax, %es
+    movw    $0x7008, %di
+    xorl    %ebx, %ebx
+    xorw    %bp, %bp
+8:  movl    $1, %es:20(%di)
+    movl    $0xE820, %eax
+    movl    $24, %ecx
+    movl    $0x534D4150, %edx
+    int     $0x15
+    jc      9f
+    cmpl    $0x534D4150, %eax
+    jne     9f
+    jcxz    7f
+    incw    %bp
+    addw    $24, %di
+7:  testl   %ebx, %ebx
+    jz      9f
+    cmpw    $40, %bp
+    jb      8b
+9:  movzwl  %bp, %eax
+    movl    %eax, 0x7004
+    movl    $0x4558564E, 0x7000
+    popw    %es
+    popal
+    ret
+try_mode: BX = VBE mode number.  On success sets the mode with a linear
    framebuffer, stores params at 0x5000, returns CF=0.  CF=1 on failure. */
 try_mode:
     pushw   %bx

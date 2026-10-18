@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Python IDE
+Comment=Write and run Python 3 programs
+Exec=python3-ide
+Icon=python3-ide
+Categories=Development;IDE;
+X-Noovex-App=pyide

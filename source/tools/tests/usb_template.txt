@@ -1,0 +1,319 @@
+@@PRE@@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/mman.h>
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64; typedef int8_t int8_t_;
+#define XHC_MAX 4
+#define DMW_FIXED 0x09A00000u
+static u32 g_devbuf=DMW_FIXED;
+#define DMW(off) (g_devbuf+(u32)(off))
+static void uvc_reset(void){}
+void* kmalloc(unsigned long n){ return malloc(n); }
+void kfree(void* p){ free(p); }
+void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name);
+static u32 g_xmem=0x09A10000u; static int g_xcur=0, g_xhc_n=1, msd_ctl=0, xhci_pci_fn=0, xhci_hi4g=0;
+#define XHCI_DCBAA (g_xmem+0x0000u)
+#define XHCI_EVTRING (g_xmem+0x2000u)
+static int xhci_present=1, xhci_init_ok=1, xhci_slots=32, xhci_ports=16, xhci_ports_hw=16, xhci_pci_bus=0, xhci_pci_slot=0, usb_seen_init=0; static u16 xhci_vendor=0;
+static u8 xhci_port_conn[32], xhci_port_speed[32], usb_seen[32];
+#define XMR(a) (*(volatile u32*)(u64)(a))
+#define XMW(a,v) (*(volatile u32*)(u64)(a)=(u32)(v))
+static u32 xhci_base, xhci_op;
+@@XHC_CTX@@ static int xhci_csz=0; static u32 xhci_dboff=0x2000, xhci_rtoff=0x3000; static u32 cmd_enq,cmd_cyc=1,ev_deq=0,ev_cyc=1;
+static u64 g_ticks; static u8 kdown[128]; static int mouse_dx,mouse_dy,mouse_evt,mouse_btn,mouse_rbtn,mouse_mid,mouse_scroll;
+static char kq[256]; static int kqn; static void kpush(int c){ if(kqn<255)kq[kqn++]=(char)c; kq[kqn]=0; }
+static void io_wait(void){} static void klog(const char* s){(void)s;}
+static int g_next_slot=1, g_disabled[16], g_ndis; static u8 g_cfg_snapshot[4096]; static int g_cfg_done;
+static const u8* g_conf; static int g_conflen; static const u8* g_rd[4]; static int g_rdl[4]; static int g_req[32][3], g_nreq;
+static u32 g_cmdlog[64][3]; static int g_ncmd; static int g_stall_class, g_halted;
+typedef struct { int used, root, depth, kind, speed, nports, present, mps0; u32 route; int cflag[16], en[16], creset[16], pwr[16]; const u8* conf; int conflen; const u8* rd; int rdl; } mdev_t;
+static mdev_t M[16]; static int g_nm, g_model_on; static int g_slotdev[256]; static u32 g_addr_sc[256][3]; static u32 g_hubcfg[256][3]; static int g_eval_mps[256];
+static int mfind(int root,u32 route){ for(int i=1;i<g_nm;i++) if(M[i].used&&M[i].present&&M[i].root==root&&M[i].route==route)return i; return 0; }
+static int xh_cmd_s(u32 p0,u32 p1,u32 p2,u32 type,u32 slotid,u8* cc,u8* sl){ (void)p1;(void)p2; *cc=1; if(g_ncmd<64){ g_cmdlog[g_ncmd][0]=type; g_cmdlog[g_ncmd][1]=slotid; g_cmdlog[g_ncmd][2]=p0; g_ncmd++; }
+    if(type==9){ *sl=(u8)g_next_slot++; g_slotdev[*sl&255]=0; return 1; } if(type==10){ g_disabled[g_ndis++]=(int)slotid; g_slotdev[slotid&255]=0; return 1; }
+    if(type==11){ u32* sc=(u32*)(u64)(p0+32); g_addr_sc[slotid&255][0]=sc[0]; g_addr_sc[slotid&255][1]=sc[1]; g_addr_sc[slotid&255][2]=sc[2]; if(g_model_on)g_slotdev[slotid&255]=mfind((int)((sc[1]>>16)&0xFF)-1,sc[0]&0xFFFFF); }
+    if(type==13){ g_eval_mps[slotid&255]=(int)(((u32*)(u64)(p0+64))[1]>>16); }
+    if(type==12){ memcpy(g_cfg_snapshot,(void*)(u64)p0,4096); g_cfg_done=1; u32* sc=(u32*)(u64)(p0+32); g_hubcfg[slotid&255][0]=sc[0]; g_hubcfg[slotid&255][1]=sc[1]; g_hubcfg[slotid&255][2]=sc[2]; } return 1; }
+static int g_db[4096][2], g_ndb; static void xh_db(int slot,u32 t){ if(g_ndb<4096){ g_db[g_ndb][0]=slot; g_db[g_ndb][1]=(int)t; g_ndb++; } }
+
+@@PRE2@@
+static int msd_ok, msd_slot, msd_ctl, msd_port=-1, ufat_ok, ufs_n, g_files_usb, g_usb_arrived; static u32 msd_route; static int msd_depth; static int g_msd_calls;
+static void ufat_mount(void){ ufat_ok=1; }
+static int xhci_msd_enum_loc(const usbloc_t* L){ g_msd_calls++; int m=mfind(L->root,L->route); if(m&&M[m].kind==3){ msd_ok=1; msd_route=L->route; msd_depth=L->depth; msd_slot=g_next_slot++; return 1; } msd_slot=0; return 0; }
+static int g_hubreq[64][3], g_nhubreq;
+static int model_ctrl(int dv,u8 rt,u8 req,u16 val,u16 idx,u16 len){
+    mdev_t* m=&M[dv]; u8* db=(u8*)(u64)cur_dbuf;
+    if(m->kind==1){
+        if(rt==0xA0&&req==6){ u8 d[9]={9,0x29,(u8)m->nports,0x20,0,50,0,0,0xFF}; memcpy(db,d,len<9?len:9); return 1; }
+        if(rt==0x23&&g_nhubreq<64){ g_hubreq[g_nhubreq][0]=req; g_hubreq[g_nhubreq][1]=val; g_hubreq[g_nhubreq][2]=idx; g_nhubreq++; }
+        if(rt==0x23&&req==3&&val==8){ m->pwr[idx]=1; return 1; }
+        if(rt==0x23&&req==3&&val==4){ m->en[idx]=mfind(m->root,m->route|((u32)idx<<(4*m->depth)))!=0; m->creset[idx]=1; return 1; }
+        if(rt==0x23&&req==1&&val==20){ m->creset[idx]=0; return 1; }
+        if(rt==0x23&&req==1&&val==16){ m->cflag[idx]=0; return 1; }
+        if(rt==0xA3&&req==0){ int c=mfind(m->root,m->route|((u32)idx<<(4*m->depth))); u16 st=(u16)((c?1:0)|(c&&m->en[idx]?2:0)|(m->pwr[idx]?0x100:0)); if(c){ if(M[c].speed==2)st|=0x200; if(M[c].speed==3)st|=0x400; } else m->en[idx]=0;
+            u16 ch=(u16)((m->cflag[idx]?1:0)|(m->creset[idx]?0x10:0)); db[0]=(u8)st; db[1]=(u8)(st>>8); db[2]=(u8)ch; db[3]=(u8)(ch>>8); return 1; }
+        if(req==6&&val==0x0100){ memset(db,0,18); db[4]=9; db[7]=64; return 1; }
+        if(req==6&&val==0x0200){ static const u8 H[]={9,2,25,0,1,1,0,0xE0,0, 9,4,0,0,1,9,0,0,0, 7,5,0x81,3,1,0,12}; int n=len<25?len:25; memcpy(db,H,(size_t)n); return 1; }
+        return 1; }
+    if(req==6&&val==0x0100){ memset(db,0,18); db[7]=(u8)m->mps0; return 1; }
+    if(req==6&&val==0x0200){ int n=len<m->conflen?len:m->conflen; memcpy(db,m->conf,(size_t)n); return 1; }
+    if(req==6&&val==0x2200){ int n=len<m->rdl?len:m->rdl; if(n>0)memcpy(db,m->rd,(size_t)n); return m->rdl>0; }
+    return 1; }
+static int xh_ctrl(u8 rt,u8 req,u16 val,u16 idx,u16 len,int in,u8* data){ (void)in;(void)data;
+    if(g_model_on&&g_slotdev[cur_slot&255])return model_ctrl(g_slotdev[cur_slot&255],rt,req,val,idx,len);
+    if(g_stall_class&&(req==0x0B||req==0x0A)){ if(g_nreq<32){ g_req[g_nreq][0]=req; g_req[g_nreq][1]=val; g_req[g_nreq][2]=idx; g_nreq++; } g_halted=1; return 0; }
+    if(g_halted&&req==6&&val==0x2200) return 0;
+    if(req==6&&val==0x0100){ memset((void*)(u64)cur_dbuf,0,18); return 1; }
+    if(req==6&&val==0x2200){ int i=idx<4?idx:0; int n=len<g_rdl[i]?len:g_rdl[i]; if(n>0)memcpy((void*)(u64)cur_dbuf,g_rd[i],(size_t)n); return g_rdl[i]>0; }
+    if(req==6&&val==0x0200){ int n=len<g_conflen?len:g_conflen; memcpy((void*)(u64)cur_dbuf,g_conf,(size_t)n); return 1; }
+    if(g_nreq<32){ g_req[g_nreq][0]=req; g_req[g_nreq][1]=val; g_req[g_nreq][2]=idx; g_nreq++; } (void)rt; return 1; }
+@@MAIN@@
+volatile u32 g_kbd_last_tick;
+void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name){ (void)port;(void)vid;(void)pid;(void)cfg;(void)n;(void)name; }
+static int uvc_has_video(const u8* c,int n){ (void)c;(void)n; return 0; }
+static int uvc_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)full;(void)wtot;(void)cfgval;(void)vid;(void)pid;(void)nm; return 0; }
+static int ok=1; static void chk(const char* w,int c){ printf("  %-70s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+static const u8 UNIFYING[]={9,2,0x54,0,3,1,4,0xA0,0x31,
+ 9,4,0,0,1,3,1,1,0, 9,0x21,0x11,1,0,1,0x22,0x3B,0, 7,5,0x81,3,8,0,8,
+ 9,4,1,0,1,3,1,2,0, 9,0x21,0x11,1,0,1,0x22,0x94,0, 7,5,0x82,3,8,0,2,
+ 9,4,2,0,1,3,0,0,0, 9,0x21,0x11,1,0,1,0x22,0x62,0, 7,5,0x83,3,0x20,0,2};
+static const u8 VENDORFIRST[]={9,2,0x3B,0,2,1,0,0xA0,0x32,
+ 9,4,0,0,1,3,0,0,0, 9,0x21,0x10,1,0,1,0x22,0x20,0, 7,5,0x81,3,0x40,0,1,
+ 9,4,1,0,1,3,1,2,0, 9,0x21,0x10,1,0,1,0x22,0x40,0, 7,5,0x82,3,4,0,10,
+ 9,4,1,1,1,3,1,2,0, 7,5,0x84,3,4,0,1};
+static const u8 STICK[]={9,2,0x20,0,1,1,0,0x80,0x32, 9,4,0,0,2,8,6,0x50,0, 7,5,0x81,2,0x40,0,0, 7,5,0x02,2,0x40,0,0};
+static u8 mmio[0x10000];
+static void plug(int port,int speed){ u32* pr=(u32*)(u64)(xhci_op+0x400+port*0x10); *pr=1u|((u32)speed<<10)|(1u<<21); }
+static u32 epctx(int dci,int w){ return *(u32*)(g_cfg_snapshot+32*(dci+1)+w*4); }
+static int evn=0;
+static void event(int slot,int epid,int cc){ volatile u32* e=(volatile u32*)(u64)(XHCI_EVTRING+ev_deq*16+(u32)evn*16); e[0]=0; e[1]=0; e[2]=(u32)cc<<24; e[3]=(32u<<10)|((u32)epid<<16)|((u32)slot<<24)|ev_cyc; evn++; }
+static void flush(void){ xhci_mouse_poll(); evn=0; }
+static int entry_for(int dci){ for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_dci[i]==dci)return i; return -1; }
+static int entry_on(int port,int dci){ for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_port[i]==port&&xhid_dci[i]==dci)return i; return -1; }
+
+static u8 cfgbuf[64]; static int mkcfg(int rdlen){ static const u8 c[]={9,2,34,0,1,1,0,0xA0,0x32, 9,4,0,0,1,3,0,0,0, 9,0x21,0x11,1,0,1,0x22,0,0, 7,5,0x81,3,16,0,1}; memcpy(cfgbuf,c,sizeof c); cfgbuf[25]=(u8)rdlen; cfgbuf[26]=(u8)(rdlen>>8); g_conf=cfgbuf; g_conflen=sizeof c; return 0; }
+static const u8 RD_MOUSE16[]={0x05,1,0x09,2,0xA1,1,0x85,1,0x09,1,0xA1,0,0x05,9,0x19,1,0x29,5,0x15,0,0x25,1,0x95,5,0x75,1,0x81,2,0x95,1,0x75,3,0x81,1,0x05,1,0x09,0x30,0x09,0x31,0x16,0x00,0x80,0x26,0xFF,0x7F,0x75,16,0x95,2,0x81,6,0x09,0x38,0x15,0x81,0x25,0x7F,0x75,8,0x95,1,0x81,6,0xC0,0xC0};
+static const u8 RD_LOGI[]={0x05,1,0x09,2,0xA1,1,0x85,2,0x09,1,0xA1,0,0x05,9,0x19,1,0x29,16,0x15,0,0x25,1,0x95,16,0x75,1,0x81,2,0x05,1,0x16,0x01,0xF8,0x26,0xFF,0x07,0x75,12,0x95,2,0x09,0x30,0x09,0x31,0x81,6,0x15,0x81,0x25,0x7F,0x75,8,0x95,1,0x09,0x38,0x81,6,0x05,0x0C,0x0A,0x38,0x02,0x95,1,0x81,6,0xC0,0xC0,
+  0x05,0x0C,0x09,1,0xA1,1,0x85,3,0x75,16,0x95,2,0x15,1,0x26,0xFF,0x02,0x19,1,0x2A,0xFF,0x02,0x81,0,0xC0};
+static const u8 RD_NKRO[]={0x05,1,0x09,6,0xA1,1,0x85,1,0x05,7,0x19,0xE0,0x29,0xE7,0x15,0,0x25,1,0x75,1,0x95,8,0x81,2,0x19,0,0x29,0x67,0x95,0x68,0x81,2,0xC0};
+static const u8 RD_COMBO[]={0x05,1,0x09,6,0xA1,1,0x85,1,0x05,7,0x19,0xE0,0x29,0xE7,0x15,0,0x25,1,0x75,1,0x95,8,0x81,2,0x95,1,0x75,8,0x81,1,0x95,6,0x75,8,0x15,0,0x25,0x65,0x05,7,0x19,0,0x29,0x65,0x81,0,0xC0,
+  0x05,1,0x09,2,0xA1,1,0x85,2,0x09,1,0xA1,0,0x05,9,0x19,1,0x29,3,0x15,0,0x25,1,0x95,3,0x75,1,0x81,2,0x95,1,0x75,5,0x81,1,0x05,1,0x09,0x30,0x09,0x31,0x15,0x81,0x25,0x7F,0x75,8,0x95,2,0x81,6,0xC0,0xC0};
+static const u8 RD_VENDOR[]={0x06,0x00,0xFF,0x09,1,0xA1,1,0x85,0x10,0x75,8,0x95,6,0x15,0,0x26,0xFF,0,0x09,1,0x81,0,0xC0};
+static int plugrd(int port,const u8* rd,int n){  mkcfg(n); g_rd[0]=rd; g_rdl[0]=n; plug(port,1); return xhci_hid_enum(port); }
+static void send(int e,const u8* r,int n){ volatile u8* b=(volatile u8*)(u64)xhid_dbuf[e]; memset((void*)b,0,64); memcpy((void*)b,r,(size_t)n); event(xhid_slot[e],xhid_dci[e],1); flush(); }
+static void report_protocol_tests(void){
+  printf("== 9. HID report protocol (non-boot devices) ==\n");
+  xhid_reset(); g_ndb=0; int n=plugrd(0,RD_MOUSE16,sizeof RD_MOUSE16); int e=entry_on(0,3);
+  chk("non-boot mouse accepted via its report descriptor", n==1&&e>=0&&xhid_rep[e]==1&&xhid_hasid[e]==1);
+  int sp=0; for(int i=0;i<g_nreq;i++) if(g_req[i][0]==0x0B&&g_req[i][1]==1)sp++; chk("switched to report protocol (SET_PROTOCOL 1)", sp>=1);
+  mouse_dx=mouse_dy=mouse_scroll=0; { u8 r[]={1,0x05,0xD4,0xFE,20,0,0xFF}; send(e,r,sizeof r); }
+  chk("16-bit X/Y, wheel and buttons decoded (-300,+20, wheel -1, left+middle)", mouse_dx==-300&&mouse_dy==-20&&mouse_scroll==-1&&mouse_btn==1&&mouse_mid==1&&mouse_rbtn==0);
+  xhid_reset(); n=plugrd(1,RD_LOGI,sizeof RD_LOGI); e=entry_on(1,3);
+  chk("Logitech-style mouse (ID 2, 12-bit X/Y) accepted; consumer collection ignored", n==1&&e>=0&&xhid_nlay[e]==1);
+  mouse_dx=mouse_dy=mouse_scroll=0; { u8 r[]={2,0x02,0x00,0xFB,0x7F,0x00,0x01,0x00}; send(e,r,sizeof r); }
+  chk("12-bit packed X/Y decoded (-5,+7), right button, wheel +1", mouse_dx==-5&&mouse_dy==-7&&mouse_rbtn==1&&mouse_btn==0&&mouse_scroll==1);
+  int dx0=mouse_dx; { u8 r[]={3,0xE9,0x00,0,0}; send(e,r,sizeof r); } chk("report ID 3 (media keys) does not move the mouse", mouse_dx==dx0);
+  xhid_reset(); n=plugrd(2,RD_NKRO,sizeof RD_NKRO); e=entry_on(2,3);
+  chk("NKRO bitmap keyboard accepted", n==1&&e>=0&&xhid_iskbd[e]==1);
+  kqn=0; kq[0]=0; { u8 r[16]={1,0x02,0x10}; send(e,r,16); } { u8 r[16]={1,0,0}; send(e,r,16); }
+  chk("bitmap key 'a' with Left Shift gives 'A'", !strcmp(kq,"A"));
+  xhid_reset(); n=plugrd(3,RD_COMBO,sizeof RD_COMBO); e=entry_on(3,3);
+  chk("keyboard + mouse in ONE interface (IDs 1 and 2) accepted", n==1&&e>=0&&xhid_nlay[e]==2);
+  kqn=0; kq[0]=0; mouse_dx=mouse_dy=0; { u8 r[]={1,0,0,0x0B,0,0,0,0,0}; send(e,r,sizeof r); } { u8 r[]={1,0,0,0,0,0,0,0,0}; send(e,r,sizeof r); } { u8 r[]={2,0x01,10,0xF6}; send(e,r,sizeof r); }
+  chk("ID 1 types 'h', ID 2 moves the mouse (+10,+10) with left button", !strcmp(kq,"h")&&mouse_dx==10&&mouse_dy==10&&mouse_btn==1);
+  xhid_reset(); int dis=g_ndis; n=plugrd(4,RD_VENDOR,sizeof RD_VENDOR);
+  chk("vendor-only interface rejected, slot released", n==0&&g_ndis==dis+1);
+}
+static const u8 RD_CONSUMER[]={0x05,0x0C,0x09,1,0xA1,1,0x85,3,0x75,16,0x95,1,0x15,0,0x26,0xFF,0x03,0x19,0,0x2A,0xFF,0x03,0x81,0,0xC0};
+static const u8 FOURIF[]={9,2,109,0,4,1,0,0xA0,0x32,
+ 9,4,0,0,1,3,1,1,0, 9,0x21,0x11,1,0,1,0x22,0x41,0, 7,5,0x81,3,8,0,10,
+ 9,4,1,0,1,3,0,0,0, 9,0x21,0x11,1,0,1,0x22,25,0, 7,5,0x82,3,8,0,10,
+ 9,4,2,0,1,3,0,0,0, 9,0x21,0x11,1,0,1,0x22,23,0, 7,5,0x83,3,32,0,1,
+ 9,4,3,0,1,3,1,2,0, 9,0x21,0x11,1,0,1,0x22,68,0, 7,5,0x84,3,8,0,1};
+static const u8 BOOTMOUSE_NORD[]={9,2,25,0,1,1,0,0xA0,0x32, 9,4,0,0,1,3,1,2,0, 7,5,0x81,3,4,0,10};
+static void more_mouse_tests(void){
+  printf("== 10. combo receiver with 4 interfaces, mouse is the 4th ==\n");
+  xhid_reset(); g_conf=FOURIF; g_conflen=sizeof FOURIF; g_rd[0]=0; g_rdl[0]=0; g_rd[1]=RD_CONSUMER; g_rdl[1]=sizeof RD_CONSUMER; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; g_rd[3]=RD_MOUSE16; g_rdl[3]=sizeof RD_MOUSE16;
+  plug(0,1); int n=xhci_hid_enum(0); int kb=entry_on(0,3), ms=entry_on(0,9);
+  chk("keyboard and the 4th-interface mouse both set up; media + vendor skipped", n==2&&kb>=0&&ms>=0);
+  mouse_dx=mouse_dy=0; if(ms>=0){ u8 r[]={1,0x01,10,0,0xF6,0xFF,0}; send(ms,r,sizeof r); }
+  chk("that mouse moves (+10,+10) and clicks", mouse_dx==10&&mouse_dy==10&&mouse_btn==1);
+  printf("== 11. boot mouse without a report descriptor ==\n");
+  xhid_reset(); g_conf=BOOTMOUSE_NORD; g_conflen=sizeof BOOTMOUSE_NORD; plug(1,1); n=xhci_hid_enum(1); int e=entry_on(1,3);
+  chk("falls back to boot protocol", n==1&&e>=0&&xhid_rep[e]==0);
+  mouse_dx=mouse_dy=0; if(e>=0){ u8 r[]={0x02,0xFB,0x04,0}; send(e,r,4); }
+  chk("boot report decoded (dx -5, dy -4, right button)", mouse_dx==-5&&mouse_dy==-4&&mouse_rbtn==1);
+  chk("each report is counted with its raw bytes kept (for usbinfo)", e>=0&&xhid_cnt[e]==1&&xhid_lastn[e]>=3&&xhid_last[e][1]==0xFB);
+}
+static const u8 GAMING_DONGLE[]={9,2,59,0,2,1,0,0xA0,0x32,
+ 9,4,0,0,1,3,0,2,0, 9,0x21,0x11,1,0,1,0x22,68,0, 7,5,0x81,3,16,0,1,
+ 9,4,1,0,1,3,0,0,0, 9,0x21,0x11,1,0,1,0x22,23,0, 7,5,0x82,3,32,0,1};
+static void put_event(int idx,int slot,int ep,int cc){ volatile u32* e=(volatile u32*)(u64)(XHCI_EVTRING+((ev_deq+(u32)idx)%256)*16); e[0]=0; e[1]=0; e[2]=(u32)cc<<24; e[3]=(32u<<10)|((u32)ep<<16)|((u32)slot<<24)|ev_cyc; }
+static void stall_and_queue_tests(void){
+  printf("== 12. control-endpoint STALL recovery (real xh_ctrl) ==\n");
+  ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096); g_ncmd=0;
+  cur_slot=7; cur_ep0=XHID_EP0RING(7); cur_dbuf=XHID_DATABUF(7); e0_enq=5; e0_cyc=1; memset((void*)(u64)cur_ep0,0,4096);
+  put_event(0,7,1,6); int r=real_xh_ctrl(0x21,0x0B,1,0,0,0,0);
+  chk("a STALLed request reports failure", r==0);
+  int rs=-1,sd=-1; for(int i=0;i<g_ncmd;i++){ if(g_cmdlog[i][0]==(14u|(1u<<6))&&g_cmdlog[i][1]==7)rs=i; if(g_cmdlog[i][0]==(16u|(1u<<6))&&g_cmdlog[i][1]==7)sd=i; }
+  chk("Reset Endpoint issued for slot 7, endpoint 1", rs>=0);
+  chk("then Set TR Dequeue to the ring's next TRB with the right cycle bit", sd>rs&&g_cmdlog[sd][2]==((cur_ep0+e0_enq*16)|e0_cyc)&&e0_enq==7);
+  printf("== 13. events for other devices are queued, not lost ==\n");
+  xhid_reset(); g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(0,1); xhci_hid_enum(0);
+  int kb=entry_on(0,3); volatile u8* kbuf=(volatile u8*)(u64)xhid_dbuf[kb]; u8 h[8]={0,0,0x0B,0,0,0,0,0}; memcpy((void*)kbuf,h,8);
+  ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096); xh_qn=0;
+  cur_slot=9; cur_ep0=XHID_EP0RING(7); e0_enq=0; e0_cyc=1;
+  put_event(0,xhid_slot[kb],3,1); put_event(1,9,1,1);
+  r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0);
+  chk("control transfer for slot 9 still completes", r==1);
+  chk("the keyboard's event was queued instead of discarded", xh_qn==1);
+  kqn=0; kq[0]=0; int ndb=g_ndb; xhci_mouse_poll();
+  chk("next poll types the queued key and re-arms the keyboard", !strcmp(kq,"h")&&xh_qn==0&&g_ndb==ndb+1);
+  printf("== 14. gaming dongle that STALLs class requests ==\n");
+  xhid_reset(); g_conf=GAMING_DONGLE; g_conflen=sizeof GAMING_DONGLE; g_rd[0]=RD_MOUSE16; g_rdl[0]=sizeof RD_MOUSE16; g_rd[1]=RD_VENDOR; g_rdl[1]=sizeof RD_VENDOR;
+  g_stall_class=1; g_halted=0; g_nreq=0; plug(2,1); int n=xhci_hid_enum(2); g_stall_class=0; g_halted=0; int ms=entry_on(2,3);
+  chk("mouse found even though the dongle refuses class requests", n==1&&ms>=0&&xhid_rep[ms]==1);
+  int sp=0; for(int i=0;i<g_nreq;i++) if(g_req[i][0]==0x0B)sp++; chk("no SET_PROTOCOL sent to its non-boot interface", sp==0);
+  mouse_dx=mouse_dy=0; if(ms>=0){ u8 rr[]={1,0x01,7,0,0xFD,0xFF,0}; send(ms,rr,sizeof rr); } chk("and it moves (+7,+3)", mouse_dx==7&&mouse_dy==3);
+}
+static void multi_controller_tests(void){
+  printf("== 15. two USB controllers, same slot and endpoint numbers on both ==\n");
+  xhid_reset(); xh_qn=0;
+  g_xhc_n=2; g_xhc[0].mem=0x09A10000u;
+  xhc_select(1); g_xmem=0x09A50000u; xhci_base=0x20008000; xhci_op=0x20008080; ev_deq=0; ev_cyc=1; cmd_enq=0; cmd_cyc=1; xhci_init_ok=1; xhci_present=1;
+  *(u32*)(u64)(xhci_base+0x14)=0x2000; *(u32*)(u64)(xhci_base+0x18)=0x3000; memset((void*)(u64)XHCI_EVTRING,0,4096);
+  xhc_select(0); xhci_base=0x20000000; xhci_op=0x20000080; ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096);
+  g_next_slot=1; g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(2,1); int n0=xhci_hid_enum(2);
+  int kb=-1; for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==0&&xhid_dci[i]==3)kb=i;
+  xhc_select(1); g_next_slot=1; g_conf=cfgbuf; mkcfg(sizeof RD_MOUSE16); g_rd[0]=RD_MOUSE16; g_rdl[0]=sizeof RD_MOUSE16; plug(2,1); int n1=xhci_hid_enum(2);
+  int ms=-1; for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==1&&xhid_dci[i]==3)ms=i;
+  chk("keyboard set up on controller 1, mouse on controller 2", n0==2&&n1==1&&kb>=0&&ms>=0);
+  chk("both got slot 1 and endpoint 3 (their numbering is independent)", kb>=0&&ms>=0&&xhid_slot[kb]==1&&xhid_slot[ms]==1&&xhid_dci[kb]==xhid_dci[ms]);
+  volatile u8* kbf=(volatile u8*)(u64)xhid_dbuf[kb]; u8 h[8]={0,0,0x0B,0,0,0,0,0}; memcpy((void*)kbf,h,8);
+  volatile u8* mbf=(volatile u8*)(u64)xhid_dbuf[ms]; u8 mv[]={1,0x00,12,0,0xFB,0xFF,0}; memset((void*)mbf,0,64); memcpy((void*)mbf,mv,sizeof mv);
+  xhc_select(1); { volatile u32* e=(volatile u32*)(u64)(XHCI_EVTRING+ev_deq*16); e[0]=0; e[1]=0; e[2]=1u<<24; e[3]=(32u<<10)|(3u<<16)|(1u<<24)|ev_cyc; }
+  xhc_select(0); { volatile u32* e=(volatile u32*)(u64)(XHCI_EVTRING+ev_deq*16); e[0]=0; e[1]=0; e[2]=1u<<24; e[3]=(32u<<10)|(3u<<16)|(1u<<24)|ev_cyc; }
+  kqn=0; kq[0]=0; mouse_dx=mouse_dy=0; xhci_mouse_poll();
+  chk("controller 1's event types the key (not a mouse move)", !strcmp(kq,"h"));
+  chk("controller 2's event moves the mouse (+12,+5), not a key", mouse_dx==12&&mouse_dy==5);
+  chk("each controller keeps its own event-ring position", (xhc_select(0),ev_deq==1)&&(xhc_select(1),ev_deq==1));
+  chk("each controller has its own ring memory", (xhc_select(0),g_xmem==0x09A10000u)&&(xhc_select(1),g_xmem==0x09A50000u));
+  xhc_select(1); xhid_remove_port(2);
+  chk("unplugging port 2 on controller 2 frees only the mouse (the keyboard is on port 2 of controller 1)", !xhid_used[ms]&&xhid_used[kb]&&xhid_port[kb]==2);
+  xhc_select(0); g_xhc_n=1;
+}
+static const u8 BOOTKBD[]={9,2,34,0,1,1,0,0xA0,0x32, 9,4,0,0,1,3,1,1,0, 9,0x21,0x11,1,0,1,0x22,0x3F,0, 7,5,0x81,3,8,0,10};
+static int madd(int root,u32 route,int depth,int kind,int speed,int nports,const u8* conf,int conflen,const u8* rd,int rdl,int mps0){ int i=g_nm++; memset(&M[i],0,sizeof M[i]); M[i].used=1; M[i].root=root; M[i].route=route; M[i].depth=depth; M[i].kind=kind; M[i].speed=speed; M[i].nports=nports; M[i].conf=conf; M[i].conflen=conflen; M[i].rd=rd; M[i].rdl=rdl; M[i].present=1; M[i].mps0=mps0; return i; }
+static int slot_of(int m){ for(int s=1;s<256;s++) if(g_slotdev[s]==m)return s; return -1; }
+static int entry_slot(int slot,int dci){ for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_slot[i]==slot&&xhid_dci[i]==dci)return i; return -1; }
+static void hub_tests(void){
+  printf("== 16. USB hubs ==\n");
+  xhid_reset(); memset(g_slotdev,0,sizeof g_slotdev); g_nm=1; g_model_on=1; g_ncmd=0; g_nhubreq=0; msd_ok=0; g_msd_calls=0; g_next_slot=40;
+  int A=madd(5,0,0,1,3,4,0,0,0,0,64);
+  int KB=madd(5,0x1,1,2,2,0,BOOTKBD,sizeof BOOTKBD,0,0,8);
+  mkcfg(sizeof RD_MOUSE16); static u8 mcfg[64]; memcpy(mcfg,cfgbuf,(size_t)g_conflen); int mcl=g_conflen;
+  int MS=madd(5,0x2,1,2,1,0,mcfg,mcl,RD_MOUSE16,sizeof RD_MOUSE16,64);
+  int B=madd(5,0x3,1,1,3,2,0,0,0,0,64);
+  int MS2=madd(5,0x23,2,2,1,0,BOOTMOUSE_NORD,sizeof BOOTMOUSE_NORD,0,0,8);
+  int MS3=madd(5,0x13,2,2,2,0,BOOTMOUSE_NORD,sizeof BOOTMOUSE_NORD,0,0,8);
+  plug(5,3); usbloc_t RL; RL.root=5; RL.depth=0; RL.hub=-1; RL.hport=0; RL.speed=3; RL.route=0; RL.tt_slot=0; RL.tt_port=0; int n=xhci_enum_loc(&RL);
+  int sA=slot_of(A), sKB=slot_of(KB), sMS=slot_of(MS), sB=slot_of(B), sMS2=slot_of(MS2);
+  chk("hub on root port 6 set up: its keyboard and three mice found (4 entries)", n==4&&slot_of(MS3)>0&&sA>0&&sKB>0&&sMS>0&&sB>0&&sMS2>0);
+  chk("hub slot marked as hub: 4 ports, think time 1, interrupt endpoint", (g_hubcfg[sA][0]>>26&1)&&(g_hubcfg[sA][1]>>24)==4&&((g_hubcfg[sA][2]>>16)&3)==1&&(g_hubcfg[sA][0]>>27)==3);
+  int pw=0; for(int i=0;i<g_nhubreq;i++) if(g_hubreq[i][0]==3&&g_hubreq[i][1]==8)pw++; chk("every hub port powered (4 + 2)", pw==6);
+  chk("low-speed keyboard: route 1, root port 6, speed LS, TT = hub slot / port 1", (g_addr_sc[sKB][0]&0xFFFFF)==1&&((g_addr_sc[sKB][0]>>20)&0xF)==2&&((g_addr_sc[sKB][1]>>16)&0xFF)==6&&(g_addr_sc[sKB][2]&0xFF)==(u32)sA&&((g_addr_sc[sKB][2]>>8)&0xFF)==1);
+  chk("full-speed mouse: route 2, TT port 2", (g_addr_sc[sMS][0]&0xFFFFF)==2&&((g_addr_sc[sMS][0]>>20)&0xF)==1&&((g_addr_sc[sMS][2]>>8)&0xFF)==2);
+  chk("high-speed hub behind the hub: route 3, no TT", (g_addr_sc[sB][0]&0xFFFFF)==3&&(g_addr_sc[sB][2]&0xFFFF)==0);
+  chk("mouse behind the second hub: route 0x23, TT = second hub / port 2", (g_addr_sc[sMS2][0]&0xFFFFF)==0x23&&(g_addr_sc[sMS2][2]&0xFF)==(u32)sB&&((g_addr_sc[sMS2][2]>>8)&0xFF)==2);
+  chk("full-speed device with a 64-byte control endpoint gets Evaluate Context", g_eval_mps[sMS]==64&&g_eval_mps[sKB]==0);
+  chk("USB-stick probe tried first on each hub port", g_msd_calls==5);
+  int ekb=entry_slot(sKB,3), ems=entry_slot(sMS,3), ems2=entry_slot(sMS2,3), ems3=entry_slot(slot_of(MS3),3);
+  kqn=0; kq[0]=0; if(ekb>=0){ u8 r[8]={0,0,0x0B,0,0,0,0,0}; send(ekb,r,8); u8 z[8]={0}; send(ekb,z,8); }
+  mouse_dx=mouse_dy=0; if(ems2>=0){ u8 r[]={0x01,4,0xFE,0}; send(ems2,r,4); }
+  chk("keyboard behind the hub types 'h'; mouse behind the nested hub moves", !strcmp(kq,"h")&&mouse_dx==4&&mouse_dy==2&&mouse_btn==1);
+  M[MS2].present=0; M[B].cflag[2]=1; int dis=g_ndis; xhub_poll_ports();
+  chk("unplugging the nested mouse frees it and disables its slot only", ems2>=0&&!xhid_used[ems2]&&g_ndis==dis+1&&g_disabled[g_ndis-1]==sMS2&&xhid_used[ekb]&&xhid_used[ems]&&ems3>=0&&xhid_used[ems3]);
+  int S=madd(5,0x4,1,3,3,0,0,0,0,0,64); (void)S; M[A].cflag[4]=1; xhub_poll_ports();
+  chk("USB stick plugged into hub port 4 is mounted (route 4)", msd_ok&&msd_route==4&&msd_depth==1&&ufat_ok);
+  M[MS2].present=1; M[B].cflag[2]=1; xhub_poll_ports(); int sMS2b=slot_of(MS2);
+  chk("re-plugging the nested mouse sets it up again with a new slot", sMS2b>0&&sMS2b!=sMS2&&entry_slot(sMS2b,3)>=0);
+  dis=g_ndis; xhid_remove_port(5);
+  int anyh=0; for(int h=0;h<XHUB_MAX;h++)anyh|=xhub[h].used; int anyr=0; for(int r=0;r<XHID_MAX;r++)anyr|=xreg_hub[r];
+  chk("unplugging the hub frees everything below it: 4 entries, 2 hubs, the stick", !xhid_used[ekb]&&!xhid_used[ems]&&!xhid_used[ems3]&&!anyh&&!anyr&&!msd_ok&&g_ndis==dis+7);
+  g_model_on=0; }
+
+int main(void){
+  if(mmap((void*)0x09A10000,0x120000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)!=(void*)0x09A10000){ printf("map fail\n"); return 2; }
+  xhci_base=(u32)(u64)0; static u8* fake; fake=mmap((void*)0x20000000,0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0); xhci_base=0x20000000; xhci_op=0x20000080;
+  *(u32*)(u64)(xhci_base+0x14)=0x2000; *(u32*)(u64)(xhci_base+0x18)=0x3000;
+  printf("== 1. polling interval encoding (xHCI spec 6.2.3.6) ==\n");
+  chk("full-speed bInterval 1 ms -> 3 (1 ms)", xh_interval(1,1)==3);
+  chk("full-speed bInterval 10 ms -> 6 (8 ms, was 128 ms before)", xh_interval(1,10)==6);
+  chk("full-speed bInterval 255 -> 10 (128 ms, never invalid)", xh_interval(1,255)==10);
+  chk("low-speed bInterval 8 -> 6", xh_interval(2,8)==6);
+  chk("high-speed bInterval 4 -> 3 (exponent form)", xh_interval(3,4)==3);
+  printf("== 2. Logitech Unifying receiver (keyboard + mouse + pairing channel) ==\n");
+  xhid_reset(); g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(0,1); g_nreq=0; g_ndb=0;
+  int n=xhci_hid_enum(0);
+  chk("keyboard AND mouse set up (2 interfaces), pairing channel skipped", n==2&&entry_for(3)>=0&&entry_for(5)>=0&&entry_for(7)<0);
+  chk("one Configure Endpoint adds both endpoints (add flags slot+DCI3+DCI5)", g_cfg_done&&*(u32*)(g_cfg_snapshot+4)==((1u)|(1u<<3)|(1u<<5)));
+  chk("slot context: last valid endpoint = DCI 5", ((*(u32*)(g_cfg_snapshot+32))>>27)==5);
+  chk("keyboard endpoint: interval 6 (8 ms), max packet 8, interrupt IN", ((epctx(3,0)>>16)&0xFF)==6&&(epctx(3,1)>>16)==8&&((epctx(3,1)>>3)&7)==7);
+  chk("mouse endpoint: interval 4 (2 ms)", ((epctx(5,0)>>16)&0xFF)==4);
+  chk("average TRB length set (Intel controllers require it)", (epctx(3,4)&0xFFFF)==8&&(epctx(5,4)&0xFFFF)==8);
+  chk("each endpoint has its own transfer ring", (epctx(3,2)&~0xFu)!=(epctx(5,2)&~0xFu));
+  int sp0=0,sp1=0,si=0; for(int i=0;i<g_nreq;i++){ if(g_req[i][0]==0x0B&&g_req[i][1]==0&&g_req[i][2]==0)sp0++; if(g_req[i][0]==0x0B&&g_req[i][1]==1&&g_req[i][2]==1)sp1++; if(g_req[i][0]==0x0A&&g_req[i][2]==0)si++; }
+  chk("keyboard: boot protocol + SET_IDLE; mouse: report protocol from its descriptor", sp0==1&&sp1==1&&si==1);
+  chk("both endpoints armed (doorbells for DCI 3 and 5)", g_ndb==2*XHID_INFLIGHT);
+  int kb=entry_for(3), ms=entry_for(5); int slot=xhid_slot[kb];
+  printf("== 3. routing: same receiver, two interfaces ==\n");
+  volatile u8* kbuf=(volatile u8*)(u64)xhid_dbuf[kb]; volatile u8* mbuf=(volatile u8*)(u64)xhid_dbuf[ms];
+  kqn=0; kq[0]=0; u8 r1[8]={0,0,0x0B,0,0,0,0,0}; memcpy((void*)kbuf,r1,8); u8 m1[8]={2,0x01,0x00,0x05,0xD0,0xFF,0,0}; memcpy((void*)mbuf,m1,8);
+  mouse_dx=mouse_dy=0; event(slot,3,1); event(slot,5,1); flush();
+  chk("keyboard report -> key 'h' typed (not treated as mouse)", !strcmp(kq,"h"));
+  chk("mouse report -> moved +5,+3 with left button (not typed)", mouse_dx==5&&mouse_dy==3&&mouse_btn==1);
+  printf("== 4. keyboard: repeat, special keys, Caps Lock ==\n");
+  { u8 up[8]={0}; memcpy((void*)kbuf,up,8); event(slot,3,1); flush(); }
+  kqn=0; kq[0]=0; g_ticks=1000; u8 r2[8]={0,0,0x50,0,0,0,0,0}; memcpy((void*)kbuf,r2,8); event(slot,3,1); flush();
+  chk("pressing Left arrow pushes code 17 (same as PS/2)", kq[0]==17);
+  g_ticks=1040; flush(); chk("no repeat before 500 ms", kqn==1);
+  g_ticks=1051; flush(); g_ticks=1052; flush(); g_ticks=1054; flush(); g_ticks=1057; flush();
+  chk("repeats after 500 ms, then every 30 ms (ticks 51, 54, 57) while held", kqn==4&&kq[1]==17&&kq[2]==17&&kq[3]==17);
+  u8 r3[8]={0}; memcpy((void*)kbuf,r3,8); event(slot,3,1); flush(); int before=kqn; g_ticks=1200; flush();
+  chk("releasing the key stops the repeat", kqn==before);
+  kqn=0; u8 esc[8]={0,0,0x29,0,0,0,0,0}; memcpy((void*)kbuf,esc,8); event(slot,3,1); flush(); memcpy((void*)kbuf,r3,8); event(slot,3,1); flush();
+  u8 caps[8]={0,0,0x39,0,0,0,0,0}; memcpy((void*)kbuf,caps,8); event(slot,3,1); flush(); memcpy((void*)kbuf,r3,8); event(slot,3,1); flush();
+  u8 a[8]={0,0,0x04,0,0,0,0,0}; memcpy((void*)kbuf,a,8); event(slot,3,1); flush(); memcpy((void*)kbuf,r3,8); event(slot,3,1); flush();
+  u8 kp[8]={0,0,0x5D,0x57,0,0,0,0}; memcpy((void*)kbuf,kp,8); event(slot,3,1); flush(); memcpy((void*)kbuf,r3,8); event(slot,3,1); flush();
+  chk("Escape=27, Caps Lock makes 'a' -> 'A', keypad 5 and +", kq[0]==27&&kq[1]=='A'&&kq[2]=='5'&&kq[3]=='+'&&kqn==4);
+  kcaps=0;
+  { u8 wr[8]={0x08,0,0x15,0,0,0,0,0}; memcpy((void*)kbuf,wr,8); event(slot,3,1); flush(); chk("USB Win key reaches the desktop (Win+R opens the Terminal)", kdown[0x5B]==1&&kdown[0x13]==1);
+    u8 up[8]={0}; memcpy((void*)kbuf,up,8); event(slot,3,1); flush(); chk("releasing Win clears it", kdown[0x5B]==0&&kdown[0x13]==0); kqn=0; kq[0]=0; }
+  u8 roll[8]={0,0,1,1,1,1,1,1}; kqn=0; memcpy((void*)kbuf,roll,8); event(slot,3,1); flush(); chk("too-many-keys (rollover) report ignored", kqn==0);
+  printf("== 5. receiver with a vendor channel first + alternate setting ==\n");
+  g_conf=VENDORFIRST; g_conflen=sizeof VENDORFIRST; plug(1,1); g_cfg_done=0;
+  int n2=xhci_hid_enum(1); int ms2=entry_on(1,5);
+  chk("only the mouse is set up (vendor channel + alt setting skipped)", n2==1&&ms2>=0&&xhid_iskbd[ms2]==0);
+  chk("its bInterval 10 ms became interval 6 (8 ms)", ((epctx(5,0)>>16)&0xFF)==6);
+  printf("== 6. USB stick on a HID path ==\n");
+  g_conf=STICK; g_conflen=sizeof STICK; plug(2,3); int dis0=g_ndis;
+  chk("rejected, and its slot is disabled again (no leak)", xhci_hid_enum(2)==0&&g_ndis==dis0+1);
+  printf("== 7. unplugging the receiver ==\n");
+  int s1=xhid_slot[kb]; g_ticks=5000; memcpy((void*)kbuf,r2,8); event(s1,3,1); flush(); xhid_remove_port(0);
+  chk("its keyboard and mouse entries are freed, slot disabled", !xhid_used[kb]&&!xhid_used[ms]&&g_disabled[g_ndis-1]==s1);
+  int kq0=kqn; g_ticks=6000; flush(); chk("a key held at unplug does not keep repeating", kqn==kq0);
+  chk("the other receiver's mouse is untouched", xhid_used[ms2]);
+  printf("== 8. capacity ==\n");
+  g_conf=UNIFYING; g_conflen=sizeof UNIFYING; int added=0; for(int p=3;p<9;p++){ plug(p,1); added+=xhci_hid_enum(p); }
+  int used=0; for(int i=0;i<XHID_MAX;i++)used+=xhid_used[i];
+  chk("fills every entry without overflowing", used==XHID_MAX);
+  int hi=0; for(int i=0;i<XHID_MAX;i++) if(xhid_used[i]&&XHID_DATABUF(i)+0x1000>0x09AD0000u)hi=1;
+  chk("all HID memory stays below the USB-stick buffers at 0x09AD0000", !hi);
+  report_protocol_tests();
+  more_mouse_tests();
+  stall_and_queue_tests();
+  multi_controller_tests();
+  hub_tests();
+  printf("%s\n",ok?"ALL PASS":"FAILURES"); return !ok; }

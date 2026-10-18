@@ -1,24 +1,25 @@
-#define RTW_EFUSE_PHY_SZ   512
-#define RTW_EFUSE_LOG_SZ   512
-#define RTW_EFUSE_PROT_SZ  96
-static u8 rtw_phymap[RTW_EFUSE_PHY_SZ];
-static u8 rtw_logmap[RTW_EFUSE_LOG_SZ];
-static int rtw_efuse_valid=0;
+#include "include/nvx/base.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/wifi/rtw_efuse.h"
 
-static u8  rtw_r8 (u32 m,u32 o){ return *(volatile u8* )(u64)(m+o); }
-static u16 rtw_r16(u32 m,u32 o){ return *(volatile u16*)(u64)(m+o); }
-static u32 rtw_r32(u32 m,u32 o){ return *(volatile u32*)(u64)(m+o); }
-static void rtw_w8 (u32 m,u32 o,u8  v){ *(volatile u8* )(u64)(m+o)=v; }
-static void rtw_w16(u32 m,u32 o,u16 v){ *(volatile u16*)(u64)(m+o)=v; }
-static void rtw_w32(u32 m,u32 o,u32 v){ *(volatile u32*)(u64)(m+o)=v; }
 
-static void rtw_delay_us(u32 us); static void ui_pump(void); static void wpa_do_join(const char* ss,const char* pw);
+u8 rtw_phymap[RTW_EFUSE_PHY_SZ];
+u8 rtw_logmap[RTW_EFUSE_LOG_SZ];
+int rtw_efuse_valid=0;
+
+u8  rtw_r8 (u32 m,u32 o){ return *(volatile u8* )(u64)(m+o); }
+u16 rtw_r16(u32 m,u32 o){ return *(volatile u16*)(u64)(m+o); }
+u32 rtw_r32(u32 m,u32 o){ return *(volatile u32*)(u64)(m+o); }
+void rtw_w8 (u32 m,u32 o,u8  v){ *(volatile u8* )(u64)(m+o)=v; }
+void rtw_w16(u32 m,u32 o,u16 v){ *(volatile u16*)(u64)(m+o)=v; }
+void rtw_w32(u32 m,u32 o,u32 v){ *(volatile u32*)(u64)(m+o)=v; }
+
 static void rtw_efuse_prep(u32 m){
     u32 v=rtw_r32(m,0x0034); v&=~((1u<<8)|(1u<<9)); rtw_w32(m,0x0034,v);
     u8 ldo=rtw_r8(m,0x0037); ldo&=~(1u<<7); rtw_w8(m,0x0037,ldo);
 }
 
-static int rtw_efuse_dump_phy(u32 m,u8* map,int size){
+int rtw_efuse_dump_phy(u32 m,u8* map,int size){
     int bad=0;
     rtw_efuse_prep(m);
     u32 c=rtw_r32(m,0x0030);
@@ -36,7 +37,7 @@ static int rtw_efuse_dump_phy(u32 m,u8* map,int size){
     return bad;
 }
 
-static int rtw_efuse_logical(const u8* phy,int physize,int protect,u8* log,int logsize){
+int rtw_efuse_logical(const u8* phy,int physize,int protect,u8* log,int logsize){
     for(int i=0;i<logsize;i++)log[i]=0xFF;
     int pi=0, limit=physize-protect;
     while(pi<limit){
@@ -66,15 +67,14 @@ static int rtw_efuse_logical(const u8* phy,int physize,int protect,u8* log,int l
     return pi;
 }
 
-static void rtw_hexline(const u8* p,int off,int n,char* out){
+void rtw_hexline(const u8* p,int off,int n,char* out){
     char* q=out;
     q=scopy(q,"  "); q=hx(q,(u32)off,3); q=scopy(q,"  ");
     for(int i=0;i<n;i++){ q=hx(q,p[off+i],2); *q++=' '; if(i==7)*q++=' '; }
     *q=0;
 }
 
-typedef struct { u32 off; u8 sz; u32 val; } rtw_regw;
-static rtw_regw rtw_mactbl[512];
+rtw_regw rtw_mactbl[512];
 static int rtw_mactbl_n=0;
 
 static int rtw_hexval(const char* s,int n,u32* out){
@@ -91,7 +91,7 @@ static int rtw_hexval(const char* s,int n,u32* out){
     *out=v; return 1;
 }
 
-static int rtw_tbl_parse(const char* txt,int len){
+int rtw_tbl_parse(const char* txt,int len){
     rtw_mactbl_n=0;
     int i=0;
     while(i<len && rtw_mactbl_n<512){
@@ -118,14 +118,14 @@ static int rtw_tbl_parse(const char* txt,int len){
     return rtw_mactbl_n;
 }
 
-static u32 rtw_rdsz(u32 m,u32 o,u8 sz){
+u32 rtw_rdsz(u32 m,u32 o,u8 sz){
     if(sz==1)return rtw_r8(m,(u16)o);
     if(sz==2)return rtw_r16(m,(u16)o);
     return rtw_r32(m,(u16)o);
 }
-static void rtw_delay_us(u32 us){ if(us>200000u)us=200000u; for(u32 i=0;i<us;i++){ for(volatile int d=0;d<8;d++) io_wait(); } }
+void rtw_delay_us(u32 us){ if(us>200000u)us=200000u; for(u32 i=0;i<us;i++){ for(volatile int d=0;d<8;d++) io_wait(); } }
 #define RTW_RFA_SIPI 0xC90u
-static void rtw_rf_write_a(u32 m,u32 addr,u32 data){
+void rtw_rf_write_a(u32 m,u32 addr,u32 data){
     u32 daa=(((addr&0xFF)<<20)|(data&0x000FFFFFu))&0x0FFFFFFFu;
     rtw_w32(m,RTW_RFA_SIPI,daa);
     rtw_delay_us(13);

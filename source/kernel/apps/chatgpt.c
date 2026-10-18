@@ -1,3 +1,11 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/fmt.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/net/http.h"
+#include "include/nvx/gui/theme.h"
+#include "include/nvx/gui/wm.h"
+#include "include/nvx/apps/calculator.h"
+#include "include/nvx/apps/chatgpt.h"
 /* ================= ChatGPT app (talks to the Lovable AI backend over HTTPS) ================= */
 #define CG_HOST "id-preview--5b18dc3f-c2ca-42cf-a981-a226787c6564.lovable.app"
 #define CG_MAXMSG 24
@@ -31,7 +39,7 @@ static void cg_send(void){
     g_cg_busy=0;
 }
 static int g_cg_inx,g_cg_iny,g_cg_inw;   /* input box rect (for clicks) */
-static void chatgpt_draw(int i){
+void chatgpt_draw(int i){
     win_frame(i,"ChatGPT");
     int wx=WN[i].x, wy=WN[i].y+TITLEH, ww=WN[i].w, wh=WN[i].h-TITLEH;
     fill_rect(wx+1,wy,ww-2,wh-1,rgb(247,247,248));
@@ -68,16 +76,16 @@ static void chatgpt_draw(int i){
     /* send button */
     int sbx=wx+ww-78, sby=wy+wh-44; fill_round(sbx,sby,64,34,8,15, g_cg_busy?rgb(180,200,190):rgb(16,163,127)); dstr(sbx+14,sby+10,"Send",rgb(255,255,255),1);
 }
-static void chatgpt_key(char c){
+void chatgpt_key(char c){
     if(c=='\r'||c=='\n'){ cg_send(); return; }
     if(c==8){ if(g_cg_inlen>0)g_cg_in[--g_cg_inlen]=0; return; }
     if(c>=32 && c<127 && g_cg_inlen<255){ g_cg_in[g_cg_inlen++]=c; g_cg_in[g_cg_inlen]=0; }
 }
-static void chatgpt_click(int px,int py){
+void chatgpt_click(int px,int py){
     int wx=WN[W_CHATGPT].x, wy=WN[W_CHATGPT].y+TITLEH, ww=WN[W_CHATGPT].w, wh=WN[W_CHATGPT].h-TITLEH;
     int sbx=wx+ww-78, sby=wy+wh-44; if(in_rect(px,py,sbx,sby,64,34)){ cg_send(); return; }
 }
-static void calc_draw(int i){
+void calc_draw(int i){
     win_frame(i,"Calculator");
     int x=WN[i].x+18,y=WN[i].y+TITLEH+16,w=WN[i].w-36;
     fill_round(x,y,w,52,8,15,rgb(24,28,38));
@@ -90,5 +98,5 @@ static void calc_draw(int i){
         if(L[0]=='='||L[0]=='C') bg=ACC; else if(L[0]=='+'||L[0]=='-'||L[0]=='*'||L[0]=='/'||L[0]=='<') bg=rgb(80,90,112);
         fill_round(bx,by,gw,gh,7,15,bg); dstr_ctr(bx+gw/2,by+(gh-16)/2,L,rgb(255,255,255),2); }
 }
-static void calc_click(int px,int py){ for(int k=0;k<16;k++) if(in_rect(px,py,cb_x[k],cb_y[k],cb_w,cb_h)){ calc_press(CBL[k]); return; } }
+void calc_click(int px,int py){ for(int k=0;k<16;k++) if(in_rect(px,py,cb_x[k],cb_y[k],cb_w,cb_h)){ calc_press(CBL[k]); return; } }
 

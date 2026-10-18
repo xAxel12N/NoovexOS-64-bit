@@ -17,7 +17,7 @@ int main(void){
     printf("== utils ==\n");
     printf("next_pow2(1000)=%u popcount(255)=%d clz(1)=%d\n",next_pow2(1000),popcount32(255),clz32(1));
     char rom[16]; int_to_roman(2024,rom); printf("2024 roman=%s back=%d\n",rom,roman_to_int(rom));
-    char com[32]; fmt_commas(1234567,com); char by[24]; fmt_bytes(by,1536000); printf("commas=%s bytes(1536000)=%s\n",com,by);
+    char com[32]; fmt_commas(com,1234567); char by[24]; fmt_bytes(by,1536000); printf("commas=%s bytes(1536000)=%s\n",com,by);
     printf("day_of_week(2026,9,29)=%s leap(2024)=%d levenshtein(kitten,sitting)=%d\n",weekday_name(day_of_week(2026,9,29)),is_leap_year(2024),str_levenshtein("kitten","sitting"));
     printf("valid_ipv4(192.168.1.1)=%d valid_email(a@b.co)=%d luhn(4532015112830366)=%d\n",valid_ipv4("192.168.1.1"),valid_email("a@b.co"),luhn_check("4532015112830366"));
     printf("hsv->rgb(120,255,255)=%06x lerp_color=%06x\n",hsv_to_rgb(120,255,255),rgb_lerp(0xFF0000,0x0000FF,128));

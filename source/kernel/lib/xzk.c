@@ -1,0 +1,5 @@
+#include "third_party/xzembedded/xz_crc32.c"
+#include "third_party/xzembedded/xz_crc64.c"
+#include "third_party/xzembedded/xz_dec_stream.c"
+#include "third_party/xzembedded/xz_dec_lzma2.c"
+#include "third_party/xzembedded/xz_dec_bcj.c"

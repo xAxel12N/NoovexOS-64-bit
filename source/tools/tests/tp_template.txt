@@ -1,0 +1,287 @@
+@@HDR@@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
+volatile u64 g_ticks;
+static u64 cpu_irq_save(void){ return 0; } static void cpu_irq_on(void){} static void cpu_irq_restore(u64 f){ (void)f; }
+static volatile int mouse_dx,mouse_dy,mouse_evt,mouse_btn,mouse_rbtn,mouse_mid,mouse_scroll;
+static void io_wait(void){}
+static void klog(const char* s){ (void)s; }
+static void* kmalloc(unsigned long n){ return malloc(n); }
+static u32 pci_cfg(int b,int d,int f,int o){ (void)b;(void)d;(void)f;(void)o; return 0xFFFFFFFFu; }
+static void pci_cfgw(int b,int d,int f,int o,u32 v){ (void)b;(void)d;(void)f;(void)o;(void)v; }
+static int g_cpu_amd=1;
+static void cpuid(u32 lf,u32* a,u32* b,u32* c,u32* d){ (void)lf; *a=0; if(g_cpu_amd){ *b=0x68747541u; *d=0x69746E65u; *c=0x444D4163u; } else { *b=0x756E6547u; *d=0x49656E69u; *c=0x6C65746Eu; } }
+static u64 acpi_find_rsdp(void){ return 0; }
+static u32 acpi_r32(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
+static u64 acpi_r64(const u8* p){ return (u64)acpi_r32(p)|((u64)acpi_r32(p+4)<<32); }
+static const u8* acpi_tbl_ok(u64 a){ (void)a; return 0; }
+
+#define CTRL_BASE 0xFEDC3000ULL
+#define GPIO_BASE 0xFED81500ULL
+static u32 g_gpio_reg[256];
+typedef struct { u32 con, tar, enable, raw, abrt, ss_h, ss_l, fs_h, fs_l; u8 rx[4096]; int rxh, rxt; u8 w[256]; int nw; int nack; int inxfer; u32 xfers; } simdw;
+static simdw S;
+static u8 g_rdesc[1024]; static int g_rdlen;
+static u8 g_queue[64][64]; static int g_qlen[64], g_qh, g_qt; static u8 g_lastrep[64]; static int g_lastlen;
+static int g_reset_pending, g_power_on, g_mode_set=-1, g_sw_set=-1, g_dev_addr=0x2C, g_stale_mode=1, g_resets;
+static void gpio_update(void){ int asserted=g_reset_pending||g_qh!=g_qt; g_gpio_reg[9]=asserted?0u:(1u<<16); }
+static void dev_push(const u8* r,int n){ memcpy(g_queue[g_qt],r,(size_t)n); g_qlen[g_qt]=n; g_qt=(g_qt+1)%64; gpio_update(); }
+static const u8 g_desc[30]={30,0,0x00,0x01,0,0,0x21,0,0x22,0,32,0,0x25,0,0,0,0x24,0,0x23,0,0xCB,0x06,0x44,0xCE,1,0,0,0,0,0};
+static void rx_put(u8 v){ S.rx[S.rxt]=v; S.rxt=(S.rxt+1)%4096; }
+static int g_rd_index; static u8 g_rd_src[600]; static int g_rd_n;
+static int g_kind=0, g_el_pattern=1, g_el_mode=-1, g_el_wake=0, g_el_power=-1, g_el_clickpad=1;
+static u16 el_reg16(int reg){ switch(reg){ case 0x0100: return (u16)(g_el_pattern<<8); case 0x0101: return 0x002B; case 0x0102: return 0x0004; case 0x0103: return 0x0E00; case 0x0104: return (u16)((g_el_clickpad?0x10:0)|(0x05<<8));
+    case 0x0105: return 0x1C2E; case 0x0106: return 3024; case 0x0107: return 1768; case 0x0108: return 0x0202; case 0x0110: return 0x000E; case 0x0307: return 0x0001; } return 0xFFFF; }
+static void dev_begin_read(void){
+    g_rd_index=0; g_rd_n=0;
+    if(g_kind==1&&S.nw==2){ int reg=S.w[0]|(S.w[1]<<8);
+        if(reg==0x0001){ for(int i=0;i<30;i++)g_rd_src[i]=(u8)(i+1); g_rd_n=30; }
+        else if(reg==0x0002){ for(int i=0;i<158;i++)g_rd_src[i]=(u8)i; g_rd_n=158; }
+        else { u16 v=el_reg16(reg); g_rd_src[0]=(u8)v; g_rd_src[1]=(u8)(v>>8); g_rd_n=2; } return; }
+    if(S.nw==2){ int reg=S.w[0]|(S.w[1]<<8);
+        if(reg==0x20){ memcpy(g_rd_src,g_desc,30); g_rd_n=30; ((u8*)g_rd_src)[4]=(u8)g_rdlen; ((u8*)g_rd_src)[5]=(u8)(g_rdlen>>8); }
+        else if(reg==0x21){ memcpy(g_rd_src,g_rdesc,(size_t)g_rdlen); g_rd_n=g_rdlen; } return; }
+    if(S.nw==0){
+        if(g_reset_pending){ g_rd_src[0]=0; g_rd_src[1]=0; g_rd_n=2; g_reset_pending=0; gpio_update(); return; }
+        if(g_qh!=g_qt){ memcpy(g_rd_src,g_queue[g_qh],(size_t)g_qlen[g_qh]); g_rd_n=g_qlen[g_qh]; memcpy(g_lastrep,g_rd_src,(size_t)g_rd_n); g_lastlen=g_rd_n; g_qh=(g_qh+1)%64; gpio_update(); return; }
+        if(g_stale_mode&&g_lastlen){ memcpy(g_rd_src,g_lastrep,(size_t)g_lastlen); g_rd_n=g_lastlen; return; }
+        g_rd_src[0]=0; g_rd_src[1]=0; g_rd_n=2; return; }
+    if(S.nw>=7&&(S.w[0]|(S.w[1]<<8))==0x24&&S.w[3]==0x02){ int rid=S.w[2]&15; if(rid==2){ g_rd_src[0]=4; g_rd_src[1]=0; g_rd_src[2]=2; g_rd_src[3]=0x25; g_rd_n=4; } } }
+static void dev_end(void){
+    if(g_kind==1){ if(S.nw==4){ int reg=S.w[0]|(S.w[1]<<8), val=S.w[2]|(S.w[3]<<8);
+            if(reg==0x0005&&val==0x0100){ g_reset_pending=1; g_resets++; gpio_update(); } else if(reg==0x0005&&val==0x0800)g_el_wake=1; else if(reg==0x0300)g_el_mode=val; else if(reg==0x0307)g_el_power=val; }
+        S.nw=0; S.inxfer=0; return; }
+    if(S.nw>=4&&(S.w[0]|(S.w[1]<<8))==0x24){ int op=S.w[3];
+        if(op==0x08)g_power_on=S.w[2]==0;
+        else if(op==0x01){ g_reset_pending=1; g_resets++; gpio_update(); }
+        else if(op==0x03&&S.nw>=9){ int rid=S.w[2]&15; int o=4; if(rid==15)rid=S.w[o++]; o+=2; o+=2; int r2=S.w[o++]; if(r2==3)g_mode_set=S.w[o]; else if(r2==4)g_sw_set=S.w[o]; } }
+    S.nw=0; S.inxfer=0; }
+static u32 sim_rd(u64 base,u32 o){
+    if(base!=CTRL_BASE)return 0xFFFFFFFFu;
+    switch(o){ case 0xFC: return 0x44570140u; case 0xF4: return (15u<<16)|(15u<<8); case 0x9C: return S.enable&1; case 0x6C: return S.enable;
+        case 0x74: return 0; case 0x78: return (u32)((S.rxt-S.rxh+4096)%4096); case 0x34: return S.raw; case 0x80: return S.abrt;
+        case 0x54: { u32 r=S.raw; S.raw&=~(1u<<6); return r; } case 0x40: return 0; case 0x70: return 0;
+        case 0x10: { u8 v=S.rx[S.rxh]; if(S.rxh!=S.rxt)S.rxh=(S.rxh+1)%4096; return v; }
+        case 0x14: return S.ss_h; case 0x18: return S.ss_l; case 0x1C: return S.fs_h; case 0x20: return S.fs_l; case 0x00: return S.con; }
+    return 0; }
+static void sim_wr(u64 base,u32 o,u32 v){
+    if(base!=CTRL_BASE)return;
+    switch(o){ case 0x00: S.con=v; break; case 0x04: S.tar=v; break; case 0x6C: S.enable=v; if(!v){ S.nw=0; S.inxfer=0; S.nack=0; S.rxh=S.rxt=0; } break;
+        case 0x14: S.ss_h=v; break; case 0x18: S.ss_l=v; break; case 0x1C: S.fs_h=v; break; case 0x20: S.fs_l=v; break;
+        case 0x10: {
+            if(!S.inxfer){ S.inxfer=1; S.nw=0; S.nack=((S.tar&0x7F)!=(u32)g_dev_addr); S.xfers++; g_rd_n=-1; }
+            if(S.nack){ S.raw|=1u<<6; S.abrt=1; if(v&(1u<<9)){ S.inxfer=0; } break; }
+            if(v&0x100u){ if(g_rd_n<0)dev_begin_read(); rx_put(g_rd_index<g_rd_n?g_rd_src[g_rd_index]:0xFF); g_rd_index++; }
+            else if(S.nw<256)S.w[S.nw++]=(u8)v;
+            if(v&(1u<<9))dev_end();
+            break; } }
+}
+static void sim_reset(void){ g_el_mode=-1; g_el_wake=0; g_el_power=-1; memset(&S,0,sizeof S); g_qh=g_qt=0; g_lastlen=0; g_reset_pending=0; g_mode_set=-1; g_sw_set=-1; g_resets=0; gpio_update(); }
+
+static const u8 FING[]={0x05,0x0D,0x09,0x22,0xA1,0x02, 0x15,0x00,0x25,0x01,0x09,0x47,0x09,0x42,0x95,0x02,0x75,0x01,0x81,0x02, 0x95,0x01,0x75,0x03,0x25,0x05,0x09,0x51,0x81,0x02, 0x75,0x01,0x95,0x03,0x81,0x03,
+    0x05,0x01,0x15,0x00,0x26,0xAF,0x04,0x75,0x10,0x55,0x0E,0x65,0x11,0x09,0x30,0x35,0x00,0x46,0xE8,0x03,0x95,0x01,0x81,0x02, 0x46,0x58,0x02,0x26,0xBB,0x02,0x09,0x31,0x81,0x02, 0xC0};
+static void build_rdesc(int nfing){
+    int n=0; const u8 h[]={0x05,0x0D,0x09,0x05,0xA1,0x01,0x85,0x01}; memcpy(g_rdesc+n,h,sizeof h); n+=sizeof h;
+    for(int f=0;f<nfing;f++){ memcpy(g_rdesc+n,FING,sizeof FING); n+=sizeof FING; }
+    const u8 t[]={0x05,0x0D,0x55,0x0C,0x66,0x01,0x10,0x47,0xFF,0xFF,0x00,0x00,0x27,0xFF,0xFF,0x00,0x00,0x75,0x10,0x95,0x01,0x09,0x56,0x81,0x02,
+        0x09,0x54,0x25,0x7F,0x95,0x01,0x75,0x08,0x81,0x02, 0x05,0x09,0x09,0x01,0x25,0x01,0x75,0x01,0x95,0x01,0x81,0x02,0x95,0x07,0x81,0x03,
+        0x05,0x0D,0x85,0x02,0x09,0x55,0x09,0x59,0x75,0x04,0x95,0x02,0x25,0x0F,0xB1,0x02, 0xC0,
+        0x05,0x0D,0x09,0x0E,0xA1,0x01,0x85,0x03,0x09,0x22,0xA1,0x02,0x09,0x52,0x15,0x00,0x25,0x0A,0x75,0x08,0x95,0x01,0xB1,0x02,0xC0,
+        0x09,0x22,0xA1,0x00,0x85,0x04,0x09,0x57,0x09,0x58,0x75,0x01,0x95,0x02,0x25,0x01,0xB1,0x02,0x95,0x06,0xB1,0x03,0xC0,0xC0,
+        0x05,0x01,0x09,0x02,0xA1,0x01,0x85,0x05,0x09,0x01,0xA1,0x00,0x05,0x09,0x19,0x01,0x29,0x02,0x15,0x00,0x25,0x01,0x95,0x02,0x75,0x01,0x81,0x02,0x95,0x01,0x75,0x06,0x81,0x03,
+        0x05,0x01,0x09,0x30,0x09,0x31,0x15,0x81,0x25,0x7F,0x75,0x08,0x95,0x02,0x81,0x06,0xC0,0xC0};
+    memcpy(g_rdesc+n,t,sizeof t); n+=sizeof t; g_rdlen=n; }
+static u8 g_kq[256]; static int g_kqh, g_kqt; static int g_k_aux_next, g_k_cfg_next; static u8 g_k_cfg=0x47; static u8 g_hist[64]; static int g_hn; static int g_etp_dev=4; static u8 g_log[512]; static int g_logn;
+static void kq_put(u8 v){ g_kq[g_kqt]=v; g_kqt=(g_kqt+1)&255; }
+static void aux_byte(u8 c){
+    if(g_logn<512)g_log[g_logn++]=c;
+    if(g_hn<64)g_hist[g_hn++]=c; else { memmove(g_hist,g_hist+1,63); g_hist[63]=c; }
+    kq_put(0xFA);
+    if(c==0xE9&&!(g_hn>=2&&(g_hist[g_hn-2]==0xE8||g_hist[g_hn-2]==0xF3))){
+        u8 r[3]={0,0,0}; int h=g_hn-1;
+        if(h>=3&&g_hist[h-1]==0xE6&&g_hist[h-2]==0xE6&&g_hist[h-3]==0xE6){ r[0]=0x3C; r[1]=0x03; r[2]=0xC8; }
+        else if(h>=9&&g_hist[h-9]==0xE6&&g_hist[h-8]==0xE8&&g_hist[h-6]==0xE8&&g_hist[h-4]==0xE8&&g_hist[h-2]==0xE8){ int q=(g_hist[h-7]<<6)|(g_hist[h-5]<<4)|(g_hist[h-3]<<2)|g_hist[h-1];
+            if(q==0x01){ if(g_etp_dev==4){ r[0]=0x46; r[1]=0x1F; r[2]=0x00; } else { r[0]=0x45; r[1]=0x0F; r[2]=0x01; } } }
+        else if(h>=2&&g_hist[h-2]==0xF8){ int q=g_hist[h-1];
+            if(q==0x02){ r[0]=0x01; r[1]=0x10; r[2]=0x0C; } else if(q==0x00){ r[0]=0x7C; r[1]=0x00; r[2]=0x40; } else if(q==0x04){ r[0]=0x00; r[1]=0x22; r[2]=0x00; } }
+        kq_put(r[0]); kq_put(r[1]); kq_put(r[2]); } }
+static u8 inb(u16 port){ if(port==0x64)return (u8)((g_kqh!=g_kqt)?0x21:0x00); if(port==0x60){ u8 v=0; if(g_kqh!=g_kqt){ v=g_kq[g_kqh]; g_kqh=(g_kqh+1)&255; } return v; } return 0xFF; }
+static void outb(u16 port,u8 v){ if(port==0x64){ if(v==0xD4)g_k_aux_next=1; else if(v==0x20)kq_put(g_k_cfg); else if(v==0x60)g_k_cfg_next=1; return; }
+    if(port==0x60){ if(g_k_cfg_next){ g_k_cfg=v; g_k_cfg_next=0; return; } if(g_k_aux_next){ g_k_aux_next=0; aux_byte(v); } } }
+static int g_mbytes=3;
+static int log_has(const u8* seq,int n){ for(int i=0;i+n<=g_logn;i++){ int m=1; for(int k=0;k<n;k++) if(g_log[i+k]!=seq[k]){ m=0; break; } if(m)return 1; } return 0; }
+
+static void aml_load_from_acpi(void);
+@@TEST@@
+u64 acpi_hi_map(u64 pa){ return pa; }
+int g_lap_tp_off=0, g_syn_ready=0;
+u64 hr_ns(void){ return (u64)g_ticks*10000000ULL; }
+int igp_setup(const char* g,int pin,int al){ (void)g; (void)pin; (void)al; return 0; }
+void igp_sample(void){}
+void igp_learn(int rep){ (void)rep; }
+int igp_ready(void){ return 0; }
+int igp_asserted(void){ return 1; }
+int syn_detect(void){ return 0; }
+void syn_irq_byte(u8 v){ (void)v; }
+int tpa_crs(const char* dev,tpa_res* r){ (void)dev; memset(r,0,sizeof(*r)); return -1; }
+int tpa_dsm_hid(const char* dev){ (void)dev; return -1; }
+void tpa_power_on(const char* dev){ (void)dev; }
+int tpa_timing(const char* ctrl,u16 ss[3],u16 fs[3]){ (void)ctrl; (void)ss; (void)fs; return 0; }
+void tpa_lpss_init(u64 base){ (void)base; }
+u64 tpa_map(u64 base){ return base; }
+int tpa_hid(const char* dev,char* out){ (void)dev; out[0]=0; return -1; }
+static int g_nf=5; static u16 g_scan;
+typedef struct { int id, x, y, tip, conf; } fin;
+static void report(const fin* f,int n,int cc,int btn){
+    u8 r[64]; memset(r,0,sizeof r); int len=2+1+g_nf*5+2+1+1; r[0]=(u8)len; r[1]=0; r[2]=1; int o=3;
+    for(int k=0;k<g_nf;k++){ if(k<n){ r[o]=(u8)((f[k].conf?1:0)|(f[k].tip?2:0)|((f[k].id&7)<<2)); r[o+1]=(u8)f[k].x; r[o+2]=(u8)(f[k].x>>8); r[o+3]=(u8)f[k].y; r[o+4]=(u8)(f[k].y>>8); } o+=5; }
+    g_scan+=100; r[o]=(u8)g_scan; r[o+1]=(u8)(g_scan>>8); o+=2; r[o++]=(u8)cc; r[o++]=(u8)(btn?1:0);
+    dev_push(r,len); }
+static void step(void){ g_ticks++; tp_poll(); }
+static void reset_mouse(void){ mouse_dx=mouse_dy=mouse_scroll=0; mouse_btn=mouse_rbtn=mouse_mid=0; mouse_hscroll=0; g_gesture=0; }
+
+static u8 aml[4096]; static int an;
+static void ab(u8 v){ aml[an++]=v; }
+static void aseg(const char* s){ for(int i=0;i<4;i++)ab((u8)s[i]); }
+static int pk_open(void){ int p=an; an+=2; return p; }
+static void pk_close(int p){ int len=an-p; aml[p]=(u8)(0x40|(len&0x0F)); aml[p+1]=(u8)(len>>4); }
+static void astr(const char* s){ ab(0x0D); while(*s)ab((u8)*s++); ab(0); }
+static int dev_open(const char* nm){ ab(0x5B); ab(0x82); int p=pk_open(); aseg(nm); return p; }
+static void name_str(const char* n,const char* v){ ab(0x08); aseg(n); astr(v); }
+static void name_dw(const char* n,u32 v){ ab(0x08); aseg(n); ab(0x0C); ab((u8)v); ab((u8)(v>>8)); ab((u8)(v>>16)); ab((u8)(v>>24)); }
+static void buf_open(int* p,int* q){ ab(0x11); *p=pk_open(); ab(0x0B); *q=an; ab(0); ab(0); }
+static void buf_close(int p,int q){ ab(0x79); ab(0x00); int sz=an-(q+2); aml[q]=(u8)sz; aml[q+1]=(u8)(sz>>8); pk_close(p); }
+static void mem32(u32 base,u32 len){ ab(0x86); ab(9); ab(0); ab(1); for(int i=0;i<4;i++)ab((u8)(base>>(8*i))); for(int i=0;i<4;i++)ab((u8)(len>>(8*i))); }
+static void i2cres(u16 addr,u32 speed,const char* src){ int L=12-3+6+(int)strlen(src)+1; ab(0x8E); ab((u8)L); ab((u8)(L>>8)); ab(2); ab(0); ab(1); ab(2); ab(0); ab(0); ab(1); ab(6); ab(0);
+    for(int i=0;i<4;i++)ab((u8)(speed>>(8*i))); ab((u8)addr); ab((u8)(addr>>8)); while(*src)ab((u8)*src++); ab(0); }
+static void gpiores(u16 pin,const char* src){ int nl=(int)strlen(src)+1; int L=23+2+nl-3; ab(0x8C); ab((u8)L); ab((u8)(L>>8)); ab(1); ab(0); ab(1); ab(0); ab(0x02); ab(0); ab(0); ab(0); ab(0); ab(0); ab(0);
+    ab(23); ab(0); ab(0); ab((u8)(25)); ab(0); ab((u8)(25+nl)); ab(0); ab(0); ab(0); ab((u8)pin); ab((u8)(pin>>8)); while(*src)ab((u8)*src++); ab(0); }
+static int g_variant=0;
+static void build_amd_dsdt(void){
+    an=0; ab(0x10); int s=pk_open(); ab('\\'); aseg("_SB_");
+    int d=dev_open("I2CA"); name_str("_HID","AMDI0010"); { ab(0x08); aseg("_CRS"); int p,q; buf_open(&p,&q); mem32((u32)CTRL_BASE,0x1000); buf_close(p,q); } pk_close(d);
+    d=dev_open("GPIO"); name_str("_HID","AMDI0030"); { ab(0x08); aseg("_CRS"); int p,q; buf_open(&p,&q); mem32((u32)GPIO_BASE,0x400); buf_close(p,q); } pk_close(d);
+    d=dev_open("TPD0"); name_str("_HID","SYNA2B33"); name_dw("_CID",0x500CD041u);
+    { ab(0x14); int m=pk_open(); aseg("_CRS"); ab(0x08); ab(0xA4); int p,q; buf_open(&p,&q); i2cres(g_variant==1?0:0x2C,400000,"\\_SB.I2CA"); gpiores(9,"\\_SB.GPIO"); buf_close(p,q); pk_close(m); }
+    int c=dev_open("CHLD"); name_str("_HID","PNP0C50"); pk_close(c);
+    pk_close(d); pk_close(s); }
+static void build_intel_dsdt(void){
+    an=0; ab(0x10); int s=pk_open(); ab('\\'); ab(0x2E); aseg("_SB_"); aseg("PCI0");
+    int d=dev_open("I2C1"); name_dw("_ADR",0x00150001u); pk_close(d);
+    d=dev_open("TPD1"); name_str("_HID","ELAN0001"); name_str("_CID","PNP0C50");
+    { ab(0x08); aseg("SBFB"); int p,q; buf_open(&p,&q); i2cres(0x15,400000,"\\_SB.PCI0.I2C1"); buf_close(p,q); } pk_close(d);
+    pk_close(s); }
+static void aml_load_from_acpi(void){ g_amlt[0]=aml; g_amll[0]=(u32)an; g_amlt_n=1; }
+static int ok=1; static void chk(const char* w,int c){ printf("    %-66s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
+int main(void){
+    build_rdesc(5);
+    sim_reset(); build_amd_dsdt(); aml_load_from_acpi(); aml_scan_tables();
+    int td=-1; for(int i=0;i<g_amld_n;i++) if(g_amld[i].is_hidi2c&&!strcmp(g_amld[i].hid,"SYNA2B33"))td=i;
+    chk("AML: touchpad device found by EISA _CID PNP0C50", td>=0);
+    chk("AML: device path \\_SB_.TPD0, I2C address 0x2C at 400 kHz on \\_SB.I2CA", td>=0&&!strcmp(g_amln[g_amld[td].node].path,"\\_SB_.TPD0")&&g_amld[td].ni2c==1&&g_amld[td].i2c[0].addr==0x2C&&g_amld[td].i2c[0].speed==400000&&!strcmp(g_amld[td].i2c[0].ctrl,"\\_SB.I2CA"));
+    chk("AML: interrupt pin 9 active low on \\_SB.GPIO", td>=0&&g_amld[td].has_gpio&&g_amld[td].gpio.pin==9&&g_amld[td].gpio.active_low&&!strcmp(g_amld[td].gpio.ctrl,"\\_SB.GPIO"));
+    { int c=aml_find_dev("\\_SB.I2CA"); chk("AML: controller found by path, MMIO base from Memory32Fixed", c>=0&&g_amld[c].has_mem&&g_amld[c].mem_base==(u32)CTRL_BASE); }
+    { int ch=-1; for(int i=0;i<g_amld_n;i++) if(!strcmp(g_amln[g_amld[i].node].path,"\\_SB_.TPD0.CHLD"))ch=i; chk("AML: child device content is not mixed into its parent", ch>=0&&g_amld[ch].is_hidi2c&&g_amld[ch].ni2c==0); }
+    tp_init();
+    chk("touchpad set up from ACPI: precision touchpad mode", g_tp.ok&&g_tp.mode==1&&g_tp.from_acpi&&g_tp.addr==0x2C);
+    chk("HID descriptor: vendor 06CB product CE44, 5 finger slots", g_tp.d.vid==0x06CB&&g_tp.d.pid==0xCE44&&g_tp.lay.nfing==5);
+    chk("power on, reset, input mode 3 and surface/button switches sent", g_power_on&&g_resets==1&&g_mode_set==3&&g_sw_set==3);
+    chk("size from physical units: 100 x 60 mm", g_tp.lay.xum==100000&&g_tp.lay.yum==60000);
+    chk("interrupt pin used instead of blind polling", g_tp.gpio_ok&&g_tp.pin==9);
+    reset_mouse(); { fin f={1,300,300,1,1}; for(int i=0;i<12;i++){ f.x=300+i*12; report(&f,1,1,0); step(); } f.tip=0; report(&f,1,1,0); step(); step(); }
+    chk("one finger moving right 11 mm moves the pointer right only", mouse_dx>60&&mouse_dy==0&&!mouse_btn);
+    reset_mouse(); { int presses=0, released=0; fin f={2,600,350,1,1}; report(&f,1,1,0); step(); f.tip=0; report(&f,1,1,0); step(); presses=mouse_btn; step(); released=!mouse_btn; chk("tap: left button pressed, released on the next poll", presses&&released&&mouse_dx==0); }
+    reset_mouse(); { fin f[2]={{1,500,200,1,1},{2,700,200,1,1}}; report(f,2,2,0); step(); f[0].tip=f[1].tip=0; report(f,2,2,0); step(); int r=mouse_rbtn; step(); chk("two-finger tap: right click", r&&!mouse_rbtn&&!mouse_btn); }
+    reset_mouse(); { fin f[2]={{1,500,200,1,1},{2,700,200,1,1}}; for(int i=0;i<14;i++){ f[0].y=f[1].y=200+i*10; report(f,2,2,0); step(); } f[0].tip=f[1].tip=0; report(f,2,2,0); step(); step();
+        chk("two fingers moving down scroll (natural direction), no pointer motion, no click", mouse_scroll>=5&&mouse_dx==0&&mouse_dy==0&&!mouse_btn&&!mouse_rbtn); }
+    reset_mouse(); { fin f[2]={{1,500,200,1,1},{2,700,200,1,1}}; for(int i=0;i<14;i++){ f[0].x=f[1].x=500-i*12+(i?0:0); f[1].x=700-i*12; report(f,2,2,0); step(); } f[0].tip=f[1].tip=0; report(f,2,2,0); step(); step();
+        chk("two fingers moving left scroll horizontally", mouse_hscroll!=0&&mouse_scroll==0); }
+    reset_mouse(); { fin f[3]={{1,400,500,1,1},{2,550,500,1,1},{3,700,500,1,1}}; for(int i=0;i<14;i++){ for(int k=0;k<3;k++)f[k].y=500-i*20; report(f,3,3,0); step(); } int g=g_gesture; for(int k=0;k<3;k++)f[k].tip=0; report(f,3,3,0); step(); step();
+        chk("three-finger swipe up fires one gesture, no click", g==GES_SWIPE_UP&&!mouse_btn&&!mouse_mid&&mouse_dx==0); }
+    reset_mouse(); { fin f[3]={{1,900,300,1,1},{2,1000,300,1,1},{3,1100,300,1,1}}; for(int i=0;i<14;i++){ for(int k=0;k<3;k++)f[k].x=900+k*100-i*20; report(f,3,3,0); step(); } int g=g_gesture; for(int k=0;k<3;k++)f[k].tip=0; report(f,3,3,0); step(); step();
+        chk("three-finger swipe left", g==GES_SWIPE_LEFT); }
+    reset_mouse(); { fin f[2]={{1,550,300,1,1},{2,650,300,1,1}}; for(int i=0;i<12;i++){ f[0].x=550-i*20; f[1].x=650+i*20; report(f,2,2,0); step(); } int g=g_gesture; f[0].tip=f[1].tip=0; report(f,2,2,0); step(); int rb=mouse_rbtn; step();
+        chk("pinch out: zoom-in gesture, no scroll, no right-click when the fingers lift", g==GES_ZOOM_IN&&mouse_scroll==0&&!rb); }
+    reset_mouse(); { fin f={4,300,300,1,0}; for(int i=0;i<12;i++){ f.x=300+i*20; report(&f,1,1,0); step(); } f.tip=0; report(&f,1,1,0); step(); step();
+        chk("palm (confidence 0) is ignored: no motion, no tap", mouse_dx==0&&mouse_dy==0&&!mouse_btn); }
+    reset_mouse(); { fin f={5,300,300,1,1}; report(&f,1,1,1); step(); int l=mouse_btn; report(&f,1,1,0); step(); f.tip=0; report(&f,1,1,0); step(); step(); chk("clickpad press with one finger: left button held then released", l&&!mouse_btn&&!mouse_rbtn); }
+    reset_mouse(); { fin f={6,1100,650,1,1}; report(&f,1,1,1); step(); int r=mouse_rbtn; report(&f,1,1,0); step(); f.tip=0; report(&f,1,1,0); step(); step(); chk("clickpad press in the bottom-right corner: right button", r&&!mouse_btn); }
+    reset_mouse(); { fin f[2]={{1,500,300,1,1},{2,700,300,1,1}}; report(f,2,2,1); step(); int r=mouse_rbtn; report(f,2,2,0); step(); f[0].tip=f[1].tip=0; report(f,2,2,0); step(); step(); chk("clickpad press with two fingers: right button", r); }
+    reset_mouse(); { g_tp.gpio_ok=0; g_stale_mode=1; fin f={7,300,300,1,1}; for(int i=0;i<6;i++){ f.x=300+i*12; report(&f,1,1,0); step(); } u32 fr=g_tp.frames; for(int i=0;i<8;i++)step(); u32 fr2=g_tp.frames;
+        f.tip=0; report(&f,1,1,0); step(); step(); g_tp.gpio_ok=1;
+        chk("polling without the interrupt pin: stale repeated reports are skipped", mouse_dx>0&&fr2==fr&&g_tp.dup>=7); }
+    build_rdesc(2); g_nf=2; sim_reset(); tp_init();
+    chk("2-slot touchpad (hybrid reporting) set up", g_tp.ok&&g_tp.lay.nfing==2);
+    reset_mouse(); { fin a[2]={{1,400,500,1,1},{2,550,500,1,1}}, b[1]={{3,700,500,1,1}};
+        for(int i=0;i<14;i++){ a[0].y=a[1].y=b[0].y=500-i*20; report(a,2,3,0); report(b,1,0,0); step(); step(); }
+        int g=g_gesture; a[0].tip=a[1].tip=b[0].tip=0; report(a,2,3,0); report(b,1,0,0); step(); step(); step();
+        chk("hybrid mode: 3 fingers spread over two reports still swipe up", g==GES_SWIPE_UP); }
+    build_rdesc(5); g_nf=5; sim_reset(); g_variant=1; build_amd_dsdt(); tp_init();
+    chk("address 0 in ACPI (patched at runtime): found by probing the usual addresses", g_tp.ok&&g_tp.addr==0x2C);
+    g_variant=0; sim_reset(); g_dev_addr=0x15; build_intel_dsdt(); g_cpu_amd=0; tp_init();
+    { int td2=-1; for(int i=0;i<g_amld_n;i++) if(g_amld[i].is_hidi2c)td2=i;
+      chk("Intel layout: \\_SB.PCI0 scope, string _CID, I2C1 with _ADR 0x00150001", td2>=0&&!strcmp(g_amln[g_amld[td2].node].path,"\\_SB_.PCI0.TPD1")&&g_amld[td2].i2c[0].addr==0x15&&aml_find_dev("\\_SB.PCI0.I2C1")>=0&&g_amld[aml_find_dev("\\_SB.PCI0.I2C1")].adr==0x00150001u); }
+    chk("Intel controller not reachable in this test: no touchpad, no crash", !g_tp.ok);
+    sim_reset(); g_dev_addr=0x2C; g_cpu_amd=1; an=0; tp_init();
+    chk("no ACPI entry: the boot probe leaves the I2C bus alone", !g_tp.ok&&S.xfers==0);
+    tp_init_ex(1);
+    chk("no ACPI entry: tpinfo scan finds the touchpad on the controller", g_tp.ok&&g_tp.addr==0x2C&&g_tp.mode==1);
+    { u8 junk[2000]; srand(7); for(int r=0;r<300;r++){ for(int i=0;i<2000;i++)junk[i]=(u8)rand(); if(r%3==0){ junk[0]=0x5B; junk[1]=0x82; } if(r%5==0){ junk[10]=0x8E; junk[11]=0x20; junk[12]=0; } g_amlt[0]=junk; g_amll[0]=2000; g_amlt_n=1; aml_scan_tables(); }
+      chk("AML scanner survives 300 random tables", 1); }
+    { tplay L; u8 junk[600]; int bad=0; for(int r=0;r<500;r++){ for(int i=0;i<600;i++)junk[i]=(u8)rand(); if(tp_parse(junk,(int)(rand()%600),&L)==0&&L.ptp&&L.nfing>TPF_MAX)bad=1; } chk("HID parser survives 500 random descriptors", !bad); }
+
+    sim_reset(); g_kind=1; g_dev_addr=0x15; g_cpu_amd=1;
+    an=0; ab(0x10); { int sc=pk_open(); ab('\\'); aseg("_SB_");
+        int d=dev_open("I2CA"); name_str("_HID","AMDI0010"); { ab(0x08); aseg("_CRS"); int p,q; buf_open(&p,&q); mem32((u32)CTRL_BASE,0x1000); buf_close(p,q); } pk_close(d);
+        d=dev_open("ETPD"); name_str("_HID","ELAN0634"); { ab(0x08); aseg("SBFB"); int p,q; buf_open(&p,&q); i2cres(0x15,400000,"\\_SB.I2CA"); buf_close(p,q); } pk_close(d); pk_close(sc); }
+    tp_init();
+    chk("ELAN0634 (no PNP0C50) found in ACPI and set up with the ELAN I2C protocol", g_tp.ok&&g_tp.proto==1&&g_tp.addr==0x15&&!strcmp(g_tp.hid,"ELAN0634"));
+    chk("ELAN: reset, absolute mode 1, wake, power bit cleared", g_resets==1&&g_el_mode==1&&g_el_wake&&g_el_power==0);
+    chk("ELAN: product 0x2B, IC 0x0E, clickpad, 3024 x 1768, 34-byte reports", g_tp.el_product==0x2B&&g_tp.el_ic==0x0E&&g_tp.el_clickpad&&g_tp.el_maxx==3024&&g_tp.el_maxy==1768&&g_tp.el_replen==34);
+    chk("ELAN: resolution 31 units/mm gives a 97 x 57 mm pad", g_tp.lay.xum/1000==97&&g_tp.lay.yum/1000==57);
+    #define ELREP(n_,hp_) u8 r[40]; memset(r,0,sizeof r); int L_=hp_?39:34; r[0]=(u8)L_; r[2]=hp_?0x60:0x5D;
+    reset_mouse(); { int x=800,y=900; for(int i=0;i<12;i++){ ELREP(1,0) r[3]=0x08; r[4]=(u8)(((x>>8)&0x0F)<<4|((y>>8)&0x0F)); r[5]=(u8)x; r[6]=(u8)y; r[8]=40; dev_push(r,34); step(); x+=30; }
+        { ELREP(0,0) r[3]=0; dev_push(r,34); step(); step(); } }
+    chk("ELAN: one finger moving right moves the pointer right only", mouse_dx>60&&mouse_dy==0&&!mouse_btn);
+    reset_mouse(); { ELREP(1,0) r[3]=0x08; r[4]=0x34; r[5]=0x00; r[6]=0x00; dev_push(r,34); step(); } { ELREP(0,0) r[3]=0; dev_push(r,34); step(); } { int pr=mouse_btn; step(); chk("ELAN: tap clicks and releases", pr&&!mouse_btn); }
+    reset_mouse(); { int y=1200; for(int i=0;i<14;i++){ ELREP(2,0) r[3]=0x18; int xs[2]={900,1500}; for(int k=0;k<2;k++){ u8* f=r+4+k*5; f[0]=(u8)(((xs[k]>>8)&0x0F)<<4|((y>>8)&0x0F)); f[1]=(u8)xs[k]; f[2]=(u8)y; } dev_push(r,34); step(); y-=30; }
+        { ELREP(0,0) r[3]=0; dev_push(r,34); step(); step(); } }
+    chk("ELAN: two fingers sliding down the pad scroll (raw Y is flipped)", mouse_scroll>=4&&mouse_dx==0&&!mouse_rbtn);
+    reset_mouse(); { ELREP(1,0) r[3]=0x08|1; r[4]=0x34; dev_push(r,34); step(); int l=mouse_btn; { ELREP(0,0) r[3]=0; dev_push(r,34); step(); step(); } chk("ELAN: clickpad press is a left click", l&&!mouse_btn); }
+    reset_mouse(); { u8 r[40]; memset(r,0,sizeof r); r[0]=34; r[2]=0x5E; r[3]=0x02; r[4]=0x80; r[5]=0x80; r[6]=0x06; r[7]=12; r[8]=4; dev_push(r,34); step(); chk("ELAN trackpoint report 0x5E: pointer moves, right button", mouse_dx==12&&mouse_dy==-4&&mouse_rbtn); }
+    sim_reset(); g_el_pattern=2; g_el_clickpad=0; tp_init();
+    chk("ELAN pattern 2: high-precision 39-byte reports, real buttons", g_tp.ok&&g_tp.el_replen==39&&!g_tp.el_clickpad);
+    reset_mouse(); { int x=600; for(int i=0;i<10;i++){ ELREP(1,1) r[3]=0x08; r[4]=(u8)(x>>8); r[5]=(u8)x; r[6]=0x03; r[7]=0x00; dev_push(r,39); step(); x+=40; } { ELREP(0,1) r[3]=0x02; dev_push(r,39); step(); } int rb=mouse_rbtn; { ELREP(0,1) r[3]=0; dev_push(r,39); step(); step(); }
+        chk("ELAN high precision: 16-bit coordinates move the pointer, right button works", mouse_dx>60&&rb&&!mouse_rbtn); }
+    g_el_pattern=1; g_el_clickpad=1; g_kind=0; g_dev_addr=0x2C;
+    g_etp_dev=4; g_logn=0; g_hn=0; g_kqh=g_kqt=0; g_mouse_ok=0; g_mbytes=3; mouse_init();
+    { const u8 knock[]={0xE6,0xE6,0xE6,0xE9}, abs4[]={0xF8,0x00,0xF8,0x07,0xF8,0x00,0xF8,0x01,0xE6};
+      chk("PS/2: magic knock answered, Elantech v4 detected from firmware 0x461F00", g_mouse_ok&&g_etp_hw==4&&g_etp_fw==0x461F00u&&log_has(knock,4));
+      chk("PS/2 v4: absolute mode written (reg 0x07 = 0x01), 'set defaults' not sent afterwards", log_has(abs4,9)&&g_log[g_logn-1]==0xF4&&g_mbytes==6);
+      chk("PS/2 v4: range 3072 x 1856 from the firmware-ID query, 31 units/mm", g_etp_maxx==3072&&g_etp_maxy==1856&&g_etp_xres==31); }
+    #define FEED(a,b,c,d,e,f) { u8 pk[6]={(u8)(a),(u8)(b),(u8)(c),(u8)(d),(u8)(e),(u8)(f)}; for(int q_=0;q_<6;q_++)mouse_feed(pk[q_]); }
+    #define HEAD4(id,x,y,btn) FEED(0x04|(btn)|0x20, ((x)>>8)&0x0F, (x)&0xFF, (((id)+1)<<5)|0x11, ((y)>>8)&0x0F, (y)&0xFF)
+    #define STAT4(mask,btn) FEED(0x04|(btn),(mask),0,0x10,0,0)
+    #define MOT4(id,dx,dy,sid,dx2,dy2) FEED((((id)+1)<<5)|0x04,(u8)(dx),(u8)(dy),(((sid)+1)<<5)|0x12,(u8)(dx2),(u8)(dy2))
+    reset_mouse(); STAT4(1,0); HEAD4(0,1000,1000,0); g_ticks++; etp_poll(); for(int i=0;i<10;i++){ MOT4(0,20,0,-1,0,0); g_ticks++; etp_poll(); } STAT4(0,0); g_ticks++; etp_poll(); g_ticks++; etp_poll();
+    chk("PS/2 v4: one finger (status, head, motion packets) moves the pointer right", mouse_dx>25&&mouse_dy==0&&!mouse_btn);
+    reset_mouse(); STAT4(1,0); HEAD4(0,1500,900,0); g_ticks++; etp_poll(); STAT4(0,0); g_ticks++; etp_poll(); { int pr=mouse_btn; g_ticks++; etp_poll(); chk("PS/2 v4: tap clicks and releases", pr&&!mouse_btn); }
+    reset_mouse(); STAT4(3,0); HEAD4(0,1000,1200,0); HEAD4(1,1600,1200,0); g_ticks++; etp_poll(); for(int i=0;i<12;i++){ MOT4(0,0,-30,1,0,-30); g_ticks++; etp_poll(); } STAT4(0,0); g_ticks++; etp_poll(); g_ticks++; etp_poll();
+    chk("PS/2 v4: two fingers moving down the pad scroll", mouse_scroll>=4&&mouse_dx==0&&!mouse_rbtn);
+    reset_mouse(); { u32 bad0=g_etp_bad; mouse_feed(0x55); mouse_feed(0xAA); STAT4(1,0); HEAD4(0,1000,1000,0); g_ticks++; etp_poll(); for(int i=0;i<8;i++){ MOT4(0,25,0,-1,0,0); g_ticks++; etp_poll(); } STAT4(0,0); g_ticks++; etp_poll(); g_ticks++; etp_poll();
+      chk("PS/2 v4: two stray bytes are skipped and the stream resyncs", g_etp_bad>bad0&&mouse_dx>40); }
+    reset_mouse(); { int w=0; FEED(0x04,0x01,0,0x10,0,0); HEAD4(0,1000,1000,0); g_ticks++; etp_poll(); FEED(0x20|0x10|0x04,10,0,0x12,0,0); g_ticks++; etp_poll(); w=mouse_dx; STAT4(0,0); g_ticks++; etp_poll(); g_ticks++; etp_poll(); chk("PS/2 v4: overflow flag multiplies the motion by 5", w>=6); }
+    reset_mouse(); FEED(0x02,0x80,0x80,0x06,9,3); g_ticks++; etp_poll(); chk("PS/2 v4 trackpoint packet: pointer moves, right button", mouse_dx==9&&mouse_dy==-3&&mouse_rbtn);
+    g_etp_dev=3; g_logn=0; g_hn=0; g_kqh=g_kqt=0; g_mouse_ok=0; g_etp_hw=0; mouse_init();
+    { const u8 abs3[]={0xF8,0x00,0xF8,0x10,0xF8,0x0B,0xE6}; chk("PS/2: Elantech v3 detected, reg 0x10 = 0x0B", g_mouse_ok&&g_etp_hw==3&&log_has(abs3,7)); }
+    #define V3(n,tail,x,y,btn) FEED(((n)<<6)|((tail)?0x0C:0x04)|(btn), ((x)>>8)&0x0F, (x)&0xFF, (tail)?0x0C:0x02, ((y)>>8)&0x0F, (y)&0xFF)
+    reset_mouse(); for(int i=0;i<12;i++){ V3(1,0,800+i*25,900,0); g_ticks++; etp_poll(); } V3(0,0,0,0,0); g_ticks++; etp_poll(); g_ticks++; etp_poll();
+    chk("PS/2 v3: one finger moves the pointer right", mouse_dx>30&&mouse_dy==0);
+    reset_mouse(); for(int i=0;i<12;i++){ V3(2,0,900,1300-i*30,0); V3(2,1,1500,1300-i*30,0); g_ticks++; etp_poll(); } V3(0,0,0,0,0); g_ticks++; etp_poll(); g_ticks++; etp_poll();
+    chk("PS/2 v3: two-finger head/tail packets scroll", mouse_scroll>=4&&mouse_dx==0);
+    reset_mouse(); FEED(0xC4,0xFF,0xFF,0x02,0xFF,0xFF); g_ticks++; etp_poll(); chk("PS/2 v3: debounce packet ignored", mouse_dx==0&&mouse_dy==0&&!mouse_btn);
+    g_etp_hw=0; g_etp_dev=0; g_logn=0; g_hn=0; g_kqh=g_kqt=0; g_mouse_ok=0;
+    printf(ok?"ALL PASS\n":"FAILURES\n"); return !ok; }

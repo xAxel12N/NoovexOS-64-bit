@@ -31,7 +31,7 @@ pm32:
     movw    %ax, %es
     movw    %ax, %ss
     movl    %cr4, %eax
-    orl     $0x20, %eax              /* CR4.PAE */
+    orl     $0x620, %eax
     movl    %eax, %cr4
     movl    (TB+0xFF0), %eax         /* CR3 (BSP's page tables) */
     movl    %eax, %cr3
@@ -40,7 +40,8 @@ pm32:
     orl     $0x100, %eax             /* EFER.LME */
     wrmsr
     movl    %cr0, %eax
-    orl     $0x80000000, %eax        /* CR0.PG */
+    andl    $0xFFFFFFF3, %eax
+    orl     $0x80010002, %eax
     movl    %eax, %cr0
     ljmpl   $0x18, $(lm64 - ap_tramp_start + TB)
 

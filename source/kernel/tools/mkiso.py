@@ -19,7 +19,7 @@ syms = {p[2]: int(p[0], 16) for p in (l.split() for l in run("nm", "boot/cdboot.
 run("objcopy", "-O", "binary", "-j", ".text", "boot/cdboot.elf", "boot/cdboot.bin")
 cdboot = bytearray(open("boot/cdboot.bin", "rb").read())
 
-kern = open("kernel64.bin", "rb").read()
+kern = open("build/kernel64.bin", "rb").read()
 
 # --- ISO layout (in 2048-byte LBAs) ---
 LBA_PVD   = 16

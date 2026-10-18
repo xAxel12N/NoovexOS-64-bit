@@ -83,8 +83,33 @@ isr_ignore:
     pushq $255
     jmp isr_common
 
+.global isr_ipi_resched
+isr_ipi_resched:
+    pushq $0
+    pushq $0xF0
+    jmp isr_common
+.global isr_ipi_tlb
+isr_ipi_tlb:
+    pushq $0
+    pushq $0xF1
+    jmp isr_common
+.global isr_ipi_halt
+isr_ipi_halt:
+    pushq $0
+    pushq $0xF2
+    jmp isr_common
+
+.global isr_lapic_timer
+isr_lapic_timer:
+    pushq $0
+    pushq $0x40
+    jmp isr_common
+
 isr_common:
-    pushq %rax
+    testb $3, 24(%rsp)
+    jz    1f
+    swapgs
+1:  pushq %rax
     pushq %rbx
     pushq %rcx
     pushq %rdx
@@ -119,7 +144,11 @@ isr_common:
     popq  %rcx
     popq  %rbx
     popq  %rax
-    addq  $16, %rsp           /* discard vector + error code           */
+    cli
+    testb $3, 24(%rsp)
+    jz    1f
+    swapgs
+1:  addq  $16, %rsp           /* discard vector + error code           */
     iretq
 
 .section .rodata
@@ -134,3 +163,62 @@ isr_stubs:
     .quad isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47
 
 .section .note.GNU-stack,"",@progbits
+
+.section .text
+.macro ESTUB_NOERR n
+eexc\n:
+    pushq $0
+    pushq $\n
+    jmp eexc_common
+.endm
+.macro ESTUB_ERR n
+eexc\n:
+    pushq $\n
+    jmp eexc_common
+.endm
+ESTUB_NOERR 0
+ESTUB_NOERR 1
+ESTUB_NOERR 2
+ESTUB_NOERR 3
+ESTUB_NOERR 4
+ESTUB_NOERR 5
+ESTUB_NOERR 6
+ESTUB_NOERR 7
+ESTUB_ERR   8
+ESTUB_NOERR 9
+ESTUB_ERR   10
+ESTUB_ERR   11
+ESTUB_ERR   12
+ESTUB_ERR   13
+ESTUB_ERR   14
+ESTUB_NOERR 15
+ESTUB_NOERR 16
+ESTUB_ERR   17
+ESTUB_NOERR 18
+ESTUB_NOERR 19
+ESTUB_NOERR 20
+ESTUB_ERR   21
+ESTUB_NOERR 22
+ESTUB_NOERR 23
+ESTUB_NOERR 24
+ESTUB_NOERR 25
+ESTUB_NOERR 26
+ESTUB_NOERR 27
+ESTUB_NOERR 28
+ESTUB_ERR   29
+ESTUB_ERR   30
+ESTUB_NOERR 31
+eexc_common:
+    cli
+    movq %rsp, %rdi
+    andq $-16, %rsp
+    call early_fault
+1:  hlt
+    jmp 1b
+.section .rodata
+.global early_exc_stubs
+early_exc_stubs:
+    .quad eexc0, eexc1, eexc2, eexc3, eexc4, eexc5, eexc6, eexc7
+    .quad eexc8, eexc9, eexc10, eexc11, eexc12, eexc13, eexc14, eexc15
+    .quad eexc16, eexc17, eexc18, eexc19, eexc20, eexc21, eexc22, eexc23
+    .quad eexc24, eexc25, eexc26, eexc27, eexc28, eexc29, eexc30, eexc31

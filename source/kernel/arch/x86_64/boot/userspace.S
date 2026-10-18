@@ -11,8 +11,6 @@ gdt_flush:
     mov     %ax, %ds
     mov     %ax, %es
     mov     %ax, %ss
-    mov     %ax, %fs
-    mov     %ax, %gs
     leaq    .gdt_reload(%rip), %rax
     pushq   $0x08               /* kernel code */
     pushq   %rax
@@ -31,7 +29,10 @@ tss_flush:
 .global isr128
 .extern syscall_dispatch
 isr128:
-    push    %rax
+    testb   $3, 8(%rsp)
+    jz      1f
+    swapgs
+1:  push    %rax
     push    %rbx
     push    %rcx
     push    %rdx
@@ -47,7 +48,7 @@ isr128:
     push    %r14
     push    %r15
     mov     %rsp, %rdi          /* rdi -> saved-register frame (sysregs) */
-    call    syscall_dispatch
+    call    isr128_c
     pop     %r15
     pop     %r14
     pop     %r13
@@ -63,18 +64,21 @@ isr128:
     pop     %rcx
     pop     %rbx
     pop     %rax
-    iretq
+    cli
+    testb   $3, 8(%rsp)
+    jz      1f
+    swapgs
+1:  iretq
 
 /* void enter_ring3(u64 rip, u64 rsp) - drop to ring 3 via iretq */
 .global enter_ring3
 .global enter_ring3_args
 enter_ring3_args:
     /* rdi=rip, rsi=rsp, rdx=argc, rcx=argv -> user main(argc,argv) */
+    cli
     mov     $0x23, %ax
     mov     %ax, %ds
     mov     %ax, %es
-    mov     %ax, %fs
-    mov     %ax, %gs
     pushq   $0x23
     pushq   %rsi
     pushq   $0x202
@@ -82,19 +86,20 @@ enter_ring3_args:
     pushq   %rdi
     mov     %rdx, %rdi          /* argc -> user rdi */
     mov     %rcx, %rsi          /* argv -> user rsi */
+    swapgs
     iretq
 
 enter_ring3:
+    cli
     mov     $0x23, %ax          /* user data | RPL 3 */
     mov     %ax, %ds
     mov     %ax, %es
-    mov     %ax, %fs
-    mov     %ax, %gs
     pushq   $0x23               /* SS  = user data | 3 */
     pushq   %rsi                /* RSP (user)          */
     pushq   $0x202              /* RFLAGS (IF set)     */
     pushq   $0x1B               /* CS  = user code | 3 */
     pushq   %rdi                /* RIP (user)          */
+    swapgs
     iretq
 
 /* int k_setjmp(u64* buf)  - returns 0 first time, or the value from k_longjmp */
@@ -151,22 +156,31 @@ sched_swap:
 /* first entry into a new process: the iret frame sits on the stack right here */
 .global user_trampoline
 user_trampoline:
+    cli
+    swapgs
     iretq
 /* fork child: force rax=0 (fork returns 0 in the child), then iretq */
 .global user_trampoline_fork
 user_trampoline_fork:
+    cli
     xor     %eax, %eax
+    swapgs
     iretq
 .section .note.GNU-stack,"",@progbits
 
 .text
 .global jc_resume
 jc_resume:
+    cli
     mov     $0x23, %ax
     mov     %ax, %ds
     mov     %ax, %es
     mov     %ax, %fs
-    mov     %ax, %gs
+    mov     %gs:24, %rax
+    mov     %rax, %rdx
+    shr     $32, %rdx
+    mov     $0xC0000100, %ecx
+    wrmsr
     mov     %rdi, %rsp
     pop     %r15
     pop     %r14
@@ -184,5 +198,54 @@ jc_resume:
     pop     %rbx
     pop     %rax
     add     $16, %rsp
+    swapgs
+    iretq
+
+.global lsys_entry
+.extern linux_syscall
+lsys_entry:
+    swapgs
+    movq    %rsp, %gs:8
+    movq    %gs:0, %rsp
+    pushq   $0x23
+    pushq   %gs:8
+    pushq   %r11
+    pushq   $0x1B
+    pushq   %rcx
+    push    %rax
+    push    %rbx
+    push    %rcx
+    push    %rdx
+    push    %rsi
+    push    %rdi
+    push    %rbp
+    push    %r8
+    push    %r9
+    push    %r10
+    push    %r11
+    push    %r12
+    push    %r13
+    push    %r14
+    push    %r15
+    mov     %rsp, %rdi
+    cld
+    call    lsys_c
+    pop     %r15
+    pop     %r14
+    pop     %r13
+    pop     %r12
+    pop     %r11
+    pop     %r10
+    pop     %r9
+    pop     %r8
+    pop     %rbp
+    pop     %rdi
+    pop     %rsi
+    pop     %rdx
+    pop     %rcx
+    pop     %rbx
+    pop     %rax
+    cli
+    swapgs
     iretq
 .section .note.GNU-stack,"",@progbits

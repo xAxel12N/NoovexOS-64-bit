@@ -1,20 +1,29 @@
+#include "include/nvx/base.h"
+#include "include/nvx/mm/heap.h"
+#include "include/nvx/drivers/video/framebuffer.h"
+#include "include/nvx/net/http.h"
+#include "include/nvx/gui/wm.h"
+#include "include/nvx/shell/terminal.h"
+#include "include/nvx/fs/fat_ata.h"
+#include "include/nvx/apps/doom.h"
 /* ============================ DOOM (doomgeneric + FreeDoom) ============================ */
 extern unsigned int* DG_ScreenBuffer;
 extern void doomgeneric_Create(int argc, char** argv);
 extern void doomgeneric_Tick(void);
 extern void dsh_set_output(void(*)(const char*,int));
 extern void dsh_set_file(const char*, unsigned char*, long);
+extern void dsh_set_heap(void*);
+static void* g_doom_heap;
 extern void dsh_set_exit(void(*)(int));
 #define DOOM_W 640
 #define DOOM_H 400
-#define DOOM_WAD     ((u8*)0x5800000ULL)     /* WAD lives at 88 MiB (above .bss): GRUB module copied here, or FAT read here */
+u8* g_doom_wad;
+#define DOOM_WAD     (g_doom_wad?g_doom_wad:(g_doom_wad=(u8*)kmalloc(DOOM_WAD_CAP)))
 #define DOOM_WAD_CAP (32*1024*1024)
-static int g_doomx=0, g_doomy=0, g_doom_state=0; /* 0 init 2 running 3 failed */
-static long doom_wadlen=0;
+int g_doomx=0, g_doomy=0, g_doom_state=0; /* 0 init 2 running 3 failed */
+static long doom_wadlen=0; const char* g_doom_src=0;
 /* minimal setjmp/longjmp so I_Error/exit can unwind back to the desktop */
 typedef long djmp[8];
-__asm__(".globl doom_setjmp\ndoom_setjmp:\n mov %rbx,0(%rdi)\n mov %rbp,8(%rdi)\n mov %r12,16(%rdi)\n mov %r13,24(%rdi)\n mov %r14,32(%rdi)\n mov %r15,40(%rdi)\n lea 8(%rsp),%rax\n mov %rax,48(%rdi)\n mov (%rsp),%rax\n mov %rax,56(%rdi)\n xor %eax,%eax\n ret\n"
-        ".globl doom_longjmp\ndoom_longjmp:\n mov 0(%rdi),%rbx\n mov 8(%rdi),%rbp\n mov 16(%rdi),%r12\n mov 24(%rdi),%r13\n mov 32(%rdi),%r14\n mov 40(%rdi),%r15\n mov 48(%rdi),%rsp\n mov %esi,%eax\n test %eax,%eax\n jnz 1f\n mov $1,%eax\n1: jmp *56(%rdi)\n");
 extern int doom_setjmp(djmp);
 extern void doom_longjmp(djmp,int) __attribute__((noreturn));
 static djmp doom_jb;
@@ -44,8 +53,8 @@ static int sc_to_doomkey(int sc){ switch(sc){
     case 0x15: return 'y'; case 0x31: return 'n'; case 0x21: return 'f';
 } return 0; }
 /* --- platform hooks the Doom blob calls --- */
-static int g_doom_mcap=0;                       /* mouse captured by DOOM (ESC releases) */
-static int doom_mdx=0, doom_mdy=0, doom_mbtn=0, doom_mbtn_prev=0;
+int g_doom_mcap=0;                       /* mouse captured by DOOM (ESC releases) */
+int doom_mdx=0, doom_mdy=0, doom_mbtn=0, doom_mbtn_prev=0;
 int DG_GetMouse(int* dx,int* dy,int* buttons){
     if(!g_doom_mcap){ *dx=0;*dy=0;*buttons=0; doom_mdx=doom_mdy=0; return 0; }
     int any=(doom_mdx||doom_mdy||doom_mbtn!=doom_mbtn_prev);
@@ -55,7 +64,7 @@ int DG_GetMouse(int* dx,int* dy,int* buttons){
 void DG_Init(void){}
 void DG_SetWindowTitle(const char* t){ (void)t; }
 unsigned int DG_GetTicksMs(void){ return (unsigned int)(g_ticks*10ULL); }
-void DG_SleepMs(unsigned int ms){ u64 tgt=g_ticks+(ms/10)+1; while(g_ticks<tgt) __asm__ volatile("hlt"); }
+void DG_SleepMs(unsigned int ms){ u64 tgt=g_ticks+(ms/10)+1; while(g_ticks<tgt) cpu_halt(); }
 int DG_GetKey(int* pressed, unsigned char* key){
     for(int sc=1;sc<128;sc++){ if(kdown[sc]!=doom_prevkd[sc]){ int dk=sc_to_doomkey(sc); u8 st=kdown[sc]; doom_prevkd[sc]=st; if(dk){ *pressed=st?1:0; *key=(unsigned char)dk; return 1; } } }
     return 0; }
@@ -64,25 +73,30 @@ void DG_DrawFrame(void){ if(!DG_ScreenBuffer) return;
         int xm=DOOM_W; if(g_doomx+xm>(int)W)xm=(int)W-g_doomx; for(int x=0;x<xm;x++)d[x]=s[x]; } }
 static void doom_init(void){
     dsh_set_output(doom_out); dsh_set_exit(doom_exit_cb);
+    if(!g_doom_heap){ g_doom_heap=kmalloc(24u*1024u*1024u); if(!g_doom_heap){ g_doom_state=3; return; } dsh_set_heap(g_doom_heap); }
+    extern u8 _binary_doom1_wad_start[], _binary_doom1_wad_end[];
     u32 modaddr=*(volatile u32*)0x5010ULL, modsize=*(volatile u32*)0x5018ULL;
-    doom_wadlen=0;
-    if(modaddr && modsize>1000000u){ doom_wadlen=(long)modsize; }        /* WAD from GRUB module (already at DOOM_WAD) */
-    else { const char* cand[5]={"DOOM1.WAD","FREEDOOM.WAD","DOOM.WAD","DOOM2.WAD","FREEDOO1.WAD"};
-        for(int i=0;i<5;i++){ int n=fat_read_file(cand[i],DOOM_WAD,DOOM_WAD_CAP); if(n>0){ doom_wadlen=n; break; } } }
+    static const char* cand[5]={"DOOM2.WAD","DOOM.WAD","FREEDOOM.WAD","FREEDOO1.WAD","DOOM1.WAD"};
+    static const char* inm[5]={"doom2.wad","doom.wad","freedoom2.wad","freedoom1.wad","doom1.wad"};
+    const char* nm="doom1.wad"; doom_wadlen=0; g_doom_src=0;
+    if(!g_doom_wad) g_doom_wad=(u8*)kmalloc(DOOM_WAD_CAP);
+    if(g_doom_wad) for(int i=0;i<4;i++){ int n=fat_read_file(cand[i],g_doom_wad,DOOM_WAD_CAP); if(n>1000000){ doom_wadlen=n; nm=inm[i]; g_doom_src=cand[i]; break; } }
+    if(doom_wadlen<=0 && modaddr && modsize>1000000u){ if(g_doom_wad)kfree(g_doom_wad); g_doom_wad=(u8*)(u64)modaddr; doom_wadlen=(long)modsize; g_doom_src="boot disk"; }
+    if(doom_wadlen<=0){ long el=(long)(_binary_doom1_wad_end-_binary_doom1_wad_start); if(el>1000000){ if(g_doom_wad)kfree(g_doom_wad); g_doom_wad=_binary_doom1_wad_start; doom_wadlen=el; g_doom_src="built in"; } }
     if(doom_wadlen<=0){ g_doom_state=3; return; }
-    dsh_set_file("freedoom1.wad",DOOM_WAD,doom_wadlen);
-    static char* argv[]={(char*)"doom",(char*)"-iwad",(char*)"freedoom1.wad",0};
+    dsh_set_file(nm,g_doom_wad,doom_wadlen);
+    static char* argv[]={(char*)"doom",(char*)"-iwad",(char*)"doom1.wad",0}; argv[2]=(char*)nm;
     doomgeneric_Create(3,argv);
     g_doom_state=2;
 }
-static void doom_draw(int i){
-    win_frame(i,"DOOM");
+void doom_draw(int i){
+    win_frame(i,g_doom_mcap?"DOOM  -  Esc frees the mouse":"DOOM - WASD move, Ctrl fire, Space use, click aims");
     g_doomx=WN[i].x+4; g_doomy=WN[i].y+28;
     if(g_doom_state==3){ fill_rect(g_doomx,g_doomy,DOOM_W,DOOM_H,rgb(12,10,14));
         dstr_ctr(WN[i].x+WN[i].w/2, g_doomy+150, "Could not load the WAD.", rgb(230,120,110), 2);
-        dstr_ctr(WN[i].x+WN[i].w/2, g_doomy+186, "Put freedoom1.wad (renamed DOOM1.WAD) on an IDE FAT disk.", rgb(200,200,210), 1);
+        dstr_ctr(WN[i].x+WN[i].w/2, g_doomy+186, "The built-in DOOM1.WAD is missing. Put DOOM1.WAD or DOOM2.WAD on a FAT disk.", rgb(200,200,210), 1);
         dstr_ctr(WN[i].x+WN[i].w/2, g_doomy+206, "Check the log in Terminal for details.", rgb(150,155,170), 1); return; }
-    if(doom_setjmp(doom_jb)==0){ if(g_doom_state==0){ fill_rect(g_doomx,g_doomy,DOOM_W,DOOM_H,rgb(10,10,14)); dstr_ctr(WN[i].x+WN[i].w/2,g_doomy+190,"Loading FreeDoom...",rgb(220,60,40),2); doom_init(); }
+    if(doom_setjmp(doom_jb)==0){ if(g_doom_state==0){ fill_rect(g_doomx,g_doomy,DOOM_W,DOOM_H,rgb(10,10,14)); dstr_ctr(WN[i].x+WN[i].w/2,g_doomy+190,"Loading DOOM...",rgb(220,60,40),2); doom_init(); }
         if(g_doom_state==2){ doomgeneric_Tick(); } }
     else { g_doom_state=3; }
 }

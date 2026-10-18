@@ -1,0 +1,6 @@
+#!/bin/sh
+M=${NVX_MUSL:?NVX_MUSL not set}
+MS=${NVX_MUSL_SH:?NVX_MUSL_SH not set}
+GI=$(gcc -print-file-name=include)
+for a in "$@"; do case "$a" in -c|-S|-E|-M|-MM) exec gcc -fPIE -nostdinc -isystem "$M/include" -isystem "$GI" "$@";; esac; done
+exec gcc -fPIE -nostdinc -isystem "$M/include" -isystem "$GI" -pie -nostdlib -Wl,-dynamic-linker,/lib/ld-musl-x86_64.so.1 -Wl,-z,noexecstack -L"$MS/lib" "$MS/lib/Scrt1.o" "$MS/lib/crti.o" "$@" -lc "$(gcc -print-libgcc-file-name)" "$MS/lib/crtn.o"

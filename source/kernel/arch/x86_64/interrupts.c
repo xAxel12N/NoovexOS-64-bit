@@ -1,23 +1,39 @@
+#include "include/nvx/base.h"
+#include "include/nvx/arch/x86_64/percpu.h"
+#include "include/nvx/lib/mem.h"
+#include "include/nvx/arch/x86_64/ring3.h"
+#include "include/nvx/core/proc/sched.h"
+#include "include/nvx/lib/js.h"
+#include "include/nvx/net/http.h"
+#include "include/nvx/drivers/input/ps2.h"
+#include "include/nvx/arch/x86_64/interrupts.h"
+#include "include/nvx/core/panic.h"
+#include "include/nvx/fs/ramfs.h"
+#include "include/nvx/core/syscall.h"
+#include "include/nvx/arch/x86_64/hrtimer.h"
+#include "include/nvx/arch/x86_64/smp_sched.h"
+#include "include/nvx/core/proc/jobs.h"
+#include "include/nvx/core/linux.h"
+volatile u32 g_stray_n=0; volatile int g_stray_vec=-1;
 /* =========================================================================
    IDT / PIC / PIT
    ========================================================================= */
-static int sig_self_check(void); extern int g_sig_ok;
-struct idt_entry{ u16 lo; u16 sel; u8 ist; u8 attr; u16 mid; u32 hi; u32 z; } __attribute__((packed));
-struct idt_ptr{ u16 limit; u64 base; } __attribute__((packed));
-static struct idt_entry idt[256];
+
+struct idt_entry idt[256];
 extern void* isr_stubs[48];
-extern void  isr_ignore(void);
-static void set_gate(int n,void*h){
+
+void set_gate(int n,void*h){
     u64 a=(u64)h;
     idt[n].lo=a&0xFFFF; idt[n].sel=0x08; idt[n].ist=0; idt[n].attr=0x8E;
     idt[n].mid=(a>>16)&0xFFFF; idt[n].hi=(u32)(a>>32); idt[n].z=0;
 }
-static void idt_set128(void){   /* INT 0x80 gate, DPL=3 (callable from ring 3) */
+void idt_set128(void){   /* INT 0x80 gate, DPL=3 (callable from ring 3) */
     u64 a=(u64)isr128;
     idt[0x80].lo=a&0xFFFF; idt[0x80].sel=0x08; idt[0x80].ist=0; idt[0x80].attr=0xEE;
     idt[0x80].mid=(a>>16)&0xFFFF; idt[0x80].hi=(u32)(a>>32); idt[0x80].z=0;
 }
-static void pic_remap(void){
+void idt_use_ist(int n,int ist){ idt[n].ist=(u8)ist; }
+void pic_remap(void){
     outb(0x20,0x11);io_wait(); outb(0xA0,0x11);io_wait();
     outb(0x21,0x20);io_wait(); outb(0xA1,0x28);io_wait();
     outb(0x21,0x04);io_wait(); outb(0xA1,0x02);io_wait();
@@ -25,32 +41,23 @@ static void pic_remap(void){
     outb(0x21,0xF8);io_wait();            /* master: enable IRQ0,1,2      */
     outb(0xA1,0xEF);io_wait();            /* slave:  enable IRQ12         */
 }
-static void pit_init(u32 hz){
+void pit_init(u32 hz){
     u32 div=1193182u/hz; outb(0x43,0x36);
     outb(0x40,div&0xFF); outb(0x40,(div>>8)&0xFF);
 }
-static inline void pic_eoi(int irq){ if(irq>=8)outb(0xA0,0x20); outb(0x20,0x20); }
 
 /* register frame pushed by isr_common (order must match the asm) */
-typedef struct {
-    u64 r15,r14,r13,r12,r11,r10,r9,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax;
-    u64 vector,errcode,rip,cs,rflags,rsp,ss;
-} regs_t;
 
-void panic(regs_t*r,const char*msg);   /* fwd */
-#define JS_BLOCK (-1000)
-static volatile int g_js_running; static int g_jcur; static int g_umask; extern int g_dcwd; extern int g_uid; static void dt_setmode(int n,unsigned m);
-static char g_hostname[32]; static int ux_uid_name(int uid,char* out,int cap); static int ux_lookup(const char* p,int* isdir,int follow); static void ux_touch(int k,int data); static int k_split(const char* p,int* dir,char* base);
-static void nvx3_flush_meta(void); static int nvx3_sync(int k); static void nvx3_sync_all(void); static int nvx3_try_load(void); static int g_n3_conv; static int g_fb0_open, g_mouse_open, g_fb0_dirty;
+   /* fwd */
 
-static int ux_unlink(const char* p); static int ux_link(const char* a,const char* b); static int ux_symlink(const char* a,const char* b); static int ux_readlink(const char* p,char* o,int c); static int ux_stat2(const char* p,u32* o,int f); static int ux_chown(const char* p,int u,int g,int f); static int ux_chmod(const char* p,unsigned m); static int ux_utime(const char* p,u32 a,u32 m); static int ux_mount(const char* s,const char* t); static int ux_umount(const char* t);
-struct vfile; static int ux_dev_read(struct vfile* v,char* buf,int len); static int ux_dev_write(struct vfile* v,const char* buf,int len);
-static void jc_fault(regs_t* r); static void jc_timer(regs_t* r);
+struct vfile;  
 
-void isr_dispatch(regs_t*r){
-    if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } panic(r,0); return; }        /* exception -> RSOD */
+static void isr_body(regs_t*r){
+    if(r->vector==14&&vm_user_pf(r))return;
+    if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } { extern int web_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&web_fault_redirect(&r->rip,&r->rsp))return; } panic(r,0); return; }        /* exception -> RSOD */
+    if(r->vector==HR_LAPIC_VEC){ hr_lapic_isr(); return; }
     int irq=(int)r->vector-32;
-    if(irq==0){ g_ticks++;
+    if(irq==0){
         if(g_js_running&&(r->cs&3)==3) jc_timer(r);
         if(g_preempt_on){
             int cur=g_curproc;
@@ -65,28 +72,21 @@ void isr_dispatch(regs_t*r){
         }
     }
     else if(irq==1||irq==12) ps2_byte();
-    if(r->vector!=255) pic_eoi(irq);
+    if(r->vector==255){ extern void lapic_eoi_any(void); extern int lapic_isr_top(void); int tv=lapic_isr_top(); if(tv>=0)g_stray_vec=tv; g_stray_n++; lapic_eoi_any(); return; }
+    pic_eoi(irq);
+    if(irq==0){ extern volatile u32 g_ml_beat; extern volatile int g_ml_stage; static u32 lb=0; static u32 still=0; static int shown=0;
+        if(g_ml_beat!=lb){ lb=g_ml_beat; still=0; } else if(++still==600&&!shown){ shown=1; extern void early_note(const char*,const char*,u64,int); early_note("NoovexOS main loop has not run for 6 seconds - please take a photo.","stage",r->rip,g_ml_stage); } }
 }
 
-/* ---- PS/2 mouse init (bounded waits so a missing mouse never hangs) ---- */
-static int pw_write(void){ int t=200000; while((inb(0x64)&2)&&--t)io_wait(); return t; }
-static int pw_read (void){ int t=200000; while(!(inb(0x64)&1)&&--t)io_wait(); return t; }
-static int mcmd(u8 c){ if(!pw_write())return 0; outb(0x64,0xD4); if(!pw_write())return 0; outb(0x60,c);
-    if(!pw_read())return 0; inb(0x60); return 1; }
-static int g_mouse_ok=0;
-static void mouse_rate(u8 r){ mcmd(0xF3); mcmd(r); }
-static void mouse_init(void){
-    if(!pw_write())return; outb(0x64,0xA8); io_wait();           /* enable aux */
-    if(!pw_write())return; outb(0x64,0x20);                       /* read cfg   */
-    if(!pw_read())return; u8 st=inb(0x60);
-    st|=2; st&=~0x20;
-    if(!pw_write())return; outb(0x64,0x60);
-    if(!pw_write())return; outb(0x60,st);
-    if(!mcmd(0xF6))return;                                        /* defaults   */
-    mouse_rate(200); mouse_rate(100); mouse_rate(80);            /* magic knock */
-    if(mcmd(0xF2) && pw_read()){ u8 id=inb(0x60); if(id==3) g_mbytes=4; }
-    if(!mcmd(0xF4))return;                                        /* enable rpt */
-    g_mouse_ok=1;
+void isr_dispatch(regs_t*r){
+    if(r->vector==2)return;
+    u64 v=r->vector; int user=(r->cs&3)==3;
+    if(v>=0xF0&&v<=0xF2){ smp_ipi(r,user); return; }
+    if(v==HR_LAPIC_VEC&&cpu_id()!=0){ ap_timer(r,user); return; }
+    if(v==HR_LAPIC_VEC&&!user){ hr_lapic_isr(); return; }
+    if(v==32)g_ticks++;
+    bkl_lock(); isr_body(r); bkl_unlock();
 }
-
-
+ 
+void lsys_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; linux_syscall(r); bkl_unlock(); }
+void isr128_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; syscall_dispatch(r); bkl_unlock(); }

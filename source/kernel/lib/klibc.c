@@ -1,3 +1,5 @@
+#include "include/nvx/base.h"
+#include "include/nvx/lib/klibc.h"
 /* ---- freestanding libc string/memory layer (standard names, for ported code) ---- */
 unsigned long strlen(const char*s){ unsigned long n=0; while(s[n])n++; return n; }
 int strcmp(const char*a,const char*b){ while(*a&&*a==*b){a++;b++;} return (int)(u8)*a-(int)(u8)*b; }
@@ -13,12 +15,3 @@ int memcmp(const void*a,const void*b,unsigned long n){ const u8*x=a,*y=b; while(
 void* memchr(const void*s,int c,unsigned long n){ const u8*p=s; while(n--){ if(*p==(u8)c)return (void*)p; p++; } return 0; }
 int atoi(const char*s){ int r=0,neg=0; while(*s==' '||*s=='\t')s++; if(*s=='-'){neg=1;s++;}else if(*s=='+')s++; while(*s>='0'&&*s<='9'){ r=r*10+(*s-'0'); s++; } return neg?-r:r; }
 int abs(int v){ return v<0?-v:v; }
-
-/* ---- port I/O ---- */
-static inline void outb(u16 p,u8 v){ __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
-static inline u8   inb(u16 p){ u8 v; __asm__ volatile("inb %1,%0":"=a"(v):"Nd"(p)); return v; }
-static inline void io_wait(void){ outb(0x80,0); }
-static inline void outl(u16 p,u32 v){ __asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p)); }
-static inline u32  inl(u16 p){ u32 v; __asm__ volatile("inl %1,%0":"=a"(v):"Nd"(p)); return v; }
-static inline u16  inw(u16 p){ u16 v; __asm__ volatile("inw %1,%0":"=a"(v):"Nd"(p)); return v; }
-static inline void outw(u16 p,u16 v){ __asm__ volatile("outw %0,%1"::"a"(v),"Nd"(p)); }

@@ -6,7 +6,7 @@ KREGION = 1048576
 ISO_OFF = 45568
 USB_OFF = 2560
 
-kern = open('kernel64.bin','rb').read()
+kern = open('build/kernel64.bin','rb').read()
 assert len(kern) <= KREGION, f"kernel {len(kern)} > {KREGION//1048576} MiB region"
 # sanity: size stamp at offset 24 matches
 assert struct.unpack_from('<I', kern, 24)[0] == len(kern), "size@24 mismatch"
