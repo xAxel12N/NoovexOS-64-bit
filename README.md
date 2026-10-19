@@ -3,6 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Build Status](https://img.shields.io/badge/build-manual-lightgrey)](#) [![Stars](https://img.shields.io/github/stars/xAxel12N/NoovexOS-64-bit?style=social)](https://github.com/xAxel12N/NoovexOS-64-bit/stargazers)
 
 NoovexOS (myboot) is a compact, staged bootloader that can boot ELF32/ELF64 kernels on BIOS and UEFI systems. It demonstrates bringing the CPU into x86-64 long mode, mounting a FAT32 partition, parsing a simple `boot.cfg`, and handing control to a kernel — all written in plain C and x86 assembly.
+<img width="664" height="273" alt="image" src="https://github.com/user-attachments/assets/641c6029-edd8-4d2b-b5dd-be945e320bf2" />
 
 Highlights
 - Small staged BIOS + optional UEFI path (single disk image supports both).
