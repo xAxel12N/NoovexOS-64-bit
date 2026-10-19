@@ -1,71 +1,39 @@
-# NoovexOS / myboot — portable 64-bit-capable bootloader
+# NoovexOS (64-bit)
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Build Status](https://img.shields.io/badge/build-manual-lightgrey)](#) [![Stars](https://img.shields.io/github/stars/xAxel12N/NoovexOS-64-bit?style=social)](https://github.com/xAxel12N/NoovexOS-64-bit/stargazers)
+[![CI](https://github.com/xAxel12N/NoovexOS-64-bit/actions/workflows/ci-and-setup.yml/badge.svg)](https://github.com/xAxel12N/NoovexOS-64-bit/actions/workflows/ci-and-setup.yml) [![Contributing](https://img.shields.io/badge/contributing-guidelines-blue.svg)](CONTRIBUTING.md)
 
-NoovexOS (myboot) is a compact, staged bootloader that can boot ELF32/ELF64 kernels on BIOS and UEFI systems. It demonstrates bringing the CPU into x86-64 long mode, mounting a FAT32 partition, parsing a simple `boot.cfg`, and handing control to a kernel — all written in plain C and x86 assembly.
-<img width="1281" height="1018" alt="image" src="https://github.com/user-attachments/assets/20bd102b-5ce3-469b-ba29-75c36efae847" />
+Minimal 64-bit educational OS kernel — experimental and community-driven.
 
+Short description
+A minimal 64-bit operating system kernel and tools for learning OS development and experimentation.
 
-Highlights
-- Small staged BIOS + optional UEFI path (single disk image supports both).
-- ELF64 handoff into long mode (paging enabled, low 4 GB identity mapped).
-- FAT32 reader, menu, config parsing, optional VBE framebuffer support.
-- COM1 serial mirror for reproducible logs in QEMU and on hardware.
-- Minimal example kernel included to verify the handoff.
+Demo
+- Add a screenshot or a short GIF here (images/demo.gif)
 
-Quick demo
+Quick start
+1. Clone: git clone https://github.com/xAxel12N/NoovexOS-64-bit.git
+2. Enter the repo: cd NoovexOS-64-bit
+3. Build (example):
+   - Install dependencies: <list deps>
+   - Run: make build
+4. Run in QEMU:
+   - qemu-system-x86_64 -kernel build/kernel.bin
 
-- Build and run in QEMU:
-  - Prereqs (Debian/Ubuntu): sudo apt install build-essential gcc-multilib qemu-system-x86 python3
-  - Build: `make`
-  - Run BIOS image: `make run`
-  - Run UEFI (OVMF required): `make run-uefi`
-- There is a prebuilt disk image at `build/disk.img` you can flash to USB (dd / Rufus/Etcher).
+Status
+- Alpha — active development. Not production-ready.
 
-Why this project?
-- Educational, focused, and easy to extend into a production-grade bootloader path.
-- Good foundation for OS dev experiments and teaching CPU long-mode transitions.
-- Clean, well-documented staged loader architecture you can fork and extend.
+How to help
+- Read CONTRIBUTING.md for how to contribute (see also CODE_OF_CONDUCT.md).
+- Look for issues labeled `good first issue` or `help wanted`.
 
-Quickstart (2 minutes)
-
-1. Clone
-
-   git clone https://github.com/xAxel12N/NoovexOS-64-bit.git
-   cd NoovexOS-64-bit
-
-2. Install (Debian/Ubuntu)
-
-   sudo apt update
-   sudo apt install build-essential gcc-multilib qemu-system-x86 python3
-
-3. Build & Run
-
-   make
-   make run
-
-If you want to flash a ready image instead:
-
-- `dd if=build/disk.img of=/dev/sdX bs=4M conv=fsync`  (replace `/dev/sdX`)
-
-What’s in this repo
-- source/: bootloader source (stage1, stage2, FAT, ELF loaders, VBE, serial)
-- example/: tiny 64-bit example kernel (kernel_entry.S, kernel.c, kernel.ld)
-- mkimage.py, Makefile: build + packaging helpers
-- build/disk.img: optional prebuilt image
-
-Documentation & deeper reading
-- source/bootloader/README.md — full bootloader design and boot sequence
-- source/myboot-dualfirmware/README.md — combined BIOS+UEFI image notes
-
-Contributing — quick
-We welcome help! See CONTRIBUTING.md for setup, coding style, and PR workflow. Good first contributions:
-- Add GitHub Actions to build the repo and run a smoke QEMU test.
-- Add a README demo GIF and screenshots.
-- Add automated image releases on GitHub Releases.
+Roadmap (short)
+- Bootloader improvements
+- Memory management
+- Drivers: keyboard, VGA
+- Packaging and releases
 
 License
+- GPL-3.0 (see LICENSE)
 
-This project is licensed under the GNU General Public License version 3 (GPLv3). See the `LICENSE` file for details.
-
-Thanks for checking this out — fork, star, and contribute. If you want, request a specific "good first issue" and I’ll create it for you.
+Contact
+- Open an issue or a PR.
