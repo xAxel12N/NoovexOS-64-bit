@@ -2,7 +2,7 @@
 
 NoovexOS 64 has no block cache layer under a generic inode cache the way Linux does. Every file the system knows about lives in one fixed in-memory table, `FS[]`, and every directory in a second table, `DT[]`. The on-disk formats (NVX4, or NTFS/FAT when installed that way) are back ends that fill those tables at mount, load file contents on demand, and get the changes written back. The rest of the kernel, the shell, the desktop apps and the Linux system-call layer all work on `FS[]`/`DT[]` through a small set of helpers.
 
-Every file here is its own compilation unit with a header under `include/nvx/fs/`. Before v8.96, `fs/unixfs.c` included `fs/nvx4.c` and `fs/ntfsk.c` included `fs/vfat.c`; they are now separate units too.
+Every file here is its own compilation unit with a header under `include/nvx/fs/`. Before v8.96, `fs/vfs/unixfs.c` included `fs/nvx/nvx4.c` and `fs/ntfs/ntfsk.c` included `fs/fat/vfat.c`; they are now separate units too.
 
 ```
               shell / desktop apps / core/linux.c (Linux syscalls)
@@ -25,7 +25,7 @@ Every file here is its own compilation unit with a header under `include/nvx/fs/
 
 ---
 
-## 7.1 The in-memory file table (`fs/ramfs.c`)
+## 7.1 The in-memory file table (`fs/vfs/ramfs.c`)
 
 ### Constants
 
@@ -52,7 +52,7 @@ static FsFile FS[FS_N];
 | `data`, `cap` | Heap buffer from `kmalloc` and its size. `data` may be `NULL` while `len > 0`, for a file that has not been loaded yet or has been evicted. The buffer always keeps one spare byte so `data[len]` can be `0`. |
 | `len` | Logical file size in bytes. |
 | `used` | Slot is in use. |
-| `folder` | Legacy category index used by the file explorer (`apps/file_explorer.c` filters on `FS[k].folder`). Not part of the directory tree. |
+| `folder` | Legacy category index used by the file explorer (`apps/system/file_explorer.c` filters on `FS[k].folder`). Not part of the directory tree. |
 | `dir` | Index of the parent directory in `DT[]`. `-2` marks an orphan (see 7.3). |
 | `mode`, `uid`, `gid`, `nlink`, `mtime`, `ctime`, `atime` | Unix metadata. Times are seconds since the epoch from `ux_now()` (= `k_realtime_ms()/1000`). |
 | `lazy` | The contents are on disk but not in memory. The next `fs_ensure` loads them. |
@@ -112,11 +112,11 @@ static volatile int g_fs_wb_pending; static u64 g_fs_wb_due;
 static void fs_wb_mark(int k){ (void)k; if(!g_fs_wb_pending){ g_fs_wb_pending=1; g_fs_wb_due=g_ticks+100; } }
 ```
 
-When the last reference to a file `vfile` goes away (`vf_unref` in `core/proc/jobs.c`) and `g_fs_dirty[k]` is set, the flag is cleared and `fs_wb_mark` is called. Then `fs_orphan_close(k)` runs. The kernel main loop (`init/main.c`) checks `if(g_fs_wb_pending&&g_ticks>=g_fs_wb_due)nvx3_sync_all();`, so a burst of closes becomes one commit about 100 ticks (one second at 100 Hz) later. `nvx3_sync_all` and `nvx3_flush_meta` both clear `g_fs_wb_pending`.
+When the last reference to a file `vfile` goes away (`vf_unref` in `core/proc/jobs.c`) and `g_fs_dirty[k]` is set, the flag is cleared and `fs_wb_mark` is called. Then `fs_orphan_close(k)` runs. The kernel main loop (`core/init/main.c`) checks `if(g_fs_wb_pending&&g_ticks>=g_fs_wb_due)nvx3_sync_all();`, so a burst of closes becomes one commit about 100 ticks (one second at 100 Hz) later. `nvx3_sync_all` and `nvx3_flush_meta` both clear `g_fs_wb_pending`.
 
 Synchronous paths bypass the timer:
 
-* `fs_sync(k)` to `nvx3_sync(k)` to `n4_sync_file` + `n4_commit`. This is used by `k_fsync`, `k_truncate_idx`, `k_rename`, `ux_mkfile`, `ux_symlink`, package extraction and `fs_save_bin` in `core/syscall.c`.
+* `fs_sync(k)` to `nvx3_sync(k)` to `n4_sync_file` + `n4_commit`. This is used by `k_fsync`, `k_truncate_idx`, `k_rename`, `ux_mkfile`, `ux_symlink`, package extraction and `fs_save_bin` in `sys/native/syscall.c`.
 * `nvx3_flush_meta()` commits metadata after link, unlink, chmod, chown and utime.
 
 ### File descriptors (declared in `ramfs.c`)
@@ -143,7 +143,7 @@ There is one global table of open files, `g_vf`. Per-process descriptor tables c
 
 ---
 
-## 7.2 The directory tree (`fs/dirtree.c`)
+## 7.2 The directory tree (`fs/vfs/dirtree.c`)
 
 ```c
 #define DN_MAX 512
@@ -160,7 +160,7 @@ static DNode DT[DN_MAX];
 | `dt_mkdir_at(parent, name)` | Returns an existing child of that name, or allocates a slot with mode `0040755` owned by `g_uid:g_gid`. It updates the parent's mtime and ctime. Names must be 1..63 characters. |
 | `dt_child(parent, name)` | Linear search for a child directory. |
 | `dt_resolve_dir(p)` | Walks an absolute or relative (from `g_dcwd`) path one component at a time, handling `.` and `..`. A component longer than 63 characters fails. Returns a `DT` index or -1. |
-| `dt_path_n(node, out, cap)` | Builds an absolute path by climbing parents, at most 16 levels. `dt_path(n, o)` is a macro in `core/syscall.c` that passes `sizeof(o)` as the capacity. |
+| `dt_path_n(node, out, cap)` | Builds an absolute path by climbing parents, at most 16 levels. `dt_path(n, o)` is a macro in `sys/native/syscall.c` that passes `sizeof(o)` as the capacity. |
 | `dt_is_tmp(d)` | Climbs up to 32 levels. Returns true if the ancestor directly under `/` is named `tmp`. |
 | `dt_save()` | Persists the tree: `nk_root_dt_save()` on NTFS/FAT, otherwise `nvx3_flush_meta()`. |
 | `dt_dir_ok`, `dt_dir_empty`, `k_is_ancestor` | Validity, emptiness and ancestry tests. A directory is not empty while it holds files, subdirectories or hard links (`ux_links_in`). |
@@ -198,7 +198,7 @@ static DNode DT[DN_MAX];
 
 ---
 
-## 7.3 Unix semantics (`fs/unixfs.c`)
+## 7.3 Unix semantics (`fs/vfs/unixfs.c`)
 
 ### Lookup and symlinks
 
@@ -339,7 +339,7 @@ static int ux_perm_ok(int k,int want){            /* want: 4=r 2=w 1=x */
 
 ---
 
-## 7.4 The VFS layer (`fs/vfs.c`)
+## 7.4 The VFS layer (`fs/vfs/vfs.c`)
 
 ```c
 struct vfs_fs_ops {
@@ -376,7 +376,7 @@ The output is built into the 4 KiB `g_procbuf` on every read. This set differs f
 7. `O_TRUNC` on a non-empty file to `fs_truncate_to(k, 0)`. Create and truncate both set `g_fs_dirty`.
 8. The starting offset is `len` for `O_APPEND`, otherwise 0. Descriptors 0-2 are not handed out when no process is current (`g_jcur < 0`). `O_CLOEXEC` (`0x80000`) is recorded in `fdce()`.
 
-Flag values: `O_RDONLY 0`, `O_WRONLY 1`, `O_RDWR 2`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_CLOEXEC 0x80000`. The Linux layer (`core/linux.c`) also decodes `O_DIRECTORY` (`0x10000`).
+Flag values: `O_RDONLY 0`, `O_WRONLY 1`, `O_RDWR 2`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_CLOEXEC 0x80000`. The Linux layer (`sys/linux/linux.c`) also decodes `O_DIRECTORY` (`0x10000`).
 
 ### `vfs_read` / `vfs_write`
 
@@ -405,7 +405,7 @@ Flag values: `O_RDONLY 0`, `O_WRONLY 1`, `O_RDWR 2`, `O_CREAT 0x40`, `O_EXCL 0x8
 
 ---
 
-## 7.5 Locating the data area (`fs/nvxfs.c`)
+## 7.5 Locating the data area (`fs/nvx/nvxfs.c`)
 
 `disk_init()` (called from `kmain` after `fs_init`) calls `nvx_locate()`, which picks the disk interface and the base LBA `g_nvx_base`. The legacy ATA driver is used when `ata_detect` finds a drive. Otherwise the generic disk is used: `gdisk_*` for AHCI or NVMe, with `g_nvx_generic = 1` and partition LBAs scaled by `dk_ratio()` on 4 KiB-sector drives.
 
@@ -436,7 +436,7 @@ The legacy readers `nvx_rd`/`nvx_rdn` return -1 whenever `g_rootfs` is set, so t
 
 ---
 
-## 7.6 The NVX4 on-disk format (`fs/nvx4.c`)
+## 7.6 The NVX4 on-disk format (`fs/nvx/nvx4.c`)
 
 ### Geometry
 
@@ -682,7 +682,7 @@ If power fails at any earlier point, sector 0 still carries the NVX2/NVX3 magic 
 
 ---
 
-## 7.8 NTFS and FAT root file systems (`fs/ntfsk.c`)
+## 7.8 NTFS and FAT root file systems (`fs/ntfs/ntfsk.c`)
 
 When no NoovexFS location is found, the system can run from an NTFS, FAT32 or FAT16 volume. Every back end is reached through one table:
 
@@ -721,13 +721,13 @@ static const rfs_ops g_rfs_fat16 = {"FAT16", vf_mount, ..., vf_fmt16};
   * `nk_root_flush()`: deletes on the volume every known path that no longer matches a live `FS` slot (this is how deletes and renames reach the disk), then rewrites the meta file.
   * `nk_root_dt_save()`: creates the directories, then removes known directories that no longer resolve, longest path first (up to 8 per call).
   * `nvx3_sync`, `nvx3_flush_meta`, `nvx3_sync_all` and `dt_save` all route here while `g_rootfs` is set.
-* Installing (`nk_install`, used by `init/installer.c`): format with the chosen ops (volume label `NOOVEXOS`), mount, write `/.noovexos` = `"NoovexOS\n"`, create every directory, copy every file (reporting progress), write the meta file, then unmount. The installer sets the data partition's MBR type to `0x07` (NTFS), `0x0C` (FAT32), `0x0E` (FAT16) or `0x7F` (NoovexFS).
+* Installing (`nk_install`, used by `core/init/installer.c`): format with the chosen ops (volume label `NOOVEXOS`), mount, write `/.noovexos` = `"NoovexOS\n"`, create every directory, copy every file (reporting progress), write the meta file, then unmount. The installer sets the data partition's MBR type to `0x07` (NTFS), `0x0C` (FAT32), `0x0E` (FAT16) or `0x7F` (NoovexFS).
 
 ---
 
 ## 7.9 FAT drivers
 
-### `fs/vfat.c`, read/write FAT16/FAT32 on sector callbacks
+### `fs/fat/vfat.c`, read/write FAT16/FAT32 on sector callbacks
 
 * State. The state is `g_vfat`:
   * geometry: `spc`, `rsvd`, `nfats`, `fatsz`, `root_lba`, `data_lba`, `clusters`, `rootclus`, `fsinfo`, `cbytes`;
@@ -748,7 +748,7 @@ static const rfs_ops g_rfs_fat16 = {"FAT16", vf_mount, ..., vf_fmt16};
   * on FAT32 a backup boot sector goes in sector 6 and FSInfo in sectors 1 and 7;
   * a volume-label entry is written in the root.
 
-### `fs/fat_ata.c`, boot-media reader
+### `fs/fat/fat_ata.c`, boot-media reader
 
 A minimal read-only FAT16/FAT32 reader on the legacy ATA drive (`ata_read`). It handles an MBR partition (types `0x01,0x04,0x06,0x0B,0x0C,0x0E`) or a superfloppy whose sector 0 starts with a jump. It supports only the root directory and 8.3 names (`fat_name83`):
 
@@ -769,7 +769,7 @@ On the file-system side (`unixfs.c`):
 
 ---
 
-## 7.10 Packages (`fs/pkg.c`)
+## 7.10 Packages (`fs/pkg/pkg.c`)
 
 `pkg_install(file, n, extract)` (shell command in `shell/commands.c`) works from an 8 MiB raw buffer (`g_pkg_raw`) and an 8 MiB inflate buffer (`g_pkg_inf`).
 

@@ -1,10 +1,10 @@
 # Part 8: Storage drivers, PCI and the installer
 
-This part covers everything between the PCI bus and a finished installation on disk: PCI configuration access, the four block-device back ends (ATA PIO, AHCI, NVMe, VirtIO-blk), the generic `gdisk_*` layer and its buffer cache, the graphical installer and disk manager in `init/installer.c`, USB mass storage, and the shell commands that work with disks.
+This part covers everything between the PCI bus and a finished installation on disk: PCI configuration access, the four block-device back ends (ATA PIO, AHCI, NVMe, VirtIO-blk), the generic `gdisk_*` layer and its buffer cache, the graphical installer and disk manager in `core/init/installer.c`, USB mass storage, and the shell commands that work with disks.
 
-All paths are relative to `source/kernel/`. The storage code is split into units (`drivers/bus/pci.c`, `drivers/storage/ahci.c`, `ata.c`, `gdisk.c`, `nvme.c`, `fs/nvxfs.c`, `fs/fat_ata.c`, `init/installer.c`), each with a header under `include/nvx/`. VirtIO-blk is a `MODS` driver that sees only `include/kapi.h` (see 8.6).
+All paths are relative to the repository root. The storage code is split into units (`drivers/bus/pci.c`, `drivers/storage/ahci.c`, `ata.c`, `gdisk.c`, `nvme.c`, `fs/nvx/nvxfs.c`, `fs/fat/fat_ata.c`, `core/init/installer.c`), each with a header under `include/nvx/`. VirtIO-blk is a `MODS` driver that sees only `include/kapi.h` (see 8.6).
 
-The file names do not match their contents. The code is not split up the way the file names suggest: | File | What it actually contains | |---|---| | `drivers/storage/ahci.c` | A standalone, read-only `ahci_identify()` probe with its own static buffers. It is used only by the `disks` command. The rest of the file is the PCnet NIC driver (`wcsr`, `nic_up_raw`, `nic_send`, ...). | | `drivers/storage/gdisk.c` | The real AHCI driver: `AHCI_*` addresses, `ahci_cmd`, `ahci_read`, `ahci_write1`, `ahci_flush` and `ahci_init`. | | `drivers/storage/nvme.c` | The NVMe driver, then the generic disk layer (`DK_*`, `gdisk_*`, buffer cache, `dk_ratio`), then the first installer helper (`ins83`, the `_binary_inst_*` externs). | | `init/installer.c` | The Disk Manager (`dm_*`), the kernel snapshot and checks (`inst_snapshot_data`, `kimg_check`, `kcheck_run`, `memmap_run`, `memtest_run`), the boot-partition builder (`inst_build_fs`), the installer UI and its run logic (`ip_*`), and the boot menu (`bootmenu_*`). |
+The file names do not match their contents. The code is not split up the way the file names suggest: | File | What it actually contains | |---|---| | `drivers/storage/ahci.c` | A standalone, read-only `ahci_identify()` probe with its own static buffers. It is used only by the `disks` command. The rest of the file is the PCnet NIC driver (`wcsr`, `nic_up_raw`, `nic_send`, ...). | | `drivers/storage/gdisk.c` | The real AHCI driver: `AHCI_*` addresses, `ahci_cmd`, `ahci_read`, `ahci_write1`, `ahci_flush` and `ahci_init`. | | `drivers/storage/nvme.c` | The NVMe driver, then the generic disk layer (`DK_*`, `gdisk_*`, buffer cache, `dk_ratio`), then the first installer helper (`ins83`, the `_binary_inst_*` externs). | | `core/init/installer.c` | The Disk Manager (`dm_*`), the kernel snapshot and checks (`inst_snapshot_data`, `kimg_check`, `kcheck_run`, `memmap_run`, `memtest_run`), the boot-partition builder (`inst_build_fs`), the installer UI and its run logic (`ip_*`), and the boot menu (`bootmenu_*`). |
 
 ---
 
@@ -19,13 +19,13 @@ static u32 pci_cfg(int bus,int slot,int fn,int off){ u32 a=(1u<<31)|((u32)bus<<1
 static void pci_cfgw(int bus,int slot,int fn,int off,u32 v){ ... outl(0xCF8,a); outl(0xCFC,v); }
 ```
 
-`drivers/net/nic.c:39` defines an identical writer called `pci_wcfg`. The `disks` command and the PCnet code use that one.
+`drivers/net/ethernet/nic.c:39` defines an identical writer called `pci_wcfg`. The `disks` command and the PCnet code use that one.
 
 ### Functions
 
 | Symbol | Scope | Behaviour |
 |---|---|---|
-| `pci_scan()` | buses 0-3, function 0 only | Fills the parallel arrays `pci_ven/pci_dev/pci_cls/pci_sub/pci_bus/pci_slot`, holding at most `PCI_MAX` = 24 entries, with the count in `pci_n`. `kmain` calls it (`init/main.c:145`, logged as `"boot: pci scanned"`). Consumers such as `pci`, `net`, `disks`, `wifi` and Settings rescan lazily with `if(!pci_n)pci_scan()`. |
+| `pci_scan()` | buses 0-3, function 0 only | Fills the parallel arrays `pci_ven/pci_dev/pci_cls/pci_sub/pci_bus/pci_slot`, holding at most `PCI_MAX` = 24 entries, with the count in `pci_n`. `kmain` calls it (`core/init/main.c:145`, logged as `"boot: pci scanned"`). Consumers such as `pci`, `net`, `disks`, `wifi` and Settings rescan lazily with `if(!pci_n)pci_scan()`. |
 | `pci_find(cls,sub,prog,&bus,&slot,&fn)` | all 256 buses, all functions of multifunction devices (header bit `0x800000` at offset `0x0C`) | Returns the first device that matches class and subclass. `prog<0` means any programming interface. The source comment gives the reason for the full scan: "NVMe/AHCI often live on high buses". |
 | `pci_quiesce()` | all 256 buses and functions, header type 0 only | Clears Bus-Master Enable (command bit 2) on devices that the firmware may have left doing DMA. It counts them in `g_pci_quiesced`, which `memmap` reports. It runs right after `pci_scan` at boot and logs `"boot: stopped DMA on devices the firmware left running"`. |
 
@@ -52,7 +52,7 @@ None of the storage drivers map BARs. They cast the 32-bit physical BAR value st
 | NVMe (`nvme_init`, `nvme.c`) | BAR0 (`0x10`) plus BAR1 (`0x14`) | BAR1 is non-zero (the 64-bit BAR has a high half) to `nvme_failstage=2`; it is an I/O BAR to 3; `base<0x1000` or `base>=0xF0000000` to 4 |
 | VirtIO (`vio_open`, `virtio.c`) | BAR0 | it is not an I/O BAR (`!(bar&1)`). Only the legacy I/O-port interface is supported. |
 
-Before touching registers, AHCI and NVMe set command bits `0x06` (Memory Space and Bus Master). `kapi_pci_enable` (`core/kapi.c:16`), which the VirtIO module uses, ORs in `0x407` instead: I/O, Memory, Bus Master and INTx-disable.
+Before touching registers, AHCI and NVMe set command bits `0x06` (Memory Space and Bus Master). `kapi_pci_enable` (`sys/native/kapi.c:16`), which the VirtIO module uses, ORs in `0x407` instead: I/O, Memory, Bus Master and INTx-disable.
 
 ---
 
@@ -84,7 +84,7 @@ For drive 0 and then drive 1, `ata_detect()` does the following:
 
 `ata_poll()` returns `-1` on ERR (`0x01`) or DF (`0x20`), and `0` once BSY is clear and DRQ is set. Every loop is bounded at 4,000,000 iterations.
 
-Two other files call `ata_detect()` directly: `fs/fat_ata.c` (`fat_mount`) and `fs/nvxfs.c` (`nvx_locate`, which runs from `disk_init()` at boot). When an IDE disk exists, NVXFS uses the `ata_*` functions directly (`g_nvx_generic=0`) rather than the gdisk layer.
+Two other files call `ata_detect()` directly: `fs/fat/fat_ata.c` (`fat_mount`) and `fs/nvx/nvxfs.c` (`nvx_locate`, which runs from `disk_init()` at boot). When an IDE disk exists, NVXFS uses the `ata_*` functions directly (`g_nvx_generic=0`) rather than the gdisk layer.
 
 ---
 
@@ -239,7 +239,7 @@ static int g_dktype=DK_NONE; static u32 g_dksectors=0;
 3. NVMe (`nvme_init`)
 4. VirtIO (`virtio_blk_probe`)
 
-`gdisk_ensure()` runs `gdisk_init` once and records that in `g_gdisk_probed`. The source comments call this lazy ("only when disks/installer is used"). However, `disk_init()` to `nvx_locate()` calls `gdisk_ensure()` at boot whenever no IDE drive exists (`fs/nvxfs.c:32`), so on AHCI, NVMe and VirtIO machines the probe actually happens during `kmain`.
+`gdisk_ensure()` runs `gdisk_init` once and records that in `g_gdisk_probed`. The source comments call this lazy ("only when disks/installer is used"). However, `disk_init()` to `nvx_locate()` calls `gdisk_ensure()` at boot whenever no IDE drive exists (`fs/nvx/nvxfs.c:32`), so on AHCI, NVMe and VirtIO machines the probe actually happens during `kmain`.
 
 `gdisk_name()` returns `"IDE/ATA"`, `"AHCI/SATA"`, `"NVMe"`, `"VirtIO"` or `"none"`.
 
@@ -261,10 +261,10 @@ static struct { u32 lba; u32 tick; int valid; u8 data[512]; } g_bc[BC_N];
 ```
 
 - `gdisk_read_cached(lba,cnt,buf)`: when `cnt==1`, it looks the sector up and fills a slot on a miss. The victim is the first invalid slot, otherwise the slot with the lowest tick. When `cnt!=1`, it calls `bc_invalidate(lba,cnt)` and then reads straight from the disk.
-- `bc_invalidate(lba,cnt)` is called from `gdisk_writen`, `gdisk_readn`, `gdisk_write_through` and `nk_wr` (`fs/ntfsk.c`).
+- `bc_invalidate(lba,cnt)` is called from `gdisk_writen`, `gdisk_readn`, `gdisk_write_through` and `nk_wr` (`fs/ntfs/ntfsk.c`).
 - `g_bc_hits` and `g_bc_miss` are the counters that `bcstat` prints.
 
-`nvx_rd()` in `fs/nvxfs.c` is the cached reader for NVXFS in generic mode.
+`nvx_rd()` in `fs/nvx/nvxfs.c` is the cached reader for NVXFS in generic mode.
 
 All LBAs and sector counts in this layer are `u32`, so every back end is limited to 2^32 x 512 B.
 
@@ -287,13 +287,13 @@ Reads and writes are split into chunks of at most 128 sectors and are bounds-che
 
 ---
 
-## 8.7 The installer (`init/installer.c`)
+## 8.7 The installer (`core/init/installer.c`)
 
 ### Entry points
 
 | Caller | Call |
 |---|---|
-| Boot menu item 3, "Install NoovexOS" (`init/bootmenu.c` `BM_ITEMS`) | `bootmenu_activate` to `ip_open(ST_BOOTMENU)` |
+| Boot menu item 3, "Install NoovexOS" (`core/init/bootmenu.c` `BM_ITEMS`) | `bootmenu_activate` to `ip_open(ST_BOOTMENU)` |
 | Shell `install` (requires root via `need_root`) | `ip_open(ST_DESKTOP)` |
 | Disk Manager buttons "Install to selected" / "Install whole disk" | `dm_do_install` to `ip_open_preset(ret, mode, part)` |
 
@@ -319,7 +319,7 @@ Install mode. "Continue" on the disk page always sets `ip_mode=0` (whole disk). 
 
 | `g_ip_fs` | UI label | Data partition type | Formatter | Minimum data size enforced in `ip_run` |
 |---|---|---|---|---|
-| 0 | NoovexFS ("native, recommended") | `NVX_PTYPE` = `0x7F` (`fs/nvxfs.c:10`) | `n4_format(dsz)` (`fs/nvx4.c`) | - |
+| 0 | NoovexFS ("native, recommended") | `NVX_PTYPE` = `0x7F` (`fs/nvx/nvxfs.c:10`) | `n4_format(dsz)` (`fs/nvx/nvx4.c`) | - |
 | 1 | NTFS | `0x07` | `nk_install(&g_rfs_ntfs,...)` | 32768 sectors: "NTFS needs at least 16 MB - choose FAT16 instead." |
 | 2 | FAT32 | `0x0C` | `nk_install(&g_rfs_fat32,...)` to `vf_fmt32` | 66600 sectors: "FAT32 needs at least 33 MB - choose FAT16 instead." |
 | 3 | FAT16 ("partitions up to 2 GB") | `0x0E` | `nk_install(&g_rfs_fat16,...)` to `vf_fmt16` | 8400 sectors: "FAT16 needs at least 4 MB." The size is also capped at 4186112 sectors. |
@@ -337,7 +337,7 @@ Size constants:
 
 In whole-disk mode the data partition is fixed at `INST_DATAP` sectors ( about 51 MiB) and starts right after the boot partition. In partition mode it fills the rest of the chosen partition.
 
-`nk_install(o,base,nsect,copy,prog)` (`fs/ntfsk.c:168`) does the following:
+`nk_install(o,base,nsect,copy,prog)` (`fs/ntfs/ntfsk.c:168`) does the following:
 
 1. Formats the partition with label `"NOOVEXOS"` and mounts it.
 2. Writes `/.noovexos`.
@@ -349,7 +349,7 @@ Its return codes: -1 = format failed; -2 = mount failed; -3 = marker write faile
 
 ### The kernel snapshot
 
-`kmain` calls `inst_snapshot_data()` first, right after `.bss` is zeroed (`init/main.c:124`). This happens before anything can modify the loaded image. The function copies the kernel image at `0x100000` into `g_kimg_snap[KSNAP_MAX]` (`KSNAP_MAX` = `0x800000`, 8 MiB, the same as the build limit). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`.
+`kmain` calls `inst_snapshot_data()` first, right after `.bss` is zeroed (`core/init/main.c:124`). This happens before anything can modify the loaded image. The function copies the kernel image at `0x100000` into `g_kimg_snap[KSNAP_MAX]` (`KSNAP_MAX` = `0x800000`, 8 MiB, the same as the build limit). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`.
 
 Note: Up to v8.94 the buffer was 3 MiB while the kernel had grown past 5 MB, so the snapshot was always empty and every installation stopped with "The kernel image could not be captured at boot." The buffer lives in `.bss`, which starts at `0xC00000`, so the larger size does not touch the fixed low-memory regions.
 
@@ -386,7 +386,7 @@ Contents (all directory timestamps are fixed at `0x6000`/`0x5B3B`):
 /boot/kernel64.bin       (copy 1 of the snapshot)
 /boot.cfg                (assets/installer/inst_boot.cfg: kernel=/boot/kernel64.bin, cmdline=noovexos, ...)
 /KERNEL64.BIN            (copy 2)
-/EFI/BOOT/BOOTX64.EFI    (bootloader/uefi/BOOTX64.EFI, embedded by build.sh as inst_efi.bin)
+/EFI/BOOT/BOOTX64.EFI    (boot/uefi/BOOTX64.EFI, embedded by build.sh as inst_efi.bin)
 ```
 
 The installer writes only `used = dstart + (next-2)` sectors, which ends at the last allocated cluster. The FAT, however, describes the whole partition. `ko1` and `ko2` are the byte offsets of the two kernel copies inside the image. `ip_mem_verify` uses them to compare the copies against the snapshot, both after building and after verification. If a copy differs, it rewrites the copy, waits 1 s and compares again, to tell RAM that does not hold data apart from something else overwriting it.
@@ -448,7 +448,7 @@ Partition entries are written in native blocks (`/R`). Everything else in the in
 
 ---
 
-## 8.8 Disk Manager (`dm_*`, `init/installer.c` lines 1-104)
+## 8.8 Disk Manager (`dm_*`, `core/init/installer.c` lines 1-104)
 
 The Disk Manager is a graphical MBR editor. It works on `g_dm_p[4]` (`dmpart {used,type,start,size}`), loaded by `dm_load()` from LBA 0 with `*dk_ratio()` scaling.
 
@@ -502,7 +502,7 @@ This is a Bulk-Only Transport class driver on top of the xHCI stack.
 - The FAT is cached one sector at a time in `ufatcache`, and `ufat_flush` writes the cached sector to every FAT copy.
 - Only the root directory is supported, with 8.3 names.
 
-This driver is separate from `fs/fat_ata.c` (`fat_mount`, `fat_listdir`, `fat_read_file`), a read-only FAT reader that works only through IDE PIO.
+This driver is separate from `fs/fat/fat_ata.c` (`fat_mount`, `fat_listdir`, `fat_read_file`), a read-only FAT reader that works only through IDE PIO.
 
 ---
 
@@ -525,7 +525,7 @@ This driver is separate from `fs/fat_ata.c` (`fat_mount`, `fat_listdir`, `fat_re
 | `kcheck` / `memmap` / `memtest` | 1537-1541 | Installer diagnostics: snapshot integrity, the firmware memory map against kernel areas (plus the `g_pci_quiesced` count), and a fill/verify/re-verify test of free RAM. |
 | `pci` | 696 | Prints `vendor:device class=`, flagging network devices. Covers only the `pci_scan` set (buses 0-3, function 0). |
 
-## 8.11 Partition scanner (`fs/parts.c`)
+## 8.11 Partition scanner (`fs/vfs/parts.c`)
 
 ### Disks (`bd_scan`)
 
@@ -554,6 +554,6 @@ Each partition is probed for its file system: NTFS, exFAT, FAT12/16/32, BitLocke
 |---|---|
 | `parts`, `lsblk`, `partitions` | list every disk and partition (also written to the log as `parts:` lines) |
 | `disks` | controller details, then the same list |
-| `nk_scan` (`fs/ntfsk.c`) | the root file system search walks `parts_scan_main` instead of its own four-entry MBR and 128-entry GPT loops |
+| `nk_scan` (`fs/ntfs/ntfsk.c`) | the root file system search walks `parts_scan_main` instead of its own four-entry MBR and 128-entry GPT loops |
 
 Limits: reads only (writing is still through the main disk); LBAs above 2^32 on the main and USB disks are not reachable through their 32-bit readers; one NVMe namespace.

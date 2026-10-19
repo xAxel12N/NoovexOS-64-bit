@@ -1,10 +1,10 @@
 # Part 10: Input, USB, ACPI, sound and graphics drivers
 
-This part goes through the device drivers that are not storage, network or Wi-Fi. For each one it covers the hardware interface, how the driver starts, how data moves, where waits are bounded, which shell command shows its state, and what it does not do. All paths are relative to `source/kernel/`. Every file here is a kernel unit with a header under `include/nvx/`, except the two sound back ends. `build.sh` compiles `drivers/sound/ac97.c` and `drivers/sound/hda.c` as separate objects (`MODS=...`) against `include/kapi.h`.
+This part goes through the device drivers that are not storage, network or Wi-Fi. For each one it covers the hardware interface, how the driver starts, how data moves, where waits are bounded, which shell command shows its state, and what it does not do. All paths are relative to the repository root. Every file here is a kernel unit with a header under `include/nvx/`, except the two sound back ends. `build.sh` compiles `drivers/sound/ac97.c` and `drivers/sound/hda.c` as separate objects (`MODS=...`) against `include/kapi.h`.
 
 ## 10.1 Where the drivers start and how they are polled
 
-All bring-up runs from `kmain` (`init/main.c`) in a fixed order once the PIC and PIT are up:
+All bring-up runs from `kmain` (`core/init/main.c`) in a fixed order once the PIC and PIT are up:
 
 ```c
 if(inb(0x64)==0xFF){ klog("boot: no PS/2 controller (USB keyboard/mouse only)"); }
@@ -31,7 +31,7 @@ When there is no USB HID device and no runnable JS job, the loop halts (`cpu_hal
 
 ## 10.2 Shared input state and the key queue
 
-Every input driver writes into one set of globals declared in `net/http.c` (the include order puts them there):
+Every input driver writes into one set of globals declared in `net/http/http.c` (the include order puts them there):
 
 ```c
 static volatile int mouse_dx=0, mouse_dy=0;        /* accumulated deltas     */
@@ -48,7 +48,7 @@ static int kpop(void){ if(kh==kt)return -1; char c=kbuf[kt]; kt=(kt+1)%KBUFN; re
 
 - `kbuf` is a 64-entry single-producer/single-consumer ring. It holds 63 characters, and when it is full new keys are dropped (`kpush` checks `n!=kt`). `kpop()` returns -1 when the ring is empty.
 - Arrow keys are encoded as control codes: left 17, right 18, up 19, down 20. Both the PS/2 path (`kbd_feed`) and the USB path (`usb_key_code`) use them. Escape is 27.
-- `kdown[]` is a held-key table indexed by PS/2 set-1 scancode. USB keyboards fill it through `hid2scan()`, which maps letters, digits, arrows, Enter, Esc, Backspace, Tab and Space, plus modifiers at 0x1D/0x2A/0x38/0x5B. That lets shortcuts such as Win+R (`gui/input.c`: `kdown[0x5B]` and `kdown[0x13]`) work with either keyboard.
+- `kdown[]` is a held-key table indexed by PS/2 set-1 scancode. USB keyboards fill it through `hid2scan()`, which maps letters, digits, arrows, Enter, Esc, Backspace, Tab and Space, plus modifiers at 0x1D/0x2A/0x38/0x5B. That lets shortcuts such as Win+R (`graphics/ui/input.c`: `kdown[0x5B]` and `kdown[0x13]`) work with either keyboard.
 
 `drivers/input/input.c` (7 lines) adds the helpers that the touchpad drivers use. Each one wraps its update in `cpu_irq_save` so it cannot race the IRQ12 handler:
 
@@ -57,11 +57,11 @@ static int kpop(void){ if(kh==kt)return -1; char c=kbuf[kt]; kt=(kt+1)%KBUFN; re
 | `in_rel(dx,dy)` | `mouse_dx+=dx; mouse_dy-=dy; mouse_evt=1` |
 | `in_buttons(l,r,m)` | sets the three button globals |
 | `in_scroll(v,h)` | `mouse_scroll+=v; mouse_hscroll+=h` |
-| `in_gesture(g)` | `g_gesture=g` (consumed once by `gui/input.c`) |
+| `in_gesture(g)` | `g_gesture=g` (consumed once by `graphics/ui/input.c`) |
 
-The consumer is `process_input()` in `gui/input.c`. It disables interrupts, snapshots and clears the deltas, and feeds `ux_mouse_push()` (the `/dev/input/mouse` device, VFS dev 10). It applies optional acceleration (`g_mouse_accel`) and moves the cursor. Gestures map to desktop actions there: swipe up opens the launcher, swipe down closes the launcher and notifications, and swipe left or right switches workspace. The pinch gestures are produced but not acted on in `gui/input.c`.
+The consumer is `process_input()` in `graphics/ui/input.c`. It disables interrupts, snapshots and clears the deltas, and feeds `ux_mouse_push()` (the `/dev/input/mouse` device, VFS dev 10). It applies optional acceleration (`g_mouse_accel`) and moves the cursor. Gestures map to desktop actions there: swipe up opens the launcher, swipe down closes the launcher and notifications, and swipe left or right switches workspace. The pinch gestures are produced but not acted on in `graphics/ui/input.c`.
 
-## 10.3 PS/2 keyboard and mouse (`drivers/input/ps2.c`, `ps2_mouse.c`)
+## 10.3 PS/2 keyboard and mouse (`drivers/input/ps2/ps2.c`, `ps2_mouse.c`)
 
 Hardware. The i8042 data port is 0x60 and the status/command port is 0x64. `pic_remap()` unmasks IRQ0-2 on the master (`outb(0x21,0xF8)`) and IRQ12 on the slave (`outb(0xA1,0xEF)`). `isr_body` routes both IRQ1 and IRQ12 to one function:
 
@@ -98,7 +98,7 @@ Inspect: `mousetest` prints movement, buttons and wheel for up to 3000 ticks (30
 
 Limits: only the first PS/2 port gets a keyboard; there is no hot-plug and no 5-button mice.
 
-## 10.4 Elan PS/2 touchpad (`drivers/input/elan_ps2.c`)
+## 10.4 Elan PS/2 touchpad (`drivers/input/ps2/elan_ps2.c`)
 
 This is a native Elantech v3/v4 decoder. It feeds the shared gesture engine (section 10.5.4) instead of plain mouse emulation.
 
@@ -150,7 +150,7 @@ This is MMIO only. `dw_present(base)` requires a page-aligned base below 4 GB an
 
 `dw_xfer(c,addr,w,wn,r,rn)` does one combined write-then-read. It disables the controller, sets the target and re-enables it. It then keeps the TX FIFO full with write bytes followed by read commands (RESTART on the first read, STOP on the last byte), while keeping at most `rxd-1` reads outstanding. The loop is bounded at 400000 iterations. Return codes: `-1` bad args or not initialised, `-2` enable timeout, `-3` abort (NACK, arbitration loss), `-4` timeout. No interrupts and no DMA are used.
 
-### 10.5.2 Finding the touchpad (`drivers/input/touchpad.c`)
+### 10.5.2 Finding the touchpad (`drivers/input/touchpad/touchpad.c`)
 
 `tp_init_ex(scan_all)` uses the raw AML pre-scanner (`aml_scan.c`, section 10.7.2), not the interpreter, because it runs before `acpi_aml_init()`:
 
@@ -167,7 +167,7 @@ This is MMIO only. `dw_present(base)` requires a page-aligned base below 4 GB an
 
 Once a descriptor register returns a valid HID descriptor, no other register is tried at that address. `ih_get_desc` decodes into a local copy and writes `t->d` only after the descriptor is valid, so a later failed probe cannot overwrite a good vendor and product. The `_CRS` address that is put in front of the static resource list is removed from the rest of the list (paths compared without `_` and `\`), so it is tried once. A device whose `_HID` starts with `ELAN` is a candidate even without PNP0C50; it is tried with HID first and the ELAN protocol second, like any HID pad with vendor 0x04F3.
 
-### 10.5.3 HID over I2C (`drivers/input/i2c_hid.c`) and report parsing (`tp_hid.c`)
+### 10.5.3 HID over I2C (`drivers/input/touchpad/i2c_hid.c`) and report parsing (`tp_hid.c`)
 
 `ih_setup` walks through numbered stages. The stage number is stored in `t->stage` and `tpinfo` prints it when a probe fails:
 
@@ -198,7 +198,7 @@ The physical size comes from Unit/Unit Exponent through `tp_unit_um` (cm or inch
 
 `ih_process` checks the 2-byte length and the report ID, and gathers contacts whose Tip (and Confidence, if present) are set. Hybrid-mode reports that are split across frames (Contact Count > fingers per report) are buffered in `pend[]` until complete.
 
-### 10.5.4 Gesture engine (`drivers/input/tp_gesture.c`)
+### 10.5.4 Gesture engine (`drivers/input/touchpad/tp_gesture.c`)
 
 `tpe_frame(E, contacts, n, button, ms, &out)` is shared by I2C-HID, ELAN-I2C and ELAN-PS/2. All its thresholds are in micrometres, converted using `upmm_x/upmm_y` (units per mm):
 
@@ -211,7 +211,7 @@ The physical size comes from Unit/Unit Exponent through `tp_unit_um` (cm or inch
 | Pinch | finger distance changes by >8000 um and by more than half the accumulated movement to `GES_ZOOM_IN/OUT` |
 | 3+ finger swipe | 15000 um along the dominant axis to one `GES_SWIPE_*` per touch |
 
-### 10.5.5 ELAN native I2C (`drivers/input/elan_i2c.c`)
+### 10.5.5 ELAN native I2C (`drivers/input/touchpad/elan_i2c.c`)
 
 `el_setup` writes `0x0100` (reset) to register 0x0005 and waits 100 ms. It then reads the 30-byte descriptor (all-0xFF means no device) and the 158-byte report descriptor. Next it reads pattern (0x0100), product (0x0101), firmware (0x0102), IC type (0x0103 or 0x0110 depending on pattern), SM version (0x0104; bit 4 means clickpad), max X/Y (0x0106/0x0107) and resolution (0x0108). It selects absolute mode (0x0300 = 1), wakes the device (0x0005 = 0x0800) and clears the power-off bit in 0x0307. Reports are 34 bytes (pattern at most 1, ID 0x5D) or 39 bytes (high-precision, ID 0x60), with five 5-byte finger records gated by `touch` bits 3..7. Report IDs 0x5E/0x5F carry trackpoint data.
 
@@ -373,7 +373,7 @@ Embedded controller. Ports come from the ECDT, or from a `PNP0C09` device's `_CR
 
 Power button. `acpi_poll` reads PM1a_STS bit 8 (PWRBTN_STS), clears it, debounces for 100 ticks and calls `acpi_power_button()` to `power_off()`. This works only in polled, non-HW-reduced mode. No SCI interrupt handler is used.
 
-Battery. It reads `_BIX` (at least 20 elements) or `_BIF` (at least 13) for design/full capacity, model, serial, type and OEM, and `_BST` for state, rate, remaining and voltage. Percentage = sumremaining/sumfull, rounded. Minutes to empty or full come from the rate (discarded above 99 h). It is refreshed every 500 ticks, and also when a battery or AC device gets a notification (0x81 forces a full `_BIX` re-read). `gui/desktop.c` prefers this data (`bat_via_ec=2`). With no ACPI battery it falls back to an older fixed-port EC reader on 0x62/0x66 that guesses the percentage from offsets {0x2A,0x32,0x42,0x90,0xB0,0x14,0x24} and the charging state from offset 0x01 bit 0.
+Battery. It reads `_BIX` (at least 20 elements) or `_BIF` (at least 13) for design/full capacity, model, serial, type and OEM, and `_BST` for state, rate, remaining and voltage. Percentage = sumremaining/sumfull, rounded. Minutes to empty or full come from the rate (discarded above 99 h). It is refreshed every 500 ticks, and also when a battery or AC device gets a notification (0x81 forces a full `_BIX` re-read). `graphics/ui/desktop.c` prefers this data (`bat_via_ec=2`). With no ACPI battery it falls back to an older fixed-port EC reader on 0x62/0x66 that guesses the percentage from offsets {0x2A,0x32,0x42,0x90,0xB0,0x14,0x24} and the charging state from offset 0x01 bit 0.
 
 Backlight (`bl_*`).
 - `bl_find` looks for a device with both `_BCM` and `_BCL`. Its levels are the de-duplicated `_BCL` entries from index 2 on, in the range 0-100.
@@ -418,7 +418,7 @@ static inline int sring_free(const struct sring* r){ u64 used=r->wr-r->rd; u32 g
 
 The DMA engine loops over the whole buffer forever. The driver never takes an interrupt; it learns the position by polling (`snd_poll` every 20 ms, and also inside every `write`).
 
-`/dev/dsp` (also `/dev/audio`, VFS dev 12): `snd_dev_write` starts the stream and writes whole frames (`len&~3`). If the ring is full it retries every 1 ms for up to 2000 tries. A JS-runtime process gets `JS_BLOCK` instead and is rescheduled. `core/linux.c` answers two OSS ioctls for the same device: 0xC0045002 (`SNDCTL_DSP_SPEED`, returns the rate) and 0x8010500C (`SNDCTL_DSP_GETOSPACE`, 32 fragments of 4096).
+`/dev/dsp` (also `/dev/audio`, VFS dev 12): `snd_dev_write` starts the stream and writes whole frames (`len&~3`). If the ring is full it retries every 1 ms for up to 2000 tries. A JS-runtime process gets `JS_BLOCK` instead and is rescheduled. `sys/linux/linux.c` answers two OSS ioctls for the same device: 0xC0045002 (`SNDCTL_DSP_SPEED`, returns the rate) and 0x8010500C (`SNDCTL_DSP_GETOSPACE`, 32 fragments of 4096).
 
 Shell: `audio`/`sound` (back end and HDA codec/paths), `audio vol <0-100>`, `audio tone [50-8000 Hz]` (one second of a +/-6000 triangle wave from `snd_tone`).
 
@@ -444,13 +444,13 @@ The device is PCI class 04/03 with a 32-bit MMIO BAR (BARs above 4 GB are refuse
 
 `hda_volume` scales each path's output-amp gain from 0 to the offset step, and mutes at 0 %.
 
-Host-side tests for both probes, including codec timeout and muted-codec cases, are in `source/tools/tests/drivers/drvsim.c`.
+Host-side tests for both probes, including codec timeout and muted-codec cases, are in `tools/tests/drivers/drvsim.c`.
 
 Sound limits: playback only, no capture; one stream; a fixed format; no jack detection or switching (all found paths are routed at the same time); no HDMI audio codecs beyond what the path search happens to find; the first matching PCI device only.
 
 ## 10.10 Video
 
-### 10.10.1 Boot framebuffer (`drivers/video/framebuffer.c`)
+### 10.10.1 Boot framebuffer (`drivers/video/fb/framebuffer.c`)
 
 There is no display-mode driver. The kernel draws into the linear framebuffer that the bootloader handed over at 0x5000:
 
@@ -464,7 +464,7 @@ There is no display-mode driver. The kernel draws into the linear framebuffer th
 
 All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpaper and icons. Primitives include `fill_rect`, anti-aliased `fill_round` and `fill_circle` (coverage from `isqrt32`), `shadow_soft`, the 8x14 bitmap font (`dchar/dstr`) and proportional anti-aliased text from `fontaa` (`pdstr`). `blit_all()` copies `SCENE` to the hardware buffer row by row, honouring pitch, 24/32 bpp and the RGB swap. If `g_panel_oled` is set, the whole image shifts by 1 px through 4 positions every 3000 ticks (30 s) to protect OLED panels.
 
-### 10.10.2 SIMD blitting (`arch/x86_64/simd.c`)
+### 10.10.2 SIMD blitting (`arch/x86_64/cpu/simd.c`)
 
 `arch_fpu_init` enables SSE (CR0.MP, clears EM, CR4.OSFXSR/OSXMMEXCPT) and sets `g_ssse3` from CPUID.1:ECX bit 9. The kernel itself is compiled with `-mno-sse`, so these inline-asm routines are the only code that touches XMM registers:
 
@@ -476,11 +476,11 @@ All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpape
 
 `g_accel2d` (default 1, toggled in Settings > "2D acceleration") chooses between these and plain loops.
 
-### 10.10.3 Effects (`gui/effects.c`)
+### 10.10.3 Effects (`graphics/theme/effects.c`)
 
 `glass_panel` and `glass_liquid` do in-place frosted-glass effects on `SCENE`: two or three passes of a horizontal running-sum box blur of radius `blurR` (one row buffer `g_glasstmp[MAXW]`), a tint blend, top highlight gradients, and 1 px rim lines that follow the rounded-corner mask (`cut()`). `soft_ring` draws a blended annulus. Everything runs on the CPU.
 
-### 10.10.4 Write-combining and Intel graphics (`drivers/video/igpu.c`)
+### 10.10.4 Write-combining and Intel graphics (`drivers/video/intel/igpu.c`)
 
 `igpu_early()` runs right after the framebuffer is known. `pat_cpu_init()` programs IA32_PAT (MSR 0x277) as `0x0007040600070106`: entry 1 (PWT only) becomes write-combining, the others keep their defaults (nothing else in the kernel uses PWT alone). Every CPU runs it, the application processors in `ap_entry_c`. `wc_map()` then sets PWT and clears PCD and the PAT bit on the 2 MB (or 4 KB) page-table entries that cover the framebuffer, flushes the caches and reloads CR3. Firmware MTRRs normally make the framebuffer uncached; MTRR UC combined with PAT WC gives WC, so screen writes are combined into bursts. It is only done when the framebuffer is at least 2 MB, so the 2 MB pages stay inside the display BAR. `gpuinfo` shows "write-combining" when it was applied.
 
@@ -512,7 +512,7 @@ Every submission resets the ring head to 0 and sets the tail in the saved contex
 
 Render engine (base 0x2000, started after the blitter is ready, `rcs_init()`): the same submission code with a 23-page context (status page plus 22 pages of render state) whose image adds `BB_PER_CTX_PTR`, `INDIRECT_CTX`, `INDIRECT_CTX_OFFSET` and a third `MI_LOAD_REGISTER_IMM` for `R_PWR_CLK_STATE` (0x20C8). On Apollo Lake and Gemini Lake the value is computed like Linux does: the enabled subslices from `FUSE2` (0x9120, bits 22:20 are disable bits) and the enabled EUs per subslice from 0x9134 (8 bits per subslice, 6 used), giving enable (bit 31), subslice count enable (bit 11), the subslice count (bits 10:8) and the minimum and maximum EU count (bits 3:0 and 7:4); a full UHD 605 gives 0x80000B66. Without this request power gating can leave EUs switched off. Other chips keep 0. Completion is signalled by `PIPE_CONTROL` (CS stall, render-target and data-cache flush, post-sync write of the sequence number to the status page through the GGTT). Steps: 7 `MI_STORE_DATA_IMM` into the status page and read back; 8 `PIPE_CONTROL` flush then `PIPELINE_SELECT` GPGPU (0x69040302); 9 `STATE_BASE_ADDRESS` (all bases 0, sizes maximal); 10 `MEDIA_VFE_STATE` (32 threads, 4 URB entries); 11 ready; then the shaders below are started. While the GPU path is used, `blit_all()` has the blitter copy `SCENE` into the hidden buffer and then flips; three failed copies turn it off and the CPU copy takes over. `gpu blit gpu` and `gpu blit cpu` choose by hand. QEMU has no Intel graphics, so only the fallback was tested.
 
-GPU instruction assembler (`drivers/video/gen9asm.c`, stage 2). It encodes native 128-bit gen 9 EU instructions in align1 mode, never compacted, with NoMask: `mov`, `and`, `or`, `shr`, `shl`, `add` with register regions (`<8;8,1>`, scalars `<0;1,0>`) and 32-bit or packed-vector (`:uv`) immediates, and `send` with an immediate message descriptor and the end-of-thread bit. `g9_kernel_fill()` and `g9_kernel_copy()` build the two first shaders. Both were checked bit for bit against Intel's own assembler (IGA, platform gen 9) and its semantic checks (`-Wall`) during development.
+GPU instruction assembler (`drivers/video/intel/gen9asm.c`, stage 2). It encodes native 128-bit gen 9 EU instructions in align1 mode, never compacted, with NoMask: `mov`, `and`, `or`, `shr`, `shl`, `add` with register regions (`<8;8,1>`, scalars `<0;1,0>`) and 32-bit or packed-vector (`:uv`) immediates, and `send` with an immediate message descriptor and the end-of-thread bit. `g9_kernel_fill()` and `g9_kernel_copy()` build the two first shaders. Both were checked bit for bit against Intel's own assembler (IGA, platform gen 9) and its semantic checks (`-Wall`) during development.
 
 | Shader | What one thread does (one 8x8 pixel block, SIMD8, one thread per thread group) |
 |---|---|
@@ -536,7 +536,7 @@ One dispatch (`sh_run()`): `PIPE_CONTROL` (CS stall, render-target and data-cach
 
 If a shader does not finish within 50 ms the render engine is marked stopped and the scene buffer is not switched, so a late GPU write cannot reach the screen. The blitter and CPU drawing are not affected. QEMU has no Intel graphics, so only the fallback was tested.
 
-GPU drawing (stages 3 to 5: `drivers/video/gpukern.c`, `gq.c`, `gfx.c`). `gpukern.c` builds 12 shaders with the assembler; all share a prologue that computes the 8x8 block, a per-pixel mask for the rectangle edges and the media block reads, and an epilogue that writes the block. Constant data per operation holds the block origin, the negated rectangle, colours, alpha, source and mask offsets, gradient step and colour key.
+GPU drawing (stages 3 to 5: `drivers/video/intel/gpukern.c`, `gq.c`, `gfx.c`). `gpukern.c` builds 12 shaders with the assembler; all share a prologue that computes the 8x8 block, a per-pixel mask for the rectangle edges and the media block reads, and an epilogue that writes the block. Constant data per operation holds the block origin, the negated rectangle, colours, alpha, source and mask offsets, gradient step and colour key.
 
 | Shader | Pixel result |
 |---|---|
@@ -625,7 +625,7 @@ Copy engine for other code (v9.82): `nvgsp_ce_ready()` says whether the channels
 
 Limits: untested on a real card; only the simulator (`tools/tests/nvidia/nvsim.c`, `check.py nvidia`) has run it. The firmware has no TU117 booter, so a TU117 uses the TU116 one unless `booter_load-535.113.01.bin` for TU117 is put in Files. FWSEC cannot run twice: if WPR2 is still set from an earlier try the driver stops and asks for a full power-off. After `nvgsp boot` a monitor on the NVIDIA card may go dark, because GSP-RM takes over the display engine and there is no mode setting yet. No interrupts are used; every wait polls with a time limit.
 
-## 10.11 CPU information (`arch/x86_64/cpuinfo.c`)
+## 10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)
 
 The file defines the `cpuid()` and `rdmsr()` inline wrappers that the rest of the kernel uses (`tp_is_amd`, `arch_fpu_init`, timers). `get_brand()` reads leaves 0x80000002-4 into `g_brand[52]` and strips leading spaces, or uses "x86-64 CPU" when the extended leaves are missing. It sets `g_lma` from IA32_EFER (MSR 0xC0000080) bit 10. The `cpu`/`cpuid` command prints these two values. The later `cores`/`cpu` command branch (SMP view) responds only to `cores`, because the earlier `seq(cmd,"cpu")` takes `cpu`. Frequency, cache and feature-flag reporting are not in this file. TSC/HPET calibration lives in `hrtimer.c` (`timers` command).
 

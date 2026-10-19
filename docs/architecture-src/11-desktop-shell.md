@@ -6,37 +6,37 @@ Each GUI and app file is its own compilation unit with a header under `include/n
 
 | File | Contents |
 |---|---|
-| `assets/font.c`, `assets/fontaa.c`, `lib/js.c` | bitmap font, anti-aliased font, the small integer JS interpreter (the web engine and its QuickJS are in Part 13) |
-| `rune/rune_gfx.h` | prototypes for the Rune-compiled object |
-| `gui/effects.c` | glass/blur panels |
-| `gui/theme.c` | colour constants, `g_state`, cursor drawing |
-| `gui/wm.c` | `WN[]`, open/close/focus, notifications, window frame |
+| `assets/font.c`, `assets/fontaa.c`, `lib/js/js.c` | bitmap font, anti-aliased font, the small integer JS interpreter (the web engine and its QuickJS are in Part 13) |
+| `lang/rune/rune_gfx.h` | prototypes for the Rune-compiled object |
+| `graphics/theme/effects.c` | glass/blur panels |
+| `graphics/theme/theme.c` | colour constants, `g_state`, cursor drawing |
+| `graphics/ui/wm.c` | `WN[]`, open/close/focus, notifications, window frame |
 | `shell/terminal.c` | terminal grid, scrollback, prompt, `neofetch` text |
 | `shell/commands.c` | parser, pipes, scripting, `run_cmd_one`, live terminal |
 | `apps/*.c` | editor, calculator, chatgpt, browser, settings, files_classic, (fs/pkg.c), file_explorer, small_apps, doom, logs |
-| `gui/desktop.c`, `gui/input.c` | compositor, dock, launcher, `process_input` |
-| `init/splash.c`, `bootmenu.c`, `installer.c`, `setup.c` | boot UI, installer, OOBE and login |
+| `graphics/ui/desktop.c`, `graphics/ui/input.c` | compositor, dock, launcher, `process_input` |
+| `core/init/splash.c`, `bootmenu.c`, `installer.c`, `setup.c` | boot UI, installer, OOBE and login |
 
-Note: the file names do not always match what is inside. `gui/theme.c` also holds the mouse-cursor code (`ARROW[]`, `draw_cursor`). `gui/effects.c` holds `glass_panel`/`glass_liquid`. `apps/logs.c` holds the central `draw_app`/`app_click` dispatchers. The Lua drawing canvas is in `gui/input.c`.
+Note: the file names do not always match what is inside. `graphics/theme/theme.c` also holds the mouse-cursor code (`ARROW[]`, `draw_cursor`). `graphics/theme/effects.c` holds `glass_panel`/`glass_liquid`. `apps/system/logs.c` holds the central `draw_app`/`app_click` dispatchers. The Lua drawing canvas is in `graphics/ui/input.c`.
 
 ---
 
 ## 11.1 UI states and the main loop
 
-`gui/theme.c` defines the global UI state machine:
+`graphics/theme/theme.c` defines the global UI state machine:
 
 ```c
 enum { ST_SETUP, ST_LOGIN, ST_DESKTOP, ST_BOOTMENU, ST_RECOVERY, ST_DISKMGR, ST_INSTALL, ST_LIVE };
 static int g_state=ST_DESKTOP;
 ```
 
-The default is `ST_DESKTOP`, but `init/main.c` changes the state to `ST_LIVE` before the main loop starts:
+The default is `ST_DESKTOP`, but `core/init/main.c` changes the state to `ST_LIVE` before the main loop starts:
 
 ```c
 g_state=ST_LIVE; live_init(); ... live_present();
 ```
 
-The OS therefore always boots into the full-screen live terminal. Each pass of the main loop in `init/main.c` (lines ~173-227) sends input to the handler for the current state:
+The OS therefore always boots into the full-screen live terminal. Each pass of the main loop in `core/init/main.c` (lines ~173-227) sends input to the handler for the current state:
 
 | `g_state` | input handler | redraw |
 |---|---|---|
@@ -69,7 +69,7 @@ Other things the loop does in desktop mode:
 
 ---
 
-## 11.2 Window manager (`gui/wm.c`)
+## 11.2 Window manager (`graphics/ui/wm.c`)
 
 ### Fixed window table
 
@@ -110,7 +110,7 @@ There are two separate mechanisms:
 
 ---
 
-## 11.3 Desktop shell and compositor (`gui/desktop.c`)
+## 11.3 Desktop shell and compositor (`graphics/ui/desktop.c`)
 
 ### Scene buffers
 
@@ -209,26 +209,26 @@ Below the tiles are a brightness slider (`bl_set`, only when `g_bl.ok`) and a vo
 
 "Run as administrator" builds the command `sudo /path/NAME`, opens the Terminal, and passes the command to `run_cmd()`. "New > Code (.nvx)" creates `script.nvx` containing a C-style `int main(){ printf(...); }` template.
 
-### Themes and effects (`gui/theme.c`, `gui/effects.c`, `apps/settings.c`)
+### Themes and effects (`graphics/theme/theme.c`, `graphics/theme/effects.c`, `apps/system/settings.c`)
 
 | Item | Where | Values |
 |---|---|---|
 | Accent | `ACC/ACC2`, `ACV[5]`/`ACN[5]` | Blue, Violet, Teal, Rose, Amber (`ACC2 = mix(ACC,black,60)`) |
-| Wallpaper theme | `g_theme`, `THN[NWALL]` | 0-5 = Porsche, Crane, Wireframe, Peaks, Earth, Yosemite, decoded from embedded JPEGs by `wall_decode()`. The default is 1 (Crane) in `gui/theme.c`. |
-| Custom wallpaper | `g_wallmode=1`, `wall_custom_slot` | any PNG/JPEG/WebP file ("Set as wallpaper"), cover-scaled by `wall_blit_cover()` with bilinear filtering (`wall_smooth()`, once per change); then `wall_enhance()` (`gui/wallfx.c`) removes colour bands, adds glow, depth blur, vignette and light. Built-in wallpapers are 1920x1080 JPEGs in `assets/wall_hd.c` (six, chosen with `g_theme` 0-5); smaller pictures are enlarged with Catmull-Rom filtering |
+| Wallpaper theme | `g_theme`, `THN[NWALL]` | 0-5 = Porsche, Crane, Wireframe, Peaks, Earth, Yosemite, decoded from embedded JPEGs by `wall_decode()`. The default is 1 (Crane) in `graphics/theme/theme.c`. |
+| Custom wallpaper | `g_wallmode=1`, `wall_custom_slot` | any PNG/JPEG/WebP file ("Set as wallpaper"), cover-scaled by `wall_blit_cover()` with bilinear filtering (`wall_smooth()`, once per change); then `wall_enhance()` (`graphics/theme/wallfx.c`) removes colour bands, adds glow, depth blur, vignette and light. Built-in wallpapers are 1920x1080 JPEGs in `assets/wall_hd.c` (six, chosen with `g_theme` 0-5); smaller pictures are enlarged with Catmull-Rom filtering |
 | Safe mode | `g_safemode` | flat gradient wallpaper, no animation |
 | Cursor | `g_cursor`, `CUN[5]` | Arrow, Large, White, Cross, Dot (`draw_cursor`); hidden while DOOM holds the mouse |
 | Terminal theme | `g_tth`, `TTH[6]` | Midnight, Dracula, Solarized, Paper (light), Matrix, Noovex |
 
 `TTH[]` is defined in commands.c. The fixed shell colours (`WHT`, `GREY`, `GREEN`, `RED`, `CYAN`, and the prompt blue) are remapped per theme by `tmap()`. Light themes also darken bright custom colours.
 
-`gui/effects.c` provides `glass_panel()` and `glass_liquid()`. Both use a running-sum box blur over `SCENE` (2 or 3 passes of radius `blurR`), a tint blend, a top highlight, and a 1-px rim. The terminal window has its own frosted background, `term_glass()`. It is a separable horizontal and vertical box blur (radius 10) into `g_blurtmp`, followed by an opacity blend `g_topa`. Settings to Terminal sets `g_topa` (Off/Low/Medium/High map to 100/90/80/<80) and `g_tblur`.
+`graphics/theme/effects.c` provides `glass_panel()` and `glass_liquid()`. Both use a running-sum box blur over `SCENE` (2 or 3 passes of radius `blurR`), a tint blend, a top highlight, and a 1-px rim. The terminal window has its own frosted background, `term_glass()`. It is a separable horizontal and vertical box blur (radius 10) into `g_blurtmp`, followed by an opacity blend `g_topa`. Settings to Terminal sets `g_topa` (Off/Low/Medium/High map to 100/90/80/<80) and `g_tblur`.
 
 Wallpaper and accent sync with the signed-in Noovex account. `nvx_settings_save()` POSTs `{"accent":N,"theme":N}` to `/api/public/settings`, and `nvx_settings_load()` applies the returned values.
 
 ---
 
-## 11.4 Input routing (`gui/input.c`, `process_input`)
+## 11.4 Input routing (`graphics/ui/input.c`, `process_input`)
 
 `process_input()` returns `changed`, which tells the main loop whether a full frame is needed. Its order of operations:
 
@@ -293,7 +293,7 @@ Output from programs does not go through `term_putc` but through the escape-sequ
 
 ---
 
-## 11.6 Setup (OOBE) and login (`init/setup.c`)
+## 11.6 Setup (OOBE) and login (`core/init/setup.c`)
 
 The path to the desktop runs through two screens:
 
@@ -326,7 +326,7 @@ Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 
 ## 11.7 Applications (`apps/`)
 
-`draw_app(i)` and `app_click(i,...)` in `apps/logs.c` dispatch drawing and clicks to each app.
+`draw_app(i)` and `app_click(i,...)` in `apps/system/logs.c` dispatch drawing and clicks to each app.
 
 | Window | Source | Key functions | What it does |
 |---|---|---|---|
@@ -344,9 +344,9 @@ Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 | Clock, Task Manager, Calendar, Snake, Flappy Bird, neofetch, Paint | `small_apps.c` | `clock_draw`, `sysmon_draw/_click`, `calendar_draw/cal_key`, `snake_*`, `flappy_*`, `neofetch_draw`, `paint_*` | small utilities and games |
 | Welcome, About | `file_explorer.c` | `welcome_draw`, `about_draw` | static pages |
 
-### Browser (`apps/browser.c`, 698 lines)
+### Browser (`apps/internet/browser.c`, 698 lines)
 
-Since v9.08 the Browser window is a front end for the web engine in `web/`, which is described in Part 13. `apps/browser.c` keeps the window, the toolbar (back, reload, bookmark star, address bar, Go, Save, Home, Find, Cookies), up to 6 tabs, bookmarks and history (saved with `bm_save_fs` and `hist_save_fs`, history also pulled from the account by `nvx_hist_fetch`), downloads, the image viewer and the about: pages (`about:blank`, `about:js`, `about:cookies`, `about:console`, `about:history`, `about:bookmarks`). It decodes images for the engine (`nwk_image`: PNG, baseline JPEG, WebP, GIF, BMP, ICO) and routes mouse, wheel and keys into it (section 13.11).
+Since v9.08 the Browser window is a front end for the web engine in `web/`, which is described in Part 13. `apps/internet/browser.c` keeps the window, the toolbar (back, reload, bookmark star, address bar, Go, Save, Home, Find, Cookies), up to 6 tabs, bookmarks and history (saved with `bm_save_fs` and `hist_save_fs`, history also pulled from the account by `nvx_hist_fetch`), downloads, the image viewer and the about: pages (`about:blank`, `about:js`, `about:cookies`, `about:console`, `about:history`, `about:bookmarks`). It decodes images for the engine (`nwk_image`: PNG, baseline JPEG, WebP, GIF, BMP, ICO) and routes mouse, wheel and keys into it (section 13.11).
 
 `browser_go(push)` loads the page in `g_url`. Input that is not URL-like becomes a DuckDuckGo query; a URL without a scheme tries HTTPS first and falls back to HTTP; the back stack holds 16 entries. Network errors show an error page with the reason. The engine and its HTTP client are described in sections 13.2 and 13.9.
 
@@ -358,7 +358,7 @@ There are two implementations.
 
 `file_explorer.c` (header "v8.95") browses the directory tree.
 
-- This PC (`fx_mode`), modelled on Windows 11: an address bar with "This PC", "Search This PC", a command bar (Properties, Open, Refresh, Open Settings), a "Devices and drives" group with one tile per volume (drive icon, name with drive letter, a usage bar that turns red above 90 percent, "X free of Y"), selection on click and open on double-click, the drives listed under This PC in the side bar, an item count in the status bar, and a Properties dialog (General tab: label, type, file system, location, used, free and capacity in bytes and short form, a used/free ring chart). The volume list comes from `vol_scan()` in `fs/volumes.c`: C: is the running system (NoovexOS on disk or the live RAM disk); then every partition of every disk (`gdisk_read_on()` reads another disk without changing the current one) and of the USB stick, in MBR (with logical partitions) or GPT (EFI, Microsoft reserved, recovery, BIOS boot and swap types and entries with the hidden or no-drive-letter attribute are left out). Each partition is identified as FAT12/16/32, NTFS, exFAT, ext2/3/4 or NVX4 and gets its label (FAT root-directory label or boot-sector label, NTFS `$Volume` name, exFAT label entry, ext volume name) and free space (FAT32 FSInfo or a count of free FAT entries up to a 16 MB FAT, the NTFS `$Bitmap` data runs, the exFAT allocation bitmap, the ext superblock). Letters follow from C: in that order. The list is rebuilt on Refresh, when the USB stick changes and when the USB device list changes; a USB stick that was plugged in before boot is set up on the first scan, skipping ports that already belong to a keyboard, mouse, camera or printer (`msd_autoinit_safe`). Double-clicking C: opens the folder tree, a FAT USB stick opens the USB view and other drives open Properties. Win+E opens File Explorer; the `explorer`, `files` and `thispc` commands do the same from the kernel console.
+- This PC (`fx_mode`), modelled on Windows 11: an address bar with "This PC", "Search This PC", a command bar (Properties, Open, Refresh, Open Settings), a "Devices and drives" group with one tile per volume (drive icon, name with drive letter, a usage bar that turns red above 90 percent, "X free of Y"), selection on click and open on double-click, the drives listed under This PC in the side bar, an item count in the status bar, and a Properties dialog (General tab: label, type, file system, location, used, free and capacity in bytes and short form, a used/free ring chart). The volume list comes from `vol_scan()` in `fs/vfs/volumes.c`: C: is the running system (NoovexOS on disk or the live RAM disk); then every partition of every disk (`gdisk_read_on()` reads another disk without changing the current one) and of the USB stick, in MBR (with logical partitions) or GPT (EFI, Microsoft reserved, recovery, BIOS boot and swap types and entries with the hidden or no-drive-letter attribute are left out). Each partition is identified as FAT12/16/32, NTFS, exFAT, ext2/3/4 or NVX4 and gets its label (FAT root-directory label or boot-sector label, NTFS `$Volume` name, exFAT label entry, ext volume name) and free space (FAT32 FSInfo or a count of free FAT entries up to a 16 MB FAT, the NTFS `$Bitmap` data runs, the exFAT allocation bitmap, the ext superblock). Letters follow from C: in that order. The list is rebuilt on Refresh, when the USB stick changes and when the USB device list changes; a USB stick that was plugged in before boot is set up on the first scan, skipping ports that already belong to a keyboard, mouse, camera or printer (`msd_autoinit_safe`). Double-clicking C: opens the folder tree, a FAT USB stick opens the USB view and other drives open Properties. Win+E opens File Explorer; the `explorer`, `files` and `thispc` commands do the same from the kernel console.
 - Views: browse mode, list and grid views, sort and filter-as-you-type (`fx_filter`), back/forward/up history (`fx_hist`), and a preview pane (`fx_preview`).
 - Clipboard: copy/cut/paste (`fx_clip`, `fx_paste`).
 - Rename and new items: `fx_start_input` modes 0-3 cover renaming a file or folder and creating a new folder or file.
@@ -406,7 +406,7 @@ int main(){
 
 This works because `js.h` accepts C type keywords as declarations (`js_isctype`), hoists `type name(...)` functions (`js_hoist`), implements `printf` with `%d %i %u %s %c %%`, and calls `main()` automatically after the top-level code (`js_run`).
 
-### ChatGPT (`apps/chatgpt.c`)
+### ChatGPT (`apps/internet/chatgpt.c`)
 
 `cg_send()` builds `{"message":"...","source":"noovexos"}` with minimal escaping and calls:
 
@@ -416,7 +416,7 @@ https_request(CG_HOST,"/api/public/chat","POST","Content-Type: application/json\
 
 `CG_HOST` is a `*.lovable.app` preview host. The client takes `"reply"` (or `"error"`) from the JSON body with `json_str`. The conversation keeps the last 24 messages (`CG_MAXMSG`), each up to 400 characters, with role 0 = user, 1 = assistant, 2 = system note.
 
-### DOOM (`apps/doom.c`)
+### DOOM (`apps/games/doom.c`)
 
 The game is linked as a blob (`doomgeneric_Create/Tick`). The kernel implements the platform hooks `DG_DrawFrame` (copies the 640x400 `DG_ScreenBuffer` into `SCENE`), `DG_GetKey`, `DG_GetMouse`, `DG_GetTicksMs` (`g_ticks*10`) and `DG_SleepMs`.
 
@@ -437,9 +437,9 @@ Input.
 - `sc_to_doomkey()` maps scan codes: WASD/arrows, Ctrl fires, E/Space use, Shift runs, Alt strafes, and 1-7 choose weapons.
 - Clicking inside DOOM captures the mouse (`g_doom_mcap`); Esc releases it.
 
-### Gears (`apps/gpu3d.cpp`, `apps/r3d/r3d.cpp`)
+### Gears (`apps/graphics/gpu3d.cpp`, `apps/graphics/r3d/r3d.cpp`)
 
-Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Drivers & Hardware, or `gears` (`gpu3d`, `glgears`) in the terminal. `apps/r3d/r3d.cpp` is a software 3D renderer: vector and matrix classes, meshes built at start (glxgears-style gears, a torus knot, a sphere, a cube, a floor), near-plane clipping, a triangle rasterizer with edge functions, a depth buffer, perspective-correct normals and positions, Blinn-Phong light with a sky/ground ambient term, rim light, fog, planar shadows and a wireframe mode. `apps/gpu3d.cpp` is the window: it renders into a frame buffer, shows a large FPS counter and an information bar, and hands the frame to the screen in one of three ways:
+Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Drivers & Hardware, or `gears` (`gpu3d`, `glgears`) in the terminal. `apps/graphics/r3d/r3d.cpp` is a software 3D renderer: vector and matrix classes, meshes built at start (glxgears-style gears, a torus knot, a sphere, a cube, a floor), near-plane clipping, a triangle rasterizer with edge functions, a depth buffer, perspective-correct normals and positions, Blinn-Phong light with a sky/ground ambient term, rim light, fog, planar shadows and a wireframe mode. `apps/graphics/gpu3d.cpp` is the window: it renders into a frame buffer, shows a large FPS counter and an information bar, and hands the frame to the screen in one of three ways:
 
 | Path | When | How |
 |---|---|---|
@@ -449,7 +449,7 @@ Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Driver
 
 Keys: 1 gears, 2 3 4 other scenes (showcase, materials, 192 cubes), W wireframe, S shadows, H half resolution, Space pause, arrows and + - for the camera, R reset, G start the NVIDIA card. Speed: a gears frame at 996x586 takes 8.7 ms on one core of the build machine (about 115 frames a second); in QEMU without hardware acceleration it is 1-2 frames a second.
 
-### Settings (`apps/settings.c`)
+### Settings (`apps/system/settings.c`)
 
 The sidebar lists `SC_LBL[8]`. Each category holds the following:
 
@@ -466,7 +466,7 @@ The sidebar lists `SC_LBL[8]`. Each category holds the following:
 
 The window opens at up to 1000 x 800, sized to the screen and centred above the taskbar. The sidebar is 190-256 px wide with 42-px items 50 px apart; the selected page is an accent-coloured pill. Content has 40-px margins and 28 px between cards. Toggles (`st_toggle`) are 48 x 26 with a shadowed knob and a hover state, buttons (`st_btn`) are 34 px tall with rounded corners, the segmented control (`st_seg`) is a soft tray with a raised white chip, and text uses the proportional font.
 
-### Small apps (`apps/small_apps.c`)
+### Small apps (`apps/accessories/small_apps.c`)
 
 - Clock: an analog face drawn with the integer `isin`/`icos` and `clock_hand`.
 - Task Manager (`sysmon_draw`): one row per open window. Each row shows a per-app memory figure from `tm_app_kb()`, which the source calls "representative" (for example Browser 149504 KB and DOOM 33792 KB). Seven background rows (`TM_BG_N`: System, Compositor, Input, Network stack, NVXFS, TLS engine, Heap manager) use fixed `TM_BG_KB` values. "End task" calls `close_win()` on the selected row.
@@ -476,7 +476,7 @@ The window opens at up to 1000 x 800, sized to the screen and centred above the 
 - neofetch: a graphical page that is separate from the text `neofetch()` in terminal.c.
 - Paint: a 540x360 `paint_buf` with a 12-colour `PPAL`, three brush radii (2/4/8) and Clear.
 
-### Logs and Terminal Finder (`apps/logs.c`)
+### Logs and Terminal Finder (`apps/system/logs.c`)
 
 `logs_draw()` shows the kernel base/size, DMA arena, `CR3`, kernel `RSP`, tick count, and a live 8-row hexdump of memory at `0x00100000`. The dump offset advances with `g_ticks/30`.
 
@@ -537,7 +537,7 @@ Important properties:
 
 ### Environment variables
 
-`core/syscall.c` keeps `g_env[NENV=24]` entries, each with a 24-byte name and a 128-byte value.
+`sys/native/syscall.c` keeps `g_env[NENV=24]` entries, each with a 24-byte name and a 128-byte value.
 
 - `env_init()` seeds `PATH=/bin HOME=/home PWD=/home USER=root SHELL=/bin/nsh TERM=xterm-256color XZ_DEFAULTS=--memlimit-compress=20MiB`.
 - `env_set()` is called by `su`, `cd` (sets `PWD`), the `setuid` syscall (131), and login (`HOME`, `USER` in fs/unixfs.c).
@@ -679,7 +679,7 @@ The table lists every `seq(cmd,"...")` branch of `run_cmd_one()` (shell/commands
 
 ## 11.9 Scripting languages
 
-### JavaScript / C-script interpreter (`lib/js.c`)
+### JavaScript / C-script interpreter (`lib/js/js.c`)
 
 This is a tree-walking interpreter that runs directly over tokens (there is no AST). Its limits are compile-time constants:
 
@@ -721,9 +721,9 @@ Callers: the Editor's Run button (`ed_run_cb`, which also runs `.nvx` files open
 4. on error, appends `error: ...`;
 5. closes the state and returns the captured output buffer `g_lua_out[16384]`. `lua_emit` is the print sink.
 
-The `nvx` library maps to C functions in `gui/input.c`. Those functions draw into a centred canvas window with its own chrome (`lc_chrome`) directly on the framebuffer:
+The `nvx` library maps to C functions in `graphics/ui/input.c`. Those functions draw into a centred canvas window with its own chrome (`lc_chrome`) directly on the framebuffer:
 
-| Lua | C (`gui/input.c`) | Notes |
+| Lua | C (`graphics/ui/input.c`) | Notes |
 |---|---|---|
 | `nvx.window(title,w,h)` | `nvxlc_window` | clamps to 120x80 ... (W-40)x(H-100); centres |
 | `nvx.clear(c)` / `nvx.rect(x,y,w,h,c)` / `nvx.pixel(x,y,c)` / `nvx.line(...)` / `nvx.text(x,y,s,c)` | `nvxlc_*` | clipped to the canvas |
@@ -742,17 +742,17 @@ else if(cmd[0]=='l'&&cmd[1]=='u'&&cmd[2]=='a'&&(cmd[3]==' '||cmd[3]==0)){
     else { const char* out=nvx_lua_run(cmd+4); ... } }
 ```
 
-Because `run_cmd_one` copies only the first word into `cmd[24]`, `cmd[3]` is always 0 for `lua ...`. As written, the shell therefore always prints the usage text and never calls `nvx_lua_run`; the code would have to use `arg` instead of `cmd+4`. `mm/pmm_vmm.c:9` declares `extern const char* nvx_lua_run(const char*)`.
+Because `run_cmd_one` copies only the first word into `cmd[24]`, `cmd[3]` is always 0 for `lua ...`. As written, the shell therefore always prints the usage text and never calls `nvx_lua_run`; the code would have to use `arg` instead of `cmd+4`. `mem/pmm_vmm.c:9` declares `extern const char* nvx_lua_run(const char*)`.
 
-### Rune (`rune/`)
+### Rune (`lang/rune/`)
 
-`rune/rune_gfx.rn` is written in the user's Rune language. `build.sh` step 3a compiles it into an object, which is linked into the kernel as a blob (`rune_gfx.o` in `BLOBS`):
+`lang/rune/rune_gfx.rn` is written in the user's Rune language. `build.sh` step 3a compiles it into an object, which is linked into the kernel as a blob (`rune_gfx.o` in `BLOBS`):
 
 ```
 tools/rune build rune/rune_gfx.rn --freestanding --target=x86_64-none -o $B/rune_gfx.o
 ```
 
-The C side is the two prototypes in `rune/rune_gfx.h`: `rune_render(u32* buf,int w,int h,int t)` and `rune_fib(int n)`. The Rune source:
+The C side is the two prototypes in `lang/rune/rune_gfx.h`: `rune_render(u32* buf,int w,int h,int t)` and `rune_fib(int n)`. The Rune source:
 
 ```rust
 fn rune_render(buf: *u32, w: i32, h: i32, t: i32) -> void {
@@ -775,7 +775,7 @@ There is no HexLang code in this repository. A case-insensitive search for "hexl
 
 ---
 
-## 11.10 Kernel modules: `mod/hello_mod.c` and the `.MOD` format
+## 11.10 Kernel modules: `usr/mod/hello_mod.c` and the `.MOD` format
 
 A `.MOD` file is a position-independent ELF64 shared object; `HELLO.MOD` has `e_type` = 3 (`ET_DYN`), x86-64, entry `0x1070`, 11 program headers. It imports kernel functions by name:
 
@@ -809,13 +809,13 @@ Separately, `build.sh` line 21 uses the word `MODS` for drivers that are compile
 
 ---
 
-## 11.11 Fonts and assets (`source/kernel/assets/`)
+## 11.11 Fonts and assets (`assets/`)
 
 | File | Contents | Used by |
 |---|---|---|
 | `font.h` | `FONT814[95][14]`: 8x14 1-bpp ASCII 32-126, LSB-first | Pixel terminal font |
 | `fontaa.h` | `fontaa[95][112]`: DejaVu Sans Mono anti-aliased 8x14 alpha atlas (`AA_CW 8`, `AA_CH 14`) | `dchar/dstr/dstr_ctr` (blended, fixed 8-px advance), `tglyph` (terminal), proportional text `pdch/pdstr` |
-| `nvx_assets.h` | Wallpapers as baseline JPEG byte arrays: `wall_cobalt_jpg` (13153 B), `wall_wire_jpg`, `wall_crane_jpg`, plus 640x360 `wall_porsche_jpg`, `wall_field_jpg`, `wall_desert_jpg`; `wordmark_a` (448x184 8-bit coverage) | included by `apps/browser.c:70`; decoded by `wall_decode()` |
+| `nvx_assets.h` | Wallpapers as baseline JPEG byte arrays: `wall_cobalt_jpg` (13153 B), `wall_wire_jpg`, `wall_crane_jpg`, plus 640x360 `wall_porsche_jpg`, `wall_field_jpg`, `wall_desert_jpg`; `wordmark_a` (448x184 8-bit coverage) | included by `apps/internet/browser.c:70`; decoded by `wall_decode()` |
 | `demo_pptx.h` | `demo_pptx[8360]` | `fs_init()` to `demo.pptx` |
 | `nyc_pptx.h` | `nyc_pptx[897654]` | not included anywhere |
 | `installer/` | `inst_boot.bin` (512 B), `inst_stage2.bin`, `inst_boot.cfg` (`timeout=2`, `video=auto`, `kernel=/boot/kernel64.bin`) | linked as installer blobs (`inst_boot.o`, `inst_stage2.o`, `inst_cfg.o` in `BLOBS`) |
@@ -878,7 +878,7 @@ The console has one termios, `g_tios` (`struct vt_tios`, the same 36-byte layout
 | `VMIN`, `VTIME` (raw) | `VMIN > 0`: `read` waits for input and returns what is there. `VMIN = 0, VTIME = 0`: returns at once, possibly 0 bytes. `VMIN = 0, VTIME = t`: waits up to t tenths of a second (the deadline is kept in the thread's `pollwake`) |
 | `OPOST`, `ONLCR` | LF on output also returns to column 0 (the default); a program that clears `OPOST` must send CR LF itself, as full-screen programs do |
 
-The keyboard drivers deliver the extra keys as codes 2 (Home), 5 (End), 6 (Page Up), 7 (Page Down), 14 (Delete) and 15 (Insert) besides the arrows 17-20 (PS/2 in `drivers/input/ps2.c`, USB in `drivers/usb/xhci.c`). While a job owns the terminal, Ctrl+letter is passed as `0x100 | code` so it cannot be confused with those key codes.
+The keyboard drivers deliver the extra keys as codes 2 (Home), 5 (End), 6 (Page Up), 7 (Page Down), 14 (Delete) and 15 (Insert) besides the arrows 17-20 (PS/2 in `drivers/input/ps2/ps2.c`, USB in `drivers/usb/xhci.c`). While a job owns the terminal, Ctrl+letter is passed as `0x100 | code` so it cannot be confused with those key codes.
 
 `TIOCGWINSZ` reports `trows` x `tcols` (for example 58 x 158 on a 1280 x 1024 screen in live mode).
 
@@ -896,6 +896,6 @@ When the foreground job finishes or stops, `jc_tty_restore` resets the terminal:
 
 ## Task Manager and Settings (v9.73)
 
-Task Manager (`apps/taskmgr.c`) has a left rail with Processes, Performance, Devices and Services. Performance samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
+Task Manager (`apps/system/taskmgr.c`) has a left rail with Processes, Performance, Devices and Services. Performance samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
 
-Settings (`apps/settings.c`) keeps the current page in `g_stpg`. Pages 0-8 are the category pages (tiles), higher numbers are sub-pages; `pg_parent()` gives each page its parent, which builds the path at the top and the back button. The previous per-category pages are drawn by `old_leaf()` and reused as sub-pages. `settings <page>` opens a page from the terminal.
+Settings (`apps/system/settings.c`) keeps the current page in `g_stpg`. Pages 0-8 are the category pages (tiles), higher numbers are sub-pages; `pg_parent()` gives each page its parent, which builds the path at the top and the back button. The previous per-category pages are drawn by `old_leaf()` and reused as sub-pages. `settings <page>` opens a page from the terminal.
