@@ -5,6 +5,7 @@
 Unix-like 64-bit operating system — experimental, educational, and community-driven.
 
 Quick links: [Getting started](#quick-start) · [Contributing](CONTRIBUTING.md) · [Roadmap](#roadmap) · [Issues](https://github.com/xAxel12N/NoovexOS-64-bit/issues)
+<img width="1281" height="1018" alt="image" src="https://github.com/user-attachments/assets/fb9c9e45-67ee-4ac2-828f-868baeea6cac" />
 
 ---
 
