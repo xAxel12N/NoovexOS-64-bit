@@ -1,12 +1,12 @@
 # Part 4: CPU, interrupts, timers and multi-core
 
-This part describes everything between the bare CPU and the scheduler: the inline CPU helpers, descriptor tables, the interrupt and system-call entry paths, the legacy PIC/PIT, the high-resolution timers, and the symmetric-multiprocessing (SMP) layer with its big kernel lock. All paths are relative to `source/kernel/`. Each `.c` file is its own compilation unit with an interface header under `include/nvx/` (Part 1, section 3); functions another unit calls are declared there, everything else stays `static`. The four assembly files (`boot64.S`, `isr64.S`, `userspace.S`, `ap_trampoline.S`) are separate objects as before.
+This part describes everything between the bare CPU and the scheduler: the inline CPU helpers, descriptor tables, the interrupt and system-call entry paths, the legacy PIC/PIT, the high-resolution timers, and the symmetric-multiprocessing (SMP) layer with its big kernel lock. All paths are relative to the repository root. Each `.c` file is its own compilation unit with an interface header under `include/nvx/` (Part 1, section 3); functions another unit calls are declared there, everything else stays `static`. The four assembly files (`boot64.S`, `isr64.S`, `userspace.S`, `ap_trampoline.S`) are separate objects as before.
 
-Include order matters for this part. `arch/x86_64/cpu.h` and `arch/x86_64/percpu.c` come first (`kernel64.c` lines 25-26), so every later file can use `PCPU`, `cpu_id()` and the BKL. `ring3.c` and `smp.c` come early, `interrupts.c` and `core/panic.c` come in the middle, `hrtimer.c` comes late, and `smp_sched.c` and `cpu_init.c` come last, just before `init/main.c`.
+Include order matters for this part. `arch/x86_64/cpu/cpu.h` and `arch/x86_64/cpu/percpu.c` come first (`kernel64.c` lines 25-26), so every later file can use `PCPU`, `cpu_id()` and the BKL. `ring3.c` and `smp.c` come early, `interrupts.c` and `core/panic.c` come in the middle, `hrtimer.c` comes late, and `smp_sched.c` and `cpu_init.c` come last, just before `core/init/main.c`.
 
 ---
 
-## 4.1 `arch/x86_64/cpu.h`, the CPU interface
+## 4.1 `arch/x86_64/cpu/cpu.h`, the CPU interface
 
 `cpu.h` is the only header portable code uses for privileged instructions. `tools/check.py` rejects inline assembly outside `arch/`, and `tools/tests/linux/cpu_host.h` provides host stand-ins for the Linux-hosted test build. Every helper is `static inline`.
 
@@ -21,31 +21,31 @@ Include order matters for this part. `arch/x86_64/cpu.h` and `arch/x86_64/percpu
 | `cpu_irq_save` | `pushfq; popq; cli` | returns RFLAGS |
 | `cpu_irq_restore(f)` | `sti` if `f & 0x200` | restores IF only |
 | `cpu_get_pt` / `cpu_set_pt` | `mov cr3` | writing CR3 flushes the TLB (no CR4.PGE is set anywhere, so there are no global pages) |
-| `cpu_flush_page(v)` | `invlpg (v)` | `mm/pmm_vmm.c` `vm_map`/`vm_unmap`/COW, `core/linux.c` munmap |
-| `cpu_cache_flush` | `wbinvd` | `apps/files_classic.c` |
+| `cpu_flush_page(v)` | `invlpg (v)` | `mem/pmm_vmm.c` `vm_map`/`vm_unmap`/COW, `sys/linux/linux.c` munmap |
+| `cpu_cache_flush` | `wbinvd` | `apps/system/files_classic.c` |
 | `cpu_tsc` | `rdtsc` | |
-| `cpu_rand32` / `cpu_seed32` | `rdrand` / `rdseed` + `setc` | return CF; used by `net/http.c`, `nvxcrypto2.c` |
+| `cpu_rand32` / `cpu_seed32` | `rdrand` / `rdseed` + `setc` | return CF; used by `net/http/http.c`, `nvxcrypto2.c` |
 | `cpu_cpuid(leaf,sub,...)` | `cpuid` | |
 | `cpu_sp` | `mov rsp` | |
 | `cpu_fpu_save` / `cpu_fpu_restore` | `fxsave` / `fxrstor` | per-process `fx` area in `jc_enter` / `jc_leave` |
 | `cpu_bios_ebda_seg` | `movw 0x40E` | BDA EBDA segment, `core/power.c` RSDP scan |
 | `cpu_triple_fault` | `lidt` of a null IDT, then `int3` | last-resort reboot (`core/power.c`) |
 | `cpu_rdmsr` / `cpu_wrmsr` | `rdmsr` / `wrmsr` | |
-| `cpu_set_fsbase(v)` | `wrmsr 0xC0000100` (FS_BASE) | `arch_prctl(ARCH_SET_FS)` in `core/linux.c` case 158 |
+| `cpu_set_fsbase(v)` | `wrmsr 0xC0000100` (FS_BASE) | `arch_prctl(ARCH_SET_FS)` in `sys/linux/linux.c` case 158 |
 | `cpu_percpu()` | `mov %gs:16, ...` | reads `pcpu.self` (see 4.9) |
 | `cpu_set_percpu(p)` | `wrmsr 0xC0000101 = p`, `wrmsr 0xC0000102 = 0` | GS_BASE = per-CPU block, KERNEL_GS_BASE = 0 |
 | `cpu_cr2` | `mov cr2` | page-fault address |
-| `cpu_copy(d,s,n)` | `rep movsb` | `fs/ramfs.c` `kmemcpy` |
+| `cpu_copy(d,s,n)` | `rep movsb` | `fs/vfs/ramfs.c` `kmemcpy` |
 
 `cpu_set_percpu` puts the per-CPU pointer in the *active* GS base and zero in the *shadow* one. The first `swapgs` on the way to ring 3 swaps them, so user code always runs with GS base 0 and the kernel pointer waits in KERNEL_GS_BASE until the next entry.
 
 ---
 
-## 4.2 `arch/x86_64/cpu_init.c`
+## 4.2 `arch/x86_64/cpu/cpu_init.c`
 
 ### `arch_fpu_init`
 
-The BSP calls this early in `kmain` (`init/main.c`, after `percpu_init_bsp` and `mm_load`), and every AP calls it again in `ap_entry_c`.
+The BSP calls this early in `kmain` (`core/init/main.c`, after `percpu_init_bsp` and `mm_load`), and every AP calls it again in `ap_entry_c`.
 
 ```c
 cr0 &= ~(1<<2);            /* EM=0: x87/SSE not emulated            */
@@ -55,7 +55,7 @@ g_ssse3 = (cpuid(1).ecx >> 9) & 1;
 fninit; ldmxcsr 0x1F80;    /* all SSE exceptions masked             */
 ```
 
-Bit 16 is CR0.WP (Write Protect), not NE. With WP set, kernel writes to read-only user pages also fault, which the copy-on-write logic in `mm/pmm_vmm.c` relies on. `g_ssse3` selects SIMD paths (`simd.h`). XSAVE and AVX are not enabled. Only `fxsave` state is managed.
+Bit 16 is CR0.WP (Write Protect), not NE. With WP set, kernel writes to read-only user pages also fault, which the copy-on-write logic in `mem/pmm_vmm.c` relies on. `g_ssse3` selects SIMD paths (`simd.h`). XSAVE and AVX are not enabled. Only `fxsave` state is managed.
 
 ### `apic_virtual_wire`
 
@@ -83,9 +83,9 @@ Other gates are filled in later (see 4.4). There is one IDT, `static struct idt_
 
 ---
 
-## 4.3 GDT, selectors, TSS and IST stacks (`arch/x86_64/ring3.c`)
+## 4.3 GDT, selectors, TSS and IST stacks (`arch/x86_64/user/ring3.c`)
 
-At boot the kernel runs on the bootloader's GDT. `us_init()` installs the final GDT the first time anything needs ring 3. It is called from `ring3_run`, `elf.c`, `sched.c`, `jobs.c` (`jc_enter`), `core/syscall.c`, the shell, and every AP's `ap_entry_c`. `us_init` returns early if `g_us_ready` is set. Because `g_us_ready`, `g_gdt`, `g_gdtp` and `g_tss` are all per-CPU macros (4.9), each core builds and loads its own GDT and TSS exactly once.
+At boot the kernel runs on the bootloader's GDT. `us_init()` installs the final GDT the first time anything needs ring 3. It is called from `ring3_run`, `elf.c`, `sched.c`, `jobs.c` (`jc_enter`), `sys/native/syscall.c`, the shell, and every AP's `ap_entry_c`. `us_init` returns early if `g_us_ready` is set. Because `g_us_ready`, `g_gdt`, `g_gdtp` and `g_tss` are all per-CPU macros (4.9), each core builds and loads its own GDT and TSS exactly once.
 
 `gdt_set(i, base, limit, access, flags)` packs a legacy 8-byte descriptor into `g_gdt[i]`.
 
@@ -113,7 +113,7 @@ After that, `us_init` calls `idt_set128()`, `lsys_init()`, `idt_use_ist(2,1)` an
 
 ---
 
-## 4.4 IDT gates and the vector map (`arch/x86_64/interrupts.c`)
+## 4.4 IDT gates and the vector map (`arch/x86_64/interrupts/interrupts.c`)
 
 ```c
 struct idt_entry{ u16 lo; u16 sel; u8 ist; u8 attr; u16 mid; u32 hi; u32 z; };
@@ -211,7 +211,7 @@ void isr_dispatch(regs_t*r){
 2. Other exceptions (< 32). If `g_js_running` is set and the fault came from ring 3, `jc_fault(r)` runs. It saves the frame into the job's `ctx` and maps the vector to a signal: 0/16/19 to SIGFPE (8), 6 to SIGILL (4), 1/3 to SIGTRAP (5), anything else to SIGSEGV (11). If the signal is unhandled or masked, the job is finished; otherwise the signal is marked pending. Then `jc_leave()` runs. Any kernel-mode exception calls `panic(r,0)`.
 3. `HR_LAPIC_VEC` (BSP, user mode) to `hr_lapic_isr()`.
 4. IRQ0 (PIT). If a job is in ring 3, `jc_timer(r)` runs. It preempts after two ticks (`g_ticks - g_js_slice >= 2`): it saves `ctx`, sends `pic_eoi(0)` and calls `jc_leave()`. The older demo scheduler (`g_preempt_on`, used by `preempt`/`ipc`/`compositor`) round-robins over `g_proc[]`. It copies the frame into `g_proc[cur].ctx`, sets `g_tss.rsp0`, loads the next CR3 and overwrites `*r`, so `isr_common` irets into the next process. If no process is left, it calls `k_longjmp(g_preempt_kern,1)`.
-5. IRQ1 / IRQ12 to `ps2_byte()` (keyboard and mouse share one byte reader in `drivers/input/ps2.c`).
+5. IRQ1 / IRQ12 to `ps2_byte()` (keyboard and mouse share one byte reader in `drivers/input/ps2/ps2.c`).
 6. EOI. `pic_eoi(irq)` runs unless the vector is 255 (`isr_ignore`). EOI is sent to the slave for IRQ at least 8, then always to the master.
 
 ### RSOD (`core/panic.c`)
@@ -239,11 +239,11 @@ static void pic_remap(void){
 static void pit_init(u32 hz){ div=1193182/hz; outb(0x43,0x36); lo; hi; }  /* ch0, mode 3 */
 ```
 
-`kmain` runs `pic_remap(); pit_init(100);`, so `g_ticks` advances at 100 Hz (10 ms per tick). `g_ticks` is a `volatile u64` defined in `net/http.c` and declared in `include/nvx/net/http.h`. Everything else (USB, NVMe, Wi-Fi) is polled, so only IRQ 0, 1, 2 and 12 are unmasked.
+`kmain` runs `pic_remap(); pit_init(100);`, so `g_ticks` advances at 100 Hz (10 ms per tick). `g_ticks` is a `volatile u64` defined in `net/http/http.c` and declared in `include/nvx/net/http/http.h`. Everything else (USB, NVMe, Wi-Fi) is polled, so only IRQ 0, 1, 2 and 12 are unmasked.
 
-After `cpu_irq_on()`, `kmain` checks that ticks are actually arriving. If `g_ticks` does not move within 3,000,000 pauses, it clears `g_ticks_live` and the main loop calls `pit_poll_tick()` instead (`init/main.c`). That function latches channel 0 and counts reloads.
+After `cpu_irq_on()`, `kmain` checks that ticks are actually arriving. If `g_ticks` does not move within 3,000,000 pauses, it clears `g_ticks_live` and the main loop calls `pit_poll_tick()` instead (`core/init/main.c`). That function latches channel 0 and counts reloads.
 
-Boot order (`init/main.c`):
+Boot order (`core/init/main.c`):
 
 ```
 percpu_init_bsp -> arch_fpu_init -> ... -> arch_idt_init -> [UEFI] apic_virtual_wire
@@ -253,7 +253,7 @@ percpu_init_bsp -> arch_fpu_init -> ... -> arch_idt_init -> [UEFI] apic_virtual_
 
 ---
 
-## 4.8 High-resolution timers (`arch/x86_64/hrtimer.c`)
+## 4.8 High-resolution timers (`arch/x86_64/time/hrtimer.c`)
 
 All state lives in `static struct {...} g_hr`. `src` is the clock source (0 = PIT ticks, 1 = HPET, 2 = TSC). `ref` records what the calibration was measured against (0 nothing, 1 HPET, 2 PIT channel 2, 3 CPUID 0x15, 4 CPUID 0x16), and `timers_cmd` in `shell/commands.c` shows these names. `why[48]` holds the reason the HPET was rejected.
 
@@ -290,7 +290,7 @@ The main loop uses `hr_wake_at` on the desktop when the cursor moved. It arms a 
 
 ---
 
-## 4.9 Per-CPU state (`arch/x86_64/percpu.c`)
+## 4.9 Per-CPU state (`arch/x86_64/cpu/percpu.c`)
 
 ```c
 #define NCPU 16
@@ -330,7 +330,7 @@ The old global names are kept as macros over `PCPU->...`, so pre-SMP code became
 
 ---
 
-## 4.10 The big kernel lock (`arch/x86_64/percpu.c`)
+## 4.10 The big kernel lock (`arch/x86_64/cpu/percpu.c`)
 
 ```c
 struct bkl { volatile u32 next, serving; volatile int owner; volatile int depth; };
@@ -423,7 +423,7 @@ Any later kernel entry that decides to leave the job calls `jc_leave()`. It save
 
 ---
 
-## 4.12 Multi-core discovery (`arch/x86_64/smp.c`)
+## 4.12 Multi-core discovery (`arch/x86_64/smp/smp.c`)
 
 - `acpi_count_cores()` is the older, read-only scanner. It searches `0xE0000-0xFFFFF` for `"RSD PTR "`, follows the XSDT (revision at least 2) or the RSDT (both must be below `0xF0000000`), finds `APIC`, and counts MADT type-0 entries with the enabled flag. It cannot see a UEFI RSDP outside the BIOS area. The `cores`/`cpu` shell command uses it.
 - `madt_apic_ids(out,max)` is used for real startup. It reads the MADT through `acpi_find_table("APIC",0)`, which also works on UEFI, and walks the entries from offset 44 with bounds checks (`el>=2`, `p+el<=len`). It collects the APIC IDs of enabled type-0 (Local APIC, `id=m[p+3]`) and type-9 (Local x2APIC, 32-bit ID at `+4`, flags at `+8`) entries. x2APIC IDs at least 255 and duplicates are skipped.
@@ -481,7 +481,7 @@ The trampoline GDT has null, `0x08` 32-bit code, `0x10` 32-bit data, `0x18` 64-b
 
 ---
 
-## 4.14 AP runtime (`arch/x86_64/smp_sched.c`)
+## 4.14 AP runtime (`arch/x86_64/smp/smp_sched.c`)
 
 ### `ap_entry_c(id)`
 
@@ -531,7 +531,7 @@ On APs the time slice is counted in the core's own `ticks` (`jc_now()` returns `
 
 ### `smp_boot_auto` and the `/etc/smp` hang guard
 
-`kmain` calls `smp_boot_auto_c()` just before the main loop, after the integrity check (section 2.12) has had its chance to stop the boot. (The old comment in `init/main.c` saying the cores start only on demand was removed in v8.95.)
+`kmain` calls `smp_boot_auto_c()` just before the main loop, after the integrity check (section 2.12) has had its chance to stop the boot. (The old comment in `core/init/main.c` saying the cores start only on demand was removed in v8.95.)
 
 ```
 /etc/smp == "off"       -> stay single-core
@@ -569,4 +569,4 @@ Coherence relies on these properties in the current design:
 | `cores` / `cpu` | Legacy MADT count and `g_cores_online`. |
 | `smpwork` / `parallel`, `smpsched` | Prime-counting job queue demo and per-core counters (4.12). |
 
-Other places that report the core count: `/proc/cpuinfo` (`fs/vfs.c`, one entry per online `g_cpu[]`), `/sys/devices/system/cpu/online` (`fs/unixfs.c`), and Linux `sched_getaffinity` (syscall 204 in `core/linux.c`). All of them report `g_cores_online` only while `g_smp_on` is set, and 1 otherwise. The user program `user/musl/smptest.c` (named in the `smp` help line) forks workers, records which CPUs they ran on, and checks results as a stress test.
+Other places that report the core count: `/proc/cpuinfo` (`fs/vfs/vfs.c`, one entry per online `g_cpu[]`), `/sys/devices/system/cpu/online` (`fs/vfs/unixfs.c`), and Linux `sched_getaffinity` (syscall 204 in `sys/linux/linux.c`). All of them report `g_cores_online` only while `g_smp_on` is set, and 1 otherwise. The user program `usr/musl/smptest.c` (named in the `smp` help line) forks workers, records which CPUs they ran on, and checks results as a stress test.

@@ -4,20 +4,20 @@ NoovexOS 64 has no general-purpose physical page allocator covering all of RAM. 
 
 | Allocator | Region | Granularity | Freed? | Source |
 |---|---|---|---|---|
-| `kmalloc` / `kfree` (heap) | largest clean run at least 128 MiB from `0x10000000` | 16 B (+24 B header) | yes (coalescing) | `mm/heap.c` |
-| `kslab_alloc` (slab) | 8 KiB slabs carved from the heap | 16 B ... 4 KiB classes | to its free list | `mm/slab.c` |
-| `dma_alloc` / `dma_alloc_pages` | DMA arena `0x0B000000-0x0C000000` | 64 B / 4 KiB | never | `mm/pmm_vmm.c` |
-| `pframe_alloc` / `pframe_free` | frame pool `0x0C000000-0x0E000000` | 4 KiB | yes (refcounted) | `mm/pmm_vmm.c` |
+| `kmalloc` / `kfree` (heap) | largest clean run at least 128 MiB from `0x10000000` | 16 B (+24 B header) | yes (coalescing) | `mem/heap.c` |
+| `kslab_alloc` (slab) | 8 KiB slabs carved from the heap | 16 B ... 4 KiB classes | to its free list | `mem/slab.c` |
+| `dma_alloc` / `dma_alloc_pages` | DMA arena `0x0B000000-0x0C000000` | 64 B / 4 KiB | never | `mem/pmm_vmm.c` |
+| `pframe_alloc` / `pframe_free` | frame pool `0x0C000000-0x0E000000` | 4 KiB | yes (refcounted) | `mem/pmm_vmm.c` |
 | fixed `#define` buffers | `0x1090000-0x1240000` | per driver | n/a | drivers |
 | `.bss` statics | `0x00C00000-__bss_end` | n/a | n/a | `arch/x86_64/kernel64.ld` |
 
-The memory code is five units: `lib/mem.c`, `mm/heap.c`, `mm/pmm_vmm.c`, `mm/slab.c` and `mm/heap_api.c`. Other units reach the allocators through their interface headers (`include/nvx/mm/heap.h`, `include/nvx/mm/pmm_vmm.h` and so on).
+The memory code is five units: `lib/base/mem.c`, `mem/heap.c`, `mem/pmm_vmm.c`, `mem/slab.c` and `mem/heap_api.c`. Other units reach the allocators through their interface headers (`include/nvx/mem/heap.h`, `include/nvx/mem/pmm_vmm.h` and so on).
 
 ---
 
 ## 3.1 Boot order
 
-`kmain` (`init/main.c`) sets memory up in this order:
+`kmain` (`core/init/main.c`) sets memory up in this order:
 
 ```c
 { extern char __bss_end[]; extern char boot_pt_end[];          /* zero .bss but keep the boot page tables */
@@ -32,7 +32,7 @@ pframe_init();                   /* frame pool; enabled only if g_ram_mb >= 272 
 if(mm_known()){ ... if(mm_area_conflicts()) klog("memory: WARNING ...run memmap"); }
 ```
 
-`detect_ram_mb` (`apps/files_classic.c`) returns `g_uefi_ram_mb`, capped at 4032, when the UEFI loader supplied one. Otherwise it writes and reads back a pattern at every 64 MiB step from 128 MiB to 4032 MiB and stops at the first step that fails. The result never exceeds 4032 MiB, which matches the 4 GiB identity map.
+`detect_ram_mb` (`apps/system/files_classic.c`) returns `g_uefi_ram_mb`, capped at 4032, when the UEFI loader supplied one. Otherwise it writes and reads back a pattern at every 64 MiB step from 128 MiB to 4032 MiB and stops at the first step that fails. The result never exceeds 4032 MiB, which matches the 4 GiB identity map.
 
 ---
 
@@ -40,7 +40,7 @@ if(mm_known()){ ... if(mm_area_conflicts()) klog("memory: WARNING ...run memmap"
 
 ### 3.2.1 Producer: UEFI loader
 
-`source/bootloader/uefi/uefiboot.c` calls `mm_summarize()` after `ExitBootServices` succeeds. The function reduces the EFI map to at most `MM_MAX = 170` regions:
+`boot/uefi/uefiboot.c` calls `mm_summarize()` after `ExitBootServices` succeeds. The function reduces the EFI map to at most `MM_MAX = 170` regions:
 
 - Type 7 (`EfiConventionalMemory`) stays 7.
 - Types 1-4 (loader code/data, boot-services code/data; see `usable_after_exit`) become 4, meaning "usable, but the firmware used it before boot".
@@ -57,7 +57,7 @@ The loader copies this summary to physical `0x7000`:
 
 The loader also works out how much RAM is usable. It starts at `0x10000000`, or at 1 MiB if nothing is usable there, and extends through contiguous usable regions. The end of that run, in MiB, goes to `0x5028` as `g_uefi_ram_mb`. The loader warns when non-usable firmware memory overlaps a kernel area (`{0x5000,0x8000}`, `{0x100000,0x980000}`, `{0x980000,0xC00000}`, `{0xC00000,kbss}`, `{0x10000000,0x11000000}`). It refuses to boot if the loader image or its stack lies where the kernel or the boot information must go.
 
-### 3.2.2 Consumer: `mm_load` and queries (`mm/pmm_vmm.c`)
+### 3.2.2 Consumer: `mm_load` and queries (`mem/pmm_vmm.c`)
 
 ```c
 typedef struct { u64 s,e; u32 t; } mmreg;
@@ -80,7 +80,7 @@ static mmreg g_mmr[MMR_MAX]; static int g_mmr_n=0, g_mmr_over=0;
 
 `mm_skip_bad` matters most: the DMA arena uses it so that no buffer lands in memory the firmware has used (section 3.6). `pframe_init` uses `mm_is_clean` per frame for the same reason.
 
-### 3.2.3 Diagnostics (`init/installer.c`)
+### 3.2.3 Diagnostics (`core/init/installer.c`)
 
 `kareas()` lists the kernel's own areas: boot information, kernel image and stack, USB and disk buffers, page tables and kernel data, DMA arena, page pool, module area, and heap. The DMA arena and page pool are marked `skips`, because they route around bad ranges instead of failing on them. `mm_area_conflicts()` counts non-`skips` areas that overlap non-usable firmware memory; `kmain` logs a warning if any do, and the installer refuses to run. The `memmap` shell command prints the firmware map below 4 GiB, each area with `ok`, `OVERLAPS` or `skips`, the heap range and its sizing mode, `dma_cur`, and the free frame count. `memtest` walks the heap block headers (checking `HBLK_MAGIC`), then fills free DMA-arena space, free frame-pool runs, the module area if unused, and up to 16 x 16 MiB `kmalloc` blocks with an address hash. It reads them back immediately and again after 3 s.
 
@@ -92,10 +92,10 @@ All addresses are physical, and also virtual through the identity map.
 
 | Range | Use | Defined in |
 |---|---|---|
-| `0x5000-0x5040` | Boot information block (64 B, details below) | `boot64.S`, `uefiboot.c`, `init/main.c` |
+| `0x5000-0x5040` | Boot information block (64 B, details below) | `boot64.S`, `uefiboot.c`, `core/init/main.c` |
 | `0x6000-0x6088` | Multiboot-style info from the UEFI loader; RSDP at `+120`, `'RSDP'` magic at `+128` | `uefiboot.c`, `core/power.c` (`acpi` RSDP lookup) |
 | `0x7000-0x7FF8` | Firmware memory-map summary (`NVXM`, 8 + 170x24 B) | `uefiboot.c`, `mm_load` |
-| `0x8000-...` | AP start-up trampoline (copied from `ap_tramp_start`) | `arch/x86_64/smp.c`, `ap_trampoline.S` |
+| `0x8000-...` | AP start-up trampoline (copied from `ap_tramp_start`) | `arch/x86_64/smp/smp.c`, `ap_trampoline.S` |
 | `0x8FD8` / `0x8FE0` / `0x8FF0` / `0x8FF8` | AP parameter block: CPU index, stack top, CR3, `ap_main` | `smp.c` |
 | `0xE0000-0x100000` | Read only: scanned in 16-byte steps for the BIOS MP table | `smp.c` line 5 |
 | `0x100000` | Kernel load address and `_start` (`. = 0x100000` in `kernel64.ld`); byte 24 holds the size stamp | `kernel64.ld`, `boot64.S` |
@@ -108,14 +108,14 @@ All addresses are physical, and also virtual through the identity map.
 | `0x1230000-0x1235000+` | NVMe: ASQ, ACQ, I/O SQ `0x1232000`, I/O CQ `0x1233000`, Identify `0x1234000`, data `NVME_BUF 0x1235000` | `drivers/storage/nvme.c` |
 | `0x1300000` | `__bss_start`. First come the boot page tables `pml4`, `pdpt`, `pd0-pd3` and `pdfb` (8 KiB), ending at `boot_pt_end = 0x1308000`. Then all kernel statics, including `SCENE`/`BG` (1920x1080x4 B each), `FS[]`, `pf_bitmap`/`pf_ref`, `g_ap_stacks`, `g_pstack`, and since v9.11 the TLS scratch buffers (`g_tls_inner`, `g_tls_rec`, `g_tls_rb`, `g_tls_mch`) and the HTTPS `g_tls_io`, which used to sit at fixed addresses `0x908000`-`0x930000` | `boot64.S`, `kernel64.ld`, `lib/crypto/nvxtls.c` |
 | `__bss_end` (must be at most `0x09800000`) | The linker `ASSERT` fails the build if `.bss` grows past this; in the v9.11 `build/kernel64.elf`, `__bss_end = 0x7D7ADB0` | `kernel64.ld` |
-| `0x0B000000-0x0C000000` | DMA arena, 16 MiB (`DMA_ARENA_BASE/TOP`) | `mm/pmm_vmm.c` |
-| `0x0C000000-0x0E000000` | Frame pool, 32 MiB = 8192 frames (`PF_BASE/PF_TOP`) | `mm/pmm_vmm.c` |
-| `0x0E000000-0x10000000` | Module area. The Multiboot path copies the first module (the Doom WAD) here and records its address and size at `0x5010`/`0x5018` | `boot64.S`, `apps/doom.c` |
-| `0x10000000-...` | Default heap base; the actual range depends on the firmware map (section 3.5) | `mm/heap.c` |
+| `0x0B000000-0x0C000000` | DMA arena, 16 MiB (`DMA_ARENA_BASE/TOP`) | `mem/pmm_vmm.c` |
+| `0x0C000000-0x0E000000` | Frame pool, 32 MiB = 8192 frames (`PF_BASE/PF_TOP`) | `mem/pmm_vmm.c` |
+| `0x0E000000-0x10000000` | Module area. The Multiboot path copies the first module (the Doom WAD) here and records its address and size at `0x5010`/`0x5018` | `boot64.S`, `apps/games/doom.c` |
+| `0x10000000-...` | Default heap base; the actual range depends on the firmware map (section 3.5) | `mem/heap.c` |
 | Framebuffer (`*(u64*)0x5000`) | Linear framebuffer; mapped explicitly when above 4 GiB (section 3.4) | `boot64.S` |
 | LAPIC `0xFEE00000` (default), HPET, ECAM, ... | MMIO below 4 GiB through the identity map; above 4 GiB through `acpi_hi_map` | `smp.c`, `hrtimer.c`, `acpi_dev.c` |
 
-Note: the comment at the top of `mm/pmm_vmm.c` says the frame pool covers "160 MB .. 256 MB". The code defines 192-224 MiB.
+Note: the comment at the top of `mem/pmm_vmm.c` says the frame pool covers "160 MB .. 256 MB". The code defines 192-224 MiB.
 
 Boot information block at `0x5000`, as read by `kmain` and written by `uefiboot.c` and `boot64.S`. The header comment in `boot64.S` describes an older layout and is out of date.
 
@@ -169,7 +169,7 @@ static u64 acpi_hi_map(u64 pa){
 
 ---
 
-## 3.5 Kernel heap (`mm/heap.c`, `mm/heap_api.c`)
+## 3.5 Kernel heap (`mem/heap.c`, `mem/heap_api.c`)
 
 ### Sizing: `heap_init(ram_mb)`
 
@@ -206,17 +206,17 @@ heap_base                                   heap_cur                 heap_top
 - `kcalloc(a,b)`: `kmalloc(a*b)` plus zeroing. It does not check `a*b` for overflow.
 - Every list walk is bounded at 1,000,000 iterations so that a damaged list cannot hang the kernel.
 
-`mm/heap_api.c` exports `malloc`, `free`, `realloc` and `calloc` as non-static aliases, so that ported C libraries (Lua, ntfs-3g, zstd, ...) link unchanged. It also defines `heap_used()`, the sum of used block sizes; unlike the allocator, it walks without `hblk_ok` and without a bound. The `mem` command prints the heap base, total size, bytes in use, bytes reserved (`heap_cur - heap_base`), and the result of a 1 MiB allocate/write/free self-test. Large consumers allocate on first use; for example `apps/doom.c` takes `kmalloc(24 MiB)` for Doom's private heap.
+`mem/heap_api.c` exports `malloc`, `free`, `realloc` and `calloc` as non-static aliases, so that ported C libraries (Lua, ntfs-3g, zstd, ...) link unchanged. It also defines `heap_used()`, the sum of used block sizes; unlike the allocator, it walks without `hblk_ok` and without a bound. The `mem` command prints the heap base, total size, bytes in use, bytes reserved (`heap_cur - heap_base`), and the result of a 1 MiB allocate/write/free self-test. Large consumers allocate on first use; for example `apps/games/doom.c` takes `kmalloc(24 MiB)` for Doom's private heap.
 
 ### High-memory extension
 
 The low arena is bounded below 4 GiB, but a laptop's usable RAM mostly sits above 4 GiB, and the sub-4 GiB window is further eaten by the PCI hole, the kernel image and the sysroot overlay. A large `sudo apt install` needs transient RAM per package (the downloaded `.deb`, the decompressed `data.tar`, the package index), and on the live ISO the writable filesystem is RAM-backed as well. Confined to the low arena, these exhausted it and failed with `E: out of space or memory while unpacking` even though gigabytes above 4 GiB were free.
 
-`kmalloc` therefore keeps a small table of extra arenas. When neither the free list nor the low arena can satisfy a request, it rounds the request up (at least a 64 MiB chunk, 2 MiB-aligned) and calls `hp_alloc_run(pages)` in `mm/pmm_vmm.c`, which scans the high frame pool for a contiguous run of free frames within one region, marks them used, zeroes them, and returns the base. Because `mm_map_high` identity-maps every high RAM region with 2 MiB pages at boot, that physical base is directly usable as a kernel pointer. The run becomes a new bump arena; later allocations fill the low arena and every high arena that has room. `hblk_ok` (used by `kfree`, `krealloc` and the list walks) accepts a pointer in the low arena or in any high arena, so frees and coalescing work uniformly across them. Coalescing never merges across arenas, since the physical-adjacency test in `kfree` only joins neighbours within one contiguous run.
+`kmalloc` therefore keeps a small table of extra arenas. When neither the free list nor the low arena can satisfy a request, it rounds the request up (at least a 64 MiB chunk, 2 MiB-aligned) and calls `hp_alloc_run(pages)` in `mem/pmm_vmm.c`, which scans the high frame pool for a contiguous run of free frames within one region, marks them used, zeroes them, and returns the base. Because `mm_map_high` identity-maps every high RAM region with 2 MiB pages at boot, that physical base is directly usable as a kernel pointer. The run becomes a new bump arena; later allocations fill the low arena and every high arena that has room. `hblk_ok` (used by `kfree`, `krealloc` and the list walks) accepts a pointer in the low arena or in any high arena, so frees and coalescing work uniformly across them. Coalescing never merges across arenas, since the physical-adjacency test in `kfree` only joins neighbours within one contiguous run.
 
 The extension depends on the high frame pool being up (`pf_ready`, RAM at least 500 MiB), which `hp_init` validates at boot with a three-point write/read probe before the pool is used. Drivers that need a buffer below 4 GiB for 32-bit DMA use `dma_alloc` (section 3.6), not `kmalloc`, and their init-time allocations run while the low arena is still plentiful, so they are unaffected.
 
-### Slab allocator (`mm/slab.c`)
+### Slab allocator (`mem/slab.c`)
 
 ```c
 #define SLAB_BACKING 8192ULL
@@ -249,13 +249,13 @@ The arena is a bump allocator over 16 MiB of identity-mapped memory below 4 GiB,
 
 | Caller | Purpose |
 |---|---|
-| `drivers/wifi/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
+| `drivers/net/wifi/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
 | `shell/commands.c` (`RXNUM`/`BENUM` rings) | Wi-Fi RX and beacon rings |
 | `drivers/usb/xhci.c` | xHCI scratchpad buffers when a controller needs more than 32 |
 | `drivers/video/nvidia/nvdisp.c` | display push buffer |
 | `drivers/acpi/acpi_dev.c` | `acpi_hi_map` page directories |
 | `core/proc/elf.c` | `nvx_dlload` module images and `nvx_alloc` for modules |
-| `core/kapi.c` | `kapi_dma_pages` for loadable driver modules |
+| `sys/native/kapi.c` | `kapi_dma_pages` for loadable driver modules |
 
 ---
 
@@ -278,7 +278,7 @@ The pool has two parts. Frame numbers below `PF_N` are the fixed 32 MiB at `PF_B
 - `pframe_free(pa)` ignores addresses outside the pool and frames not marked used. If `pf_ref > 1` it only decrements; otherwise it clears the bit.
 - `pframe_ref(pa)` adds a reference to an allocated frame, saturating at `0xFFFF`.
 - `pframe_refs(pa)` returns the reference count. It returns 1 for any address outside the pool, so the copy-on-write code treats those pages as unshared.
-- `pframe_free_count()` returns `pf_n - pf_used`, or 0 when the pool is off. It is used for the ENOMEM checks in `mmap` and `brk`, and as `freeram` in Linux `sysinfo` (`core/linux.c`).
+- `pframe_free_count()` returns `pf_n - pf_used`, or 0 when the pool is off. It is used for the ENOMEM checks in `mmap` and `brk`, and as `freeram` in Linux `sysinfo` (`sys/linux/linux.c`).
 
 The pool supplies every user page, every user page-table level (PML4/PDPT/PD/PT), and shared-memory segments (`shm_get_k` in `core/proc/sched.c`). Code that walks frames by number (the installer's memory test, the `mem` command) uses `pf_n` and `pf_pa`; code that asks "is this a pool frame" (copy-on-write in `vm_clone_user`) uses `pf_owned`.
 
@@ -286,7 +286,7 @@ Before v8.97 the pool was only the fixed 32 MiB, whatever the RAM size, so a sin
 
 ---
 
-## 3.8 Virtual memory (`mm/pmm_vmm.c`, `core/proc/jobs.c`)
+## 3.8 Virtual memory (`mem/pmm_vmm.c`, `core/proc/jobs.c`)
 
 ### PTE format
 
@@ -351,7 +351,7 @@ Cases 3 and 4 then call `pframe_ref(pa)`. If any parent PTE changed and the pare
 
 ### CR0.WP
 
-`arch_fpu_init` (`arch/x86_64/cpu_init.c`), which runs on the BSP from `kmain` and on each AP from `smp_sched.c`, sets CR0 bit 16 (WP). Ring-0 writes to read-only user pages therefore fault too. Before the kernel writes through a user pointer it calls `jc_umapped(p,n)` (`jobs.c`). This checks that the range lies in the user window, faults in lazy and COW pages with `vm_fault_user(cr3, v, 1)`, and requires `(e & 5) == 5` (present and user).
+`arch_fpu_init` (`arch/x86_64/cpu/cpu_init.c`), which runs on the BSP from `kmain` and on each AP from `smp_sched.c`, sets CR0 bit 16 (WP). Ring-0 writes to read-only user pages therefore fault too. Before the kernel writes through a user pointer it calls `jc_umapped(p,n)` (`jobs.c`). This checks that the range lies in the user window, faults in lazy and COW pages with `vm_fault_user(cr3, v, 1)`, and requires `(e & 5) == 5` (present and user).
 
 ---
 
@@ -395,7 +395,7 @@ User space is the single PML4 slot 8, `0x400_0000_0000-0x7FF_FFFF_FFFF` (4 TiB-8
 
 ---
 
-## 3.10 `mmap`, `munmap`, `brk` (`core/linux.c`)
+## 3.10 `mmap`, `munmap`, `brk` (`sys/linux/linux.c`)
 
 | Linux nr | Handler | Behaviour |
 |---|---|---|
@@ -459,7 +459,7 @@ No reclaim path frees frames for user memory. `fs_evict` (section 3.12) gives ba
 
 ---
 
-## 3.12 File-system memory (`fs/ramfs.c`)
+## 3.12 File-system memory (`fs/vfs/ramfs.c`)
 
 Every file lives in `FS[FS_N = 1024]` (`FsFile`). Its contents are a single contiguous `kmalloc` buffer, `data`, holding `len` bytes plus a NUL, with `cap` the allocated size. Disk backends (NVX4 or the root file system) load contents on demand.
 
@@ -467,7 +467,7 @@ Every file lives in `FS[FS_N = 1024]` (`FsFile`). Its contents are a single cont
 |---|---|
 | `fs_reserve(k, need)` | Returns at once if `cap > need`. Otherwise the new capacity is `cap * 1.5`, or 64 for an empty file, at least `need+1`, at most `FS_CAP+1` (1 GiB), rounded up to 64. If that allocation fails it retries with exactly `need+64`. It copies `min(len, nc-1)` bytes and frees the old buffer |
 | `fs_alloc(k, n)` | `kmalloc`; on failure `fs_evict(n+4096, k)` and one retry |
-| `fs_evict(want, keep)` | Two passes over all files. It skips `keep`, files with no data, lazy or dirty (`!clean`) files, files touched within the last 64 (pass 0) or 8 (pass 1) `fs_ensure` ticks, open files, and files that `fs_reloadable` (`fs/nvx4.c`) rejects: orphans, no disk, files in a tmp directory, or NVX4 files not fully stored. Evicted files have their buffer freed and `lazy = 1` |
+| `fs_evict(want, keep)` | Two passes over all files. It skips `keep`, files with no data, lazy or dirty (`!clean`) files, files touched within the last 64 (pass 0) or 8 (pass 1) `fs_ensure` ticks, open files, and files that `fs_reloadable` (`fs/nvx/nvx4.c`) rejects: orphans, no disk, files in a tmp directory, or NVX4 files not fully stored. Evicted files have their buffer freed and `lazy = 1` |
 | `fs_ensure(k)` | Bumps `tick` (LRU). If lazy, it reloads with `fs_backend_load` (`nk_root_read` or `n4_read_file`) and marks the file clean. If there is no data, it allocates a zero-filled buffer |
 | `fsd(k)` | Returns `fs_ensure(k)` data, or the static 64 KiB `g_fs_zero` on failure |
 | `fs_set` | Frees an oversized buffer (`cap > n + cap/2 + 64 KiB`) before writing |
@@ -493,7 +493,7 @@ The file cache and every other `kmalloc` user share one heap. When an allocation
 | User stack | up to 256 pages, 1 MiB (2 eager, the rest lazy) | `JS_STK_PAGES` |
 | `brk` heap | 32 MiB | `lx_brk` |
 | Single `mmap` | 1 GiB, and no more pages than free frames | `lx_mmap` |
-| RAM file size | 1 GiB (`FS_CAP`), 1024 files | `fs/ramfs.c` |
+| RAM file size | 1 GiB (`FS_CAP`), 1024 files | `fs/vfs/ramfs.c` |
 
 ## 3.14 Memory above 4 GiB
 
@@ -513,7 +513,7 @@ Before v9.14 the kernel identity-mapped only the first 4 GiB (`boot64.S`) and ca
 
 `detect_ram_mb` now returns the sum of all usable regions (types 7 and 4) when a map is known, so `g_ram_mb`, `/proc/meminfo` and Settings show the real size. `heap_init` clamps the heap top to `0xFC000000` so a large RAM size never pushes the heap above 4 GiB.
 
-### Mapping: `mm_map_high` (`mm/pmm_vmm.c`)
+### Mapping: `mm_map_high` (`mem/pmm_vmm.c`)
 
 For every 1 GiB slot from 4 GiB to 512 GiB whose PDPT entry is empty and that overlaps usable RAM, a page directory is taken from the heap (one 4 KiB page per slot, 64 KiB for 16 GiB, 512 KiB for 128 GiB). Each 2 MiB entry that overlaps usable RAM is mapped (`0x83`: present, writable, large page). Slots already in use (the framebuffer window, `acpi_hi_map`) are left alone. MMIO between RAM regions is not mapped.
 
@@ -541,7 +541,7 @@ Since v9.22 the low memory map is:
 |---|---|
 | 1 MiB - 101 MiB | kernel image (`ASSERT(__file_end <= 0x06500000)` in `kernel64.ld`, `assert len(b) <= 104857600` in `build.sh`) |
 | 152 - 154 MiB | boot stack (top `0x09A00000`, `boot64.S`) |
-| 154 - 156 MiB | fallback for the 2 MB device window (`DMW_FIXED`, `include/nvx/mm/dmawin.h`). Since v9.81 `dmw_init()` normally takes the window from the DMA arena instead; offsets inside it: xHCI rings 0x10000, HID areas 0x80000, USB stick 0xD0000, AHCI 0x180000, identify buffers 0x1A0000, VirtualBox request 0x1A1000, NVMe 0x1B0000, PCnet 0x1D0000 |
+| 154 - 156 MiB | fallback for the 2 MB device window (`DMW_FIXED`, `include/nvx/mem/dmawin.h`). Since v9.81 `dmw_init()` normally takes the window from the DMA arena instead; offsets inside it: xHCI rings 0x10000, HID areas 0x80000, USB stick 0xD0000, AHCI 0x180000, identify buffers 0x1A0000, VirtualBox request 0x1A1000, NVMe 0x1B0000, PCnet 0x1D0000 |
 | 176 - 192 MiB | DMA arena (unchanged) |
 | 192 - 224 MiB | frame pool (unchanged) |
 | 224 - 256 MiB | module area for the Doom WAD (unchanged) |

@@ -1,3 +1,4 @@
-source/kernel/build/
-source/bootloader/build/*.o
+build/
+boot/build/*.o
+boot/stage/kernel64.bin
 __pycache__/

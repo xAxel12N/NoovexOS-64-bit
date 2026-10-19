@@ -4,17 +4,17 @@ NoovexOS 64 runs two kinds of user programs side by side:
 
 | Kind | System-call gate | C library | Link type | Loaded at | Source |
 |---|---|---|---|---|---|
-| Native ("legacy") | `int $0x80`, number in `rax`, args in `rbx rcx rdx rsi rdi` | nvxlibc (`user/libc`) or the header-only `user/src/user.h` | static `ET_EXEC`, `user/src/user.ld` | `0x40000000000` | `user/src/*.c` |
-| Linux ABI, static | `syscall` instruction, Linux x86-64 numbers and registers | musl 1.2.6 (`third_party/musl`), `libc.a` | static-PIE `ET_DYN` | `0x40000400000` (`ELF_PIE_BASE`) | `user/musl/*.c` test programs |
+| Native ("legacy") | `int $0x80`, number in `rax`, args in `rbx rcx rdx rsi rdi` | nvxlibc (`usr/libc`) or the header-only `usr/src/user.h` | static `ET_EXEC`, `usr/src/user.ld` | `0x40000000000` | `usr/src/*.c` |
+| Linux ABI, static | `syscall` instruction, Linux x86-64 numbers and registers | musl 1.2.6 (`third_party/musl`), `libc.a` | static-PIE `ET_DYN` | `0x40000400000` (`ELF_PIE_BASE`) | `usr/musl/*.c` test programs |
 | Linux ABI, dynamic (v8.97) | same | musl 1.2.6 shared, `/lib/ld-musl-x86_64.so.1` | PIE `ET_DYN` with `PT_INTERP` | program at `0x40000400000`, dynamic linker at `0x7F000000000` | `third_party/*` ports, `dyntest` |
 
-Both run under the same job scheduler (`core/proc/jobs.c`, `struct jproc`), share the same VFS file table and the same signal machinery. This part documents the Linux layer (`core/linux.c`), the two libcs, the ported programs and how to add your own.
+Both run under the same job scheduler (`core/proc/jobs.c`, `struct jproc`), share the same VFS file table and the same signal machinery. This part documents the Linux layer (`sys/linux/linux.c`), the two libcs, the ported programs and how to add your own.
 
 ---
 
 ## 6.1 How a Linux system call reaches the kernel
 
-`arch/x86_64/ring3.c: lsys_init()` programs the `syscall` MSRs:
+`arch/x86_64/user/ring3.c: lsys_init()` programs the `syscall` MSRs:
 
 ```c
 cpu_wrmsr(0xC0000080,cpu_rdmsr(0xC0000080)|1ULL);
@@ -31,9 +31,9 @@ EFER.SCE is set, STAR selects the kernel/user segments, LSTAR points at `lsys_en
 void lsys_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; linux_syscall(r); bkl_unlock(); }
 ```
 
-Every Linux system call runs under the big kernel lock (`arch/x86_64/interrupts.c`).
+Every Linux system call runs under the big kernel lock (`arch/x86_64/interrupts/interrupts.c`).
 
-`linux_syscall()` (end of `core/linux.c`):
+`linux_syscall()` (end of `sys/linux/linux.c`):
 
 ```c
 void linux_syscall(struct sysregs* r){
@@ -95,9 +95,9 @@ static int lx_ok(u64 p,u64 n){ return jc_umapped(p,n); }
 
 ### `open` / `openat` (`lx_open`)
 
-Flags decoded: access mode `flags&3`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_NONBLOCK 0x800` (kept in `vfile.flags`), `O_DIRECTORY 0x10000`, `O_CLOEXEC 0x80000`. Device paths (`dev_id()` in `fs/ramfs.c`) and `/proc` (`vfs_lookup`) bypass the file checks. A directory opened read-only becomes a `LX_DIRDEV` vfile whose `fs_idx` is the directory node. Permission checks use `ux_perm_ok(k,2)` for write/truncate and `ux_perm_ok(k,4)` for read. New files get `0100000|(mode&07777&~umask)`. `O_TRUNC` on disk triggers `fs_sync`.
+Flags decoded: access mode `flags&3`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_NONBLOCK 0x800` (kept in `vfile.flags`), `O_DIRECTORY 0x10000`, `O_CLOEXEC 0x80000`. Device paths (`dev_id()` in `fs/vfs/ramfs.c`) and `/proc` (`vfs_lookup`) bypass the file checks. A directory opened read-only becomes a `LX_DIRDEV` vfile whose `fs_idx` is the directory node. Permission checks use `ux_perm_ok(k,2)` for write/truncate and `ux_perm_ok(k,4)` for read. New files get `0100000|(mode&07777&~umask)`. `O_TRUNC` on disk triggers `fs_sync`.
 
-Limits from `fs/ramfs.c` and `jobs.h`: `FDMAX 256` fds per process, `VMAXOPEN 1024` vfile slots for the whole system (the console shares one slot), and `PIPE_MAX 128` pipes system-wide, each with a 4096-byte buffer (`jc_pipe_new(4096,...)`). Before v8.97 these were 32, 32 and 12.
+Limits from `fs/vfs/ramfs.c` and `jobs.h`: `FDMAX 256` fds per process, `VMAXOPEN 1024` vfile slots for the whole system (the console shares one slot), and `PIPE_MAX 128` pipes system-wide, each with a 4096-byte buffer (`jc_pipe_new(4096,...)`). Before v8.97 these were 32, 32 and 12.
 
 ### Read and write
 
@@ -349,7 +349,7 @@ Not present (ENOSYS): `epoll_*`, `eventfd`, `timerfd`, `signalfd`, `inotify`, `m
 ( cd $B/musl-obj && CC=gcc ../../third_party/musl/configure --prefix=$M --disable-shared --disable-wrapper CFLAGS="-fPIE -O2" ... && make ... && make install ... )
 ```
 
-The in-tree programs (`user/musl/mhello.c`, `musltest.c`, `smptest.c`) are compiled and linked explicitly:
+The in-tree programs (`usr/musl/mhello.c`, `musltest.c`, `smptest.c`) are compiled and linked explicitly:
 
 ```sh
 MCFLAGS="-fPIE -O2 -nostdinc -isystem $M/include -isystem $(gcc -print-file-name=include) -Wall ..."
@@ -380,11 +380,11 @@ exec gcc -fPIE -nostdinc -isystem "$M/include" -isystem "$GI" -pie -nostdlib \
 
 It uses the same headers as the static build and needs `NVX_MUSL_SH` (exported by `build.sh`) as well. The ports are linked with it; the test programs `musltest`, `smptest`, `nettest` and `featest` stay static so both paths are exercised. Section 6.10 explains how a dynamic program starts.
 
-Start-up stack. `elf_build_space()` (`core/proc/elf.c`) builds a Linux start stack in an 8 KiB image (`g_stkimg`) copied into the top two stack pages: `argc`, `argv[]`, NULL, `envp[]`, NULL, then the auxiliary vector `AT_PHDR(3) AT_PHENT(4) AT_PHNUM(5) AT_PAGESZ(6)=4096 AT_BASE(7) (0, or the dynamic linker's base) AT_FLAGS(8)=0 AT_ENTRY(9) AT_UID/EUID/GID/EGID(11-14) AT_HWCAP(16)=0 AT_CLKTCK(17)=100 AT_SECURE(23)=0 AT_RANDOM(25) AT_EXECFN(31)`, with 16 random bytes for `AT_RANDOM`. The same registers also carry `argc`/`argv` in `rdi`/`rsi` (`jc_ctx_fresh`) for nvxlibc's `crt0`. When started from the shell the environment comes from `env_pack()` (`core/syscall.c`, 24 entries, defaults `PATH=/bin HOME=/home PWD=/home USER=root SHELL=/bin/nsh TERM=xterm-256color XZ_DEFAULTS=--memlimit-compress=20MiB`; `TERM` was `noovex` before the terminal understood escape sequences); after `execve` it is the caller's `envp`.
+Start-up stack. `elf_build_space()` (`core/proc/elf.c`) builds a Linux start stack in an 8 KiB image (`g_stkimg`) copied into the top two stack pages: `argc`, `argv[]`, NULL, `envp[]`, NULL, then the auxiliary vector `AT_PHDR(3) AT_PHENT(4) AT_PHNUM(5) AT_PAGESZ(6)=4096 AT_BASE(7) (0, or the dynamic linker's base) AT_FLAGS(8)=0 AT_ENTRY(9) AT_UID/EUID/GID/EGID(11-14) AT_HWCAP(16)=0 AT_CLKTCK(17)=100 AT_SECURE(23)=0 AT_RANDOM(25) AT_EXECFN(31)`, with 16 random bytes for `AT_RANDOM`. The same registers also carry `argc`/`argv` in `rdi`/`rsi` (`jc_ctx_fresh`) for nvxlibc's `crt0`. When started from the shell the environment comes from `env_pack()` (`sys/native/syscall.c`, 24 entries, defaults `PATH=/bin HOME=/home PWD=/home USER=root SHELL=/bin/nsh TERM=xterm-256color XZ_DEFAULTS=--memlimit-compress=20MiB`; `TERM` was `noovex` before the terminal understood escape sequences); after `execve` it is the caller's `envp`.
 
 ### nvxlibc (native `int 0x80`)
 
-`user/libc` is the native C library. Its single source of truth is `user/libc/src/legacy_posix.h` (the former header-only `posix.h`). `user/libc/gen.py` generates from it:
+`usr/libc` is the native C library. Its single source of truth is `usr/libc/src/legacy_posix.h` (the former header-only `posix.h`). `usr/libc/gen.py` generates from it:
 
 * `src/libc.c`, the implementation with top-level `static` removed and `__sys` turned into an extern;
 * `include/nvx/_all.h`, `_types.h`, `_std.h` (351 standard prototypes) and `extras.h` (457 NoovexOS helpers such as `append_file`, `base64_encode`, `arr_*`), plus the standard header names (`stdio.h`, `unistd.h`, `dirent.h`, `pthread.h`, ... each just includes `<nvx/_std.h>`).
@@ -401,16 +401,16 @@ long __sys(long n,long a,long b,long c,long d,long e){
 
 `crt0.S` aligns the stack and does `exit(main(argc,argv))` using the `rdi`/`rsi` the kernel set. `sys_host.c` + `crt0_host.S` let the same libc run on Linux for differential testing. Notable semantics in `legacy_posix.h`: `execve` ignores `envp`; `pthread_create` maps to the legacy `thread_create` syscall 61 and `pthread_join` is a no-op; `dlopen` always fails with "dynamic loading not supported (static linking only)"; `isatty` is native syscall 172.
 
-`build.sh` builds it with `LFLAGS` (`-ffreestanding -nostdinc -isystem user/libc/include -fno-pie -mcmodel=large -Os -ffunction-sections -fdata-sections`), archives `libc.a`, and links each program with `ld -nostdlib -no-pie --gc-sections -T user/src/user.ld crt0.o prog.o [extra] libc.a`.
+`build.sh` builds it with `LFLAGS` (`-ffreestanding -nostdinc -isystem usr/libc/include -fno-pie -mcmodel=large -Os -ffunction-sections -fdata-sections`), archives `libc.a`, and links each program with `ld -nostdlib -no-pie --gc-sections -T usr/src/user.ld crt0.o prog.o [extra] libc.a`.
 
-### `user/src` programs
+### `usr/src` programs
 
 * `user.h` programs (`user_demo`, `user_fork`, `user_app`, `user_thread`, `user_preempt`, `user_ipc`, `user_wmapp`, `user_compdemo`, `user_posix`, `user_mem`, plus `hello.c`, `proc.c`): built with `user_crt0.S` and `UFLAGS`, embedded as `user_*_elf.o`, and started by shell demo commands through `elf_load_run`/`proc_create` (e.g. `shell/commands.c:758`), not through `JS_BIN`.
-* `posix.h` programs (now `posix.h` just includes `<nvx/extras.h>` and `<setjmp.h>`): `count spin sigdemo upper greet pipetest nvxbox init libc8` are built against nvxlibc and listed in `JS_BIN`. Other `posix.h` files in the directory (`captest`, `devtest`, `libc2`-`libc6`, `libctest`, `mathtest`, `nettest`, `ptest`, `unixtest`, `files`) are not built by `build.sh`; prebuilt ELFs of several exist in `user/bin/`.
+* `posix.h` programs (now `posix.h` just includes `<nvx/extras.h>` and `<setjmp.h>`): `count spin sigdemo upper greet pipetest nvxbox init libc8` are built against nvxlibc and listed in `JS_BIN`. Other `posix.h` files in the directory (`captest`, `devtest`, `libc2`-`libc6`, `libctest`, `mathtest`, `nettest`, `ptest`, `unixtest`, `files`) are not built by `build.sh`; prebuilt ELFs of several exist in `usr/bin/`.
 
 ### nvxbox
 
-`user/src/nvxbox.c` + `coreutils.c` form one multi-call binary (65 KB). `main` dispatches on `basename(argv[0])`: first `coreutils_main()` (head, tail, wc, sort, grep, cut, tr, uniq, seq, basename, dirname, rev, tac, nl, fold, paste, comm, cmp, md5sum, sha256sum, base64, find, yes, printenv/env; returns `-1000` if not its command), then the built-ins in `nvxbox.c` (ls, cat, echo, mkdir, rmdir, rm, mv, cp, touch, ln, chmod (octal only), chown, stat, pwd, hostname, whoami, id, uname, date, sleep, mount, umount, readlink, tee, true, false). `nvxbox CMD args` re-dispatches on `argv[1]`. Every name is a `NVXB("...")` row in `JS_BIN` pointing at the same blob.
+`usr/src/nvxbox.c` + `coreutils.c` form one multi-call binary (65 KB). `main` dispatches on `basename(argv[0])`: first `coreutils_main()` (head, tail, wc, sort, grep, cut, tr, uniq, seq, basename, dirname, rev, tac, nl, fold, paste, comm, cmp, md5sum, sha256sum, base64, find, yes, printenv/env; returns `-1000` if not its command), then the built-ins in `nvxbox.c` (ls, cat, echo, mkdir, rmdir, rm, mv, cp, touch, ln, chmod (octal only), chown, stat, pwd, hostname, whoami, id, uname, date, sleep, mount, umount, readlink, tee, true, false). `nvxbox CMD args` re-dispatches on `argv[1]`. Every name is a `NVXB("...")` row in `JS_BIN` pointing at the same blob.
 
 ## 6.6 How programs are embedded and found
 
@@ -423,7 +423,7 @@ emb user_${p}_bin.o $p
 objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents $B/user_${p}_bin.o
 ```
 
-`ld -r -b binary` wraps the file in an object whose symbols are derived from the path: `user/sqlite3.elf` to `_binary_user_sqlite3_elf_start` / `_end`. The rename moves the blob from `.data` to `.rodata`, which `arch/x86_64/kernel64.ld` places before `__immutable_end`, i.e. inside the region whose SHA-256 is stamped into the `NVX64SIG` build signature. Every object must also be listed in `BLOBS` in step `[4/6]`.
+`ld -r -b binary` wraps the file in an object whose symbols are derived from the path: `usr/sqlite3.elf` to `_binary_user_sqlite3_elf_start` / `_end`. The rename moves the blob from `.data` to `.rodata`, which `arch/x86_64/kernel64.ld` places before `__immutable_end`, i.e. inside the region whose SHA-256 is stamped into the `NVX64SIG` build signature. Every object must also be listed in `BLOBS` in step `[4/6]`.
 
 The musl programs, the ports and the shared C library are embedded compressed (v8.97). `embz` runs `tools/nvz.py`, which writes `NVZ1`, the 32-bit little-endian original size and a raw DEFLATE stream (zlib level 9), and wraps that under the same symbol names:
 
@@ -433,7 +433,7 @@ embz(){ mkdir -p $B/zz/user; python3 tools/nvz.py $B/user/$2.elf $B/zz/user/$2.e
 
 `jc_unz` (`core/proc/jobs.c`) inflates such a blob with the kernel's `pz_inflate_raw` the first time it is needed and keeps the result in a 24-entry cache, so later runs cost nothing extra. This took the kernel from 5.46 MB to 3.86 MB before the shared libc, BearSSL client and the other v8.97 programs were added; the current `build/kernel64.bin` is about 4.28 MB. The UEFI loader's limit is `0x5C0000` bytes (section 3.13).
 
-`core/proc/jobs.c` declares each pair `extern const unsigned char _binary_user_X_elf_start[], _binary_user_X_elf_end[];` and lists it in `JS_BIN[]` (name, start, end). Several names may share one blob (`gzip/gunzip/zcat`, `xz/unxz/xzcat/lzma/unlzma/lzcat`, ...); the program sees the name in `argv[0]`. `+init` is the init program. `fs/unixfs.c:351` lists every non-`+` `JS_BIN` name as a regular file in `/bin`.
+`core/proc/jobs.c` declares each pair `extern const unsigned char _binary_user_X_elf_start[], _binary_user_X_elf_end[];` and lists it in `JS_BIN[]` (name, start, end). Several names may share one blob (`gzip/gunzip/zcat`, `xz/unxz/xzcat/lzma/unlzma/lzcat`, ...); the program sees the name in `argv[0]`. `+init` is the init program. `fs/vfs/unixfs.c:351` lists every non-`+` `JS_BIN` name as a regular file in `/bin`.
 
 ### Lookup (`jc_find_prog`)
 
@@ -464,7 +464,7 @@ port(){ n=$1; shift; if [ ! -f $P/$n ]; then "$@" || { echo "PORT BUILD FAILED: 
 | `xz unxz xzcat lzma unlzma lzcat` | XZ Utils 5.8.4 | `-std=gnu11 -include third_party/xz/nvx_config.h`, explicit file list | `nvx_config.h` replaces `configure`: `ASSUME_RAM 128`, `TUKLIB_CPUCORES_SCHED_GETAFFINITY`, `TUKLIB_PHYSMEM_SYSCONF`, `MYTHREAD_POSIX` (with `stream_encoder_mt.c`, `stream_decoder_mt.c`, `outqueue.c`, `hardware_cputhreads.c`, `tuklib_cpucores.c`), so `xz -T` works; `XZ_DEFAULTS` limits compression memory to 20 MiB |
 | `zstd unzstd zstdcat` | Zstandard 1.5.7 | `-DZSTD_MULTITHREAD -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_LEGACY_SUPPORT=0 -DZSTD_DISABLE_ASM -DBACKTRACE_ENABLE=0 -DZSTD_NOTRACE` | `zstd -T` works; built through `sh -c` for the globs |
 | `kilo` | kilo (antirez, BSD 2-clause), `third_party/kilo` | `-std=c99 -D_DEFAULT_SOURCE -D_BSD_SOURCE` | a full-screen text editor: raw mode, escape sequences, syntax colours (section 11.12) |
-| `fetch` | `user/musl/fetch.c`, `nvxtls.c` with BearSSL (`third_party/bearssl`) | `-Wall`, linked with `build/bearssl/libbearssl.a`; rebuilt every time | HTTP and HTTPS downloader (section 6.11) |
+| `fetch` | `usr/musl/fetch.c`, `nvxtls.c` with BearSSL (`third_party/bearssl`) | `-Wall`, linked with `build/bearssl/libbearssl.a`; rebuilt every time | HTTP and HTTPS downloader (section 6.11) |
 | `qjs` | QuickJS-ng, `third_party/quickjs` (MIT) | `-D_GNU_SOURCE`, `qjs.c quickjs.c libregexp.c libunicode.c dtoa.c quickjs-libc.c gen/repl.c gen/standalone.c -lm` | JavaScript interpreter with the `std` and `os` modules and a REPL; listed in the program table in `core/proc/jobs.c` (section 13.13) |
 
 After building, each is copied to `build/user/<n>.elf`, embedded compressed (`embz`) and renamed to `.rodata` like the musl programs. Delete `build/ports-dyn/<n>` to force a rebuild. Linking dynamically made the ports about 0.5 MB smaller in total before compression (sqlite3 1.41 MB, zstd 750 KB, xz 256 KB, gzip 96 KB, bzip2 91 KB, kilo 31 KB, fetch 186 KB).
@@ -472,14 +472,14 @@ After building, each is copied to `build/user/<n>.elf`, embedded compressed (`em
 Three other third-party components are kernel code, not user programs:
 
 * Lua 5.5.1 (`third_party/lua`): compiled with `LUAF` (freestanding, SSE enabled) against its own mini libc `nvxlibc.c` (190 lines, output through `lua_emit`), linked as `lua_all.o`; `nvxlua.c` exposes `nvx.window/clear/rect/text/present/waitkey...` and `nvx_lua_run()` backs the shell's `lua <code>` command.
-* Doom (`third_party/doom`, doomgeneric): `build_doom.sh` compiles it with SSE at 640x400, `ld -r` combines it and `objcopy --keep-global-symbol` keeps only the interface (`doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_*`, `webp_decode`). `apps/doom.c` loads the WAD from a boot module or `DOOM1.WAD`/`FREEDOOM.WAD`/... on the FAT disk (32 MiB buffer).
-* NTFS (ntfs-3g, `third_party/ntfs`): built with `-Ulinux -U__linux__ ...` against `compat/` headers and `ntfslibc.c`, mkntfs with `-Dmain=mkntfs_main`; used by `fs/ntfsk.c`.
+* Doom (`third_party/doom`, doomgeneric): `build_doom.sh` compiles it with SSE at 640x400, `ld -r` combines it and `objcopy --keep-global-symbol` keeps only the interface (`doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_*`, `webp_decode`). `apps/games/doom.c` loads the WAD from a boot module or `DOOM1.WAD`/`FREEDOOM.WAD`/... on the FAT disk (32 MiB buffer).
+* NTFS (ntfs-3g, `third_party/ntfs`): built with `-Ulinux -U__linux__ ...` against `compat/` headers and `ntfslibc.c`, mkntfs with `-Dmain=mkntfs_main`; used by `fs/ntfs/ntfsk.c`.
 
 ## 6.8 Test programs
 
-`user/musl/mhello.c`, prints `uname()` and a float; `mhello x` exits 3; `mhello env` prints `MT_VAR` and exits 4/5. `musltest` and the host harness use these exit codes to check `execve`, `posix_spawn` and environment passing.
+`usr/musl/mhello.c`, prints `uname()` and a float; `mhello x` exits 3; `mhello env` prints `MT_VAR` and exits 4/5. `musltest` and the host harness use these exit codes to check `execve`, `posix_spawn` and environment passing.
 
-`user/musl/musltest.c`, a libc and kernel self-test that also runs on real Linux as the reference. It works in `$MT_DIR/mt<pid>` (default `/tmp`) and prints `ok`/`FAIL` per check:
+`usr/musl/musltest.c`, a libc and kernel self-test that also runs on real Linux as the reference. It works in `$MT_DIR/mt<pid>` (default `/tmp`) and prints `ok`/`FAIL` per check:
 
 | Group | Exercises |
 |---|---|
@@ -489,26 +489,26 @@ Three other third-party components are kernel code, not user programs:
 | `t_signals`, `t_time` | SA_SIGINFO, masks and `sigpending`, `kill`+`WTERMSIG`, EINTR from `nanosleep`, `sigsuspend`, clocks, `strftime` |
 | `t_sys`, `t_errors`, `t_fixes` | `uname`, `sysconf`, `getrandom`, `/dev/null`, `dup2`, poll, and ~30 exact errno checks (EFAULT on unmapped buffers, ESPIPE, EAGAIN, EISDIR, ENOTDIR, ENOTTY ...), sendfile into a full pipe, `/proc` read far past the end, permission checks after `setuid(1000)` |
 
-`user/musl/smptest.c`, `smptest [workers] [rounds] [spin]` (defaults 8/24/3,000,000, max 12 workers) forks workers that spin, record `getcpu` in a CPU bitmask, write/read/verify/unlink files in `/tmp`, fork children over pipes every 4th round and test copy-on-write of a 64 KiB anonymous mapping every 5th round. Reports go back through one pipe; output goes to stdout and `/dev/kmsg`. PASS needs all reports, no errors, clean exits and, with at least 2 CPUs (`sysconf(_SC_NPROCESSORS_ONLN)`), at least two CPUs used.
+`usr/musl/smptest.c`, `smptest [workers] [rounds] [spin]` (defaults 8/24/3,000,000, max 12 workers) forks workers that spin, record `getcpu` in a CPU bitmask, write/read/verify/unlink files in `/tmp`, fork children over pipes every 4th round and test copy-on-write of a 64 KiB anonymous mapping every 5th round. Reports go back through one pipe; output goes to stdout and `/dev/kmsg`. PASS needs all reports, no errors, clean exits and, with at least 2 CPUs (`sysconf(_SC_NPROCESSORS_ONLN)`), at least two CPUs used.
 
-`user/musl/featest.c` (v8.97), `featest [group]` runs the checks for the features added in v8.97 and prints `featest: ok ...` or `featest: FAIL ...` lines and a `featest: done N passed, M failed` summary to stdout and `/dev/kmsg`. Groups: `fds` (200 open files, `select` and `poll` on descriptor 150, 60 pipes), `mem` (96 MiB `malloc`, two 64 MiB `mmap`s), `timers` (`alarm`, `pause`, `setitimer` with a 50 ms interval, disarming, the default action), `server` (listen/accept over loopback, non-blocking accept, `accept4` flags, refused connection, UDP over loopback), `threads` (section 5.15), `tty` (termios, window size, cursor position reports, scroll region, VMIN/VTIME, alternate screen; only when stdin is the console). `featest listen` is not part of the default run: it waits up to 60 s for a connection to port 9200 from another machine and answers it (the network check uses it).
+`usr/musl/featest.c` (v8.97), `featest [group]` runs the checks for the features added in v8.97 and prints `featest: ok ...` or `featest: FAIL ...` lines and a `featest: done N passed, M failed` summary to stdout and `/dev/kmsg`. Groups: `fds` (200 open files, `select` and `poll` on descriptor 150, 60 pipes), `mem` (96 MiB `malloc`, two 64 MiB `mmap`s), `timers` (`alarm`, `pause`, `setitimer` with a 50 ms interval, disarming, the default action), `server` (listen/accept over loopback, non-blocking accept, `accept4` flags, refused connection, UDP over loopback), `threads` (section 5.15), `tty` (termios, window size, cursor position reports, scroll region, VMIN/VTIME, alternate screen; only when stdin is the console). `featest listen` is not part of the default run: it waits up to 60 s for a connection to port 9200 from another machine and answers it (the network check uses it).
 
-`user/musl/dyntest.c` (v8.97) is linked dynamically. It checks that it was started through the dynamic linker (`AT_BASE`), `dl_iterate_phdr`, `malloc` and threads in the shared libc, then writes a small library (`libnvxdemo.so`, embedded in the program) to `/tmp`, loads it with `dlopen`, looks up functions and a variable with `dlsym`, calls into it, checks that its constructor ran and that it can call back into libc, and closes it.
+`usr/musl/dyntest.c` (v8.97) is linked dynamically. It checks that it was started through the dynamic linker (`AT_BASE`), `dl_iterate_phdr`, `malloc` and threads in the shared libc, then writes a small library (`libnvxdemo.so`, embedded in the program) to `/tmp`, loads it with `dlopen`, looks up functions and a variable with `dlsym`, calls into it, checks that its constructor ran and that it can call back into libc, and closes it.
 
-`user/musl/nettest.c`, `nettest [host]` (default `noovex.test`) exercises the Linux socket layer against the test peer in `tools/tests/net/netpeer.py`: `getaddrinfo`, a 300 KB HTTP download checked byte by byte, a 100 KB TCP echo with `shutdown(SHUT_WR)`, UDP `sendto`/`poll`/`recvfrom`, a non-blocking `connect` + `poll` + `SO_ERROR`, `ECONNREFUSED` on a closed port and `EAFNOSUPPORT` for IPv6. It prints `nettest: PASS` or `nettest: FAIL` to stdout and `/dev/kmsg`. `tools/check.py --only net` runs it in QEMU.
+`usr/musl/nettest.c`, `nettest [host]` (default `noovex.test`) exercises the Linux socket layer against the test peer in `tools/tests/net/netpeer.py`: `getaddrinfo`, a 300 KB HTTP download checked byte by byte, a 100 KB TCP echo with `shutdown(SHUT_WR)`, UDP `sendto`/`poll`/`recvfrom`, a non-blocking `connect` + `poll` + `SO_ERROR`, `ECONNREFUSED` on a closed port and `EAFNOSUPPORT` for IPv6. It prints `nettest: PASS` or `nettest: FAIL` to stdout and `/dev/kmsg`. `tools/check.py --only net` runs it in QEMU.
 
-Host harness. `source/tools/tests/linux/hh.c` compiles the whole kernel as a Linux program (`hk_glue.c` does `#include "kernel64.c"`), traps user `syscall`/`int 0x80` with seccomp and feeds them to `linux_syscall`/`syscall_dispatch`. It runs mhello, legacy programs, every compressor round trip, the SQLite sequence, `smptest 3 3 200000`, `musltest` (requires at least 80 `ok`), optionally `lxfuzz.c` (random system calls with hostile arguments), and then checks that no frames, vfile slots or pipes leaked. Arguments with spaces are passed with `\037` exactly as the shell does.
+Host harness. `tools/tests/linux/hh.c` compiles the whole kernel as a Linux program (`hk_glue.c` does `#include "kernel64.c"`), traps user `syscall`/`int 0x80` with seccomp and feeds them to `linux_syscall`/`syscall_dispatch`. It runs mhello, legacy programs, every compressor round trip, the SQLite sequence, `smptest 3 3 200000`, `musltest` (requires at least 80 `ok`), optionally `lxfuzz.c` (random system calls with hostile arguments), and then checks that no frames, vfile slots or pipes leaked. Arguments with spaces are passed with `\037` exactly as the shell does.
 
 ## 6.9 Step-by-step porting guide
 
 ### Step 1, port a portable C command-line program with musl
 
 1. Run `./build.sh` once so `build/musl` exists.
-2. Put the sources under `third_party/<name>/` (or a single file under `user/musl/`).
+2. Put the sources under `third_party/<name>/` (or a single file under `usr/musl/`).
 3. Build by hand to see what breaks:
 
 ```sh
-cd source/kernel
+cd NoovexOS-64-bit
 export NVX_MUSL=$(pwd)/build/musl
 tools/mcc -O2 -w -o /tmp/myprog third_party/myprog/*.c
 file /tmp/myprog
@@ -516,7 +516,7 @@ file /tmp/myprog
 
 `file` must say `static-pie linked`. Typical fixes: replace `configure` output with a hand-written config header passed via `-include` (as `third_party/xz/nvx_config.h` does), disable threads (`SQLITE_THREADSAFE=0`, no `HAVE_PTHREAD`), assembly (`ZSTD_DISABLE_ASM`), and plugin loading (`SQLITE_OMIT_LOAD_EXTENSION`).
 
-Minimal template, the same shape as `user/musl/mhello.c`:
+Minimal template, the same shape as `usr/musl/mhello.c`:
 
 ```c
 #include <stdio.h>
@@ -550,7 +550,7 @@ and a row before `{"+init",...}`:
     {"myprog",_binary_user_myprog_elf_start,_binary_user_myprog_elf_end},
 ```
 
-5. Rebuild. The program appears in `/bin` and runs as `myprog args`, in pipes and in the background. Watch the 8 MiB kernel assertion. For a single test file in `user/musl/`, add its name to `for p in mhello musltest smptest` instead of using `port`.
+5. Rebuild. The program appears in `/bin` and runs as `myprog args`, in pipes and in the background. Watch the 8 MiB kernel assertion. For a single test file in `usr/musl/`, add its name to `for p in mhello musltest smptest` instead of using `port`.
 
 ### Step 3, run it from disk instead
 
@@ -564,7 +564,7 @@ Limits: the whole image is read from memory (`FsFile.data`), so it must fit the 
 
 ### Step 4, find missing system calls and add one
 
-A missing call shows up as `ENOSYS` (`-38`). To see which one, temporarily add a `klog(...)` of `nr` before the final `return -LX_ENOSYS;` in `lx_dispatch`. Then add a `case` to the switch in `core/linux.c`. Rules that follow from the existing code:
+A missing call shows up as `ENOSYS` (`-38`). To see which one, temporarily add a `klog(...)` of `nr` before the final `return -LX_ENOSYS;` in `lx_dispatch`. Then add a `case` to the switch in `sys/linux/linux.c`. Rules that follow from the existing code:
 
 * Read arguments from `a1...a6` (`rdi rsi rdx r10 r8 r9`); return `-LX_E...` on error.
 * Never dereference a user pointer without `lx_ok`/`lx_get`/`lx_put`/`lx_str`; turn paths into absolute ones with `PATH1(dirfd,ptr,empty_ok)`.
@@ -593,7 +593,7 @@ int main(int argc,char** argv){
 }
 ```
 
-1. Save as `user/src/mycat.c` (`upper.c` and `greet.c` are good models).
+1. Save as `usr/src/mycat.c` (`upper.c` and `greet.c` are good models).
 2. Add `mycat` to `for p in count spin sigdemo upper greet pipetest nvxbox init libc8; do`. The loop compiles with `LFLAGS`, links with `user.ld`, `crt0.o` and `libc.a`, embeds `user_mycat_bin.o`, renames to `.rodata`.
 3. Add `user_mycat_bin.o` to `BLOBS`, the `extern` and the `JS_BIN` row as in step 2.
 
@@ -607,11 +607,11 @@ There is no X11/Wayland/SDL; a Linux program can draw on the raw screen:
 |---|---|---|
 | `/proc/fb` | procfs | text `"W H 32 PITCH\n"`, the only way to learn the resolution (no `FBIOGET_*` ioctls) |
 | `/dev/fb0` | 9 | `W*H*4` bytes of 0x00RRGGBB pixels (`SCENE`, stride `SW == W`); `lseek` + `write`/`read`; `mmap` is `-ENODEV` |
-| `/dev/input/mouse`, `/dev/input/mice` | 10 | 3-byte PS/2 packets: `0x08\|buttons\|sign bits`, dx, dy (positive dy is up: the desktop does `my-=dy` in `gui/input.c`); blocks when empty unless `O_NONBLOCK`; works with `poll` |
+| `/dev/input/mouse`, `/dev/input/mice` | 10 | 3-byte PS/2 packets: `0x08\|buttons\|sign bits`, dx, dy (positive dy is up: the desktop does `my-=dy` in `graphics/ui/input.c`); blocks when empty unless `O_NONBLOCK`; works with `poll` |
 | `/dev/dsp`, `/dev/audio` | 12 | 16-bit little-endian stereo PCM at `g_snd.rate` (48 kHz by default) on HDA or AC'97 |
 | `/dev/kmsg` | 13 | lines go to `klog` |
 
-While any process holds `/dev/fb0` open (`g_fb0_open > 0`), `init/main.c` stops drawing the desktop and blits `SCENE` whenever the program wrote to it (`g_fb0_dirty`); closing it restores the desktop. Mouse packets are only queued while the mouse device is open (`ux_mouse_push`).
+While any process holds `/dev/fb0` open (`g_fb0_open > 0`), `core/init/main.c` stops drawing the desktop and blits `SCENE` whenever the program wrote to it (`g_fb0_dirty`); closing it restores the desktop. Mouse packets are only queued while the mouse device is open (`ux_mouse_push`).
 
 ```c
 #include <fcntl.h>
@@ -666,7 +666,7 @@ Things to know:
   `ENETUNREACH` while there is no link.
 - DNS works without `/etc/resolv.conf`: queries to musl's default `127.0.0.1:53`
   are forwarded to the DHCP DNS server.
-- For HTTPS, link the program with BearSSL and `user/musl/nvxtls.c` as `fetch`
+- For HTTPS, link the program with BearSSL and `usr/musl/nvxtls.c` as `fetch`
   does (section 6.11). It then checks certificates against the same roots as
   the kernel's `https` command.
 - Server programs can `bind`, `listen` and `accept` (section 9.7.4), on the
@@ -730,10 +730,10 @@ For a shared library, compile with `-fPIC` against the musl headers and link wit
 | Piece | Where | What it is |
 |---|---|---|
 | BearSSL | `third_party/bearssl` | Upstream BearSSL (master, commit 3c04036, June 2024; `VERSION.txt`), MIT licence. TLS 1.0-1.2 client and server, X.509 validation, no TLS 1.3. `tools/build_bearssl.sh` compiles its 294 files with `mcc-dyn` into `build/bearssl/libbearssl.a`, with `BR_USE_GETENTROPY` and `BR_USE_URANDOM` |
-| The kernel's root store | `/etc/ssl/nvx-anchors.pem` | Written at boot by `ux_write_anchors` (`fs/unixfs.c`) from the kernel's 120 Mozilla roots (`lib/crypto/nvxroots.c`), and rewritten only when the kernel's store has changed. Each root is two PEM objects, `TRUST ANCHOR NAME` (the subject name, DER) and `PUBLIC KEY` (SubjectPublicKeyInfo), which is exactly what a trust anchor needs |
+| The kernel's root store | `/etc/ssl/nvx-anchors.pem` | Written at boot by `ux_write_anchors` (`fs/vfs/unixfs.c`) from the kernel's 120 Mozilla roots (`lib/crypto/nvxroots.c`), and rewritten only when the kernel's store has changed. Each root is two PEM objects, `TRUST ANCHOR NAME` (the subject name, DER) and `PUBLIC KEY` (SubjectPublicKeyInfo), which is exactly what a trust anchor needs |
 | Local CAs | `/etc/ssl/local-ca.pem` | The same file the kernel's `https` command reads: ordinary PEM certificates |
-| Helper | `user/musl/nvxtls.c`, `nvxtls.h` | `nvx_anchors_load(&a, roots, local_ca)` turns both files into an array of `br_x509_trust_anchor` (RSA and EC P-256/P-384/P-521 keys); `nvx_tls_error(err)` gives a readable message for a BearSSL error code |
-| `fetch` | `user/musl/fetch.c` | Downloads a URL over HTTP or HTTPS |
+| Helper | `usr/musl/nvxtls.c`, `nvxtls.h` | `nvx_anchors_load(&a, roots, local_ca)` turns both files into an array of `br_x509_trust_anchor` (RSA and EC P-256/P-384/P-521 keys); `nvx_tls_error(err)` gives a readable message for a BearSSL error code |
+| `fetch` | `usr/musl/fetch.c` | Downloads a URL over HTTP or HTTPS |
 
 ### `fetch`
 
@@ -759,7 +759,7 @@ fetch -s -o /dev/null https://noovex.test:9443/big
 
 ### Using BearSSL in your own program
 
-1. Link with `-I third_party/bearssl/inc -I user/musl user/musl/nvxtls.c build/bearssl/libbearssl.a`.
+1. Link with `-I third_party/bearssl/inc -I usr/musl usr/musl/nvxtls.c build/bearssl/libbearssl.a`.
 2. Load the anchors: `nvx_anchors a; nvx_anchors_load(&a, "/etc/ssl/nvx-anchors.pem", "/etc/ssl/local-ca.pem");`
 3. Set up the client as in BearSSL's `samples/client_basic.c`: `br_ssl_client_init_full(&sc, &xc, a.v, a.n)`, `br_ssl_engine_set_buffer`, `br_ssl_client_reset(&sc, host, 0)`, then `br_sslio_init` with `read`/`write` callbacks on the socket.
 4. After a failure, `nvx_tls_error(br_ssl_engine_last_error(&sc.eng))` explains it.
@@ -768,7 +768,7 @@ The kernel's own TLS 1.3 client (`https` command, section 9.9) and BearSSL in us
 
 ## 6.12 FFmpeg and the `play` command
 
-`play` (`user/musl/play.c`) is a video and audio player built on FFmpeg 8.1.2. The source in `third_party/ffmpeg` is the ffmpeg-rockchip fork; its Rockchip hardware decoders only run on Rockchip ARM chips, so they are left out and everything is decoded on the CPU.
+`play` (`usr/musl/play.c`) is a video and audio player built on FFmpeg 8.1.2. The source in `third_party/ffmpeg` is the ffmpeg-rockchip fork; its Rockchip hardware decoders only run on Rockchip ARM chips, so they are left out and everything is decoded on the CPU.
 
 Build. `build.sh` configures FFmpeg once into `build/ffmpeg` with `tools/mcc-dyn` as a cross compiler for `x86_64-linux`, then builds the static libraries and links `play` as a dynamic musl program like the other ports (section 6.9):
 
@@ -815,7 +815,7 @@ QEMU's default CPU model has no SSSE3, so the colour conversion falls back to pl
 
 Limits: no subtitles and no hardware decoding. The Video Player window and the browser's `<video>` use the same program (sections 6.13 and 6.14).
 
-Since v9.12 `play` also accepts an `http://` or `https://` URL (read with Range requests through `user/musl/httpio.c`, which keeps the last 8 MB in a ring so the demuxer can seek back without a new request), and has an embedded mode used by the media service (section 6.13).
+Since v9.12 `play` also accepts an `http://` or `https://` URL (read with Range requests through `usr/musl/httpio.c`, which keeps the last 8 MB in a ring so the demuxer can seek back without a new request), and has an embedded mode used by the media service (section 6.13).
 
 ## 6.13 The media service (`/dev/media`)
 
@@ -844,7 +844,7 @@ Inside `play`, the input is an `AVIOContext`: a local file, `httpio`, or `ks_rea
 
 `media_tick` runs in the kernel main loop and compacts the stream buffers. `media_free` sends `QUIT` and kills the process.
 
-## 6.14 The Video Player window (`apps/videoplayer.c`)
+## 6.14 The Video Player window (`apps/media/videoplayer.c`)
 
 `W_VIDEO` is a window like the others. `video_open_url` starts a media slot for a path or URL, sized to the window; `video_open_slot` builds the full path of a file from the directory tree. Files with the extensions mp4, m4v, mov, mkv, webm, mp3, m4a, aac, ogg, oga, ogv, opus and wav open in it from Files and the desktop, and `video` (or `player`) does the same from the terminal (in the live terminal it switches to the desktop first). Closing the window frees the slot.
 
@@ -856,9 +856,9 @@ The kernel main loop calls `video_fast` and then `browser_media_fast` when nothi
 
 ### Building glibc
 
-`tools/build_glibc.sh` builds glibc 2.44 from `source/third_party_src/glibc-2.44.tar.gz` (`--prefix=/usr`, `--libdir=/usr/lib/x86_64-linux-gnu`, `--enable-kernel=4.4`) into `build/glibc-root` and is skipped when that directory already holds `lib64/libc.so.6`. glibc's `configure` needs GNU awk.
+`tools/build_glibc.sh` builds glibc 2.44 from `third_party/src/glibc-2.44.tar.gz` (`--prefix=/usr`, `--libdir=/usr/lib/x86_64-linux-gnu`, `--enable-kernel=4.4`) into `build/glibc-root` and is skipped when that directory already holds `lib64/libc.so.6`. glibc's `configure` needs GNU awk.
 
-### The sysroot (`fs/sysroot.c`, `tools/mksysroot.py`)
+### The sysroot (`fs/vfs/sysroot.c`, `tools/mksysroot.py`)
 
 `build.sh` copies into `build/sysroot-stage`:
 
@@ -910,7 +910,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 
 ## 6.16 Debian packages: apt and dpkg
 
-`apt` (also `apt-get`, `apt-cache`) and `dpkg` are Terminal commands in the kernel (`fs/apt.c`). Commands that change the system need root (`sudo apt install ...`).
+`apt` (also `apt-get`, `apt-cache`) and `dpkg` are Terminal commands in the kernel (`fs/pkg/apt.c`). Commands that change the system need root (`sudo apt install ...`).
 
 | Command | What it does |
 |---|---|
@@ -933,7 +933,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 
 ### Unpacking
 
-- `ar` members `control.tar.*` and `data.tar.*`; compression gzip (`pz_inflate_raw`), xz (`lib/xzk.c`, xz-embedded) or zstd (`lib/zstdk.c`, the zstd decoder); `lib/unpack.c` picks by magic bytes.
+- `ar` members `control.tar.*` and `data.tar.*`; compression gzip (`pz_inflate_raw`), xz (`lib/compress/xzk.c`, xz-embedded) or zstd (`lib/compress/zstdk.c`, the zstd decoder); `lib/compress/unpack.c` picks by magic bytes.
 - The tar reader handles ustar prefixes, GNU long names (`L`, `K`), pax headers (`path=`, `linkpath=`), symlinks (relative targets made absolute) and hard links (copied).
 - The files become one `NVS2` layer with a single stored block, written to `/var/lib/nvpkg/PKG.nvs` and added with `sysroot_add_layer("pkg:PKG", ...)`. Programs in `/usr/bin` run at once; libraries are found by the glibc loader.
 - `/var/lib/dpkg/status` keeps Package, Version, Architecture, Depends, Description and Auto-Installed.
@@ -951,7 +951,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 
 ## 6.17 Python 3.13
 
-CPython 3.13 is built from `source/third_party_src/cpython-3.13.tar.xz` by `tools/build_python.sh` (cached in `build/python-root`; `--prefix=/usr`, position-independent like every program the build machine's gcc makes). `tools/stage_python.sh` puts into the sysroot:
+CPython 3.13 is built from `third_party/src/cpython-3.13.tar.xz` by `tools/build_python.sh` (cached in `build/python-root`; `--prefix=/usr`, position-independent like every program the build machine's gcc makes). `tools/stage_python.sh` puts into the sysroot:
 
 | Path | Content |
 |---|---|
@@ -965,7 +965,7 @@ CPython 3.13 is built from `source/third_party_src/cpython-3.13.tar.xz` by `tool
 
 ## 6.18 The Python IDE package (`python3-ide`)
 
-The sysroot carries a small local package repository in `/usr/share/noovex/repo` (`Packages` plus `pool/*.deb`), built by `build.sh` from `source/kernel/packages/*/` with `dpkg-deb` and `tools/mkrepo.py`. `apt` always reads it, after the downloaded lists, as source `file:/usr/share/noovex/repo/`; `file:` URIs are read from the sysroot or the file system, so it works without a network and without `apt update`.
+The sysroot carries a small local package repository in `/usr/share/noovex/repo` (`Packages` plus `pool/*.deb`), built by `build.sh` from `usr/packages/*/` with `dpkg-deb` and `tools/mkrepo.py`. `apt` always reads it, after the downloaded lists, as source `file:/usr/share/noovex/repo/`; `file:` URIs are read from the sysroot or the file system, so it works without a network and without `apt update`.
 
 `sudo apt install python3-ide` (also `ide`, `idle`, `idle3`, `pyide`, `python-ide`, `python3-idle`; so `sudo apt install python3 ide` works) installs the package: `/usr/share/applications/python3-ide.desktop`, an example program and a README. Debian's own `idle3` needs Tk and an X server, which NoovexOS does not have, so these names are redirected.
 
@@ -975,13 +975,13 @@ The sysroot carries a small local package repository in `/usr/share/noovex/repo`
 | Start menu, modern style | Productivity lists "Python IDE"; searching "python" or "idle" finds it |
 | Terminal | `python3-ide`, `idle`, `idle3` and `pyide` open it |
 
-The IDE is the Editor window in Python mode (`ed_py`, `apps/editor.c`): the title reads "Python IDE - main.py", keywords, built-ins, strings, numbers, comments and `def`/`class` names are coloured, Save writes `/root/main.py`, and Run saves and runs `python3 /root/main.py` in the Terminal, so `input()` works. Opening the plain Editor or a file leaves Python mode. Removing the package (`sudo apt remove python3-ide`) takes the entries away again.
+The IDE is the Editor window in Python mode (`ed_py`, `apps/office/editor.c`): the title reads "Python IDE - main.py", keywords, built-ins, strings, numbers, comments and `def`/`class` names are coloured, Save writes `/root/main.py`, and Run saves and runs `python3 /root/main.py` in the Terminal, so `input()` works. Opening the plain Editor or a file leaves Python mode. Removing the package (`sudo apt remove python3-ide`) takes the entries away again.
 
-## 6.19 X11: the X.Org server (`startx`, `apps/xdisplay.c`)
+## 6.19 X11: the X.Org server (`startx`, `apps/x11/xdisplay.c`)
 
 The server is X.Org's: Xvfb is the same program as Xorg built with a memory framebuffer as its output instead of a graphics card driver, and it implements the whole X11 protocol and its extensions (XTEST, XKB, RENDER, RANDR, ...).
 
-The sysroot carries X.Org's `Xvfb` (the X server with a memory framebuffer), `xkbcomp`, the XKB keyboard data (`/usr/share/X11/xkb`), `XErrorDB`, `protocol.txt`, an Xlib test program `xdemo` (`user/x11/xdemo.c`) and every library they need (libX11, libxcb, pixman, libXfont2, freetype, ...), copied from the build machine like the GNU tools.
+The sysroot carries X.Org's `Xvfb` (the X server with a memory framebuffer), `xkbcomp`, the XKB keyboard data (`/usr/share/X11/xkb`), `XErrorDB`, `protocol.txt`, an Xlib test program `xdemo` (`usr/x11/xdemo.c`) and every library they need (libX11, libxcb, pixman, libXfont2, freetype, ...), copied from the build machine like the GNU tools.
 
 `startx` in the Terminal creates `/tmp` and `/var/lib/xkb`, sets `DISPLAY=127.0.0.1:0` and starts
 
@@ -999,9 +999,9 @@ then opens the **X Display** window (also in the start menu: Development, or Sys
 
 | Piece | How it works |
 |---|---|
-| Kernel queue | `xdisp_mouse` (called from the mouse handler in `gui/input.c`) and `xdisp_key` (keyboard dispatch when the X Display window has focus) push 8-byte records into a 512-entry ring in `apps/xdisplay.c`: type (1 motion, 2 button, 3 key), button or character, pressed, x and y in X screen coordinates. Wheel steps become buttons 4 and 5. |
+| Kernel queue | `xdisp_mouse` (called from the mouse handler in `graphics/ui/input.c`) and `xdisp_key` (keyboard dispatch when the X Display window has focus) push 8-byte records into a 512-entry ring in `apps/x11/xdisplay.c`: type (1 motion, 2 button, 3 key), button or character, pressed, x and y in X screen coordinates. Wheel steps become buttons 4 and 5. |
 | `/dev/nvxxin` | device 16; `read` returns whole records, `poll` and `epoll` report it readable while records wait |
-| `nvx-xinput` | started by `startx`; an X client (`user/x11/nvx-xinput.c`) that reads `/dev/nvxxin` and replays the records with the XTEST extension (`XTestFakeMotionEvent`, `XTestFakeButtonEvent`, `XTestFakeKeyEvent`). Characters are turned into keysyms (Return, BackSpace, Tab, Escape and the arrow keys included); Shift is pressed around characters that need it. Log in `/tmp/nvx-xinput.log`. |
+| `nvx-xinput` | started by `startx`; an X client (`usr/x11/nvx-xinput.c`) that reads `/dev/nvxxin` and replays the records with the XTEST extension (`XTestFakeMotionEvent`, `XTestFakeButtonEvent`, `XTestFakeKeyEvent`). Characters are turned into keysyms (Return, BackSpace, Tab, Escape and the arrow keys included); Shift is pressed around characters that need it. Log in `/tmp/nvx-xinput.log`. |
 
 ### The full-screen X session (`startx full`)
 
@@ -1021,11 +1021,11 @@ then opens the **X Display** window (also in the start menu: Development, or Sys
 
 | Piece | Where it comes from |
 |---|---|
-| Tcl/Tk 8.6 | `tools/build_tcltk.sh` builds Tcl and Tk 8.6 from `source/third_party_src/tcltk-8.6.tar.xz` (cached in `build/tcltk-root`). `libtcl8.6.so` and `libtk8.6.so` go to `/lib64`, the script libraries to `/usr/lib/tcl8.6` and `/usr/lib/tk8.6`, `wish` to `/usr/bin`. |
+| Tcl/Tk 8.6 | `tools/build_tcltk.sh` builds Tcl and Tk 8.6 from `third_party/src/tcltk-8.6.tar.xz` (cached in `build/tcltk-root`). `libtcl8.6.so` and `libtk8.6.so` go to `/lib64`, the script libraries to `/usr/lib/tcl8.6` and `/usr/lib/tk8.6`, `wish` to `/usr/bin`. |
 | `_tkinter` | built by the same script from CPython 3.13's `Modules/_tkinter.c` against that Tk, into `lib-dynload` |
 | `tkinter`, `idlelib` | the standard library packages, now staged (without `idlelib/idle_test`), with IDLE's `.def` configuration files and icons |
 | `/usr/bin/idle3.13` | `from idlelib.pyshell import main`; `idle3` and `idle` link to it |
-| `nvxwm` | a small window manager (`user/x11/nvxwm.c`), started by `startx`: a title bar with the window name and a close button (sends `WM_DELETE_WINDOW`), drag the title bar to move, click to raise and focus, the new window gets the focus |
+| `nvxwm` | a small window manager (`usr/x11/nvxwm.c`), started by `startx`: a title bar with the window name and a close button (sends `WM_DELETE_WINDOW`), drag the title bar to move, click to raise and focus, the new window gets the focus |
 
 Tcl is built **without threads** (`--disable-threads`). The threaded Tcl notifier waits in `pthread_cond_timedwait` and only woke up on the next X event here, so IDLE showed its prompt, colours and output one keystroke late. Without threads, Tcl waits in `select` with a timeout, and `_tkinter` polls its interpreter every 20 ms, which is what CPython does with a non-threaded Tcl.
 
@@ -1039,7 +1039,7 @@ IDLE runs in its normal mode, with the user code in a second Python process conn
 
 ## 6.21 X programs as normal desktop apps (v9.28)
 
-`startx` (and every automatic start, for example `idle3`) now runs the X server at the size of the screen in **overlay mode** (`g_xover`, `apps/xdisplay.c`): there is no X Display window, X windows are drawn straight onto the NoovexOS desktop.
+`startx` (and every automatic start, for example `idle3`) now runs the X server at the size of the screen in **overlay mode** (`g_xover`, `apps/x11/xdisplay.c`): there is no X Display window, X windows are drawn straight onto the NoovexOS desktop.
 
 | Piece | How it works |
 |---|---|
@@ -1052,7 +1052,7 @@ IDLE runs in its normal mode, with the user code in a second Python process conn
 
 ### Apps from packages in the start menu
 
-`apps/xapps.c` reads every `/usr/share/applications/*.desktop` file in the system image and installed packages (Name, Exec without `%` codes, Icon, Terminal, NoDisplay). Each appears in the start menu (Development in the classic menu, Productivity in the modern menu) and in search, with its own icon: `Icon=` is looked up as a PNG in `/usr/share/icons/hicolor/{48,64,128,32,256}x.../apps/` and `/usr/share/pixmaps/`, decoded with `png_decode` and scaled to 48x48 with its alpha channel. IDLE uses CPython's own icon (`idlelib/Icons/idle_48.png`). Launching runs the `Exec` line through `x_launch` (or the Terminal for `Terminal=true`). So `sudo apt install vlc` adds **VLC media player** with its cone icon to the menu; whether VLC itself runs is not tested (it needs Qt, which needs more of the Linux layer).
+`apps/x11/xapps.c` reads every `/usr/share/applications/*.desktop` file in the system image and installed packages (Name, Exec without `%` codes, Icon, Terminal, NoDisplay). Each appears in the start menu (Development in the classic menu, Productivity in the modern menu) and in search, with its own icon: `Icon=` is looked up as a PNG in `/usr/share/icons/hicolor/{48,64,128,32,256}x.../apps/` and `/usr/share/pixmaps/`, decoded with `png_decode` and scaled to 48x48 with its alpha channel. IDLE uses CPython's own icon (`idlelib/Icons/idle_48.png`). Launching runs the `Exec` line through `x_launch` (or the Terminal for `Terminal=true`). So `sudo apt install vlc` adds **VLC media player** with its cone icon to the menu; whether VLC itself runs is not tested (it needs Qt, which needs more of the Linux layer).
 
 ### Opening Python files
 

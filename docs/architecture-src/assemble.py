@@ -3,7 +3,7 @@ D = os.path.dirname(os.path.abspath(__file__))
 PARTS = ['01-overview-build.md', '02-boot-signatures.md', '03-memory.md', '04-cpu-smp.md', '05-processes.md',
          '06-linux-porting.md', '07-filesystems.md', '08-storage-installer.md', '09-network.md', '10-devices.md',
          '11-desktop-shell.md', '12-testing-debugging.md', '13-web-engine.md']
-VERSION = '9.82'
+VERSION = '9.83'
 
 def slug(text, seen):
     t = re.sub(r'`', '', text).strip().lower()
@@ -59,7 +59,7 @@ This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating
 - New to the code: read "What changed in v{VERSION}", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
 - Porting a program: go to Part 6; the step-by-step guide is in section 6.9.
 - Chasing a bug: start with the troubleshooting table in section 12.9 and the serial log in section 12.5.
-- Paths are relative to `source/kernel/` unless they start with `source/`, `tools/` or `bootloader/`.
+- Paths are relative to the root of the repository (since v9.83 the source tree is flat: `arch/`, `boot/`, `core/`, `drivers/`, `fs/`, ... at the top).
 
 '''
 

@@ -1,21 +1,21 @@
 # Part 5: Processes, scheduling, signals and the native system-call ABI
 
-This part covers how NoovexOS 64 runs user programs: the process table and its life cycle, the setjmp/longjmp scheduler, signals, job control on the terminal, pipes and file descriptors, the ELF loader, the program table, and the native `int 0x80` system-call ABI. Most of the code is in `source/kernel/core/proc/jobs.c` (the "job control" or `jc_*` layer). `core/proc/elf.c` loads programs, `core/syscall.c` holds the legacy dispatcher, and `core/proc/sched.c` holds the older demo schedulers. Each of these files is its own compilation unit; they share functions through `include/nvx/core/proc/jobs.h`, `elf.h`, `sched.h` and `include/nvx/core/syscall.h`. Every path below is relative to `source/kernel/`.
+This part covers how NoovexOS 64 runs user programs: the process table and its life cycle, the setjmp/longjmp scheduler, signals, job control on the terminal, pipes and file descriptors, the ELF loader, the program table, and the native `int 0x80` system-call ABI. Most of the code is in `core/proc/jobs.c` (the "job control" or `jc_*` layer). `core/proc/elf.c` loads programs, `sys/native/syscall.c` holds the legacy dispatcher, and `core/proc/sched.c` holds the older demo schedulers. Each of these files is its own compilation unit; they share functions through `include/nvx/core/proc/jobs.h`, `elf.h`, `sched.h` and `include/nvx/sys/native/syscall.h`. Every path below is relative to the repository root.
 
 There are two process systems in the tree, and they should not be confused:
 
 | System | Table | Where | Status |
 |---|---|---|---|
 | Job-control processes | `struct jproc g_jp[JMAX]` (256 slots, one per thread) | `core/proc/jobs.c` | The live system. It runs the shell's programs, init, the Linux ABI and SMP scheduling. |
-| Legacy staged processes | `struct proc g_proc[MAXPROC]` (6 slots) | `core/proc/sched.c`, `core/syscall.c` | Older demos: a cooperative scheduler, a preemption demo, IPC, a compositor demo and threads. |
+| Legacy staged processes | `struct proc g_proc[MAXPROC]` (6 slots) | `core/proc/sched.c`, `sys/native/syscall.c` | Older demos: a cooperative scheduler, a preemption demo, IPC, a compositor demo and threads. |
 
-`syscall_dispatch` (`core/syscall.c`) chooses between them on every `int 0x80`. If a job process is running on this CPU (`g_js_running && g_jcur>=0`), the call goes to `jc_syscall` first. A call that `jc_syscall` does not handle falls through to the legacy `switch`.
+`syscall_dispatch` (`sys/native/syscall.c`) chooses between them on every `int 0x80`. If a job process is running on this CPU (`g_js_running && g_jcur>=0`), the call goes to `jc_syscall` first. A call that `jc_syscall` does not handle falls through to the legacy `switch`.
 
 ---
 
 ## 5.1 Per-CPU scheduling state
 
-Several names in `jobs.c` that look like globals are really macros for fields of the current CPU's `struct pcpu` (`arch/x86_64/percpu.c`). The `%gs` base points at that struct, and `PCPU` is defined as `((struct pcpu*)cpu_percpu())`.
+Several names in `jobs.c` that look like globals are really macros for fields of the current CPU's `struct pcpu` (`arch/x86_64/cpu/percpu.c`). The `%gs` base points at that struct, and `PCPU` is defined as `((struct pcpu*)cpu_percpu())`.
 
 | Macro | Field | Meaning |
 |---|---|---|
@@ -84,10 +84,10 @@ int g_next_pid=2, g_js_dirty=0;
 | `sighand[32]` | u64 | `0` = `SIG_DFL`, `1` = `SIG_IGN`, anything above 1 = handler address |
 | `sigrest[32]` | u64 | Restorer (trampoline) address pushed as the handler's return address |
 | `sigamask[32]` | u32 | Extra mask applied while the handler runs (`sa_mask`) |
-| `saflags[32]` | u32 | `sa_flags`, written only by the Linux `rt_sigaction` (`core/linux.c`). Bit 2 (`SA_SIGINFO`) makes the kernel build a siginfo block |
+| `saflags[32]` | u32 | `sa_flags`, written only by the Linux `rt_sigaction` (`sys/linux/linux.c`). Bit 2 (`SA_SIGINFO`) makes the kernel build a siginfo block |
 | `fsbase` | u64 | TLS base. `jc_enter` loads it into `lsys_fsbase`, and `jc_resume` writes it to `MSR 0xC0000100` |
-| `pollwake` | u64 | Deadline for Linux `poll`/`select` (`core/linux.c`) |
-| `lxbrk` | u64 | Linux-ABI program break (`core/linux.c`) |
+| `pollwake` | u64 | Deadline for Linux `poll`/`select` (`sys/linux/linux.c`) |
+| `lxbrk` | u64 | Linux-ABI program break (`sys/linux/linux.c`) |
 | `susp`, `suspold` | int, u32 | `rt_sigsuspend` state: the temporary mask is active, and `suspold` holds the mask to restore |
 | `lx` | int | Set when the image is static-PIE (`g_elf_pie`) or when the process has made any Linux system call (`linux_syscall` sets `p->lx=1`). After that, native `int 0x80` calls are refused (see 5.12) |
 | `exitst` | int | Wait status in `wait()` encoding (see 5.4) |
@@ -243,11 +243,11 @@ static int jc_runnable(int i){
 ```
 - `jc_pick()` is a round-robin search that starts after `g_js_rr` and returns the first slot that is neither free nor a zombie and is runnable.
 - `jc_run()` calls `jc_pick`/`jc_enter` up to `JMAX*2` times, and stops early once 2 ticks have passed or nothing is runnable.
-- `jc_step()` is `jc_run()`, then `jc_poll()`, and returns whether anything ran or `g_js_dirty` was set. `init/main.c` calls `jc_step()` from the main loop in `ST_DESKTOP` and `ST_LIVE`. When `!jc_any_runnable()`, the BSP halts instead.
-- On application processors, `ap_loop` (`arch/x86_64/smp_sched.c`) takes the lock, calls `jc_pick()` and `jc_enter()` while `g_smp_sched` is set, and releases the lock.
+- `jc_step()` is `jc_run()`, then `jc_poll()`, and returns whether anything ran or `g_js_dirty` was set. `core/init/main.c` calls `jc_step()` from the main loop in `ST_DESKTOP` and `ST_LIVE`. When `!jc_any_runnable()`, the BSP halts instead.
+- On application processors, `ap_loop` (`arch/x86_64/smp/smp_sched.c`) takes the lock, calls `jc_pick()` and `jc_enter()` while `g_smp_sched` is set, and releases the lock.
 
 ### Time slices and preemption
-- The PIT runs at 100 Hz (`pit_init(100)` in `init/main.c`), so one tick is 10 ms.
+- The PIT runs at 100 Hz (`pit_init(100)` in `core/init/main.c`), so one tick is 10 ms.
 - BSP: IRQ0 in `isr_body` calls `jc_timer(r)` when the interrupt came from ring 3. `jc_timer` does nothing for 2 ticks after `g_js_slice`. After that it copies the frame into `ctx`, sends EOI and calls `jc_leave()`. The slice is therefore about 20 ms.
 - APs: `ap_timer` counts per-CPU `ticks` (the LAPIC timer at `lapic_hz/100`) and calls `jc_preempt(r)` after 2 ticks. `IPI_RESCHED` (0xF0) also calls `jc_preempt` when it lands in user mode. `jc_signal_proc` sends this IPI with `smp_kick` when the target process is running on another CPU.
 - `jc_now()` returns `g_ticks` on CPU 0 and `PCPU->ticks` on the APs.
@@ -268,7 +268,7 @@ If the process has no handler (`sighand<=1`) or the signal is blocked, `jc_finis
 
 ## 5.6 Blocking and restartable system calls
 
-A driver or VFS read or write that cannot finish returns `JS_BLOCK` (`-1000`, defined in `arch/x86_64/interrupts.c`). The syscall code then calls:
+A driver or VFS read or write that cannot finish returns `JS_BLOCK` (`-1000`, defined in `arch/x86_64/interrupts/interrupts.c`). The syscall code then calls:
 
 ```c
 static void jc_block(struct sysregs* r,int state,u64 wake){
@@ -283,7 +283,7 @@ static void jc_block(struct sysregs* r,int state,u64 wake){
 - `jc_save_sys` copies the `struct sysregs` frame (15 registers, then the hardware iret frame at `fr[15..19]`) into `regs_pt`.
 - `jc_yield_sys(r)` saves the context without changing the state, and leaves. Syscall 20 uses it, as do the paths that deliver a pending signal after a syscall.
 
-The Linux ABI uses the same mechanism. `core/linux.c` calls `jc_block(r,S_WAIT,g_ticks+1)` for blocking I/O and poll/select, and `S_SLEEP` for nanosleep, pause and `rt_sigsuspend`. A futex wait (section 5.15) is the one `S_WAIT` that does not poll: it blocks with `wake` at its timeout (or far in the future), and `FUTEX_WAKE` sets `wake=0` on the threads it wakes, so they run at once without retrying every tick.
+The Linux ABI uses the same mechanism. `sys/linux/linux.c` calls `jc_block(r,S_WAIT,g_ticks+1)` for blocking I/O and poll/select, and `S_SLEEP` for nanosleep, pause and `rt_sigsuspend`. A futex wait (section 5.15) is the one `S_WAIT` that does not poll: it blocks with `wake` at its timeout (or far in the future), and `FUTEX_WAKE` sets `wake=0` on the threads it wakes, so they run at once without retrying every tick.
 
 ---
 
@@ -332,7 +332,7 @@ Delivery happens in `jc_enter` before the process resumes, and after any system 
 The code checks that the 1 KB below `rsp` and the handler address are in the user window (`jc_uok`). It then switches to the process's CR3 and checks that the frame is mapped and writable (`jc_umapped`, which can also resolve COW and lazy faults). After writing the frame, it sets `rip=sighand[s]`, `rsp=sp`, `rdi=signo`, `rsi=info or 0` and `rdx=rax=0`, and `sigmask |= (1<<s) | sigamask[s]`. KILL and STOP can never be masked.
 
 ### Returning: `sigreturn` (143)
-The user library installs a trampoline (`user/libc/src/libc.c`, and also `legacy_posix.h`):
+The user library installs a trampoline (`usr/libc/src/libc.c`, and also `legacy_posix.h`):
 ```asm
 __nvx_sigtramp: mov %rsp,%rbx ; mov $143,%eax ; int $0x80 ; hlt
 ```
@@ -411,7 +411,7 @@ struct job { int used, id, pgid, state, bg, notified_stop; char cmd[64]; };
 ## 5.9 File descriptors and pipes
 
 ### Descriptor tables
-- `FDMAX=256` per process and `VMAXOPEN=1024` system-wide (`fs/ramfs.c`; 32 and 32 before v8.97). Open files are `struct vfile g_vf[VMAXOPEN]`, shared by all processes, with a reference count `ref`. The threads of a process share the leader's table.
+- `FDMAX=256` per process and `VMAXOPEN=1024` system-wide (`fs/vfs/ramfs.c`; 32 and 32 before v8.97). Open files are `struct vfile g_vf[VMAXOPEN]`, shared by all processes, with a reference count `ref`. The threads of a process share the leader's table.
 - `fdt()` returns the descriptor table of the running process (the thread-group leader's `fd[]`, so all threads share it) while a job process runs, and the kernel shell's `g_fd` otherwise. `fdce()` does the same for the cloexec arrays (`g_kcloexec` for the kernel).
 - `vf_ref`/`vf_unref` manage the count. When it reaches zero: a pipe end decrements its pipe's `readers` or `writers`, and the pipe buffer is freed once both are zero. The console vfile is never freed (its `ref` is reset to 1). Framebuffer and mouse open counts go down. A dirty file is written back (`fs_wb_mark`), and an orphaned inode is released (`fs_orphan_close`).
 - `vfile.dev` codes used in this part: `0` regular file, `5` console tty, `6` pipe read end, `7` pipe write end, `9` `/dev/fb0`, `10` mouse.
@@ -491,7 +491,7 @@ Auxiliary vector (`aux[]`):
 | 31 | `AT_EXECFN` | `argv[0]` |
 | 0 | `AT_NULL` | 0 |
 
-argv and env sources: unless a caller has already filled `g_xa_*` (`g_xa_set`, which the Linux `execve` does), `elf_args_from_string(g_exec_args)` splits the command line on spaces. Unless `g_xe_set` is set, `env_pack` fills the environment from the kernel's `g_env[24]`. `env_init` sets the defaults: `PATH=/bin`, `HOME=/home`, `PWD=/home`, `USER=root`, `SHELL=/bin/nsh`, `TERM=noovex` and `XZ_DEFAULTS=--memlimit-compress=20MiB` (`core/syscall.c`). The native context also passes `argc` in `rdi` and `argv` in `rsi` (`jc_ctx_fresh`), so the native crt0 can use either the registers or the stack.
+argv and env sources: unless a caller has already filled `g_xa_*` (`g_xa_set`, which the Linux `execve` does), `elf_args_from_string(g_exec_args)` splits the command line on spaces. Unless `g_xe_set` is set, `env_pack` fills the environment from the kernel's `g_env[24]`. `env_init` sets the defaults: `PATH=/bin`, `HOME=/home`, `PWD=/home`, `USER=root`, `SHELL=/bin/nsh`, `TERM=noovex` and `XZ_DEFAULTS=--memlimit-compress=20MiB` (`sys/native/syscall.c`). The native context also passes `argc` in `rdi` and `argv` in `rsi` (`jc_ctx_fresh`), so the native crt0 can use either the registers or the stack.
 
 ### Other loaders in `elf.c`
 - `elf_load_run(elf,len)`: a single-run path with no scheduler. It calls `k_setjmp(g_kjmp)`, loads the new CR3 and calls `enter_ring3_args`. Legacy exit (syscall 0 with no scheduler) does `k_longjmp(g_kjmp,1)` to come back. `sys_exec` uses it.
@@ -518,7 +518,7 @@ Lookup order in `jc_find_prog(name,&len)`:
 4. Look up the path in the Unix file system (`ux_lookup`). If the file has ELF magic and is at least 64 bytes, it is used, but a non-root user also needs an execute bit (`mode & 0111`).
 5. Try `fat_read_file(name, g_spawnbuf, 64 KB)` for an ELF on the FAT volume.
 
-`jc_is_prog` is how `jc_launch` decides whether a stage is a program. `fs/unixfs.c` (`k_readdir_extra`) lists the `JS_BIN` names in `/bin` and `init` in `/sbin`, and `ux_stat2` reports them as mode `0100755`.
+`jc_is_prog` is how `jc_launch` decides whether a stage is a program. `fs/vfs/unixfs.c` (`k_readdir_extra`) lists the `JS_BIN` names in `/bin` and `init` in `/sbin`, and `ux_stat2` reports them as mode `0100755`.
 
 ---
 
@@ -526,7 +526,7 @@ Lookup order in `jc_find_prog(name,&len)`:
 
 Entry: `idt_set128` installs vector `0x80` with DPL 3 (`attr=0xEE`). `isr128` (`userspace.S`) runs `swapgs` if the call came from ring 3, pushes `rax...r15` (a `struct sysregs`: `r15,...,rbx,rax` from low to high addresses), and calls `isr128_c`, which takes the big kernel lock, counts `PCPU->syscalls`, and calls `syscall_dispatch`.
 
-Convention (`user/src/user.h`, `nvx_sys`): the number goes in `rax` and the arguments in `rbx, rcx, rdx, rsi, rdi`. The result comes back in `rax`. Errors are `-1` unless noted otherwise; the native layer has no errno.
+Convention (`usr/src/user.h`, `nvx_sys`): the number goes in `rax` and the arguments in `rbx, rcx, rdx, rsi, rdi`. The result comes back in `rax`. Errors are `-1` unless noted otherwise; the native layer has no errno.
 
 Guards in `jc_syscall` run before its main switch:
 - If `p->lx` is set (a static-PIE image, or a process that has used the Linux ABI), the kernel sends SIGSYS (31) and returns `-38`.
@@ -626,19 +626,19 @@ These "stage" and "rung" demos come from before `jobs.c` and are still in the tr
 - IPC: shared memory (`SHM_MAX 4`, up to 24 frames each, mapped at `0x40000600000 + id*1 MB`) and message queues (`MSGQ_MAX 6`, 32 deep, 64-byte messages).
 - Compositor demo (`compositor_run`): three copies of `user_compdemo`. Messages are `struct wmsg` with types `WM_CREATE/WM_DAMAGE/WM_CLOSE`, sent on queue 0.
 - Fork and threads: `do_fork` copies every user page eagerly. `thread_create_k` shares the caller's CR3 and gives each thread a 64 KB-spaced user stack from `0x40000200000`.
-- `core/syscall.c` helpers: `sys_spawn` loads from FAT and checks `perm_can_exec`, `sys_waitpid` returns the status stored in `g_last_exit[]`, and `sys_exec` uses `elf_load_run`.
+- `sys/native/syscall.c` helpers: `sys_spawn` loads from FAT and checks `perm_can_exec`, `sys_waitpid` returns the status stored in `g_last_exit[]`, and `sys_exec` uses `elf_load_run`.
 
 ---
 
 ## 5.14 init (PID 1) and `/etc/rc`
 
-- Start: `jc_start_init()` (`fs/unixfs.c`) is called from `ux_desktop_start` when the main loop enters `ST_DESKTOP`. If PID 1 does not exist yet, it runs `jc_create("init",0,0)`, which resolves to `+init`, and then sets `pid=1`, `pgid=1`, `ppid=0` and `uid=gid=0`. The live terminal (`ST_LIVE`) sets up the Unix layer with `ux_core_start` but does not start init.
+- Start: `jc_start_init()` (`fs/vfs/unixfs.c`) is called from `ux_desktop_start` when the main loop enters `ST_DESKTOP`. If PID 1 does not exist yet, it runs `jc_create("init",0,0)`, which resolves to `+init`, and then sets `pid=1`, `pgid=1`, `ppid=0` and `uid=gid=0`. The live terminal (`ST_LIVE`) sets up the Unix layer with `ux_core_start` but does not start init.
 - `/etc/rc` is created by `ux_boot_layout` with this content:
   ```
   # /etc/rc - run by init (PID 1) at boot
   echo NoovexOS: init started
   ```
-- The init program (`user/src/init.c`):
+- The init program (`usr/src/init.c`):
   1. installs a SIGCHLD handler
   2. reads `/etc/rc` (up to 4 KB) line by line. `run_line` splits each line on spaces and tabs (up to 11 arguments), skips `#` comments, and treats a final `&` as background. Then it runs `fork()` and `execv(argv[0], argv)`; on failure it prints "init: cannot run ..." and exits with 127. Foreground lines are waited for with `waitpid`.
   3. appends `boot: init started, /etc/rc done at <ctime>` to `/var/log/boot.log`
@@ -667,7 +667,7 @@ Since v8.97 a process can have several threads that run at the same time on diff
 
 ### Creating a thread: `clone` with `CLONE_THREAD`
 
-`lx_clone` (`core/linux.c`) handles the flags musl's `pthread_create` uses: `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED`. `CLONE_THREAD` requires `CLONE_VM` and `CLONE_SIGHAND` (EINVAL otherwise).
+`lx_clone` (`sys/linux/linux.c`) handles the flags musl's `pthread_create` uses: `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED`. `CLONE_THREAD` requires `CLONE_VM` and `CLONE_SIGHAND` (EINVAL otherwise).
 
 `jc_clone_thread(r, stack, tls, settls)` (`core/proc/jobs.c`) copies the calling slot, gives the copy a new ID from `g_next_pid`, keeps `tg` (so it joins the same group), copies `tgid`, `ppid`, `pgid` and `sid` from the leader, clears pending signals, timers, futex state and its unused descriptor array, saves the caller's registers with `rax = 0`, and sets `rsp` and the TLS base if asked. The new slot is `S_RUN` and `smp_kick_idle` wakes an idle core for it. Then `lx_clone` stores `ctid` for `CLONE_CHILD_CLEARTID`, writes the new ID through `CLONE_CHILD_SETTID` and `CLONE_PARENT_SETTID`, and returns it.
 
@@ -704,7 +704,7 @@ Because the address space is only freed by the last thread, and a thread that is
 
 ### Futexes
 
-`lx_futex` (`core/linux.c`) implements `FUTEX_WAIT`, `FUTEX_WAKE`, `FUTEX_REQUEUE`, `FUTEX_CMP_REQUEUE`, `FUTEX_WAKE_OP`, `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, with or without `FUTEX_PRIVATE_FLAG`, and `FUTEX_CLOCK_REALTIME` for the bitset wait. A futex is identified by the thread group and the user address (`fx_tg`, `fx_addr`), so futexes work between the threads of one process but not between processes through shared memory.
+`lx_futex` (`sys/linux/linux.c`) implements `FUTEX_WAIT`, `FUTEX_WAKE`, `FUTEX_REQUEUE`, `FUTEX_CMP_REQUEUE`, `FUTEX_WAKE_OP`, `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, with or without `FUTEX_PRIVATE_FLAG`, and `FUTEX_CLOCK_REALTIME` for the bitset wait. A futex is identified by the thread group and the user address (`fx_tg`, `fx_addr`), so futexes work between the threads of one process but not between processes through shared memory.
 
 - Wait: under the big kernel lock the call reads the word; if it differs from the expected value it returns EAGAIN. Otherwise it records the wait in the thread (`fx_wait = 1`, address, bitset, and `fx_dead` for a timeout: relative for `FUTEX_WAIT`, absolute for `FUTEX_WAIT_BITSET`), and blocks in `S_WAIT` with `wake` set to the timeout tick (or far in the future).
 - Because blocked calls restart (section 5.6), the thread re-enters `lx_futex` when it is woken. With `fx_wait` already set it returns 0 if `fx_woken` is set, ETIMEDOUT (110) once `fx_dead` has passed, or EINTR if a signal is deliverable; otherwise it blocks again.

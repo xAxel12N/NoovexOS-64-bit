@@ -1,6 +1,6 @@
 # NoovexOS 64 Architecture and Developer Reference
 
-Version 9.82. x86-64, BIOS and UEFI, written from scratch.
+Version 9.83. x86-64, BIOS and UEFI, written from scratch.
 
 This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating system with its own boot loaders, kernel, drivers, file system, network stack, desktop and Linux-compatible user space. It was written from the source code, with file paths and symbol names so you can find the implementation. Where the code does something surprising or has a known gap, the text says so.
 
@@ -22,17 +22,27 @@ This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating
 
 ## How to read this document
 
-- New to the code: read "What changed in v9.82", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
+- New to the code: read "What changed in v9.83", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
 - Porting a program: go to Part 6; the step-by-step guide is in section 6.9.
 - Chasing a bug: start with the troubleshooting table in section 12.9 and the serial log in section 12.5.
-- Paths are relative to `source/kernel/` unless they start with `source/`, `tools/` or `bootloader/`.
+- Paths are relative to the root of the repository (since v9.83 the source tree is flat: `arch/`, `boot/`, `core/`, `drivers/`, `fs/`, ... at the top).
+
+## What changed in v9.83
+
+| # | Before (v9.82) | Now (v9.83) | Where |
+|---|---|---|---|
+| 1 | The code sat under `source/kernel/`, `source/bootloader/`, `source/tools/` and others, with most kernel folders flat (`fs/`, `net/`, `apps/`, `lib/`, `gui/` and `arch/x86_64/` had no subfolders). | The source tree is flat at the repository root with one folder per part of the system: `arch/`, `boot/`, `core/`, `sys/`, `mem/`, `fs/`, `drivers/`, `graphics/`, `net/`, `shell/`, `apps/`, `lib/`, `web/`, `usr/`, `lang/`, `assets/`, `include/`, `third_party/`, `tools/`, `docs/`. Inside them, code is grouped in subfolders: `arch/x86_64/{boot,cpu,interrupts,smp,time,user}`, `fs/{vfs,nvx,fat,ntfs,pkg}`, `drivers/input/{ps2,touchpad,vm}`, `drivers/net/{ethernet,wifi}`, `drivers/video/{fb,intel,nvidia}`, `graphics/{ui,theme}`, `net/{stack,http,print,wifi}`, `lib/{base,cxx,compress,image,js,crypto}`, `apps/{system,office,internet,media,games,accessories,x11,graphics}`, `sys/{native,linux}`. `include/nvx/` mirrors the new tree. Section 2 of Part 1 has the full table, with the old place of every folder. | [section 1](#part-1-overview-source-layout-and-build-system) |
+| 2 | - | Every top-level folder has a `README.md` that says what is in it; the repository `README.md` has the layout. | [section 1](#part-1-overview-source-layout-and-build-system) |
+| 3 | `build.sh` ran from `source/kernel/`. | `build.sh` runs from the repository root (`bash build.sh`); output goes to `build/`, the boot loader is built in `boot/`. `tools/check.py` and `tools/emulate.py` work from the new root, and the static checks only look at kernel code (not the boot loader or tools). | [section 1](#part-1-overview-source-layout-and-build-system) |
+
+The code inside the files did not change apart from paths (`#include` lines, build and test scripts) and the version number. Tested: `tools/check.py --sanitize` on an image built from the new tree, 92 of 92 checks; QEMU legacy BIOS and UEFI boot to the live session and run Gears.
 
 ## What changed in v9.82
 
 | # | Before (v9.81) | Now (v9.82) | Where |
 |---|---|---|---|
-| 1 | The kernel was C and assembly only. | The kernel is C, C++ and assembly. `.cpp` units in `units.list` are compiled with `g++` (no exceptions, no RTTI, no SSE); `lib/cxxrt.cpp` gives `new`/`delete` on the kernel heap and the small C++ runtime; global constructors run from `.init_array` right after the heap starts (`cxx_run_ctors`); `include/nvx/lib/cxx.h` has `nvx::KBuf` and other helpers. | [section 1](#part-1-overview-source-layout-and-build-system) |
-| 2 | - | Gears: a glxgears-style 3D demo written in C++ (Start > Drivers & Hardware, or `gears`). Its own 3D renderer (`apps/r3d/r3d.cpp`, a freestanding SSE module) draws three interlocking gears with lighting and a large FPS counter, plus three more scenes (torus knot with shadows, 12 material spheres, 192 cubes) and a wireframe mode. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 1 | The kernel was C and assembly only. | The kernel is C, C++ and assembly. `.cpp` units in `units.list` are compiled with `g++` (no exceptions, no RTTI, no SSE); `lib/cxx/cxxrt.cpp` gives `new`/`delete` on the kernel heap and the small C++ runtime; global constructors run from `.init_array` right after the heap starts (`cxx_run_ctors`); `include/nvx/lib/cxx.h` has `nvx::KBuf` and other helpers. | [section 1](#part-1-overview-source-layout-and-build-system) |
+| 2 | - | Gears: a glxgears-style 3D demo written in C++ (Start > Drivers & Hardware, or `gears`). Its own 3D renderer (`apps/graphics/r3d/r3d.cpp`, a freestanding SSE module) draws three interlocking gears with lighting and a large FPS counter, plus three more scenes (torus knot with shadows, 12 material spheres, 192 cubes) and a wireframe mode. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 3 | The NVIDIA copy engine was only used for a 4 KB self-test. | `nvgsp_ce_map` and `nvgsp_ce_copy2d`: any kernel buffer can be mapped into the GPU address space and copied as a 2D rectangle with a completion semaphore. The mapping goes page by page through the CPU page tables (`kva_to_pa`, now shared from `igpu.c`), so it is right even for pages that `early_remap` moved. Gears uses it to put every frame on the screen once `nvgsp all` has run (G in the window). On an Intel iGPU desktop it uses the GPU blitter instead. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
 Tested: `tools/check.py --sanitize` on the v9.82 image, 92 of 92 checks, including the NVIDIA simulator with the new 2D copy check (26 checks) and 0 analyzer findings with the two C++ units in the build. QEMU legacy BIOS and UEFI (OVMF): Gears opens from the terminal, the gears turn, keys 1 to 4 switch scenes and W shows the wireframe; it runs at 1-2 frames a second there because QEMU emulates the CPU without hardware help, and the same renderer takes 8.7 ms per gears frame on the build machine. The NVIDIA copy-engine path has only run in the simulator; on a real card it needs `nvgsp all` to work first. The Intel blitter path was not tested (QEMU has no Intel iGPU).
@@ -41,15 +51,15 @@ Tested: `tools/check.py --sanitize` on the v9.82 image, 92 of 92 checks, includi
 
 | # | Before (v9.80) | Now (v9.81) | Where |
 |---|---|---|---|
-| 1 | The AHCI, NVMe, xHCI, USB stick, VirtualBox mouse and identify buffers sat at fixed physical addresses (0x09A10000-0x09C80000). `early_remap` moves a 2 MB page that is not usable RAM to new memory, but only for the CPU: a device that is told the old physical address writes into firmware memory, so disks and USB could fail on a laptop that reserves that range. | One 2 MB device window (`include/nvx/mm/dmawin.h`, `DMW(off)`). `dmw_init()` runs right after `early_remap_fix_mm()` and takes a 2 MB block of real RAM below 4 GB from the DMA arena (skipping bad pages with `mm_skip_bad`); only if that fails does it keep the old address 0x09A00000. All users go through `DMW()`: AHCI (`gdisk.c`), the AHCI identify buffers (`ahci.c`), NVMe, xHCI controller 0, the HID areas and the USB stick buffers (`xhci.c`), the VirtualBox request (`vmmouse.c`) and the PCnet rings and buffers (`nic.h`, the old `.bss` arrays are gone). xHCI controllers 1-3 get their own pages from `dma_alloc_pages`. The boot log says where the window is (`memory: device buffers in the checked DMA arena at 0x...`). `check.py static` checks that the regions inside the window do not overlap. | [section 3](#part-3-memory) |
-| 2 | The `in`/`out` helpers in `arch/x86_64/io.h` had no memory clobber, so the compiler could move a store to a DMA buffer past the port write that starts the device. Several drivers had their own inline assembly. | Every port helper has a `"memory"` clobber. `cpu_mb`, `cpu_clflush`, `cpu_copy64` and `cpu_vmw_backdoor` in `arch/x86_64/cpu.h`; `igpu.c`, `vmmouse.c`, `bench.c`, `jobs.c` and `linux.c` use them. `init/early_fault.c` moved to `arch/x86_64/early_fault.c`. | [section 4](#part-4-cpu-interrupts-timers-and-multi-core) |
-| 3 | The kernel writes to user memory with CR0.WP set, but several Linux and native syscalls only checked that the user address was mapped, not that it was writable. A program that passed a read-only page (for example its own code) to `read`, `pipe`, `wait4` or `poll` made the kernel take a page fault. | Write checks (`lx_okw` in `core/linux.c`, `jc_umapped_w` in `core/proc/jobs.c`) before every kernel write to user memory: read, pread/pwrite, getdents, poll, epoll_wait, select, wait4/waitpid, recvfrom, recvmsg, pipe/pipe2, getrandom, socketpair, readlink/readlinkat, futex wake-op, the signal frame, the clear-child-tid write and the native read and pipe calls. The call returns EFAULT. | [section 6](#part-6-linux-compatibility-libc-and-porting-applications) |
+| 1 | The AHCI, NVMe, xHCI, USB stick, VirtualBox mouse and identify buffers sat at fixed physical addresses (0x09A10000-0x09C80000). `early_remap` moves a 2 MB page that is not usable RAM to new memory, but only for the CPU: a device that is told the old physical address writes into firmware memory, so disks and USB could fail on a laptop that reserves that range. | One 2 MB device window (`include/nvx/mem/dmawin.h`, `DMW(off)`). `dmw_init()` runs right after `early_remap_fix_mm()` and takes a 2 MB block of real RAM below 4 GB from the DMA arena (skipping bad pages with `mm_skip_bad`); only if that fails does it keep the old address 0x09A00000. All users go through `DMW()`: AHCI (`gdisk.c`), the AHCI identify buffers (`ahci.c`), NVMe, xHCI controller 0, the HID areas and the USB stick buffers (`xhci.c`), the VirtualBox request (`vmmouse.c`) and the PCnet rings and buffers (`nic.h`, the old `.bss` arrays are gone). xHCI controllers 1-3 get their own pages from `dma_alloc_pages`. The boot log says where the window is (`memory: device buffers in the checked DMA arena at 0x...`). `check.py static` checks that the regions inside the window do not overlap. | [section 3](#part-3-memory) |
+| 2 | The `in`/`out` helpers in `arch/x86_64/cpu/io.h` had no memory clobber, so the compiler could move a store to a DMA buffer past the port write that starts the device. Several drivers had their own inline assembly. | Every port helper has a `"memory"` clobber. `cpu_mb`, `cpu_clflush`, `cpu_copy64` and `cpu_vmw_backdoor` in `arch/x86_64/cpu/cpu.h`; `igpu.c`, `vmmouse.c`, `bench.c`, `jobs.c` and `linux.c` use them. `core/init/early_fault.c` moved to `arch/x86_64/interrupts/early_fault.c`. | [section 4](#part-4-cpu-interrupts-timers-and-multi-core) |
+| 3 | The kernel writes to user memory with CR0.WP set, but several Linux and native syscalls only checked that the user address was mapped, not that it was writable. A program that passed a read-only page (for example its own code) to `read`, `pipe`, `wait4` or `poll` made the kernel take a page fault. | Write checks (`lx_okw` in `sys/linux/linux.c`, `jc_umapped_w` in `core/proc/jobs.c`) before every kernel write to user memory: read, pread/pwrite, getdents, poll, epoll_wait, select, wait4/waitpid, recvfrom, recvmsg, pipe/pipe2, getrandom, socketpair, readlink/readlinkat, futex wake-op, the signal frame, the clear-child-tid write and the native read and pipe calls. The call returns EFAULT. | [section 6](#part-6-linux-compatibility-libc-and-porting-applications) |
 | 4 | `shmget` accepted any size and `shmat` at a fixed address silently replaced what was mapped there. | `shmget` refuses a segment larger than a quarter of the free frames (ENOMEM). `shmat` at an address that is already mapped needs `SHM_REMAP`, as on Linux. | [section 6](#part-6-linux-compatibility-libc-and-porting-applications) |
 | 5 | Converting a disk to NVX4 formatted it in place; a power cut during the format lost the old first blocks. | `n4_conv_backup` copies the blocks the format overwrites to a reserved area at the end of the disk with a marker (magic, block count, FNV checksum) in the last block. `disk_init` restores them if a disk has a valid marker but is not a mountable NVX4 disk; a failed format restores at once. `n4_conv_done` clears the marker when the new file system is written. | [section 7](#part-7-file-systems) |
 | 6 | The Elantech PS/2 touchpad could send a two-finger frame before the second finger's head packet, so a scroll started as a jump. | `g_etp_wait` holds a frame until every finger in the status mask has sent its head packet (`elan_ps2.c`). | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
-| 7 | Quake had no sound (`snd_null.c`). | WinQuake's mixer (`snd_dma.c`, `snd_mem.c`, `snd_mix.c`) with a NoovexOS back end (`snd_nvx.c`, a 32768-sample ring). `apps/quake.c` keeps about 70 ms queued in the kernel sound ring. Checked on the host with `+play weapons/guncock.wav` (peak 22196 of 32767). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 7 | Quake had no sound (`snd_null.c`). | WinQuake's mixer (`snd_dma.c`, `snd_mem.c`, `snd_mix.c`) with a NoovexOS back end (`snd_nvx.c`, a 32768-sample ring). `apps/games/quake.c` keeps about 70 ms queued in the kernel sound ring. Checked on the host with `+play weapons/guncock.wav` (peak 22196 of 32767). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 8 | Five host test groups did not build any more (usb, nvme, memory, aml, touchpad) and the Linux harness crashed; `emulate.py` could not find `uefi_entry`. | All templates follow the current code (device window, stubs for new helpers). The Linux harness has the X damage-tracking stubs, refetches host page entries after a spurious fault, covers 16 GB and clears SysV segments before the leak check. `emulate.py` finds the entry after the CET lines. The AML test's own heap moves to 0x60000000 when 0x80000000 is taken (it is inside AddressSanitizer's shadow memory), so `--sanitize` passes too. All `check.py` groups pass. | [section 12](#part-12-testing-quality-gates-debugging-and-history) |
-| 9 | Some places still said 9.80 or older (the terminal said v8.38); `uname` printed a fixed string. The source zip had no FFmpeg, glibc, CPython or Tcl/Tk sources, so `build.sh` could not run from it. | Version 9.81 everywhere. `uname` reads `/sys/kernel/osrelease` and knows `-r`. The source zip contains `kernel/third_party/ffmpeg` (n8.1.2) and `third_party_src/` (glibc 2.44, CPython 3.13, Tcl/Tk 8.6). `build.sh` needs `bash` and `gawk`. | [section 1](#part-1-overview-source-layout-and-build-system) |
+| 9 | Some places still said 9.80 or older (the terminal said v8.38); `uname` printed a fixed string. The source zip had no FFmpeg, glibc, CPython or Tcl/Tk sources, so `build.sh` could not run from it. | Version 9.81 everywhere. `uname` reads `/sys/kernel/osrelease` and knows `-r`. The source zip contains `third_party/ffmpeg` (n8.1.2) and `third_party_src/` (glibc 2.44, CPython 3.13, Tcl/Tk 8.6). `build.sh` needs `bash` and `gawk`. | [section 1](#part-1-overview-source-layout-and-build-system) |
 | 10 | The installer's list of kernel areas used fixed indexes and an old boot stack size. | The boot stack area is 0x09800000-0x09A00000; "USB and disk buffers" is listed only while the device window is still at its fixed address; the module area is found by address. | [section 8](#part-8-storage-drivers-pci-and-the-installer) |
 | 11 | NVIDIA cards were only probed read-only. | A GSP-RM driver for Turing (TU102-TU117) with the `nvgsp` command, see section 10.10.6: VRAM size and an allocator, the WPR2 layout, FWSEC-FRTS from the VBIOS, the signed booter on SEC2, the GSP firmware with its radix3 page tables, the message queues, BAR1 and BAR2 page tables and instance blocks, and the objects client, device, subdevice, address space, channels, `TURING_A`, `TURING_COMPUTE_A` and `TURING_DMA_COPY_A`, with a copy-engine test. The firmware (535.113.01 from linux-firmware) is built in, xz-compressed. `tools/tests/nvidia/nvsim.c` simulates the card and checks every step (25 checks). | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 12 | Under UEFI the USB stick was never found (`usbls`: "no USB stick found"). The firmware (OVMF, and laptops with "Above 4G decoding") places the xHCI registers above 4 GB, and the driver only took 32-bit register addresses, so it gave up on the controller (`usbinfo`: "registers above 4 GB, cannot be used yet"). Also, a device that showed up on a port after the first scan was marked as already seen and never set up. | Register addresses are 64-bit (`xhci_base`, `xhci_op` and every register pointer in `xhci.c`); a window above 4 GB is mapped with `acpi_hi_map`, as NVMe does. `msd_autoinit` reads the port status again before it looks for a stick, and the first hot-plug scan only marks ports that were set up. Tested: the USB stick in QEMU under UEFI (65 MB FAT32, files listed and read), which failed in v9.80. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
@@ -60,7 +70,7 @@ Tested: `tools/check.py --sanitize` on the final image, all 92 checks (the qemu 
 
 | # | Before (v9.79) | Now (v9.80) | Where |
 |---|---|---|---|
-| 1 | The X compositor compared the whole Xvfb screen with a shadow copy every 2 to 8 ticks to find what changed (about 4 MB at 1280x800, 8 MB at 1080p), even when nothing moved. | Damage tracking with the processor's page dirty bits (`apps/xdisplay.c`). When the X server maps its screen file for writing, the kernel keeps a pointer to each page table entry (`xfb_track`). Every tick it reads and clears the dirty bit of each page (`xfb_collect`), sends a TLB flush to the other processors without waiting, and looks only at the pages that were written, plus the pages from the tick before to cover a write that raced with the flush. Every 3 seconds it does one full compare as a safety net. The tracking stops by itself (and the old full compare is used) when the X server unmaps the screen or exits (`xfb_untrack_range`, `xfb_untrack_cr3`). It is used in all three X modes: on the desktop, in the X Display window and full screen. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 1 | The X compositor compared the whole Xvfb screen with a shadow copy every 2 to 8 ticks to find what changed (about 4 MB at 1280x800, 8 MB at 1080p), even when nothing moved. | Damage tracking with the processor's page dirty bits (`apps/x11/xdisplay.c`). When the X server maps its screen file for writing, the kernel keeps a pointer to each page table entry (`xfb_track`). Every tick it reads and clears the dirty bit of each page (`xfb_collect`), sends a TLB flush to the other processors without waiting, and looks only at the pages that were written, plus the pages from the tick before to cover a write that raced with the flush. Every 3 seconds it does one full compare as a safety net. The tracking stops by itself (and the old full compare is used) when the X server unmaps the screen or exits (`xfb_untrack_range`, `xfb_untrack_cr3`). It is used in all three X modes: on the desktop, in the X Display window and full screen. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 2 | - | `xstat` in the terminal shows the compositor numbers since the last call: tracking on or off, dirty pages, scans, partial updates, full redraws, total compositor time and the time spent reading dirty bits. `xstat off` and `xstat on` switch between the old full compare and the new tracking for comparison. Measured in QEMU (software emulation, 30 seconds each): idle desktop with X running 1180 ms of compositor time before, 246 ms now; an animating X program 3154 ms before, 1651 ms now, with more frames shown. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 3 | Firefox rebuilt the font cache on every boot, had its disk cache off, rewrote its settings file on every start and did not restore tabs after a crash. | The `nvx-firefox` launcher keeps the font cache in `/root/.cache` and runs `fc-cache` only when a font folder has changed since the last run (`/root/.cache/nvx-fc-stamp`); the same for `nvx-xrun`. The disk cache is on (256 MB). `user.js` is written only when it changed, so Firefox's startup cache in the profile stays valid. A profile lock left by a crashed Firefox is removed. Session restore after a crash is on (`browser.sessionstore.resume_from_crash`, up to 3 crashes in a row, tabs loaded when clicked). The launcher notes in `/tmp/ff.log` when the last run did not end cleanly and how long Firefox ran. `cmp` and `readlink` were added to the system tools for this. | [section 6](#part-6-linux-compatibility-libc-and-porting-applications) |
 | 4 | The Firefox crash report listed unimplemented syscalls by number and name but not unsupported options inside supported syscalls, and the report was only on screen. | The Linux layer records every unsupported option it refuses (`lx_gap`): Unix socket types, socket families, internet socket types, ioctl requests, fcntl commands, prctl options, clone flags and socketpair types, with a count and the order they happened in. The report starts with a "Most likely cause" section: a program that is not installed (exit code 127), or the last missing syscall or unsupported option used before it stopped, skipping syscalls that programs only probe for (rseq, io_uring, landlock, clone3, openat2, faccessat2) and options that are usually harmless (IPv6 and netlink sockets, prctl options), which are still listed and marked. Each report is saved in Files as `firefox-crash-N.txt` (or `app-crash-N.txt`). | [section 6](#part-6-linux-compatibility-libc-and-porting-applications) |
@@ -85,18 +95,18 @@ Tested: the engine and the freestanding blob on the build host with LibreQuake (
 
 | # | Before (v9.77) | Now (v9.78) | Where |
 |---|---|---|---|
-| 1 | No word processor; `.docx` files could not be opened. | Writer (`apps/writer.c`, `writer [file]` in the terminal, start menu Productivity): A4 pages with 1-inch margins on a grey desk, word wrap, page breaks and page numbers, a blinking cursor, mouse and Shift selection (with drag and auto-scroll), the wheel, Home/End, Page Up/Down and Ctrl+arrows by word. Three font families (Sans like Arial, Serif like Times New Roman, Mono like Courier New) in 13 sizes from 8 to 48 pt, bold, italic, underline, strikethrough, 8 text colours, left/center/right/justified paragraphs, Heading 1, Heading 2 and Normal, pictures (PNG and JPEG from Files, scaled to the page), undo (24 steps), word count, Save, Save as and Open dialogs, and keyboard shortcuts (Ctrl+B/I/U, Ctrl+E/L/R/J, Ctrl+S, Ctrl+O, Ctrl+N, Ctrl+Z, Ctrl+A). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 1 | No word processor; `.docx` files could not be opened. | Writer (`apps/office/writer.c`, `writer [file]` in the terminal, start menu Productivity): A4 pages with 1-inch margins on a grey desk, word wrap, page breaks and page numbers, a blinking cursor, mouse and Shift selection (with drag and auto-scroll), the wheel, Home/End, Page Up/Down and Ctrl+arrows by word. Three font families (Sans like Arial, Serif like Times New Roman, Mono like Courier New) in 13 sizes from 8 to 48 pt, bold, italic, underline, strikethrough, 8 text colours, left/center/right/justified paragraphs, Heading 1, Heading 2 and Normal, pictures (PNG and JPEG from Files, scaled to the page), undo (24 steps), word count, Save, Save as and Open dialogs, and keyboard shortcuts (Ctrl+B/I/U, Ctrl+E/L/R/J, Ctrl+S, Ctrl+O, Ctrl+N, Ctrl+Z, Ctrl+A). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 2 | Only the 8x14 bitmap font. | Real fonts for Writer: Liberation Sans, Serif and Mono (metric-compatible with Arial, Times New Roman and Courier New, SIL Open Font License) pre-rendered by `tools/gen_wpfont.py` in regular, bold, italic and bold italic at 13 sizes for Latin-1 (including the Swedish letters a-ring, a-umlaut and o-umlaut), stored as 4-bit anti-aliased glyphs (`assets/wpfont.c` metrics, `assets/wpf_data.bin` 5.5 MB linked as `wpf_data.o`). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 3 | - | Word format: Writer saves real `.docx` files (Office Open XML in a stored ZIP: `[Content_Types].xml`, relationships, `word/document.xml` with runs, fonts, sizes, bold, italic, underline, strike, colours, alignment and inline pictures in `word/media`). It opens `.docx` files from Word and other programs (paragraphs, runs, alignment, tabs, line breaks, fonts, sizes, colours, Title/Heading/Subtitle styles, pictures through the relationships file) and plain `.txt`. Opening a `.docx` in Files opens Writer. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 4 | Ctrl shortcuts could arrive as plain letters when Ctrl was released before the app read the key. | The key queue records Ctrl and Shift with every key at the moment it is pressed (`g_key_ctrl`, `g_key_shift`). | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
-Tested: QEMU legacy BIOS and UEFI (typing, formatting, alignment, selection, shortcuts, saving); the saved file passes a ZIP check in NoovexOS Python, is read correctly by python-docx and lays out the same in LibreOffice; a `.docx` made by python-docx with a heading, Times, Courier, colour, right alignment, Swedish letters and a picture was opened by Writer's code and saved again without losing anything (host test harness around `apps/writer.c`), and the page drawing was checked in the same harness.
+Tested: QEMU legacy BIOS and UEFI (typing, formatting, alignment, selection, shortcuts, saving); the saved file passes a ZIP check in NoovexOS Python, is read correctly by python-docx and lays out the same in LibreOffice; a `.docx` made by python-docx with a heading, Times, Courier, colour, right alignment, Swedish letters and a picture was opened by Writer's code and saved again without losing anything (host test harness around `apps/office/writer.c`), and the page drawing was checked in the same harness.
 
 ## What changed in v9.77
 
 | # | Before (v9.76) | Now (v9.77) | Where |
 |---|---|---|---|
-| 1 | Volume, mute, media and other special keys did nothing. | The PS/2 keyboard driver recognises the extended (E0) keys: volume up and down, mute, play/pause, next, previous, stop, calculator, web browser, mail, my computer, sleep, media select and the browser keys. They go to a 32-entry hotkey queue (`hk_push`) that the desktop handles (`gui/hotkeys.c`): volume in 6% steps, mute remembers the old volume, media keys control the Video Player, calculator, browser and Files open their apps. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
+| 1 | Volume, mute, media and other special keys did nothing. | The PS/2 keyboard driver recognises the extended (E0) keys: volume up and down, mute, play/pause, next, previous, stop, calculator, web browser, mail, my computer, sleep, media select and the browser keys. They go to a 32-entry hotkey queue (`hk_push`) that the desktop handles (`graphics/ui/hotkeys.c`): volume in 6% steps, mute remembers the old volume, media keys control the Video Player, calculator, browser and Files open their apps. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 2 | Brightness and volume changes showed a small text toast. | A Windows-style on-screen display: a glass panel at the bottom with an icon (speaker with level waves or a cross when muted, sun, microphone, plane, camera, screen, touchpad) and a level bar with the value, for volume, brightness, microphone mute, airplane mode, camera, display switch and touchpad. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 3 | On Lenovo IdeaPad laptops the special Fn keys reported through the VPC2004 ACPI device were ignored. | The IdeaPad VPC events are read like Linux `ideapad-laptop` does (`VPCW`/`VPCR`, registers 0x10 and 0x1A): display switch, camera, microphone mute, airplane mode, touchpad on/off (state from register 0x1B) and firmware brightness (registers 0x11 and 0x12) all work. ACPI video brightness events also show the new display, and display-switch events (0x80, 0x82) are handled. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 4 | Only Win+R and Win+E did something. | Win+L locks (login screen), Win+P shows the display choice, Win+I opens Settings, Win+A opens quick settings. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
@@ -111,7 +121,7 @@ Tested: QEMU legacy BIOS with the QEMU volume up, mute and calculator keys (on-s
 | 1 | The HD Audio driver only played sound. | Recording. The driver finds the input path from an analog-to-digital converter to a microphone pin (built-in microphone first, then a microphone jack, then line in) through mixers and selectors, sets the connection selects, microphone bias (VRef 80% or 50%), pin boost and input amplifiers, and runs the first input stream (stream tag 2, 48 kHz, 16-bit stereo, 32 x 4 KB buffer list). `struct nvx_snd` gained `rec_start`, `rec_read`, `rec_stop`, `rec_gain` and `rec_name`. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 2 | No capture path in the sound core. | `core/sound.c` moves recorded audio from the driver into a 1 MB buffer every 20 ms (`snd_poll`), tracks the input level and counts dropped data. `snd_rec_start`, `snd_rec_stop`, `snd_rec_gain`, `snd_cap_read`, and `audio mic <0-100>` in the terminal. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 3 | `/dev/dsp` could only play. | `/dev/dsp` records too: `read()` returns 48 kHz 16-bit stereo, and the OSS calls `SNDCTL_DSP_GETISPACE`, `GETBLKSIZE`, `GETCAPS` (duplex), `SETTRIGGER` and `SETDUPLEX` are answered, so Linux programs can record (tested with CPython reading `/dev/dsp`). | [section 6](#part-6-linux-compatibility-libc-and-porting-applications) |
-| 4 | No recording app. | Voice Recorder (`apps/recorder.c`, `recorder` in the terminal): a big record button (Space also starts and stops), timer, live waveform, input level meter, microphone volume slider, play and pause with a moving play head, click the waveform to jump, and every recording saved as `recording-N.wav` (48 kHz mono) in Files. Settings > System > Sound has a new Input card with the microphone, its volume and a level test. The app is in the Internet & Media and Drivers & Hardware start menu groups. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 4 | No recording app. | Voice Recorder (`apps/media/recorder.c`, `recorder` in the terminal): a big record button (Space also starts and stops), timer, live waveform, input level meter, microphone volume slider, play and pause with a moving play head, click the waveform to jump, and every recording saved as `recording-N.wav` (48 kHz mono) in Files. Settings > System > Sound has a new Input card with the microphone, its volume and a level test. The app is in the Internet & Media and Drivers & Hardware start menu groups. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 
 Tested: QEMU legacy BIOS and UEFI with an emulated HD Audio codec (line in): recording runs at the right speed, the WAV file is saved, Python reads 96,000 bytes from `/dev/dsp`, and the Settings input card works. QEMU only gives silence on its input, so the real microphone level and sound quality are untested until they run on the laptop. On laptops whose built-in microphone is wired to the Intel audio DSP instead of the HD Audio codec, the microphone is not found yet.
 
@@ -120,8 +130,8 @@ Tested: QEMU legacy BIOS and UEFI with an emulated HD Audio codec (line in): rec
 | # | Before (v9.74) | Now (v9.75) | Where |
 |---|---|---|---|
 | 1 | A USB camera was listed in Task Manager as "Camera" but nothing could use it. | USB Video Class (UVC) camera driver inside the xHCI driver (`drivers/usb/xhci.c`, API in `include/nvx/drivers/usb/uvc.h`). When a device has a Video interface, the full configuration descriptor (up to 16 KB) is read and parsed: Video Control and Video Streaming interfaces, YUY2, NV12 and MJPEG formats with their frame sizes, and the isochronous IN endpoints of each alternate setting (with high-bandwidth packets and SuperSpeed companion descriptors). Starting the stream: probe and commit (`VS_PROBE_CONTROL`, `VS_COMMIT_CONTROL`, 26, 34 or 48 bytes by UVC version), the smallest alternate setting that carries the camera's payload size, a Configure Endpoint command for an isochronous IN endpoint and `SET_INTERFACE`. Transfers use a 1000-entry isochronous ring with "start as soon as possible" and their completions go to a second event ring on interrupter 1, so mouse, keyboard and USB stick traffic is not disturbed. Payload headers (frame id, end of frame, error bit) assemble frames; YUY2 and NV12 are converted to RGB, MJPEG frames get the standard Huffman tables when the camera leaves them out and are decoded by the JPEG decoder. If a size is refused (for example not enough USB bandwidth) the next size is tried. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
-| 2 | No camera app. | Camera app (`apps/camera.c`, `camera` in the terminal): live picture, Start/Stop, SD (YUY2 up to 640x480) or HD (MJPEG up to 1280x720), mirror, Take photo (saves `photo-N.png`; Space also takes a photo) and a details panel with the camera name, USB id and speed, every supported size, frames per second, dropped frames, USB packet errors and the last completion code. Without a camera it lists the USB devices that were found. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
-| 3 | No benchmark. | Benchmark app (`apps/bench.c`, `bench cpu` or `bench gpu`). CPU test: four single-core passes counting primes up to 100,000 (must be 9,592), 16 million integer hash steps (checked against a known result), a 64 MB memory write, copy and read-back check, all other cores counting primes up to 150,000 at once (must be 13,848 each) with the speed-up over one core, the clock under load from APERF/MPERF and the temperature from the digital thermal sensor. GPU test: fill, blend and copy speed on a 1024x1024 GPU surface (three passes each), a correctness check of GPU-drawn pixels against the expected values, the GPU clock under load and the chip temperature. The verdict is Healthy, Works with warnings (speed changing between passes, low clock, heat, throttling since power-on, poor core scaling) or Problem found (any wrong answer, memory errors, a core not finishing, wrong GPU pixels, GPU falling back to the CPU). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 2 | No camera app. | Camera app (`apps/media/camera.c`, `camera` in the terminal): live picture, Start/Stop, SD (YUY2 up to 640x480) or HD (MJPEG up to 1280x720), mirror, Take photo (saves `photo-N.png`; Space also takes a photo) and a details panel with the camera name, USB id and speed, every supported size, frames per second, dropped frames, USB packet errors and the last completion code. Without a camera it lists the USB devices that were found. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 3 | No benchmark. | Benchmark app (`apps/system/bench.c`, `bench cpu` or `bench gpu`). CPU test: four single-core passes counting primes up to 100,000 (must be 9,592), 16 million integer hash steps (checked against a known result), a 64 MB memory write, copy and read-back check, all other cores counting primes up to 150,000 at once (must be 13,848 each) with the speed-up over one core, the clock under load from APERF/MPERF and the temperature from the digital thermal sensor. GPU test: fill, blend and copy speed on a 1024x1024 GPU surface (three passes each), a correctness check of GPU-drawn pixels against the expected values, the GPU clock under load and the chip temperature. The verdict is Healthy, Works with warnings (speed changing between passes, low clock, heat, throttling since power-on, poor core scaling) or Problem found (any wrong answer, memory errors, a core not finishing, wrong GPU pixels, GPU falling back to the CPU). | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 4 | The start menus had four groups. | A fifth group, Drivers & Hardware, with Camera, Benchmark and Task Manager, in both the modern and the classic start menu. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 
 Tested: QEMU legacy BIOS and UEFI boot; the CPU test (healthy, 4 cores) and the GPU test with the queue emulated on the CPU (all pixels correct); the Camera app without a camera and with a QEMU USB keyboard, which still works. QEMU has no USB camera and no Intel graphics, so the camera stream and the GPU test on the real chip are untested until they run on the laptop.
@@ -142,7 +152,7 @@ Tested: QEMU legacy BIOS (1280x800) and UEFI (1920x1080) boot; `doom` from the c
 |---|---|---|---|
 | 1 | On the Lenovo the taskbar was a blank strip. The frame check showed the picture in memory was right; it appeared with `gpu flip off` and with `gpu draw off`, so the GPU shader copy to the screen lost the bottom rows. | The picture is copied to the screen by the GPU blitter, only the changed area, with a CPU cache flush first when the blitter does not snoop. The shader copy is still available (`gpu present shader`, or Settings > System > Display > Graphics > Advanced graphics) and the render engine now also flushes its render cache at the end of every batch. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 2 | The built-in wallpapers were 640x360 JPEGs (about 12 KB) stretched three times, so they looked blurry and blocky. | Nine wallpapers at 1920x1080: Aurora, Mountains, Waves, Sunset and Crane glow are made for NoovexOS; Crane, Porsche, Wireframe and Peaks are the pictures supplied by the owner, scaled with Lanczos. The JPEG decoder accepts pictures up to 1920x1200. Smaller pictures (for example a custom wallpaper) are enlarged with Catmull-Rom (bicubic) filtering instead of bilinear. `wallpaper <name>` sets one from the terminal. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
-| 3 | Task Manager showed one process list with fixed numbers. | New Task Manager (`apps/taskmgr.c`) with four tabs: Processes (open apps, status, End task, kernel services), Performance (CPU from the scheduler's idle counters on cores 1 and up, memory, GPU busy time and clock, disk, network, 60-second graphs), Devices (Processor, Graphics, Memory, Power supply and battery with health and cycles, Storage, Network, Sound, USB, Display, Input and all PCI devices, opened by clicking, scrolled with the wheel) and Services. `taskmgr` opens it. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
+| 3 | Task Manager showed one process list with fixed numbers. | New Task Manager (`apps/system/taskmgr.c`) with four tabs: Processes (open apps, status, End task, kernel services), Performance (CPU from the scheduler's idle counters on cores 1 and up, memory, GPU busy time and clock, disk, network, 60-second graphs), Devices (Processor, Graphics, Memory, Power supply and battery with health and cycles, Storage, Network, Sound, USB, Display, Input and all PCI devices, opened by clicking, scrolled with the wheel) and Services. `taskmgr` opens it. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 4 | Settings had one flat list of nine categories. | Windows-style Settings: categories (System, Personalization, Network & internet, Bluetooth & devices, Apps, Accounts, Time & language, Privacy & security, Update & recovery) open pages of tiles, tiles open sub-pages and some of those open further pages (System > Display > Graphics > Advanced graphics). A clickable path and a back button at the top. New pages: Graphics (GPU drawing, effects, partial redraws, wallpaper effects, drifting light), Advanced graphics (GPU details, screen copy engine, tear-free, frame check), Sound (volume, mute), Network details, Mouse & pointer, Installed apps, Your info, Date & time, Language & region, Recovery. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 
 Tested: QEMU legacy BIOS and UEFI (1920x1080) boot, the desktop, every new wallpaper, Task Manager tabs and Settings pages; host GPU emulator tests. QEMU has no Intel graphics, so the blitter screen copy with partial areas is untested until it runs on the laptop.
@@ -198,7 +208,7 @@ Tested: every shader in a host-side GPU emulator that executes the exact command
 | # | Before (v9.67) | Now (v9.68) | Where |
 |---|---|---|---|
 | 1 | On the Lenovo the blitter stopped at step 9: the GPU read the same old pixel (0x005B6198) with and without a CPU cache flush, so it was reading a different copy of the screen buffer than the CPU wrote, not a stale cache line. The buffer was an 8 MB array in the kernel image, in an area that start-up can move to other memory. | The screen buffer the desktop draws into (`SCENE`) is now a pointer. On gen 9 the GPU driver allocates it from the kernel heap, maps every page into the GPU's tables itself, copies the picture over and switches `SCENE` to it. Read tests on three buffers (test buffer, new screen buffer, old kernel array), each flushed and unflushed, show in `gpuinfo` which memory the GPU reads correctly, with the physical addresses and whether the old array was moved at boot. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
-| 2 | The render engine was started but ran no programs. | Stage 2 of GPU drawing: a small assembler for native gen 9 GPU instructions (`drivers/video/gen9asm.c`) and the first two compute shaders, a gradient fill and a block copy, run on the render engine through `GPGPU_WALKER` with surface states, binding tables, interface descriptors and constant data. Results are checked pixel by pixel (256x128 test images, then a full-screen gradient that is never shown). `gpuinfo` shows "Shaders: ready" with the times, or the step, the first wrong pixel and the reason. The render context now asks for all subslices and EUs to be powered, as Linux does on Apollo Lake and Gemini Lake. Both shaders were checked bit for bit against Intel's own assembler. QEMU has no Intel graphics, so only the fallback was tested. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
+| 2 | The render engine was started but ran no programs. | Stage 2 of GPU drawing: a small assembler for native gen 9 GPU instructions (`drivers/video/intel/gen9asm.c`) and the first two compute shaders, a gradient fill and a block copy, run on the render engine through `GPGPU_WALKER` with surface states, binding tables, interface descriptors and constant data. Results are checked pixel by pixel (256x128 test images, then a full-screen gradient that is never shown). `gpuinfo` shows "Shaders: ready" with the times, or the step, the first wrong pixel and the reason. The render context now asks for all subslices and EUs to be powered, as Linux does on Apollo Lake and Gemini Lake. Both shaders were checked bit for bit against Intel's own assembler. QEMU has no Intel graphics, so only the fallback was tested. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
 Tested in QEMU: legacy BIOS and UEFI boot to the live session and the desktop.
 
@@ -228,7 +238,7 @@ Tested in QEMU: legacy BIOS and UEFI boot to the live session and the desktop.
 | 1 | This PC showed one tile for the system and one for a USB stick ("USB Drive (E:)"), with sizes estimated from the files. | A This PC page modelled on Windows 11: tiles for every volume on every disk and on the USB stick with drive letters (C: is the system, then D:, E: ... in disk order), volume labels, usage bars that turn red above 90 percent, real free space for FAT12/16/32, NTFS, exFAT and ext2/3/4, a command bar (Properties, Open, Refresh, Open Settings), the drives under This PC in the side bar, item and selection counts, and a Properties dialog with a used/free ring chart. EFI, Microsoft reserved, recovery, BIOS boot and swap partitions are hidden, as in Windows. Win+E opens File Explorer, and the Win key no longer types its letter into the focused window. Tested in QEMU with a SATA disk (NTFS "Windows", ext4 "Data", FAT32), an NVMe disk with GPT (EFI system plus FAT32) and a USB stick: all volumes appear with the right labels and free space, and the EFI partition is hidden. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 2 | Legacy BIOS boot always asked for 1280x1024 (`video=1280x1024`), so a laptop panel showed a stretched, blurry picture. | `video=auto` (now the default in the ISO and on installed disks) reads the screen's EDID through VBE 4F15h and sets the panel's native mode when the BIOS offers it (up to 1920x1080), then falls back through 1920x1080, 1600x900, 1366x768, 1280x1024 and smaller. Tested in QEMU with a 1600x900 EDID: the session started at 1600x900. | [section 2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
 | 3 | The framebuffer was mapped with the default caching, which firmware MTRRs normally make uncached, so every pixel write was a separate bus write. | The page attribute table gets a write-combining entry on every CPU and the framebuffer pages use it, so screen writes go out in bursts. `gpuinfo` shows the mapping and the time of a full-screen copy. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
-| 4 | Intel graphics were only used through the firmware framebuffer. | New Intel driver (`drivers/video/igpu.c`): finds the GPU (Sandy Bridge to Meteor Lake), reads the panel's native size, the current mode, whether the picture is scaled, and the display plane. On gen 8 to 12 it adds a second screen buffer in the graphics address table and switches between the two at the screen's vertical blank, so a frame is never shown half drawn (tear-free). It checks the plane format, that the framebuffer is the visible surface, that the new buffer keeps data and that the display really switches, and falls back to normal drawing otherwise; `gpu flip off`, `gpu flip on` and Ctrl+Alt+F switch it by hand. New `gpuinfo` command. QEMU has no Intel graphics, so this part was only tested for its fallback. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
+| 4 | Intel graphics were only used through the firmware framebuffer. | New Intel driver (`drivers/video/intel/igpu.c`): finds the GPU (Sandy Bridge to Meteor Lake), reads the panel's native size, the current mode, whether the picture is scaled, and the display plane. On gen 8 to 12 it adds a second screen buffer in the graphics address table and switches between the two at the screen's vertical blank, so a frame is never shown half drawn (tear-free). It checks the plane format, that the framebuffer is the visible surface, that the new buffer keeps data and that the display really switches, and falls back to normal drawing otherwise; `gpu flip off`, `gpu flip on` and Ctrl+Alt+F switch it by hand. New `gpuinfo` command. QEMU has no Intel graphics, so this part was only tested for its fallback. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
 Tested in QEMU: legacy BIOS and UEFI boot to the live session and the desktop.
 
@@ -294,7 +304,7 @@ Fixed DMA buffers that are moved this way (disk and USB buffers at 0x09800000-0x
 
 | # | Before (v9.57) | Now (v9.58) | Where |
 |---|---|---|---|
-| 1 | A CPU exception in the first steps of `kmain` was invisible: no interrupt table was loaded yet, so a UEFI boot froze inside the firmware's handler (all coloured boot marks except the white one) and a legacy BIOS boot triple-faulted and restarted. Reported on a Lenovo laptop in both modes. | `kmain` first loads a small early interrupt table (`init/early_fault.c`, stubs `eexc0`-`eexc31` in `isr64.S`, table in `.data` so clearing `.bss` does not erase it). Any exception before the normal table is loaded prints a screen with the exception number and name, error code, RIP, CR2, CR3, stack, the boot mode, and the start-up step, then halts instead of restarting. Tested in QEMU with a deliberate page fault at step 3: the screen appears under UEFI (OVMF) and legacy BIOS. | [section 2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
+| 1 | A CPU exception in the first steps of `kmain` was invisible: no interrupt table was loaded yet, so a UEFI boot froze inside the firmware's handler (all coloured boot marks except the white one) and a legacy BIOS boot triple-faulted and restarted. Reported on a Lenovo laptop in both modes. | `kmain` first loads a small early interrupt table (`core/init/early_fault.c`, stubs `eexc0`-`eexc31` in `isr64.S`, table in `.data` so clearing `.bss` does not erase it). Any exception before the normal table is loaded prints a screen with the exception number and name, error code, RIP, CR2, CR3, stack, the boot mode, and the start-up step, then halts instead of restarting. Tested in QEMU with a deliberate page fault at step 3: the screen appears under UEFI (OVMF) and legacy BIOS. | [section 2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
 | 2 | Only one mark (white) was drawn inside `kmain`. | Four more marks after each early step (6 purple: memory cleared, 7 cyan: per-CPU set up, 8 pink: kernel snapshot taken, 9 grey: memory map read), then the white mark after the FPU setup, so a photo shows exactly where start-up stops. | [section 2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
 | 3 | The UEFI entry kept whatever CR4 the firmware left. | CR4.CET (bit 23) is cleared on entry in case the firmware left control-flow enforcement on. | [section 2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
 
@@ -314,15 +324,15 @@ Cameras still have no video: streaming needs isochronous USB transfers in the xH
 |---|---|---|---|
 | 1 | A USB mouse or keyboard plugged in while running worked, but nothing showed which devices were connected. | Every USB device that is enumerated is recorded (`usbdev_note`: vendor and product ID, product name read from its string descriptor, kind from its interface classes: keyboard, mouse, camera, printer, audio, hub and others) and removed again when it is unplugged. A notification appears when one is connected. New Settings page "Devices" lists the keyboard, the touchpad type and every USB device with a "New" badge for 10 seconds; new command `usbdevs` (alias `lsusb`). Tested in QEMU: a USB mouse added while running appeared as "Mouse  QEMU USB Mouse  0627:0001  port 5". | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 2 | No Lenovo or ASUS laptop extras. | New `drivers/acpi/laptop.c`, using the AML interpreter. ThinkPad (HKEY device LEN0068/IBM0068/LEN0268): hotkeys enabled with MHKM/MHKC, events read with MHKP (brightness 0x1010/0x1011, volume 0x1015-0x1017, keyboard light 0x1012, touchpad 0x1008/0x1009), keyboard light with MLCG/MLCS, charge limit 80% with BCSS. IdeaPad (VPC2004): conservation mode with SBMC 3/5, keyboard light with SALS/HALS. ASUS (WMI device PNP0C14 with _UID "ATK"): INIT, events through _WED(0xFF) (brightness 0x11-0x2E, volume 0x30-0x32, keyboard light 0xC4/0xC5/0xC7, touchpad 0x6B), keyboard light (device 0x00050021) and charge limit (device 0x00120057) through DEVS/DSTS; older ASUS ATK0100 events directly. The touchpad toggle stops all touchpad drivers. Settings > Devices shows keyboard light and charge limit controls; command `laptop`, `kbdlight 0-3`, `chargelimit on/off`. Not tested on real laptops. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
-| 3 | No printing. | New `net/ipp.c`: IPP Everywhere network printing. Text is rendered with the anti-aliased font into an A4 PWG raster (300 dpi, 8-bit grey, PackBits line compression with line repeat) and sent as a Print-Job (IPP 2.0, document-format image/pwg-raster) by HTTP POST to port 631, /ipp/print. New `sock_send_rel` sends with a window of 8 segments, waits for ACKs and resends after a timeout, so large jobs are not lost. Commands `printer <ip>`, `print` (test page) and `print <file>`; Settings > Devices has a test page button. Tested on the host: the job decodes to a valid 2480 x 3508 page (21 KB for the test page). Not tested against a real printer. | [section 9](#part-9-networking-and-wi-fi) |
+| 3 | No printing. | New `net/print/ipp.c`: IPP Everywhere network printing. Text is rendered with the anti-aliased font into an A4 PWG raster (300 dpi, 8-bit grey, PackBits line compression with line repeat) and sent as a Print-Job (IPP 2.0, document-format image/pwg-raster) by HTTP POST to port 631, /ipp/print. New `sock_send_rel` sends with a window of 8 segments, waits for ACKs and resends after a timeout, so large jobs are not lost. Commands `printer <ip>`, `print` (test page) and `print <file>`; Settings > Devices has a test page button. Tested on the host: the job decodes to a valid 2480 x 3508 page (21 KB for the test page). Not tested against a real printer. | [section 9](#part-9-networking-and-wi-fi) |
 | 4 | - | USB cameras (video class 0x0E) are detected and listed by name. Streaming needs isochronous USB transfers, which the xHCI driver does not have yet, so there is no picture. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
 ## What changed in v9.55
 
 | # | Before (v9.54) | Now (v9.55) | Where |
 |---|---|---|---|
-| 1 | On Intel laptops the I2C touchpad was read every 10 ms because there was no driver for the Intel GPIO controller, whose pad numbering differs between CPU generations. | New `drivers/input/tp_igpio.c`. It needs no per-generation table: it evaluates `_CRS` of the GPIO controller named in the touchpad's GpioInt resource, takes every Memory32Fixed window as a pin community, reads the pad table offset (PADBAR, community offset 0x0C) and the pad size (16 bytes if the revision at offset 0 is 0x94 or newer, otherwise 8), and lists every pad. While polling, it samples the RX state (PADCFG0 bit 1) of every pad before each read and compares it with whether the touchpad had a report. When exactly one pad has matched every sample (at least 24 with data and 24 without), with either polarity, that pad is the interrupt line: from then on the touchpad is read only while the pin is active, checked on every pass of the main loop instead of every 10 ms. If no pad matches, polling continues. `tpinfo` shows the learning state. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
-| 2 | Synaptics PS/2 touchpads worked only as a basic mouse. | New `drivers/input/syn_ps2.c`. After the ELAN check, `mouse_init` sends the Synaptics identify query (sliced command 0x00, magic byte 0x47), reads the capabilities (0x02) and switches to absolute mode with W value (mode byte 0xC1). The 6-byte packets are checked and parsed (X, Y, pressure, W). W 0 means two fingers, W 1 three or more, W 3 a pass-through packet from a TrackPoint, which is sent as relative movement and buttons. The frames go through the same gesture engine as the other touchpads: tap to click, two-finger scrolling, three-finger swipes. If any step fails, the standard mouse setup runs as before. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
+| 1 | On Intel laptops the I2C touchpad was read every 10 ms because there was no driver for the Intel GPIO controller, whose pad numbering differs between CPU generations. | New `drivers/input/touchpad/tp_igpio.c`. It needs no per-generation table: it evaluates `_CRS` of the GPIO controller named in the touchpad's GpioInt resource, takes every Memory32Fixed window as a pin community, reads the pad table offset (PADBAR, community offset 0x0C) and the pad size (16 bytes if the revision at offset 0 is 0x94 or newer, otherwise 8), and lists every pad. While polling, it samples the RX state (PADCFG0 bit 1) of every pad before each read and compares it with whether the touchpad had a report. When exactly one pad has matched every sample (at least 24 with data and 24 without), with either polarity, that pad is the interrupt line: from then on the touchpad is read only while the pin is active, checked on every pass of the main loop instead of every 10 ms. If no pad matches, polling continues. `tpinfo` shows the learning state. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
+| 2 | Synaptics PS/2 touchpads worked only as a basic mouse. | New `drivers/input/ps2/syn_ps2.c`. After the ELAN check, `mouse_init` sends the Synaptics identify query (sliced command 0x00, magic byte 0x47), reads the capabilities (0x02) and switches to absolute mode with W value (mode byte 0xC1). The 6-byte packets are checked and parsed (X, Y, pressure, W). W 0 means two fingers, W 1 three or more, W 3 a pass-through packet from a TrackPoint, which is sent as relative movement and buttons. The frames go through the same gesture engine as the other touchpads: tap to click, two-finger scrolling, three-finger swipes. If any step fails, the standard mouse setup runs as before. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 | 3 | - | Checked the Wi-Fi changes from v9.54 again (separate transmit buffers, full-ring check, missing-card check); no change needed. | [section 9](#part-9-networking-and-wi-fi) |
 
 Not done: ALPS absolute mode and Synaptics RMI4 over SMBus. Neither the Synaptics driver nor the GPIO learning could be tested here (QEMU has neither device); QEMU boot and the standard PS/2 mouse fallback were tested.
@@ -397,7 +407,7 @@ Tested in QEMU only: boot, `tpinfo scan` (QEMU has no I2C touchpad, so the new A
 | 3 | Booting an installed disk showed the live terminal and installer every time. | The installer writes `/etc/nvx-installed`. On the first boot from the installed disk NoovexOS goes straight to setup; setup writes `/etc/nvx-setup-done` (user name, accent, theme, language, keyboard, time zone), and every later boot goes straight to the login screen. The ISO without an installed disk still starts the live session. Tested: install, first boot to setup, second boot to login. | [section 8](#part-8-storage-drivers-pci-and-the-installer) |
 | 4 | NVMe controllers with their registers above 4 GB (64-bit BAR, common with UEFI firmware and on new laptops) were rejected. `acpi_hi_map` could only map addresses below 512 GB. | 64-bit BARs are read in full and mapped with `acpi_hi_map`, which now maps any physical address below 128 TB (except the user-space range) with uncached 2 MB pages, creating page-table levels as needed. Tested in QEMU with the NVMe registers at 0xC00000000: installation to NVMe, then UEFI boot from that NVMe disk, mount of the data partition and setup. | [section 8](#part-8-storage-drivers-pci-and-the-installer) |
 | 5 | With several disks, NoovexOS used the first one it found (IDE, then AHCI, NVMe, VirtIO). | All disks are probed and the one with a NoovexOS data partition (type 0x7F) is used; otherwise the first one. Tested: IDE disk with the ISO plus an installed NVMe disk boots into the installed system. | [section 8](#part-8-storage-drivers-pci-and-the-installer) |
-| 6 | No mouse integration in virtual machines. | New `drivers/input/vmmouse.c`. Detects the hypervisor (CPUID leaf 0x40000000). VirtualBox: VMMDev (PCI 80EE:CAFE) - reports guest info, sets "guest can use absolute pointer" and reads the host pointer position every timer tick; buttons keep coming from the emulated PS/2 mouse. VMware and QEMU: VMware backdoor (port 0x5658) vmmouse protocol with absolute position, buttons and wheel. The position is turned into the usual pointer movement, so every screen and the X server see it. New command `vminfo`. Tested in QEMU: three absolute positions sent from the host moved the pointer exactly to them. VirtualBox could not be tested here. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
+| 6 | No mouse integration in virtual machines. | New `drivers/input/vm/vmmouse.c`. Detects the hypervisor (CPUID leaf 0x40000000). VirtualBox: VMMDev (PCI 80EE:CAFE) - reports guest info, sets "guest can use absolute pointer" and reads the host pointer position every timer tick; buttons keep coming from the emulated PS/2 mouse. VMware and QEMU: VMware backdoor (port 0x5658) vmmouse protocol with absolute position, buttons and wheel. The position is turned into the usual pointer movement, so every screen and the X server see it. New command `vminfo`. Tested in QEMU: three absolute positions sent from the host moved the pointer exactly to them. VirtualBox could not be tested here. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
 ## What changed in v9.47
 
@@ -546,7 +556,7 @@ The launcher (`/usr/bin/nvx-firefox`) now also checks that `firefox-esr` is inst
 |---|---|---|---|
 | 1 | Running Firefox meant typing nine `export` lines, `fc-cache -f`, `startx f` and the launch command by hand. | Clicking the Firefox icon in the start menu (or typing `firefox` / `firefox-esr` in the terminal) does it all: starts X, switches to the full-screen X session, sets the sandbox-off and software-rendering variables, refreshes the font cache and launches `firefox-esr --no-remote --new-instance about:blank`. | [section 6.21](#621-x-programs-as-normal-desktop-apps-v928) |
 
-The settings live in `/usr/bin/nvx-firefox` (built into the system image by `build.sh`). The start menu routes any app whose `Exec=` contains `firefox` to `firefox_launch()` in `apps/xapps.c`, which runs that script through `x_launch` and sets `g_xfull_pending` so the display switches to full-screen X as soon as the server is up. Firefox's output is appended to `/tmp/ff.log`.
+The settings live in `/usr/bin/nvx-firefox` (built into the system image by `build.sh`). The start menu routes any app whose `Exec=` contains `firefox` to `firefox_launch()` in `apps/x11/xapps.c`, which runs that script through `x_launch` and sets `g_xfull_pending` so the display switches to full-screen X as soon as the server is up. Firefox's output is appended to `/tmp/ff.log`.
 
 ## What changed in v9.33
 
@@ -564,7 +574,7 @@ The earlier out-of-memory on large installs was never raw RAM (the v9.30 high-me
 | 2 | No way to pass an open file descriptor between processes. | `sendmsg`/`recvmsg` carry `SCM_RIGHTS` control messages, duplicating a descriptor from the sender into the receiver. This is how Firefox hands a shared-memory buffer to a child process. | [section 9](#part-9-networking-and-wi-fi) |
 | 3 | `mmap` of a file copied bytes into private per-process pages, so two processes could not share writable memory. | `memfd_create` returns an anonymous, growable object (`ftruncate` sizes it); `mmap(MAP_SHARED)` maps its *actual* physical frames, reference-counted. Pass the memfd over `SCM_RIGHTS` and both processes map the same frames: real cross-process shared memory. | [section 3](#part-3-memory) |
 
-These are Stages 1 and 2 of the Firefox-enablement plan: the kernel groundwork that unblocks the multi-process IPC and shared-memory handoff every GTK/X/Firefox process tree depends on. Verified in QEMU by a bundled test (`afutest`, runnable from the shell): socketpair data transfer, `memfd_create`+`ftruncate`+`mmap`, SCM_RIGHTS fd-passing, and, the Firefox-critical case, a child process receiving a memfd over a socketpair across `fork()` and writing to shared memory the parent reads back. All four pass. New kernel code lives in `core/linux.c` (dev 18 = AF_UNIX via `un_*`, dev 19 = memfd via `mfd_*`, `SCM_RIGHTS` in `lx_un_msg`) with close cleanup in `core/proc/jobs.c`. Remaining for a running Firefox: install the GTK/X stack via apt and software-render it (Steps 3-5), which run on real hardware against the Debian archive.
+These are Stages 1 and 2 of the Firefox-enablement plan: the kernel groundwork that unblocks the multi-process IPC and shared-memory handoff every GTK/X/Firefox process tree depends on. Verified in QEMU by a bundled test (`afutest`, runnable from the shell): socketpair data transfer, `memfd_create`+`ftruncate`+`mmap`, SCM_RIGHTS fd-passing, and, the Firefox-critical case, a child process receiving a memfd over a socketpair across `fork()` and writing to shared memory the parent reads back. All four pass. New kernel code lives in `sys/linux/linux.c` (dev 18 = AF_UNIX via `un_*`, dev 19 = memfd via `mfd_*`, `SCM_RIGHTS` in `lx_un_msg`) with close cleanup in `core/proc/jobs.c`. Remaining for a running Firefox: install the GTK/X stack via apt and software-render it (Steps 3-5), which run on real hardware against the Debian archive.
 
 ## What changed in v9.31
 
@@ -572,7 +582,7 @@ These are Stages 1 and 2 of the Firefox-enablement plan: the kernel groundwork t
 |---|---|---|---|
 | 1 | Only one display lit up. The kernel used the single UEFI GOP framebuffer the firmware handed it at `0x5000`, and the NVIDIA driver's own modeset is an unverified, disabled placeholder. A second connected monitor stayed dark. | The UEFI loader now enumerates every GOP output the firmware exposes (`LocateHandleBuffer`) and records any extra framebuffer in the boot-info block, with a per-display flag saying whether the kernel's page tables already cover it. When a second firmware-lit head is present, the compositor mirrors the desktop onto it each frame (`blit_mirror2`, nearest-neighbour scaled). | [section 3](#part-3-memory) |
 
-Scope and limits, stated plainly: this lights the second monitor **only if your firmware initializes both outputs at power-on** (many do when both are connected at boot). If the firmware lights only the primary, `LocateHandleBuffer` returns one output and the second stays dark - that case needs a real display-engine modeset, which is a separate effort. The change is safe and additive: it writes no GPU registers, only uses framebuffers the firmware already set up, and only touches a second framebuffer the loader has confirmed is mapped, so a single-display boot (BIOS or one-GOP UEFI) behaves exactly as before. The boot log prints `display: second head WxH (mirroring)` when a second head is active. New code: loader enumeration in `bootloader/uefi/uefiboot.c`, extra-display table at `0x5040`, second-framebuffer globals and mirror in `drivers/video/framebuffer.c`, read in `init/main.c`.
+Scope and limits, stated plainly: this lights the second monitor **only if your firmware initializes both outputs at power-on** (many do when both are connected at boot). If the firmware lights only the primary, `LocateHandleBuffer` returns one output and the second stays dark - that case needs a real display-engine modeset, which is a separate effort. The change is safe and additive: it writes no GPU registers, only uses framebuffers the firmware already set up, and only touches a second framebuffer the loader has confirmed is mapped, so a single-display boot (BIOS or one-GOP UEFI) behaves exactly as before. The boot log prints `display: second head WxH (mirroring)` when a second head is active. New code: loader enumeration in `boot/uefi/uefiboot.c`, extra-display table at `0x5040`, second-framebuffer globals and mirror in `drivers/video/fb/framebuffer.c`, read in `core/init/main.c`.
 
 ## What changed in v9.30
 
@@ -580,7 +590,7 @@ Scope and limits, stated plainly: this lights the second monitor **only if your 
 |---|---|---|---|
 | 1 | `kmalloc` served only the sub-4 GB region (capped at `0xFC000000`). On a real laptop that region is squeezed by the PCI hole, the kernel and the sysroot overlay, while gigabytes of RAM above 4 GB sat unused. A large `sudo apt install` (VLC, Firefox) exhausted the low region and failed with `E: out of space or memory while unpacking`, even with Task Manager showing about 7 percent memory used. | When the low heap is full, `kmalloc` pulls contiguous, identity-mapped pages from the high-memory pool above 4 GB (the pages the frame allocator already manages) and keeps serving allocations. All installed RAM is now usable for installs, decompression buffers and the package index, so big installs no longer run out of memory. | [section 3](#part-3-memory) |
 
-Root cause of the v9.29 install failure: the direct-to-disk unpacker still needed transient RAM per package (download buffer, decompressed `data.tar`, the roughly 45 MB package index), and on the live ISO the writable filesystem is itself RAM-backed. All of that competed for the small sub-4 GB heap. v9.30 removes the 4 GB ceiling on the kernel heap. New primitives: `hp_alloc_run(pages)` in `mm/pmm_vmm.c` hands out a contiguous run of high frames; `kmalloc` in `mm/heap.c` adds extra heap arenas from it on demand, and `hblk_ok` validates pointers across every arena. Booted and verified at 6 GB; the high-memory pool self-test passes at startup.
+Root cause of the v9.29 install failure: the direct-to-disk unpacker still needed transient RAM per package (download buffer, decompressed `data.tar`, the roughly 45 MB package index), and on the live ISO the writable filesystem is itself RAM-backed. All of that competed for the small sub-4 GB heap. v9.30 removes the 4 GB ceiling on the kernel heap. New primitives: `hp_alloc_run(pages)` in `mem/pmm_vmm.c` hands out a contiguous run of high frames; `kmalloc` in `mem/heap.c` adds extra heap arenas from it on demand, and `hblk_ok` validates pointers across every arena. Booted and verified at 6 GB; the high-memory pool self-test passes at startup.
 
 ## What changed in v9.29
 
@@ -624,16 +634,16 @@ Tested with a 20,000-package Debian-format mirror: `apt update` downloads and pa
 
 | # | Before (v9.25) | Now (v9.26) | Where |
 |---|---|---|---|
-| 1 | X programs could not be used: keyboard and mouse did not reach them. | Mouse movement, left and right buttons, the wheel and typed keys in the X Display window reach X programs (through the new `/dev/nvxxin` and the XTEST helper `nvx-xinput`, started by `startx`). | [section 6.19](#619-x11-the-xorg-server-startx-appsxdisplayc) |
-| 2 | X only ran in a window. | `startx full` runs a full-screen X session at the display's size, with the classic X background, `/root/.xinitrc` or `xdemo` started, all input going to X; F12 or Ctrl+Alt+Backspace returns to the desktop. | [section 6.19](#619-x11-the-xorg-server-startx-appsxdisplayc) |
-| 3 | `xdemo` only drew. | It shows the pointer position, drops dots where you click, has a button that toggles, shows typed text, and quits with Esc. | [section 6.19](#619-x11-the-xorg-server-startx-appsxdisplayc) |
+| 1 | X programs could not be used: keyboard and mouse did not reach them. | Mouse movement, left and right buttons, the wheel and typed keys in the X Display window reach X programs (through the new `/dev/nvxxin` and the XTEST helper `nvx-xinput`, started by `startx`). | [section 6.19](#619-x11-the-xorg-server-startx-appsx11xdisplayc) |
+| 2 | X only ran in a window. | `startx full` runs a full-screen X session at the display's size, with the classic X background, `/root/.xinitrc` or `xdemo` started, all input going to X; F12 or Ctrl+Alt+Backspace returns to the desktop. | [section 6.19](#619-x11-the-xorg-server-startx-appsx11xdisplayc) |
+| 3 | `xdemo` only drew. | It shows the pointer position, drops dots where you click, has a button that toggles, shows typed text, and quits with Esc. | [section 6.19](#619-x11-the-xorg-server-startx-appsx11xdisplayc) |
 
 ## What changed in v9.25
 
 | # | Before (v9.24) | Now (v9.25) | Where |
 |---|---|---|---|
-| 1 | No X11. | The X.Org X server (Xvfb) runs on the glibc layer. `startx` starts it on `:0`; X programs connect over local TCP (`DISPLAY=127.0.0.1:0`) and appear in the new **X Display** window. `xdemo` is an Xlib test program. Keyboard and mouse input to X programs is not done yet. | [section 6.19](#619-x11-the-xorg-server-startx-appsxdisplayc) |
-| 2 | No `epoll`. | `epoll_create1`, `epoll_ctl`, `epoll_wait`, `epoll_pwait` and `epoll_pwait2`. | [section 6.19](#619-x11-the-xorg-server-startx-appsxdisplayc) |
+| 1 | No X11. | The X.Org X server (Xvfb) runs on the glibc layer. `startx` starts it on `:0`; X programs connect over local TCP (`DISPLAY=127.0.0.1:0`) and appear in the new **X Display** window. `xdemo` is an Xlib test program. Keyboard and mouse input to X programs is not done yet. | [section 6.19](#619-x11-the-xorg-server-startx-appsx11xdisplayc) |
+| 2 | No `epoll`. | `epoll_create1`, `epoll_ctl`, `epoll_wait`, `epoll_pwait` and `epoll_pwait2`. | [section 6.19](#619-x11-the-xorg-server-startx-appsx11xdisplayc) |
 
 ## What changed in v9.24
 
@@ -650,14 +660,14 @@ This release adds real Python 3 and Debian package installation: `sudo apt insta
 |---|---|---|---|
 | 1 | No Python 3 (Ubuntu's `python3` is a fixed-address program and cannot run). | CPython 3.13 built from source as a position-independent program, with its standard library, extension modules and their libraries in the sysroot. `python3`, `python3 -c`, script files and the interactive prompt work. | [section 6.17](#617-python-313) |
 | 2 | `pkg install` only copied files out of gzip `.deb` files into `/pkg/NAME`. | `apt update`, `apt install`, `remove`, `autoremove`, `upgrade`, `search`, `show`, `list`, and `dpkg -i`, `-l`, `-L`, `-s`, `-r`. Packages come from `/etc/apt/sources.list` (Debian trixie by default), dependencies are resolved, every package is checked against its SHA256, and installed programs run at once. | [section 6.16](#616-debian-packages-apt-and-dpkg) |
-| 3 | The kernel could decompress gzip only. | xz (xz-embedded) and zstd decoders in the kernel (`lib/xzk.c`, `lib/zstdk.c`, `lib/unpack.c`). | [section 6.16](#616-debian-packages-apt-and-dpkg) |
+| 3 | The kernel could decompress gzip only. | xz (xz-embedded) and zstd decoders in the kernel (`lib/compress/xzk.c`, `lib/compress/zstdk.c`, `lib/compress/unpack.c`). | [section 6.16](#616-debian-packages-apt-and-dpkg) |
 | 4 | The sysroot was one fixed file tree with deflate per file, looked up by scanning every entry. | A stack of layers (the kernel's own plus one per installed package) with a hash index; the kernel's layer uses xz blocks (glibc and GNU tools: 7.0 MB before, 4.8 MB now). | [section 6.15](#615-glibc-programs) |
 | 5 | glibc programs never saw a terminal (glibc 2.44 asks with `TCGETS2`). | `TCGETS2` and `TCSETS2` are answered, so prompts and line editing work. | [section 6.15](#615-glibc-programs) |
 | 6 | Scripts with `#!` lines could not be started. | `#!/usr/bin/env python3`, `#!/bin/sh` and other interpreter lines work from the Terminal and from programs (`execve`); `/bin/sh` and `/bin/bash` are GNU bash. | [section 6.15](#615-glibc-programs) |
 | 7 | A command line given to a program was cut at 255 characters. | 2047 characters. | [section 6.15](#615-glibc-programs) |
 | 8 | Bare program names were looked up in `/opt/gnu/bin` only. | Also `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin` of the sysroot and installed packages. | [section 6.15](#615-glibc-programs) |
 
-The source zip now holds the CPython 3.13 source (`source/third_party_src/cpython-3.13.tar.xz`); the glibc source is shipped next to it as `glibc-2.44.tar.xz`.
+The source zip now holds the CPython 3.13 source (`third_party/src/cpython-3.13.tar.xz`); the glibc source is shipped next to it as `glibc-2.44.tar.xz`.
 
 ## What changed in v9.22
 
@@ -672,7 +682,7 @@ This release runs programs built for glibc, the C library of Debian, Ubuntu and 
 | 5 | The CD's UEFI boot image was limited to 32 MiB. | Any size: the El Torito entry uses sector count 0 (the rest of the disc) and the FAT16 image grows its cluster size. | [section 3.15](#315-the-100-mib-kernel-layout) |
 | 6 | No way to see what a Linux program asked the kernel. | `lxtrace N` logs the next N Linux system calls (number, first two arguments, result) to the kernel log. | [section 6.15](#615-glibc-programs) |
 
-The source zip now also contains FFmpeg and the glibc 2.44 source (`source/third_party_src/glibc-2.44.tar.gz`).
+The source zip now also contains FFmpeg and the glibc 2.44 source (`third_party/src/glibc-2.44.tar.gz`).
 
 ## What changed in v9.21
 
@@ -750,7 +760,7 @@ This release lets NoovexOS use up to 128 GiB of RAM, finds every partition on ev
 | # | Before (v9.13) | Now (v9.14) | Where |
 |---|---|---|---|
 | 1 | At most 4032 MiB of RAM was recognised, and only memory below 4 GiB was mapped and used. BIOS boots had no memory map at all. | BIOS boots pass the E820 map to the kernel (through Multiboot or the native loaders). All RAM is counted, everything above 4 GiB (up to 512 GiB) is identity-mapped with 2 MiB pages, and it becomes a second frame pool that user programs use first. Tested at 8, 16 and 128 GiB with BIOS and UEFI. | [section 3.14](#314-memory-above-4-gib) |
-| 2 | Partitions were found only on the install disk, only as four MBR primaries or the first 128 GPT entries, and only when they held FAT or NTFS. | A partition scanner reads MBR primaries, extended and logical partitions, GPT (up to 1024 entries, partition names, backup header) and whole-disk file systems, on every IDE drive, every SATA port, the NVMe or virtio disk and USB sticks. It names 13 file systems. `parts` (also `lsblk`) lists them; the root file system search uses it, so a NoovexOS install on a logical partition is found. | [section 8.11](#811-partition-scanner-fspartsc) |
+| 2 | Partitions were found only on the install disk, only as four MBR primaries or the first 128 GPT entries, and only when they held FAT or NTFS. | A partition scanner reads MBR primaries, extended and logical partitions, GPT (up to 1024 entries, partition names, backup header) and whole-disk file systems, on every IDE drive, every SATA port, the NVMe or virtio disk and USB sticks. It names 13 file systems. `parts` (also `lsblk`) lists them; the root file system search uses it, so a NoovexOS install on a logical partition is found. | [section 8.11](#811-partition-scanner-fsvfspartsc) |
 | 3 | A CPU exception inside the web engine (a bad pointer while rendering a page) stopped the whole system with the red error screen. | The exception is caught: the engine call is unwound, the browser shows "This page crashed", and the browser and the desktop keep working. `about:crash` triggers this on purpose. | [section 13.22](#1322-crash-containment) |
 | 4 | YouTube's own site is too large for the engine, so watch pages did not play. | `youtube.com/watch`, `youtu.be`, `/shorts/`, `/embed/` and `/live/` addresses open a player page that asks YouTube's player API for the video (trying four clients) and plays the best progressive MP4 or WebM up to 720p in the browser's `<video>`. | [section 13.23](#1323-youtube-player-page) |
 
@@ -773,12 +783,12 @@ This release puts video everywhere: a media service in the kernel, a Video Playe
 | # | Before (v9.11) | Now (v9.12) | Where |
 |---|---|---|---|
 | 1 | `play` could only take over the whole screen, and only for a local file. | A kernel media service (`core/media.c`, `/dev/media`) runs one `play --embed` process per video. The process reads its data from a local file, from an HTTP or HTTPS URL (with Range requests and an 8 MB cache), or from data the kernel was handed (one or two streams); it sends decoded frames, its status and takes commands through `ioctl`. | [section 6.13](#613-the-media-service-devmedia) |
-| 2 | No video window. | A Video Player window: play and pause, a seek bar, time, mute, loop and maximize; keyboard control (space, arrows, j/l, m, f, 0-9). Double-click a video or audio file in Files, or type `video FILE` or `video URL`. | [section 6.14](#614-the-video-player-window-appsvideoplayerc) |
+| 2 | No video window. | A Video Player window: play and pause, a seek bar, time, mute, loop and maximize; keyboard control (space, arrows, j/l, m, f, 0-9). Double-click a video or audio file in Files, or type `video FILE` or `video URL`. | [section 6.14](#614-the-video-player-window-appsmediavideoplayerc) |
 | 3 | `<video>` and `<audio>` were grey boxes with the word "Video", and the media API was a stub. | Real playback with the standard API: `play()`, `pause()`, `currentTime`, `duration`, `volume`, `muted`, `loop`, `buffered`, `readyState`, `videoWidth`, `canPlayType`, the media events (`loadedmetadata`, `canplay`, `playing`, `timeupdate`, `seeking`, `seeked`, `ended` and others), `<source>` selection, `autoplay`, native controls drawn by the engine, and the element's size taken from the video. | [section 13.17](#1317-video-and-audio-in-the-browser) |
 | 4 | No MediaSource. | `MediaSource` and `SourceBuffer` with one or two buffers (split video and audio), `isTypeSupported` (H.264, H.265, VP8, VP9, AAC, MP3, Opus, Vorbis; AV1 is refused so sites fall back), `appendBuffer`, `remove`, `endOfStream`, `duration`, and `buffered` ranges computed from the fragmented MP4 (`tfdt`/`trun`) and WebM (`Cluster`) timestamps. | [section 13.17](#1317-video-and-audio-in-the-browser) |
 | 5 | `fetch` and `XMLHttpRequest` returned every body as text, so binary data (video segments, images, protobuf) was corrupted, and `Blob` held only text. | Bodies are binary-safe: `fetch` gets the bytes as an `ArrayBuffer` and decodes text only when asked; `XHR` with `responseType` `arraybuffer` or `blob` gets the raw bytes; request bodies may be `ArrayBuffer`s or typed arrays; `Blob` holds bytes. `TextEncoder` and `TextDecoder` run in C, which is much faster. | [section 13.8](#138-javascript-webjsc-webpreludejs) |
 | 6 | A full-screen request was refused. | `requestFullscreen` and `exitFullscreen` make the element cover the page and fire `fullscreenchange`. | [section 13.17](#1317-video-and-audio-in-the-browser) |
-| 7 | While any program ran, the desktop redrew the whole screen after every scheduler slice, which left programs about a third of the CPU. | The desktop redraws when a program marks the screen dirty, the terminal changes, or twice a second. New video frames are copied only into their rectangle when the window is on top (`present_rect`). | [section 6.14](#614-the-video-player-window-appsvideoplayerc) |
+| 7 | While any program ran, the desktop redrew the whole screen after every scheduler slice, which left programs about a third of the CPU. | The desktop redraws when a program marks the screen dirty, the terminal changes, or twice a second. New video frames are copied only into their rectangle when the window is on top (`present_rect`). | [section 6.14](#614-the-video-player-window-appsmediavideoplayerc) |
 | 8 | Four checker groups had not compiled or run since earlier releases (USB, NVMe and xHCI test templates used the old memory map; the AML test allocated above 4 GiB, which the interpreter's pointer check rejects). | All updated; the checker passes 106 of 106. | [section 12.2](#122-toolscheckpy-the-automatic-bug-checker) |
 
 ## What changed in v9.11
@@ -821,9 +831,9 @@ This release replaces the browser with a real web engine: an HTML parser and DOM
 |---|---|---|---|
 | 1 | The browser was a single-pass tag scanner that turned a page into lines of text with some colours. | A layout engine in `web/`: HTML parser with the usual implied-tag and table rules, a DOM, selectors up to `:has()`, the full cascade with `!important`, custom properties and `calc()`, block and inline layout, floats, positioning, `z-index`, overflow and scrolling boxes, tables, flexbox and grid, anti-aliased TrueType text, gradients, shadows, rounded corners, SVG. | [Part 13](#part-13-the-web-engine-javascript-and-cookies) |
 | 2 | An integer-only JavaScript subset with `document.write` and no DOM. | QuickJS-ng (ES2023) with DOM bindings and a browser API written in JavaScript: events, `classList`, `style`, `fetch`, `XMLHttpRequest`, `localStorage`, `history`, timers, observers, modules. React 19 and jQuery 3.6 run. Scripts are limited to 6 s per run and to 60% of the engine arena. | [section 13.8](#138-javascript-webjsc-webpreludejs) |
-| 3 | Cookies were kept in a small table in `net/http.c`. | A cookie jar (`net/cookies.c`) with domain and path matching, expiry, Secure, HttpOnly and SameSite, saved to `cookies.txt`; `localStorage` saved to `webstorage.txt`; an about:cookies page and a Cookies button. | [section 13.10](#1310-cookies-and-web-storage-netcookiesc) |
+| 3 | Cookies were kept in a small table in `net/http/http.c`. | A cookie jar (`net/http/cookies.c`) with domain and path matching, expiry, Secure, HttpOnly and SameSite, saved to `cookies.txt`; `localStorage` saved to `webstorage.txt`; an about:cookies page and a Cookies button. | [section 13.10](#1310-cookies-and-web-storage-nethttpcookiesc) |
 | 4 | No way to run modern JavaScript from the shell. | `qjs`, the QuickJS command-line interpreter, as an embedded musl program. | [section 13.13](#1313-the-qjs-command) |
-| 5 | `browse` did not exist, and opening the browser from the live terminal left the window hidden behind the terminal. | `browse <url>` (also `www`) opens the browser and, in the live terminal, switches to the desktop first; `desktop` switches without opening anything. | [section 13.11](#1311-the-browser-window-appsbrowserc) |
+| 5 | `browse` did not exist, and opening the browser from the live terminal left the window hidden behind the terminal. | `browse <url>` (also `www`) opens the browser and, in the live terminal, switches to the desktop first; `desktop` switches without opening anything. | [section 13.11](#1311-the-browser-window-appsinternetbrowserc) |
 | 6 | The boot stack started at `0x700000`, directly above a kernel that could be at most 5.75 MB. The 6.7 MB kernel was overwritten by its own stack and the integrity check stopped the boot. | The stack top is `0x980000`, the kernel may be 8 MiB (`0x100000-0x900000`), the UEFI loader's `KERNEL_MAX` matches, and both linker scripts fail the build if the image is too large. | [section 13.12](#1312-memory-layout-change-in-v908) |
 | 7 | ChaCha20-Poly1305 used a fixed scratch buffer at `0x900000`. | It uses a heap buffer (`aead_mac`), so it no longer depends on that memory being free. | [section 13.12](#1312-memory-layout-change-in-v908) |
 
@@ -833,7 +843,7 @@ Other changes:
 |---|---|
 | The browser's string copies now always end the string (`sset`). | The tab title showed the start of the new host name followed by the end of the old title, and Back went to the wrong page. |
 | Page fonts include about 80 symbols from DejaVu Sans (check marks, arrows, stars, menu and warning icons), used by all faces. | Liberation has none of them, so they showed as `?`. |
-| The stack-switch trampoline moved to `arch/x86_64/stack_call.c`. | The static checker allows inline assembly only under `arch/`. |
+| The stack-switch trampoline moved to `arch/x86_64/user/stack_call.c`. | The static checker allows inline assembly only under `arch/`. |
 | The UEFI simulator (`tools/tests/pe_run.c`) emulates 32-bit port I/O. | The loader's `quiet_dma` reads PCI configuration space with `in`/`out` on `eax`, which the simulator treated as a crash. |
 | The `mhello` check accepts any version number. | It looked for "8.97" in the program's output. |
 
@@ -843,17 +853,17 @@ These releases fix the installer crash on real hardware, speed up USB mice, give
 
 | # | Before (v8.97) | Now (v9.07) | Where |
 |---|---|---|---|
-| 1 | On some UEFI laptops the kernel was already corrupted when it started: `kcheck` said `code DIFFERS`, the installer refused to copy it, and the system could page-fault (seen in `anode_child` with a pointer of all ones). The firmware's USB controller kept writing into memory that the loader had just filled with the kernel. | The UEFI loader stops DMA right after `ExitBootServices` and before it copies the kernel: it halts every xHCI controller (clears `USBCMD.RS`, waits for `USBSTS.HCH`) and clears Bus-Master Enable on storage, network, multimedia, wireless and serial-bus devices (`quiet_dma`). | [section 2.4](#26-uefi-path-bootloaderuefiuefibootc) |
+| 1 | On some UEFI laptops the kernel was already corrupted when it started: `kcheck` said `code DIFFERS`, the installer refused to copy it, and the system could page-fault (seen in `anode_child` with a pointer of all ones). The firmware's USB controller kept writing into memory that the loader had just filled with the kernel. | The UEFI loader stops DMA right after `ExitBootServices` and before it copies the kernel: it halts every xHCI controller (clears `USBCMD.RS`, waits for `USBSTS.HCH`) and clears Bus-Master Enable on storage, network, multimedia, wireless and serial-bus devices (`quiet_dma`). | [section 2.4](#26-uefi-path-bootuefiuefibootc) |
 | 2 | `ahci_init` and `nvme_init` turned on bus mastering before checking the BAR and before stopping the controller, so a rejected or still-running controller could resume DMA into reclaimed memory. | Both enable memory space first. AHCI stops every implemented port and clears its interrupts; NVMe disables the controller. Only then is bus mastering switched on. | [section 8.3](#83-ahci-driversstoragegdiskc) |
 | 3 | A corrupt AML namespace link crashed the kernel. | `anode_child` checks every node pointer (below 4 GiB, above 1 MiB, 8-byte aligned) and stops the walk instead of faulting. | [section 10.7.3](#1073-aml-interpreter-driversacpiamlc) |
 | 4 | A USB mouse or keyboard had one read queued at a time. A 1000 Hz gaming dongle lost most reports during a redraw, so the pointer was slow and lagged. | 16 reads are queued per HID endpoint, each with its own 64-byte buffer; every completed report is decoded from its own buffer and immediately re-queued. | [section 10.6.5](#1065-hid-data-path) |
-| 5 | The browser understood hex colours and a few names, one page background colour, PNG/JPEG/WebP/BMP, and 600 lines per page. | About 140 CSS colour names, `rgb()`/`rgba()`/`hsl()`/`hsla()`, 4- and 8-digit hex; `linear-gradient` page backgrounds; block backgrounds, `text-align` and `font-size` from rules, inline `style` and `bgcolor`/`align`; paragraph spacing; GIF images; alpha blending; 2400 lines. | [section 11.7](#browser-appsbrowserc-698-lines) |
-| 6 | The JavaScript interpreter had six string methods and small tables. | Many more string methods (`split`, `replace`, `trim`, `slice`, `padStart` and others), array `shift`, `unshift`, `reverse`, `slice`, `includes`, `concat`, `Math.pow/sign/trunc/hypot`, and larger limits. | [section 11.9](#javascript--c-script-interpreter-libjsc) |
-| 7 | A top bar, a floating dock, desktop icons and a centred launcher. | A classic desktop: a gray 3D taskbar with a NoovexOS start button, one button per open window, a tray and a clock; a classic start menu with Development, Games, Graphics and Utilities submenus and Exit; no desktop icons. | [section 11.3](#113-desktop-shell-and-compositor-guidesktopc) |
-| 8 | Windows had rounded light frames and a 40-px title bar. | Classic windows: a raised gray frame, a navy-to-blue gradient title bar (gray when inactive), square 3D caption buttons, and a 30-px title bar (`TITLEH 30`). | [section 11.2](#112-window-manager-guiwmc) |
+| 5 | The browser understood hex colours and a few names, one page background colour, PNG/JPEG/WebP/BMP, and 600 lines per page. | About 140 CSS colour names, `rgb()`/`rgba()`/`hsl()`/`hsla()`, 4- and 8-digit hex; `linear-gradient` page backgrounds; block backgrounds, `text-align` and `font-size` from rules, inline `style` and `bgcolor`/`align`; paragraph spacing; GIF images; alpha blending; 2400 lines. | [section 11.7](#browser-appsinternetbrowserc-698-lines) |
+| 6 | The JavaScript interpreter had six string methods and small tables. | Many more string methods (`split`, `replace`, `trim`, `slice`, `padStart` and others), array `shift`, `unshift`, `reverse`, `slice`, `includes`, `concat`, `Math.pow/sign/trunc/hypot`, and larger limits. | [section 11.9](#javascript--c-script-interpreter-libjsjsc) |
+| 7 | A top bar, a floating dock, desktop icons and a centred launcher. | A classic desktop: a gray 3D taskbar with a NoovexOS start button, one button per open window, a tray and a clock; a classic start menu with Development, Games, Graphics and Utilities submenus and Exit; no desktop icons. | [section 11.3](#113-desktop-shell-and-compositor-graphicsuidesktopc) |
+| 8 | Windows had rounded light frames and a 40-px title bar. | Classic windows: a raised gray frame, a navy-to-blue gradient title bar (gray when inactive), square 3D caption buttons, and a 30-px title bar (`TITLEH 30`). | [section 11.2](#112-window-manager-graphicsuiwmc) |
 | 9 | The tray had Wi-Fi, quick settings (wallpaper and accent) and a bell. | A Windows 11 style tray (show more, Wi-Fi, volume, battery, notifications) and a Quick Settings panel with Wi-Fi, Airplane, Night light, Battery saver, Do not disturb and All settings, plus brightness and volume sliders. | [section 11.3](#tray-and-quick-settings) |
-| 10 | Most text used the 1-bit pixel font. | `dchar` draws the anti-aliased `fontaa` glyphs at the same 8-px width, so every app gets smooth text without layout changes. | [section 11.11](#1111-fonts-and-assets-sourcekernelassets) |
-| 11 | Aurora was the default wallpaper. | Crane is the default on every boot and is preselected in setup. | [section 11.3](#themes-and-effects-guithemec-guieffectsc-appssettingsc) |
+| 10 | Most text used the 1-bit pixel font. | `dchar` draws the anti-aliased `fontaa` glyphs at the same 8-px width, so every app gets smooth text without layout changes. | [section 11.11](#1111-fonts-and-assets-assets) |
+| 11 | Aurora was the default wallpaper. | Crane is the default on every boot and is preselected in setup. | [section 11.3](#themes-and-effects-graphicsthemethemec-graphicsthemeeffectsc-appssystemsettingsc) |
 
 Other changes:
 
@@ -881,7 +891,7 @@ Other changes:
 | Change | Why |
 |---|---|
 | Embedded programs and the shared C library are stored compressed (raw DEFLATE) and inflated on first use. | The kernel went from 5.46 MB to 3.86 MB, which made room for the new programs; it is now about 4.28 MB, 1.75 MB under the UEFI limit ([section 6.6](#66-how-programs-are-embedded-and-found)). |
-| `getrandom`, `/dev/random` and `/dev/urandom` return output of the kernel's ChaCha20 generator. | They were an xorshift or LCG sequence, not suitable for TLS keys ([section 9.8](#98-http-entropy-and-https-nethttpc)). |
+| `getrandom`, `/dev/random` and `/dev/urandom` return output of the kernel's ChaCha20 generator. | They were an xorshift or LCG sequence, not suitable for TLS keys ([section 9.8](#98-http-entropy-and-https-nethttphttpc)). |
 | The kernel's random generator checks CPUID before using RDSEED or RDRAND. | It used RDSEED unconditionally, which crashes on CPUs without it (found when programs started asking for random bytes in QEMU). |
 | TLB shootdowns that wait for the other cores, for copy-on-write, fork and `munmap` in a process with threads. | Threads of one address space run on several cores at once ([section 4.15](#415-tlb-coherence)). |
 | User memory is limited to PML4 slot 8 (`0x40000000000`-`0x47FFFFFFFFF`) everywhere; `mmap` searches the whole slot for a gap. | `jc_uok` allowed addresses up to `0x7FFFFFFFFFF`, but only slot 8 is cloned on fork and freed on exit. |
@@ -901,7 +911,7 @@ The kernel is now built from separate modules instead of one giant source file.
 | No interfaces: the include order in `kernel64.c` decided what a file could use. | One interface header per unit under `include/nvx/`, with shared types, constants, macros, `extern` variables, prototypes and small inline helpers. About 1,850 names are shared; the other 2,400 stay `static` in their file. |
 | Every build recompiled the whole kernel (about 20 s). | `tools/kbuild.py` compiles only changed units, in parallel, using `gcc -MMD` dependency files. A full build takes about 12 s on 2 cores; changing one `.c` file recompiles one unit. |
 | Units silently depended on whatever came earlier. | A unit includes only the headers it uses (10 on average), and each header includes its own dependencies, so a missing include is a compile error. |
-| `.h` files that really held code or data (`include/percpu.h`, `arch/x86_64/simd.h`, `lib/js.h`, `lib/crypto/*.h`, the fonts). | They are units now: `arch/x86_64/percpu.c`, `arch/x86_64/simd.c`, `lib/js.c`, `lib/crypto/*.c`, `assets/font.c`, `assets/fontaa.c`. |
+| `.h` files that really held code or data (`include/percpu.h`, `arch/x86_64/simd.h`, `lib/js.h`, `lib/crypto/*.h`, the fonts). | They are units now: `arch/x86_64/cpu/percpu.c`, `arch/x86_64/cpu/simd.c`, `lib/js/js.c`, `lib/crypto/*.c`, `assets/font.c`, `assets/fontaa.c`. |
 
 The behaviour of the system is unchanged: the full checker passes 86 of 86 checks (including the QEMU multi-core, socket and HTTPS runs), and the image boots on BIOS and UEFI. The kernel is about 24 KB larger because the compiler no longer inlines across files. Part 1, section 3 explains the layout and how to add a unit; section 12.2 explains how the test generators read the split sources.
 
@@ -911,14 +921,14 @@ This release fixes the problems found in the v8.94 review and adds the features 
 
 | # | Problem in v8.94 | What v8.95 does | Where |
 |---|---|---|---|
-| 1 | The installer copied the running kernel into a 3 MB buffer, but the kernel is about 5 MB, so the copy failed and every installation stopped. | The boot-time snapshot holds up to 8 MB (the build limit), and the check works on a heap copy instead of a second static buffer. `kcheck` reports `code MATCHES   whole file MATCHES`. | [section 2.12](#212-kernel-signatures-and-integrity), [section 8.7](#87-the-installer-initinstallerc) |
+| 1 | The installer copied the running kernel into a 3 MB buffer, but the kernel is about 5 MB, so the copy failed and every installation stopped. | The boot-time snapshot holds up to 8 MB (the build limit), and the check works on a heap copy instead of a second static buffer. `kcheck` reports `code MATCHES   whole file MATCHES`. | [section 2.12](#212-kernel-signatures-and-integrity), [section 8.7](#87-the-installer-coreinitinstallerc) |
 | 2 | `disks` re-pointed the AHCI port's command list and FIS buffers at its own probe buffers and never pointed them back, so disk access failed afterwards. | `ahci_identify` saves the port registers and restores them (stopping and restarting the port) after the probe. | [section 8.3](#83-ahci-driversstoragegdiskc) |
 | 3 | The integrity check only warned. | A hash mismatch stops the boot at the "WRONG VERSION" screen. R restarts, C continues at your own risk. Unstamped developer builds are not blocked. | [section 2.12](#212-kernel-signatures-and-integrity) |
-| 4 | Linux programs could not use the network: `socket()` returned `EAFNOSUPPORT`. | New socket layer (`net/lxsock.c`, device 14): TCP and UDP over IPv4 with `connect`, `send/recv(from/msg)`, `bind`, `shutdown`, `poll`/`select`, non-blocking mode, retransmission and flow control. musl's `getaddrinfo` works without configuration. | [section 9.7](#97-sockets-netsocketsc), [section 6.9](#69-step-by-step-porting-guide) |
+| 4 | Linux programs could not use the network: `socket()` returned `EAFNOSUPPORT`. | New socket layer (`sys/linux/lxsock.c`, device 14): TCP and UDP over IPv4 with `connect`, `send/recv(from/msg)`, `bind`, `shutdown`, `poll`/`select`, non-blocking mode, retransmission and flow control. musl's `getaddrinfo` works without configuration. | [section 9.7](#97-sockets-netstacksocketsc), [section 6.9](#69-step-by-step-porting-guide) |
 | 5 | Sockets and HTTPS read only from the wired card and checked a wired-only flag, so they could not work over Wi-Fi. | Every receive path goes through the active link (`g_rx`), every sender checks `nd_up()`, and `nic_up()` reports the Wi-Fi link when Wi-Fi is active. | [section 9.5](#95-the-netdev-indirection-ethernet-vs-wi-fi) |
 | 6 | TLS did not verify the server at all. | Full server authentication: X.509 chain to one of 120 built-in Mozilla roots (or your own in `/etc/ssl/local-ca.pem`), host name (SAN, wildcards, IP), validity dates, the CertificateVerify signature (ECDSA P-256/P-384, RSA-PSS) and the server Finished. `https -k` skips the checks for one request. | [section 9.9](#99-tls-13-client-and-crypto-library) |
-| 7 | The Disk Manager could not be reached. | `diskmgr` (or `partitions`) opens it, and P opens it from the installer. | [section 8.8](#88-disk-manager-dm_-initinstallerc-lines-1-104) |
-| 8 | `smp_tlb_shootdown` and `smp_kick_idle` were never called, and a stale comment in `kmain` said the cores start only on demand. | High-MMIO mapping triggers a TLB shootdown, new processes wake idle cores at once, and the comment is gone. | [section 4.14](#414-ap-runtime-archx86_64smp_schedc), [section 4.15](#415-tlb-coherence) |
+| 7 | The Disk Manager could not be reached. | `diskmgr` (or `partitions`) opens it, and P opens it from the installer. | [section 8.8](#88-disk-manager-dm_-coreinitinstallerc-lines-1-104) |
+| 8 | `smp_tlb_shootdown` and `smp_kick_idle` were never called, and a stale comment in `kmain` said the cores start only on demand. | High-MMIO mapping triggers a TLB shootdown, new processes wake idle cores at once, and the comment is gone. | [section 4.14](#414-ap-runtime-archx86_64smpsmp_schedc), [section 4.15](#415-tlb-coherence) |
 
 Problems found and fixed while testing these changes:
 
@@ -949,14 +959,14 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [8. Versioning](#8-versioning)
 - [Part 2: Boot chain, kernel entry and kernel signatures](#part-2-boot-chain-kernel-entry-and-kernel-signatures)
   - [2.1 The boot paths at a glance](#21-the-boot-paths-at-a-glance)
-  - [2.2 Boot media: the hybrid image (`bootloader/mkhybrid.py`)](#22-boot-media-the-hybrid-image-bootloadermkhybridpy)
-  - [2.3 BIOS path: myboot (`bootloader/src`)](#23-bios-path-myboot-bootloadersrc)
-  - [2.4 `myboot-dualfirmware/` (stand-alone variant)](#24-myboot-dualfirmware-stand-alone-variant)
-  - [2.5 Legacy custom loaders in `kernel/arch/x86_64/boot/`](#25-legacy-custom-loaders-in-kernelarchx86_64boot)
-  - [2.6 UEFI path (`bootloader/uefi/uefiboot.c`)](#26-uefi-path-bootloaderuefiuefibootc)
+  - [2.2 Boot media: the hybrid image (`boot/mkhybrid.py`)](#22-boot-media-the-hybrid-image-bootmkhybridpy)
+  - [2.3 BIOS path: myboot (`boot/src`)](#23-bios-path-myboot-bootsrc)
+  - [2.4 `boot/myboot/` (stand-alone variant)](#24-bootmyboot-stand-alone-variant)
+  - [2.5 Legacy custom loaders in `arch/x86_64/boot/`](#25-legacy-custom-loaders-in-archx86_64boot)
+  - [2.6 UEFI path (`boot/uefi/uefiboot.c`)](#26-uefi-path-bootuefiuefibootc)
   - [2.7 The boot-info contract (fixed low memory)](#27-the-boot-info-contract-fixed-low-memory)
-  - [2.8 Kernel entry: `kernel/arch/x86_64/boot/boot64.S`](#28-kernel-entry-kernelarchx86_64bootboot64s)
-  - [2.9 `kmain()` step by step (`kernel/init/main.c`)](#29-kmain-step-by-step-kernelinitmainc)
+  - [2.8 Kernel entry: `arch/x86_64/boot/boot64.S`](#28-kernel-entry-archx86_64bootboot64s)
+  - [2.9 `kmain()` step by step (`core/init/main.c`)](#29-kmain-step-by-step-coreinitmainc)
   - [2.10 Main loop and state machine](#210-main-loop-and-state-machine)
   - [2.11 Boot menu, recovery, setup and splash](#211-boot-menu-recovery-setup-and-splash)
   - [2.12 Kernel signatures and integrity](#212-kernel-signatures-and-integrity)
@@ -967,32 +977,32 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [3.2 Physical memory map (firmware map)](#32-physical-memory-map-firmware-map)
   - [3.3 Fixed physical regions](#33-fixed-physical-regions)
   - [3.4 Boot page tables](#34-boot-page-tables)
-  - [3.5 Kernel heap (`mm/heap.c`, `mm/heap_api.c`)](#35-kernel-heap-mmheapc-mmheap_apic)
+  - [3.5 Kernel heap (`mem/heap.c`, `mem/heap_api.c`)](#35-kernel-heap-memheapc-memheap_apic)
   - [3.6 DMA arena (`dma_alloc`, `dma_alloc_pages`)](#36-dma-arena-dma_alloc-dma_alloc_pages)
   - [3.7 Frame pool (`pframe_*`)](#37-frame-pool-pframe_)
-  - [3.8 Virtual memory (`mm/pmm_vmm.c`, `core/proc/jobs.c`)](#38-virtual-memory-mmpmm_vmmc-coreprocjobsc)
+  - [3.8 Virtual memory (`mem/pmm_vmm.c`, `core/proc/jobs.c`)](#38-virtual-memory-mempmm_vmmc-coreprocjobsc)
   - [3.9 User address space](#39-user-address-space)
-  - [3.10 `mmap`, `munmap`, `brk` (`core/linux.c`)](#310-mmap-munmap-brk-corelinuxc)
+  - [3.10 `mmap`, `munmap`, `brk` (`sys/linux/linux.c`)](#310-mmap-munmap-brk-syslinuxlinuxc)
   - [3.11 Page-fault path and OOM](#311-page-fault-path-and-oom)
-  - [3.12 File-system memory (`fs/ramfs.c`)](#312-file-system-memory-fsramfsc)
+  - [3.12 File-system memory (`fs/vfs/ramfs.c`)](#312-file-system-memory-fsvfsramfsc)
   - [3.13 Summary of limits](#313-summary-of-limits)
   - [3.14 Memory above 4 GiB](#314-memory-above-4-gib)
   - [3.15 The 100 MiB kernel layout](#315-the-100-mib-kernel-layout)
 - [Part 4: CPU, interrupts, timers and multi-core](#part-4-cpu-interrupts-timers-and-multi-core)
-  - [4.1 `arch/x86_64/cpu.h`, the CPU interface](#41-archx86_64cpuh-the-cpu-interface)
-  - [4.2 `arch/x86_64/cpu_init.c`](#42-archx86_64cpu_initc)
-  - [4.3 GDT, selectors, TSS and IST stacks (`arch/x86_64/ring3.c`)](#43-gdt-selectors-tss-and-ist-stacks-archx86_64ring3c)
-  - [4.4 IDT gates and the vector map (`arch/x86_64/interrupts.c`)](#44-idt-gates-and-the-vector-map-archx86_64interruptsc)
+  - [4.1 `arch/x86_64/cpu/cpu.h`, the CPU interface](#41-archx86_64cpucpuh-the-cpu-interface)
+  - [4.2 `arch/x86_64/cpu/cpu_init.c`](#42-archx86_64cpucpu_initc)
+  - [4.3 GDT, selectors, TSS and IST stacks (`arch/x86_64/user/ring3.c`)](#43-gdt-selectors-tss-and-ist-stacks-archx86_64userring3c)
+  - [4.4 IDT gates and the vector map (`arch/x86_64/interrupts/interrupts.c`)](#44-idt-gates-and-the-vector-map-archx86_64interruptsinterruptsc)
   - [4.5 Interrupt frame and `isr_common`](#45-interrupt-frame-and-isr_common)
   - [4.6 `isr_dispatch` and `isr_body`](#46-isr_dispatch-and-isr_body)
   - [4.7 PIC and PIT](#47-pic-and-pit)
-  - [4.8 High-resolution timers (`arch/x86_64/hrtimer.c`)](#48-high-resolution-timers-archx86_64hrtimerc)
-  - [4.9 Per-CPU state (`arch/x86_64/percpu.c`)](#49-per-cpu-state-archx86_64percpuc)
-  - [4.10 The big kernel lock (`arch/x86_64/percpu.c`)](#410-the-big-kernel-lock-archx86_64percpuc)
+  - [4.8 High-resolution timers (`arch/x86_64/time/hrtimer.c`)](#48-high-resolution-timers-archx86_64timehrtimerc)
+  - [4.9 Per-CPU state (`arch/x86_64/cpu/percpu.c`)](#49-per-cpu-state-archx86_64cpupercpuc)
+  - [4.10 The big kernel lock (`arch/x86_64/cpu/percpu.c`)](#410-the-big-kernel-lock-archx86_64cpupercpuc)
   - [4.11 System calls: `int 0x80` and `syscall`](#411-system-calls-int-0x80-and-syscall)
-  - [4.12 Multi-core discovery (`arch/x86_64/smp.c`)](#412-multi-core-discovery-archx86_64smpc)
+  - [4.12 Multi-core discovery (`arch/x86_64/smp/smp.c`)](#412-multi-core-discovery-archx86_64smpsmpc)
   - [4.13 AP trampoline (`arch/x86_64/boot/ap_trampoline.S`)](#413-ap-trampoline-archx86_64bootap_trampolines)
-  - [4.14 AP runtime (`arch/x86_64/smp_sched.c`)](#414-ap-runtime-archx86_64smp_schedc)
+  - [4.14 AP runtime (`arch/x86_64/smp/smp_sched.c`)](#414-ap-runtime-archx86_64smpsmp_schedc)
   - [4.15 TLB coherence](#415-tlb-coherence)
   - [4.16 The `smp` shell commands (`shell/commands.c`)](#416-the-smp-shell-commands-shellcommandsc)
 - [Part 5: Processes, scheduling, signals and the native system-call ABI](#part-5-processes-scheduling-signals-and-the-native-system-call-abi)
@@ -1026,25 +1036,25 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [6.11 TLS for programs: BearSSL, `fetch` and the root store](#611-tls-for-programs-bearssl-fetch-and-the-root-store)
   - [6.12 FFmpeg and the `play` command](#612-ffmpeg-and-the-play-command)
   - [6.13 The media service (`/dev/media`)](#613-the-media-service-devmedia)
-  - [6.14 The Video Player window (`apps/videoplayer.c`)](#614-the-video-player-window-appsvideoplayerc)
+  - [6.14 The Video Player window (`apps/media/videoplayer.c`)](#614-the-video-player-window-appsmediavideoplayerc)
   - [6.15 glibc programs](#615-glibc-programs)
   - [6.16 Debian packages: apt and dpkg](#616-debian-packages-apt-and-dpkg)
   - [6.17 Python 3.13](#617-python-313)
   - [6.18 The Python IDE package (`python3-ide`)](#618-the-python-ide-package-python3-ide)
-  - [6.19 X11: the X.Org server (`startx`, `apps/xdisplay.c`)](#619-x11-the-xorg-server-startx-appsxdisplayc)
+  - [6.19 X11: the X.Org server (`startx`, `apps/x11/xdisplay.c`)](#619-x11-the-xorg-server-startx-appsx11xdisplayc)
   - [6.20 Tkinter, Tk and IDLE](#620-tkinter-tk-and-idle)
   - [6.21 X programs as normal desktop apps (v9.28)](#621-x-programs-as-normal-desktop-apps-v928)
 - [Part 7: File systems](#part-7-file-systems)
-  - [7.1 The in-memory file table (`fs/ramfs.c`)](#71-the-in-memory-file-table-fsramfsc)
-  - [7.2 The directory tree (`fs/dirtree.c`)](#72-the-directory-tree-fsdirtreec)
-  - [7.3 Unix semantics (`fs/unixfs.c`)](#73-unix-semantics-fsunixfsc)
-  - [7.4 The VFS layer (`fs/vfs.c`)](#74-the-vfs-layer-fsvfsc)
-  - [7.5 Locating the data area (`fs/nvxfs.c`)](#75-locating-the-data-area-fsnvxfsc)
-  - [7.6 The NVX4 on-disk format (`fs/nvx4.c`)](#76-the-nvx4-on-disk-format-fsnvx4c)
+  - [7.1 The in-memory file table (`fs/vfs/ramfs.c`)](#71-the-in-memory-file-table-fsvfsramfsc)
+  - [7.2 The directory tree (`fs/vfs/dirtree.c`)](#72-the-directory-tree-fsvfsdirtreec)
+  - [7.3 Unix semantics (`fs/vfs/unixfs.c`)](#73-unix-semantics-fsvfsunixfsc)
+  - [7.4 The VFS layer (`fs/vfs/vfs.c`)](#74-the-vfs-layer-fsvfsvfsc)
+  - [7.5 Locating the data area (`fs/nvx/nvxfs.c`)](#75-locating-the-data-area-fsnvxnvxfsc)
+  - [7.6 The NVX4 on-disk format (`fs/nvx/nvx4.c`)](#76-the-nvx4-on-disk-format-fsnvxnvx4c)
   - [7.7 Old formats and conversion](#77-old-formats-and-conversion)
-  - [7.8 NTFS and FAT root file systems (`fs/ntfsk.c`)](#78-ntfs-and-fat-root-file-systems-fsntfskc)
+  - [7.8 NTFS and FAT root file systems (`fs/ntfs/ntfsk.c`)](#78-ntfs-and-fat-root-file-systems-fsntfsntfskc)
   - [7.9 FAT drivers](#79-fat-drivers)
-  - [7.10 Packages (`fs/pkg.c`)](#710-packages-fspkgc)
+  - [7.10 Packages (`fs/pkg/pkg.c`)](#710-packages-fspkgpkgc)
 - [Part 8: Storage drivers, PCI and the installer](#part-8-storage-drivers-pci-and-the-installer)
   - [8.1 PCI (`drivers/bus/pci.c`)](#81-pci-driversbuspcic)
   - [8.2 ATA PIO (`drivers/storage/ata.c`)](#82-ata-pio-driversstorageatac)
@@ -1052,48 +1062,48 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [8.4 NVMe (`drivers/storage/nvme.c`)](#84-nvme-driversstoragenvmec)
   - [8.5 Generic disk layer (`drivers/storage/nvme.c`, after the NVMe driver)](#85-generic-disk-layer-driversstoragenvmec-after-the-nvme-driver)
   - [8.6 VirtIO-blk module (`drivers/virtio/virtio_blk.c`)](#86-virtio-blk-module-driversvirtiovirtio_blkc)
-  - [8.7 The installer (`init/installer.c`)](#87-the-installer-initinstallerc)
-  - [8.8 Disk Manager (`dm_*`, `init/installer.c` lines 1-104)](#88-disk-manager-dm_-initinstallerc-lines-1-104)
+  - [8.7 The installer (`core/init/installer.c`)](#87-the-installer-coreinitinstallerc)
+  - [8.8 Disk Manager (`dm_*`, `core/init/installer.c` lines 1-104)](#88-disk-manager-dm_-coreinitinstallerc-lines-1-104)
   - [8.9 USB mass storage (`drivers/usb/xhci.c`)](#89-usb-mass-storage-driversusbxhcic)
   - [8.10 Shell commands (`shell/commands.c`)](#810-shell-commands-shellcommandsc)
-  - [8.11 Partition scanner (`fs/parts.c`)](#811-partition-scanner-fspartsc)
+  - [8.11 Partition scanner (`fs/vfs/parts.c`)](#811-partition-scanner-fsvfspartsc)
 - [Part 9: Networking and Wi-Fi](#part-9-networking-and-wi-fi)
   - [9.1 Where the code lives](#91-where-the-code-lives)
   - [9.2 The driver module API (`kapi.h`, `drivers.h`)](#92-the-driver-module-api-kapih-driversh)
   - [9.3 NIC bring-up and probe order](#93-nic-bring-up-and-probe-order)
   - [9.4 Wired NIC drivers](#94-wired-nic-drivers)
   - [9.5 The netdev indirection (Ethernet vs Wi-Fi)](#95-the-netdev-indirection-ethernet-vs-wi-fi)
-  - [9.6 TCP/IP stack (`net/tcpip.c`)](#96-tcpip-stack-nettcpipc)
-  - [9.7 Sockets (`net/sockets.c`)](#97-sockets-netsocketsc)
-  - [9.8 HTTP, entropy and HTTPS (`net/http.c`)](#98-http-entropy-and-https-nethttpc)
+  - [9.6 TCP/IP stack (`net/stack/tcpip.c`)](#96-tcpip-stack-netstacktcpipc)
+  - [9.7 Sockets (`net/stack/sockets.c`)](#97-sockets-netstacksocketsc)
+  - [9.8 HTTP, entropy and HTTPS (`net/http/http.c`)](#98-http-entropy-and-https-nethttphttpc)
   - [9.9 TLS 1.3 client and crypto library](#99-tls-13-client-and-crypto-library)
   - [9.10 Wi-Fi: Realtek RTL8821CE](#910-wi-fi-realtek-rtl8821ce)
   - [9.11 Network shell commands](#911-network-shell-commands)
 - [Part 10: Input, USB, ACPI, sound and graphics drivers](#part-10-input-usb-acpi-sound-and-graphics-drivers)
   - [10.1 Where the drivers start and how they are polled](#101-where-the-drivers-start-and-how-they-are-polled)
   - [10.2 Shared input state and the key queue](#102-shared-input-state-and-the-key-queue)
-  - [10.3 PS/2 keyboard and mouse (`drivers/input/ps2.c`, `ps2_mouse.c`)](#103-ps2-keyboard-and-mouse-driversinputps2c-ps2_mousec)
-  - [10.4 Elan PS/2 touchpad (`drivers/input/elan_ps2.c`)](#104-elan-ps2-touchpad-driversinputelan_ps2c)
+  - [10.3 PS/2 keyboard and mouse (`drivers/input/ps2/ps2.c`, `ps2_mouse.c`)](#103-ps2-keyboard-and-mouse-driversinputps2ps2c-ps2_mousec)
+  - [10.4 Elan PS/2 touchpad (`drivers/input/ps2/elan_ps2.c`)](#104-elan-ps2-touchpad-driversinputps2elan_ps2c)
   - [10.5 I2C HID touchpads](#105-i2c-hid-touchpads)
   - [10.6 xHCI USB (`drivers/usb/xhci.c`)](#106-xhci-usb-driversusbxhcic)
   - [10.7 ACPI and power](#107-acpi-and-power)
   - [10.8 RTC (`drivers/rtc/cmos.c`)](#108-rtc-driversrtccmosc)
   - [10.9 Sound (`core/sound.c`, `drivers/sound/*`)](#109-sound-coresoundc-driverssound)
   - [10.10 Video](#1010-video)
-  - [10.11 CPU information (`arch/x86_64/cpuinfo.c`)](#1011-cpu-information-archx86_64cpuinfoc)
+  - [10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)](#1011-cpu-information-archx86_64cpucpuinfoc)
   - [10.12 Summary of bounded waits](#1012-summary-of-bounded-waits)
 - [Part 11: Desktop, applications, shell and scripting](#part-11-desktop-applications-shell-and-scripting)
   - [11.1 UI states and the main loop](#111-ui-states-and-the-main-loop)
-  - [11.2 Window manager (`gui/wm.c`)](#112-window-manager-guiwmc)
-  - [11.3 Desktop shell and compositor (`gui/desktop.c`)](#113-desktop-shell-and-compositor-guidesktopc)
-  - [11.4 Input routing (`gui/input.c`, `process_input`)](#114-input-routing-guiinputc-process_input)
+  - [11.2 Window manager (`graphics/ui/wm.c`)](#112-window-manager-graphicsuiwmc)
+  - [11.3 Desktop shell and compositor (`graphics/ui/desktop.c`)](#113-desktop-shell-and-compositor-graphicsuidesktopc)
+  - [11.4 Input routing (`graphics/ui/input.c`, `process_input`)](#114-input-routing-graphicsuiinputc-process_input)
   - [11.5 Live terminal mode vs. desktop terminal](#115-live-terminal-mode-vs-desktop-terminal)
-  - [11.6 Setup (OOBE) and login (`init/setup.c`)](#116-setup-oobe-and-login-initsetupc)
+  - [11.6 Setup (OOBE) and login (`core/init/setup.c`)](#116-setup-oobe-and-login-coreinitsetupc)
   - [11.7 Applications (`apps/`)](#117-applications-apps)
   - [11.8 The shell (`nsh`)](#118-the-shell-nsh)
   - [11.9 Scripting languages](#119-scripting-languages)
-  - [11.10 Kernel modules: `mod/hello_mod.c` and the `.MOD` format](#1110-kernel-modules-modhello_modc-and-the-mod-format)
-  - [11.11 Fonts and assets (`source/kernel/assets/`)](#1111-fonts-and-assets-sourcekernelassets)
+  - [11.10 Kernel modules: `usr/mod/hello_mod.c` and the `.MOD` format](#1110-kernel-modules-usrmodhello_modc-and-the-mod-format)
+  - [11.11 Fonts and assets (`assets/`)](#1111-fonts-and-assets-assets)
   - [11.12 Escape sequences, termios and full-screen programs](#1112-escape-sequences-termios-and-full-screen-programs)
   - [Task Manager and Settings (v9.73)](#task-manager-and-settings-v973)
 - [Part 12: Testing, quality gates, debugging and history](#part-12-testing-quality-gates-debugging-and-history)
@@ -1102,8 +1112,8 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [12.2a Typical workflows](#122a-typical-workflows)
   - [12.3 `tools/emulate.py`, boot-path emulation](#123-toolsemulatepy-boot-path-emulation)
   - [12.4 Host harnesses in `tools/tests`](#124-host-harnesses-in-toolstests)
-  - [12.5 The serial debug log (`kernel/core/klog.c`)](#125-the-serial-debug-log-kernelcoreklogc)
-  - [12.6 Panic and the Red Screen of Death (`kernel/core/panic.c`)](#126-panic-and-the-red-screen-of-death-kernelcorepanicc)
+  - [12.5 The serial debug log (`core/klog.c`)](#125-the-serial-debug-log-coreklogc)
+  - [12.6 Panic and the Red Screen of Death (`core/panic.c`)](#126-panic-and-the-red-screen-of-death-corepanicc)
   - [12.7 Diagnostic shell commands](#127-diagnostic-shell-commands)
   - [12.8 Running NoovexOS in a VM](#128-running-noovexos-in-a-vm)
   - [12.9 Troubleshooting guide](#129-troubleshooting-guide)
@@ -1118,9 +1128,9 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [13.6 Layout (`web/layout.c`, `web/layout2.c`)](#136-layout-weblayoutc-weblayout2c)
   - [13.7 Painting, fonts and images](#137-painting-fonts-and-images)
   - [13.8 JavaScript (`web/js.c`, `web/prelude.js`)](#138-javascript-webjsc-webpreludejs)
-  - [13.9 Networking and the HTTP client (`apps/webglue.c`)](#139-networking-and-the-http-client-appswebgluec)
-  - [13.10 Cookies and web storage (`net/cookies.c`)](#1310-cookies-and-web-storage-netcookiesc)
-  - [13.11 The Browser window (`apps/browser.c`)](#1311-the-browser-window-appsbrowserc)
+  - [13.9 Networking and the HTTP client (`apps/internet/webglue.c`)](#139-networking-and-the-http-client-appsinternetwebgluec)
+  - [13.10 Cookies and web storage (`net/http/cookies.c`)](#1310-cookies-and-web-storage-nethttpcookiesc)
+  - [13.11 The Browser window (`apps/internet/browser.c`)](#1311-the-browser-window-appsinternetbrowserc)
   - [13.12 Memory layout change in v9.08](#1312-memory-layout-change-in-v908)
   - [13.13 The `qjs` command](#1313-the-qjs-command)
   - [13.14 Testing the engine](#1314-testing-the-engine)
@@ -1143,11 +1153,11 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
 
 ## Part 1: Overview, source layout and build system
 
-All paths below are relative to `source/` unless stated otherwise. Kernel paths (`init/main.c`, `core/buildsig.c`, ...) are relative to `source/kernel/`, which is also the directory `build.sh` runs from.
+All paths below are relative to the root of the repository, which is also the directory `build.sh` runs from.
 
 ### 1. What NoovexOS 64 is
 
-NoovexOS 64 is a from-scratch x86-64 operating system: a freestanding C kernel plus a few assembly stubs, its own BIOS and UEFI bootloaders, its own C library for user programs, and a set of ported third-party programs (Lua, Doom, ntfs-3g, musl, SQLite, gzip, bzip2, xz, zstd). The kernel reports itself as `"NoovexOS 64 v8.95 (from-scratch, Unix-like)"` (`fs/vfs.c`, the `version` leaf).
+NoovexOS 64 is a from-scratch x86-64 operating system: a freestanding C kernel plus a few assembly stubs, its own BIOS and UEFI bootloaders, its own C library for user programs, and a set of ported third-party programs (Lua, Doom, ntfs-3g, musl, SQLite, gzip, bzip2, xz, zstd). The kernel reports itself as `"NoovexOS 64 v8.95 (from-scratch, Unix-like)"` (`fs/vfs/vfs.c`, the `version` leaf).
 
 #### 1.1 Design principles, as they appear in the code
 
@@ -1155,21 +1165,46 @@ NoovexOS 64 is a from-scratch x86-64 operating system: a freestanding C kernel p
 |---|---|
 | Separately compiled modules. Each of the 105 kernel `.c` files is its own translation unit with a generated interface header under `include/nvx/`; a unit includes only the headers it uses. | `units.list`, `include/nvx/`, `tools/kbuild.py`; `build.sh` step `[3/6]` compiles changed units in parallel into `build/units/`. |
 | Flat image at 1 MiB. The linked ELF is turned into a raw binary and loaded at physical `0x100000`. `_start` sits at offset 0 because `.text.entry` is placed first. | `arch/x86_64/kernel64.ld`, `arch/x86_64/boot/boot64.S` |
-| Identity-mapped kernel. `boot64.S` builds page tables that identity-map 0-4 GiB with 2 MiB pages (`pml4`, `pdpt`, `pd0`..`pd3`) and calls `kmain()`. The kernel runs at its physical addresses and uses fixed physical regions directly (for example `PF_BASE 0x0C000000` / `PF_TOP 0x0E000000` in `mm/pmm_vmm.c`). | `boot64.S` ("fill PD0..PD3: 2048 entries * 2 MiB = identity map 0 .. 4 GiB"), `mm/pmm_vmm.c` ("Identity-mapped, so the kernel can build page tables in these frames directly") |
-| Ring-3 user programs. User ELF programs are linked at `0x40000000000` and run in ring 3 in their own address space; the kernel enters them via `enter_ring3`/`iretq` and takes system calls on an `INT 0x80` gate and (for Linux-ABI programs) the `syscall` instruction. | `user/src/user.ld`, `arch/x86_64/ring3.c`, `arch/x86_64/boot/userspace.S`, `core/proc/elf.c`, `core/linux.c` |
-| SMP under a big kernel lock. Up to `NCPU 16` cores, per-CPU `struct pcpu`, and a ticket lock `struct bkl { next, serving, owner, depth }` that is recursive for its owner. | `arch/x86_64/percpu.c` (`g_bkl`, `bkl_lock`), `arch/x86_64/smp.c`, `arch/x86_64/smp_sched.c`; the shell prints "big kernel lock, preemptive user mode" (`shell/commands.c`). |
-| No SSE in kernel code generation. The kernel is compiled `-mno-mmx -mno-sse -mno-sse2`; explicit SSE is used only through inline asm in `arch/x86_64/simd.c` and its header ("SSE on at boot; kernel is -mno-sse so xmm is untouched by codegen"). Lua and Doom are compiled separately *with* SSE. | `build.sh` `CFLAGS`, `LUAF`, `third_party/doom/build_doom.sh` |
+| Identity-mapped kernel. `boot64.S` builds page tables that identity-map 0-4 GiB with 2 MiB pages (`pml4`, `pdpt`, `pd0`..`pd3`) and calls `kmain()`. The kernel runs at its physical addresses and uses fixed physical regions directly (for example `PF_BASE 0x0C000000` / `PF_TOP 0x0E000000` in `mem/pmm_vmm.c`). | `boot64.S` ("fill PD0..PD3: 2048 entries * 2 MiB = identity map 0 .. 4 GiB"), `mem/pmm_vmm.c` ("Identity-mapped, so the kernel can build page tables in these frames directly") |
+| Ring-3 user programs. User ELF programs are linked at `0x40000000000` and run in ring 3 in their own address space; the kernel enters them via `enter_ring3`/`iretq` and takes system calls on an `INT 0x80` gate and (for Linux-ABI programs) the `syscall` instruction. | `usr/src/user.ld`, `arch/x86_64/user/ring3.c`, `arch/x86_64/boot/userspace.S`, `core/proc/elf.c`, `sys/linux/linux.c` |
+| SMP under a big kernel lock. Up to `NCPU 16` cores, per-CPU `struct pcpu`, and a ticket lock `struct bkl { next, serving, owner, depth }` that is recursive for its owner. | `arch/x86_64/cpu/percpu.c` (`g_bkl`, `bkl_lock`), `arch/x86_64/smp/smp.c`, `arch/x86_64/smp/smp_sched.c`; the shell prints "big kernel lock, preemptive user mode" (`shell/commands.c`). |
+| No SSE in kernel code generation. The kernel is compiled `-mno-mmx -mno-sse -mno-sse2`; explicit SSE is used only through inline asm in `arch/x86_64/cpu/simd.c` and its header ("SSE on at boot; kernel is -mno-sse so xmm is untouched by codegen"). Lua and Doom are compiled separately *with* SSE. | `build.sh` `CFLAGS`, `LUAF`, `third_party/doom/build_doom.sh` |
 | Everything embedded. Firmware, installer boot files, the UEFI loader and every user program are linked into the kernel image as binary blobs; there is no initrd. | `build.sh` steps `[3a2]`, `[3a3]`, `[efi]`, `[u]`, `[u2]`, `[musl]`, `[ports]` |
-| Self-verifying image. A `NVX64SIG` block in section `.sig` is patched after linking with a timestamp, size, UEFI entry address and two SHA-256 hashes; the kernel re-checks it at boot. | `core/buildsig.c`, `build.sh` step `[6/6]`, `sig_self_check()` in `init/main.c` |
+| Self-verifying image. A `NVX64SIG` block in section `.sig` is patched after linking with a timestamp, size, UEFI entry address and two SHA-256 hashes; the kernel re-checks it at boot. | `core/buildsig.c`, `build.sh` step `[6/6]`, `sig_self_check()` in `core/init/main.c` |
 
 ### 2. Repository layout
 
-The repository root holds `README.md`, `LICENSE`, `ARCHITECTURE.md`, `.gitignore` (ignores `source/kernel/build/`, `source/bootloader/build/*.o`, `__pycache__/`), `wifi-tables/` (RTL8821CE register tables `RTWAGC.TXT`, `RTWBB.TXT`, `RTWMAC.TXT`, `RTWRFA.TXT` and the host tool `rtwgen.c`), and `source/`. `source/` contains `bootloader/` (myboot BIOS loader, UEFI loader, hybrid ISO tooling), `myboot-dualfirmware/` (a separate myboot variant with its own EFI app, `src/efi.c`, and a nested duplicate `myboot/`; not used by `build.sh` or `check.py`), `kernel/` and `tools/`.
+Since v9.83 the source tree is flat, with one top-level folder per part of the system (like many hobby and research kernels). The repository root holds `README.md`, `LICENSE`, `ARCHITECTURE.md`, `.gitignore` (ignores `build/`, `boot/build/*.o`, `boot/stage/kernel64.bin`, `__pycache__/`), `build.sh`, `units.list` and `kernel64.c`, and these folders:
 
-#### 2.1 `bootloader/`
+| Folder | What is in it | Was (v9.82 and older) |
+|---|---|---|
+| `arch/x86_64/` | `boot/` (assembly entry, ISR stubs, user entry, AP trampoline), `cpu/` (`cpu.h`, `io.h`, CPU start-up, CPUID, per-CPU data, SSE), `interrupts/`, `smp/`, `time/` (HPET/TSC/LAPIC timers), `usr/` (ring 3, stack calls, setjmp for games), the linker scripts | `source/kernel/arch/x86_64/` (no subfolders) |
+| `boot/` | myboot BIOS loader, UEFI loader (`boot/uefi/`), hybrid ISO tools; `boot/myboot/` is the stand-alone dual-firmware variant | `source/bootloader/`, `source/myboot-dualfirmware/` |
+| `core/` | `core/init/` (`kmain`, boot menu, splash, setup, installer), `proc/` (ELF, processes, scheduler), log, panic, power, sound, media, build signature | `source/kernel/core/`, `source/kernel/init/` |
+| `sys/` | `native/` (INT 0x80 system calls, `kapi.c`), `linux/` (Linux system-call layer, Linux sockets) | `source/kernel/core/syscall.c`, `core/kapi.c`, `core/linux.c`, `net/lxsock.c` |
+| `mem/` | page tables and frames, heap, slab | `source/kernel/mm/` |
+| `fs/` | `vfs/`, `nvx/` (NVX4), `fat/`, `ntfs/`, `pkg/` (packages and apt) | `source/kernel/fs/` (no subfolders) |
+| `drivers/` | `acpi/`, `bus/`, `i2c/`, `input/` (`ps2/`, `touchpad/`, `vm/`), `net/` (`ethernet/`, `wifi/`), `rtc/`, `sound/`, `storage/`, `usb/`, `video/` (`fb/`, `intel/`, `nvidia/`), `virtio/` | `source/kernel/drivers/` (fewer subfolders), Wi-Fi in `source/kernel/drivers/wifi/` |
+| `graphics/` | `ui/` (window manager, desktop and start menu, input routing, hot keys), `theme/` (themes, effects, wallpapers) | `source/kernel/gui/` |
+| `net/` | `stack/` (TCP/IP, sockets), `http/` (HTTP client, cookies), `print/` (IPP), `wifi/` (WPA2, Wi-Fi netdev) | `source/kernel/net/` (no subfolders) |
+| `shell/` | terminal, VT, built-in commands | `source/kernel/shell/` |
+| `apps/` | `system/`, `office/`, `internet/`, `media/`, `games/`, `accessories/`, `x11/`, `graphics/` (Gears and `r3d/`) | `source/kernel/apps/` (no subfolders) |
+| `lib/` | `base/`, `cxx/`, `compress/`, `image/`, `js/`, `crypto/` | `source/kernel/lib/` |
+| `web/` | the web engine | `source/kernel/web/` |
+| `usr/` | user space: `src/`, `libc/`, `musl/`, `glibc/`, `x11/`, `bin/`, `usr/packages/`, `usr/mod/` | `source/kernel/user/`, `source/kernel/packages/`, `source/kernel/mod/` |
+| `lang/rune/` | Rune code built into the kernel | `source/kernel/rune/` |
+| `assets/` | fonts, wallpapers, game data, installer images, `nvidia/` and `assets/firmware/` | `source/kernel/assets/`, `source/kernel/firmware/` |
+| `include/` | interface headers; `include/nvx/` mirrors the folders above (the header for `drivers/usb/xhci.c` is `include/nvx/drivers/usb/xhci.h`) | `source/kernel/include/` |
+| `third_party/` | other projects' code; `third_party/src/` holds the glibc, CPython and Tcl/Tk archives | `source/kernel/third_party/`, `source/third_party_src/` |
+| `tools/` | build helpers (`kbuild.py`, `nvz.py`, `mcc`, `rune`, ...), `check.py`, `emulate.py`, `tests/`, `wifi-tables/` | `source/kernel/tools/`, `source/tools/`, `wifi-tables/` |
+| `docs/` | `architecture-src/`, the parts this document is assembled from | same |
+
+Every top-level folder has a short `README.md` saying what is in it. The build runs from the root: `bash build.sh`, output in `build/`.
+
+#### 2.1 `boot/`
 
 ```
-bootloader/
+boot/
 +-- Makefile               builds build/boot.bin, build/stage2.bin and an example disk image
 +-- linker.ld              stage2 link script: ENTRY(stage2_start), . = 0x8000
 +-- mkhybrid.py            builds the hybrid CD/USB ISO (MBR + stage2 + ISO9660 + FAT32 + FAT16 EFI image)
@@ -1191,96 +1226,17 @@ bootloader/
     +-- test/              pe_run.c, firmware_sim.c, pecheck.py, fatck.py, isocheck.py, README.md
 ```
 
-#### 2.2 `kernel/`
+#### 2.2 Kernel source folders
 
-```
-kernel/
-+-- units.list             the 104 kernel compilation units, in link order (see section 3)
-+-- kernel64.c             all units in one file, used only by the host test harness
-+-- build.sh               the whole kernel build (see section 4)
-+-- tools/kbuild.py        incremental, parallel unit compiler used by build.sh
-+-- include/nvx/           one interface header per unit, plus base.h and kernel.h
-+-- arch/x86_64/
-|   +-- boot/boot64.S      _start: Multiboot header, 32-bit entry, page tables, long mode, kmain; also uefi_entry
-|   +-- boot/isr64.S       64-bit interrupt stubs (error code + vector, common path)
-|   +-- boot/userspace.S   GDT with ring-3 segments + TSS, INT 0x80 gate, iretq entry, k_setjmp/k_longjmp
-|   +-- boot/ap_trampoline.S  AP startup code in section .aptramp, copied to 0x8000 and started by SIPI
-|   +-- boot/boot64_mb.S   alternative entry for myboot's long-mode ELF handoff (RDI=0x2BADB002, RSI=MBI); not used by build.sh
-|   +-- boot/mbr.S, stage2.S, cdboot.S, README_CUSTOMBOOT.txt   older custom BIOS/CD boot path (tools/mkboot.py, tools/mkiso.py)
-|   +-- kernel64.ld        the linker script used by build.sh
-|   +-- kernel64_mb.ld     ELF variant of the same layout for boot64_mb.S; not used by build.sh
-|   +-- cpu.h, io.h, simd.h   inline CPU primitives (cpu_irq_on/off, cpu_pause...), port I/O, SSE fill/copy in asm
-|   +-- cpu_init.c, cpuinfo.c, interrupts.c   APIC virtual wire + CPU init, cpuid/rdmsr, IDT/PIC/PIT
-|   +-- hrtimer.c          HPET, TSC and local-APIC timer (HR_LAPIC_VEC 0x40)
-|   +-- ring3.c, smp.c, smp_sched.c   GDT/TSS + ring-3 entry, MADT core detection + AP start, SMP scheduling + IPIs
-|   +-- doom_jmp.c         doom_setjmp/doom_longjmp in top-level asm
-+-- include/
-|   +-- kapi.h             the driver API (kapi_pci_*, kapi_in*/out*, kapi_dma_pages, kapi_phys, kapi_delay_us, kapi_ns, kapi_log, kapi_mb)
-|   +-- drivers.h          struct nvx_nic, struct nvx_snd and the *_probe functions of separately built drivers
-|   +-- percpu.h           NCPU, struct tss64, struct pcpu, struct bkl / g_bkl
-+-- core/
-|   +-- buildsig.c, kapi.c g_buildsig (NVX64SIG block in .sig); kapi_* implementations over pci.c and io.h
-|   +-- klog.c, panic.c    COM1 serial log; "Red Screen of Death" exception screen
-|   +-- power.c, sound.c   ACPI tables + power off/reboot/sleep; snd_init (hda_probe, then ac97_probe)
-|   +-- syscall.c          INT 0x80 system calls and fork+exec+waitpid spawning
-|   +-- linux.c            Linux x86-64 system-call ABI (used by musl programs); included from shell/commands.c
-|   +-- proc/elf.c, jobs.c, sched.c   ELF loader, process table (JMAX 256), threads, futexes and job control, cooperative scheduler
-+-- mm/heap.c, heap_api.c, pmm_vmm.c, slab.c   kmalloc free-list heap, malloc/free aliases, frame allocator + page tables, slab caches
-+-- lib/
-|   +-- mem.c, klibc.c, fmt.c, js.h, png.h, jpeg.h   memset/memcpy, string functions, formatters, integer JS interpreter, image decoders
-|   +-- crypto/nvxcrypto.h, nvxtls.c, nvxcrypto2.c, nvxwpa.c   SHA/HMAC/HKDF/ChaCha20/Poly1305/X25519, TLS 1.3 client, SHA-512 etc., SHA-1 + WPA helpers
-+-- drivers/
-|   +-- acpi/aml_scan.c, aml.c, acpi_dev.c   AML scanning, AML interpreter, ACPI devices (EC, battery, ...)
-|   +-- bus/pci.c, i2c/dw_i2c.c, rtc/cmos.c  PCI config scan, DesignWare I2C, CMOS clock
-|   +-- input/ps2.c, ps2_mouse.c, input.c, touchpad.c, tp_hid.c, tp_gesture.c, i2c_hid.c, elan_i2c.c, elan_ps2.c
-|   +-- net/nic.c, nic_names.c               built-in NIC path and PCI-ID names
-|   +-- net/e1000.c, rtl8139.c, rtl8169.c    separately compiled NIC drivers (MODS)
-|   +-- sound/ac97.c, hda.c, ring.h          separately compiled audio drivers (MODS) and their ring buffer
-|   +-- storage/ata.c, ahci.c, gdisk.c, nvme.c   ATA PIO, AHCI identify, AHCI driver, NVMe driver
-|   +-- usb/xhci.c                           xHCI controller, HID and mass storage
-|   +-- video/framebuffer.c                  framebuffer and back buffers
-|   +-- video/nvidia/nvgpu.c, nvdisp.c, nvmon.c  NVIDIA probe, display state, EDID
-|   +-- video/nvidia/nvflcn.c, nvmem.c, nvgsp.c  NVIDIA falcons and VBIOS, VRAM and GPU page tables, GSP-RM (v9.81)
-|   +-- virtio/virtio.c/.h, virtio_net.c, virtio_blk.c   VirtIO transport, net and block (MODS)
-|   +-- wifi/rtw8821ce.c, rtw_efuse.c, rtw_sec.c, rtw_tables.h   Realtek RTL8821CE Wi-Fi
-+-- net/tcpip.c, sockets.c, http.c, wifi/wpa2.c, wifi/wifi_netdev.c   TCP/IP, socket layer, HTTP(S) client, WPA2 handshake, Wi-Fi netdev
-+-- fs/
-|   +-- ramfs.c, vfs.c, dirtree.c          RAM file system, VFS + mount table, directory tree
-|   +-- nvxfs.c, fat_ata.c                 NVXFS on the ATA disk, FAT reader
-|   +-- unixfs.c -> nvx4.c                  Unix-semantics layer and the NVX4 on-disk format (included from shell/commands.c)
-|   +-- ntfsk.c -> vfat.c                   NTFS (via ntfs-3g) and VFAT glue (included from shell/commands.c)
-|   +-- pkg.c                              package handling (8 MiB g_pkg_raw buffer)
-+-- gui/theme.c, wm.c, effects.c, desktop.c, input.c   theming, window manager, glass effects, desktop/compositor, input dispatch
-+-- shell/terminal.c, vt.c, commands.c     terminal grid, escape-sequence interpreter and termios (vt.c), shell commands
-+-- apps/                                  browser.c, calculator.c, chatgpt.c, doom.c, editor.c, file_explorer.c, files_classic.c, logs.c, settings.c, small_apps.c
-+-- init/splash.c, bootmenu.c, installer.c, setup.c, main.c   boot splash, boot menu, disk manager/installer, first-run setup/login, kmain
-+-- rune/rune_gfx.rn, rune_gfx.h           graphics routine written in Rune and its C prototypes (rune_render, rune_fib)
-+-- assets/font.c, fontaa.h, nvx_assets.h, demo_pptx.h, nyc_pptx.h   bitmap and anti-aliased fonts, wallpapers, sample presentations
-+-- assets/installer/inst_boot.bin, inst_stage2.bin, inst_boot.cfg   myboot files the installer writes to disk
-+-- firmware/rtw8821c_fw.bin               RTL8821CE firmware blob
-+-- mod/hello_mod.c, HELLO.MOD             sample runtime-loadable PIE module for the `dlmod` shell command (not built by build.sh)
-+-- tools/
-|   +-- rune, mcc, mcc-dyn prebuilt Rune compiler (x86-64 Linux ELF); gcc wrappers for static-PIE and dynamic musl programs
-|   +-- nvz.py, bin2c.py   compress a program for embedding; turn a file into a C array
-|   +-- build_bearssl.sh   compiles BearSSL into build/bearssl/libbearssl.a
-|   +-- mkboot.py, mkiso.py   older: MBR+stage2+kernel raw disk (KERNEL_LBA 33); ISO9660 El Torito image with cdboot
-|   +-- mkvdi.py, splice.py   raw image -> fixed VirtualBox VDI; older: splice kernel64.bin into a Noovex9 v6.87 container
-+-- user/
-|   +-- src/               user programs, user_crt0.S, user.h, posix.h, user.ld
-|   +-- libc/              nvxlibc: include/ (standard headers, nvx/, sys/, arpa/, netinet/), src/ (libc.c, printf.c, stdlib2.c, stdio2.c, sys_nvx.c, crt0.S; sys_host.c + crt0_host.S for host tests), gen.py
-|   +-- musl/              mhello.c, musltest.c, smptest.c, nettest.c, featest.c (static musl); dyntest.c, libnvxdemo.c (dynamic); fetch.c, nvxtls.c (HTTPS client with BearSSL)
-|   +-- bin/               prebuilt ELF files (CAPTEST.ELF, LIBCTEST.ELF, ...); not referenced by build.sh
-+-- third_party/           bearssl (master 3c04036), bzip2 1.0.8, doom (doomgeneric + shim/), kilo, lua (Lua 5.5 + nvxlibc.c, nvxlua.c), musl 1.2.6, ntfs (ntfs-3g + nvxntfs.c, ntfslibc.c, mkntfs/), sqlite 3.53.4, xz 5.8, zlib 1.3.2, zstd 1.5
-+-- build/                 all generated files (git-ignored)
-```
+The kernel is every C, C++ and assembly unit listed in `units.list` (146 units, in link order, see section 3) plus the separately built modules in `build.sh` (`MODS`). The table in section 2 lists the folders; the files in them are described in the Part for each area. Two folders hold code that is not kernel units: `usr/` (programs and C libraries built for user space) and `tools/` (programs that run on the build machine). `kernel64.c` includes every unit in one file and is used only by host test harnesses and the analyzer.
 
-The `kernel/tools/mkboot.py` and `mkiso.py` scripts assemble `boot/mbr.S`, `boot/stage2.S` and `boot/cdboot.S` relative to the current directory. Those files now live in `arch/x86_64/boot/`, so the scripts do not run unchanged from `kernel/`. `splice.py` hard-codes `/mnt/user-data/...` paths.
+The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `boot/stage2.S` and `boot/cdboot.S` relative to the current directory; those files live in `arch/x86_64/boot/`, so the scripts do not run unchanged. `tools/splice.py` hard-codes `/mnt/user-data/...` paths.
 
 #### 2.3 `tools/`
 
 | File | Purpose |
 |---|---|
-| `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `kernel/build/kernel64.bin` to `bootloader/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
+| `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `build/kernel64.bin` to `boot/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
 | `tools/emulate.py` | Boot emulation of an ISO: the BIOS path (builds the real `fat.c`/`config.c`/`string.c` as a 32-bit host program), the UEFI path (El Torito EFI entry, PE check, runs `BOOTX64.EFI` against simulated services) and `uefi_entry`. |
 | `tools/tests/` | Host harnesses and templates: `aml/` (ASL/AML samples), `drivers/drvsim.c`, `fs/`, `libc/` (`ltest.c`, `pfuzz.c`, `sfile.c`), `linux/` (`hh.c`, `lxfuzz.c`, host `cpu.h`/`io.h` stand-ins), `*_template.txt` for USB/ACPI/NVMe/HR/TP/MM tests, `fatck.py`, `isocheck.py`, `pecheck.py`, `bios_emu.c`, `entry_t.c`, `mark_t.c`, `gpu_t.c`. |
 
@@ -1293,8 +1249,8 @@ Since v8.96 the kernel is built as separate compilation units (105 since v8.97, 
 | Piece | What it is |
 |---|---|
 | A unit | One kernel `.c` file, listed in `units.list`. It starts with its own includes and is compiled on its own. |
-| Its interface header | `include/nvx/<path of the unit>.h`, for example `net/tcpip.c` has `include/nvx/net/tcpip.h`. It holds what other units may use: the unit's shared types, constants and macros, `extern` declarations of its shared variables, prototypes of its shared functions, and the small `static inline` helpers others call. |
-| `include/nvx/base.h` | Included first everywhere: the `u8`..`i64` types, `include/kapi.h`, `include/drivers.h`, `arch/x86_64/cpu.h`, `arch/x86_64/io.h`, `rune/rune_gfx.h`, `third_party/ntfs/nvxntfs.h`, and forward declarations (`struct x;`) of every shared struct so pointers to them need no other header. |
+| Its interface header | `include/nvx/<path of the unit>.h`, for example `net/stack/tcpip.c` has `include/nvx/net/stack/tcpip.h`. It holds what other units may use: the unit's shared types, constants and macros, `extern` declarations of its shared variables, prototypes of its shared functions, and the small `static inline` helpers others call. |
+| `include/nvx/base.h` | Included first everywhere: the `u8`..`i64` types, `include/kapi.h`, `include/drivers.h`, `arch/x86_64/cpu/cpu.h`, `arch/x86_64/cpu/io.h`, `lang/rune/rune_gfx.h`, `third_party/ntfs/nvxntfs.h`, and forward declarations (`struct x;`) of every shared struct so pointers to them need no other header. |
 | `include/nvx/kernel.h` | `base.h` plus every interface header, in dependency order. Handy for experiments; kernel units do not use it. |
 | `kernel64.c` | Includes `kernel.h` and every unit. It is no longer part of the kernel build; the host harness (`tools/tests/linux/hk_glue.c`) and the strict-warnings check compile it as one file. |
 
@@ -1302,39 +1258,39 @@ What stays private: anything a unit does not share remains `static` in the `.c` 
 
 #### 3.2 Rules for headers and units
 
-- A unit includes `include/nvx/base.h`, its own interface header and the interface headers of every unit whose names it uses. On average a unit includes 10 module headers; `shell/commands.c` includes the most (70), small library units such as `lib/mem.c` only their own.
+- A unit includes `include/nvx/base.h`, its own interface header and the interface headers of every unit whose names it uses. On average a unit includes 10 module headers; `shell/commands.c` includes the most (70), small library units such as `lib/base/mem.c` only their own.
 - An interface header includes `base.h` and the headers it depends on, so each header compiles on its own. The dependency graph has no cycles.
-- Shared variables are defined once, in their unit, and declared `extern` in the header. A variable that two old files both declared with a tentative `static` definition (for example `W` and `H` in `mm/pmm_vmm.c` and `drivers/video/framebuffer.c`) now has one definition, in the unit that used to complete it.
+- Shared variables are defined once, in their unit, and declared `extern` in the header. A variable that two old files both declared with a tentative `static` definition (for example `W` and `H` in `mem/pmm_vmm.c` and `drivers/video/fb/framebuffer.c`) now has one definition, in the unit that used to complete it.
 - Arrays whose size came from their initializer get an explicit size in the `extern` declaration (for example `extern const struct nvx_FTREE_t FTREE[20];`), so `sizeof` works in other units.
 - Anonymous structs used for shared variables got a tag (`struct nvx_g_acpi_t`) so the definition and the `extern` declaration have the same type.
-- Files that were code or data but named `.h` became units: `include/percpu.h` is now `arch/x86_64/percpu.c`, `arch/x86_64/simd.h` is `simd.c`, `lib/js.h` is `lib/js.c`, the crypto files are `lib/crypto/*.c`, and the fonts are `assets/font.c` and `assets/fontaa.c`. Headers that only declare things (`include/kapi.h`, `include/drivers.h`, `arch/x86_64/cpu.h`, `arch/x86_64/io.h`) are unchanged.
+- Files that were code or data but named `.h` became units: `include/percpu.h` is now `arch/x86_64/cpu/percpu.c`, `arch/x86_64/simd.h` is `simd.c`, `lib/js.h` is `lib/js/js.c`, the crypto files are `lib/crypto/*.c`, and the fonts are `assets/font.c` and `assets/fontaa.c`. Headers that only declare things (`include/kapi.h`, `include/drivers.h`, `arch/x86_64/cpu/cpu.h`, `arch/x86_64/cpu/io.h`) are unchanged.
 
 #### 3.3 Groups of units
 
 | Directory | Units | Role |
 |---|---|---|
 | `arch/x86_64/` | 10 | per-CPU data and the BKL (`percpu.c`), SSE helpers, ring 3, interrupts, timers, SMP, CPU init |
-| `mm/` | 4 | heap, frames and page tables, slab, malloc aliases |
+| `mem/` | 4 | heap, frames and page tables, slab, malloc aliases |
 | `lib/` | 10 | memory and string functions, formatting, JavaScript, crypto, TLS, X.509, root store |
 | `core/` | 11 | processes and jobs, ELF, scheduler, system calls (native and Linux), log, panic, power, sound, build signature, driver API |
 | `drivers/` | 29 | PCI, storage, network cards, Wi-Fi, USB, input, touchpads, ACPI, GPU, RTC, framebuffer |
 | `net/` | 6 | TCP/IP, native and Linux sockets, HTTP/TLS, WPA2, Wi-Fi netdev |
 | `fs/` | 10 | RAM FS, VFS, Unix layer, NVX4, directory tree, FAT, NTFS glue, packages |
-| `gui/`, `shell/`, `apps/`, `init/`, `assets/` | 25 | desktop and window manager, terminal, escape-sequence interpreter and commands, applications, boot UI, installer, fonts |
+| `gui/`, `shell/`, `apps/`, `core/init/`, `assets/` | 25 | desktop and window manager, terminal, escape-sequence interpreter and commands, applications, boot UI, installer, fonts |
 
 #### 3.4 What this changes for you
 
-- Build speed: a full kernel compile takes about 12 s on 2 cores instead of 20 s, and an incremental one recompiles only what changed. Editing `net/lxsock.c` recompiles 1 unit; editing its header recompiles 4; editing `include/nvx/arch/x86_64/percpu.h` recompiles 20.
+- Build speed: a full kernel compile takes about 12 s on 2 cores instead of 20 s, and an incremental one recompiles only what changed. Editing `sys/linux/lxsock.c` recompiles 1 unit; editing its header recompiles 4; editing `include/nvx/arch/x86_64/cpu/percpu.h` recompiles 20.
 - Adding a function another unit should call: write it in your unit without `static`, add its prototype to your unit's header, and include that header in the caller.
 - Adding a new unit: create the `.c` file, give it `#include "include/nvx/base.h"` plus the headers it needs, create its header under `include/nvx/`, and add the file to `units.list` (and to `kernel64.c` if the host harness should see it). The order in `units.list` is the link order.
 - Missing declarations are compile errors (`-Werror=implicit-function-declaration`), so a missing include shows up at once.
 - The kernel image grew by about 24 KB in v8.96, because the compiler can no longer inline across files. Since v8.97 the embedded programs are compressed (section 4.4). v9.08 added the web engine (`build/web_all.o`, about 2.4 MB, Part 13), and the image is now about 6.7 MB, which leaves about 1.3 MB under the 8 MiB limit.
 
-The separately compiled `MODS` drivers (section 4.3) still see only `include/kapi.h` and `include/drivers.h`. They call the non-static `kapi_*` functions defined in `core/kapi.c` and export probe functions (`e1000_probe`, `virtio_net_probe`, `hda_probe`, ...) that fill in `struct nvx_nic { name; mac[6]; send; recv; link; }` or `struct nvx_snd { name; rate; start; free_bytes; write; poll; stop; volume; }`, plus `virtio_blk_read`/`_write`/`_flush`. Lua, Doom and NTFS are also compiled on their own, each with its own flags (section 4.6).
+The separately compiled `MODS` drivers (section 4.3) still see only `include/kapi.h` and `include/drivers.h`. They call the non-static `kapi_*` functions defined in `sys/native/kapi.c` and export probe functions (`e1000_probe`, `virtio_net_probe`, `hda_probe`, ...) that fill in `struct nvx_nic { name; mac[6]; send; recv; link; }` or `struct nvx_snd { name; rate; start; free_bytes; write; poll; stop; volume; }`, plus `virtio_blk_read`/`_write`/`_flush`. Lua, Doom and NTFS are also compiled on their own, each with its own flags (section 4.6).
 
 ### 4. `build.sh`, step by step
 
-`kernel/build.sh` is a POSIX `sh` script with `set -e`. It runs from `kernel/` and writes everything under `B=build`. It first creates `build/`, `build/user/src`, `build/user/libc`, `build/lua/src` and `build/ntfs`.
+`build.sh` is a POSIX `sh` script with `set -e`. It runs from the repository root and writes everything under `B=build`. It first creates `build/`, `build/user/src`, `build/user/libc`, `build/lua/src` and `build/ntfs`.
 
 #### 4.1 Kernel compiler flags
 
@@ -1346,12 +1302,12 @@ CFLAGS="-m64 -Os -ffreestanding -fno-pie -fno-stack-protector \
 
 | Flag | Reason in this kernel |
 |---|---|
-| `-ffreestanding`, `-fno-stack-protector` | No hosted libc or stack-guard runtime; `lib/mem.c` and `lib/klibc.c` provide the memory and string functions. |
+| `-ffreestanding`, `-fno-stack-protector` | No hosted libc or stack-guard runtime; `lib/base/mem.c` and `lib/base/klibc.c` provide the memory and string functions. |
 | `-fno-pie`, `-mcmodel=small` | Absolute addresses; the image is linked at `0x100000` and everything sits in the low 2 GiB. |
 | `-mno-red-zone` | Interrupts and exceptions run on the current kernel stack, so code below `%rsp` must not be live. |
-| `-mno-mmx -mno-sse -mno-sse2` | The compiler must not use vector registers in kernel code (`arch/x86_64/simd.c`). |
+| `-mno-mmx -mno-sse -mno-sse2` | The compiler must not use vector registers in kernel code (`arch/x86_64/cpu/simd.c`). |
 | `-fno-asynchronous-unwind-tables` | No `.eh_frame`; the linker script also discards `.eh_frame*`. |
-| `-I.` | All includes are relative to `kernel/` (for example `#include "include/nvx/net/tcpip.h"`). |
+| `-I.` | All includes are relative to the repository root (for example `#include "include/nvx/net/stack/tcpip.h"`). |
 | `-Werror=...` | Implicit declarations, int/pointer mix-ups, missing returns, empty bodies, duplicated branches and suspicious logical ops all fail the build. `-Wduplicated-branches` and `-Wlogical-op` are GCC-specific. |
 
 #### 4.2 Stages
@@ -1361,10 +1317,10 @@ CFLAGS="-m64 -Os -ffreestanding -fno-pie -fno-stack-protector \
 | `[1/6]`, `[2/6]` | `gcc $CFLAGS -c` on `arch/x86_64/boot/boot64.S`, `isr64.S`, `userspace.S`, `ap_trampoline.S` | `build/boot64.o`, `isr64.o`, `userspace.o`, `ap_trampoline.o` |
 | `[3/6]` | `python3 tools/kbuild.py build/units`: compiles every unit in `units.list` whose `.o` is older than the unit or any header it uses (from `gcc -MMD` dependency files), in parallel. A change of `CFLAGS` or `KBUILD_ARGS=--all` recompiles everything. Prints `N of 105 units compiled` | `build/units/*.o`, `build/units/objects.txt` |
 | `[3m]` | Compiles each file in `MODS` separately with the same `CFLAGS`; on failure prints `MODULE BUILD FAILED` | `build/mod_<name>.o` to `$MODOBJS` |
-| `[3a]` | `tools/rune build rune/rune_gfx.rn --freestanding --target=x86_64-none` | `build/rune_gfx.o` |
-| `[3a2]` | `ld -r -b binary` on `firmware/rtw8821c_fw.bin` | `build/rtw_fw.o` |
+| `[3a]` | `tools/rune build lang/rune/rune_gfx.rn --freestanding --target=x86_64-none` | `build/rune_gfx.o` |
+| `[3a2]` | `ld -r -b binary` on `assets/firmware/rtw8821c_fw.bin` | `build/rtw_fw.o` |
 | `[3a3]` | `ld -r -b binary` on `assets/installer/inst_boot.bin`, `inst_stage2.bin`, `inst_boot.cfg` | `build/inst_boot.o`, `inst_stage2.o`, `inst_cfg.o` |
-| `[efi]` | Rebuilds `../bootloader/uefi/BOOTX64.EFI` (falls back to the checked-in file on failure), copies it to `build/inst_efi.bin` and wraps it | `build/inst_efi.o` |
+| `[efi]` | Rebuilds `boot/uefi/BOOTX64.EFI` (falls back to the checked-in file on failure), copies it to `build/inst_efi.bin` and wraps it | `build/inst_efi.o` |
 | `[u]` | Freestanding demo programs with `user_crt0.S` | `build/user/user_*.elf`, `build/user_*_elf.o` |
 | `[lua]` | Lua sources plus `nvxlibc.c`, `nvxlua.c`, merged with `ld -r` | `build/lua_all.o` |
 | `[u2]` | nvxlibc `libc.a` and programs linked against it | `build/user/libc/libc.a`, `build/user/<p>.elf`, `build/user_<p>_bin.o` |
@@ -1388,15 +1344,15 @@ Each is compiled with the kernel `CFLAGS` into `build/mod_$(basename .c).o` and 
 
 #### 4.4 Blob embedding
 
-Every binary payload goes through GNU ld's binary input format. Running `ld -r -b binary -o X.o path/file.ext` creates a data section with the symbols `_binary_<path_with_underscores>_start` / `_end`. The helper is `emb(){ ( cd $B && ld -r -b binary -o $1 user/$2.elf ); }`. Because it runs inside `build/` on `user/<name>.elf`, the symbols are named `_binary_user_<name>_elf_start` (for example `_binary_user_nvxbox_elf_start`, `_binary_user_user_demo_elf_start`). The kernel references them from `core/proc/jobs.c`, `core/proc/sched.c`, `core/proc/elf.c`, `shell/commands.c`, `init/installer.c`, `drivers/storage/nvme.c` and `gui/input.c`. Firmware and installer blobs are wrapped from their own directories, which gives `_binary_rtw8821c_fw_bin_start`, `_binary_inst_boot_bin_start`, `_binary_inst_stage2_bin_start`, `_binary_inst_boot_cfg_start` and `_binary_inst_efi_bin_start`.
+Every binary payload goes through GNU ld's binary input format. Running `ld -r -b binary -o X.o path/file.ext` creates a data section with the symbols `_binary_<path_with_underscores>_start` / `_end`. The helper is `emb(){ ( cd $B && ld -r -b binary -o $1 usr/$2.elf ); }`. Because it runs inside `build/` on `usr/<name>.elf`, the symbols are named `_binary_user_<name>_elf_start` (for example `_binary_user_nvxbox_elf_start`, `_binary_user_user_demo_elf_start`). The kernel references them from `core/proc/jobs.c`, `core/proc/sched.c`, `core/proc/elf.c`, `shell/commands.c`, `core/init/installer.c`, `drivers/storage/nvme.c` and `graphics/ui/input.c`. Firmware and installer blobs are wrapped from their own directories, which gives `_binary_rtw8821c_fw_bin_start`, `_binary_inst_boot_bin_start`, `_binary_inst_stage2_bin_start`, `_binary_inst_boot_cfg_start` and `_binary_inst_efi_bin_start`.
 
 The `[musl]`, `[musl-shared]` and `[ports]` programs and the shared C library are wrapped with `embz` instead, which first compresses the file with `tools/nvz.py` (`NVZ1` header, original size, raw DEFLATE) into `build/zz/user/<name>.elf`; the kernel inflates it the first time it is run (section 6.6). For the `[u2]`, `[musl]`, `[musl-shared]` and `[ports]` programs the wrapped object is then rewritten with `objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents`. That moves the blob into `.rodata`, which the linker script places before `__immutable_end`. The `[u]` demo blobs are not renamed and stay in `.data`.
 
 #### 4.5 User programs
 
-`[u]` freestanding demos. These are built with `UFLAGS="-m64 -ffreestanding -nostdlib -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=large -Os -Iuser/src"`. Programs: `user_demo`, `user_fork`, `user_app`, `user_thread`, `user_preempt`, `user_ipc`, `user_wmapp`, `user_compdemo`, `user_posix`, `user_mem`. Each is linked as `ld -m elf_x86_64 -nostdlib -no-pie -T user/src/user.ld` with `user_crt0.o`. `user.ld` places `.text`, `.rodata`, `.data`, `.bss` from `0x40000000000`, which is why `-mcmodel=large` is needed. The demo program is embedded as `user_elf.o` and the others as `user_<n>_elf.o`.
+`[u]` freestanding demos. These are built with `UFLAGS="-m64 -ffreestanding -nostdlib -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=large -Os -Iusr/src"`. Programs: `user_demo`, `user_fork`, `user_app`, `user_thread`, `user_preempt`, `user_ipc`, `user_wmapp`, `user_compdemo`, `user_posix`, `user_mem`. Each is linked as `ld -m elf_x86_64 -nostdlib -no-pie -T usr/src/user.ld` with `user_crt0.o`. `user.ld` places `.text`, `.rodata`, `.data`, `.bss` from `0x40000000000`, which is why `-mcmodel=large` is needed. The demo program is embedded as `user_elf.o` and the others as `user_<n>_elf.o`.
 
-`[u2]` nvxlibc programs. `LFLAGS` adds `-nostdinc -isystem user/libc/include -isystem $(gcc -print-file-name=include) -ffunction-sections -fdata-sections -w`. `libc.a` is archived from `libc.o printf.o stdlib2.o stdio2.o sys_nvx.o`, and `crt0.S` is built separately. Programs: `count spin sigdemo upper greet pipetest nvxbox init libc8`. `nvxbox` also links `coreutils.c`. They are linked with `--gc-sections -T user/src/user.ld` as `crt0.o prog.o [coreutils.o] libc.a`.
+`[u2]` nvxlibc programs. `LFLAGS` adds `-nostdinc -isystem usr/libc/include -isystem $(gcc -print-file-name=include) -ffunction-sections -fdata-sections -w`. `libc.a` is archived from `libc.o printf.o stdlib2.o stdio2.o sys_nvx.o`, and `crt0.S` is built separately. Programs: `count spin sigdemo upper greet pipetest nvxbox init libc8`. `nvxbox` also links `coreutils.c`. They are linked with `--gc-sections -T usr/src/user.ld` as `crt0.o prog.o [coreutils.o] libc.a`.
 
 `[musl]` Linux-ABI programs. If `build/musl/lib/libc.a` or `rcrt1.o` is missing, `third_party/musl/configure --prefix=$M --disable-shared --disable-wrapper CFLAGS="-fPIE -O2"` runs in `build/musl-obj`, followed by `make -j$(nproc)` and `make install`. Then `mhello`, `musltest`, `smptest`, `nettest` and `featest` are compiled with `-fPIE -O2 -nostdinc -isystem $M/include` linked as static PIE, then `strip`ped and embedded:
 
@@ -1404,7 +1360,7 @@ The `[musl]`, `[musl-shared]` and `[ports]` programs and the shared C library ar
 gcc -static-pie -nostdlib -Wl,--no-dynamic-linker -Wl,-z,noexecstack -o $B/user/$p.elf $M/lib/rcrt1.o $M/lib/crti.o $B/user/musl_$p.o $M/lib/libc.a $(gcc -print-libgcc-file-name) $M/lib/crtn.o
 ```
 
-`[musl-shared]`. If `build/musl-sh/lib/libc.so` is missing, musl is configured a second time with `--enable-shared --disable-static --syslibdir=/lib` in `build/musl-shobj` and installed with `make install-libs`. The stripped `libc.so` is embedded compressed as `user_libc_so_bin.o`; it is the dynamic linker the kernel loads for dynamic programs (section 6.10). `user/musl/libnvxdemo.c` is built as `libnvxdemo.so`, turned into a C array by `tools/bin2c.py`, and compiled into `dyntest`, which is linked with `-pie -Wl,-dynamic-linker,/lib/ld-musl-x86_64.so.1`.
+`[musl-shared]`. If `build/musl-sh/lib/libc.so` is missing, musl is configured a second time with `--enable-shared --disable-static --syslibdir=/lib` in `build/musl-shobj` and installed with `make install-libs`. The stripped `libc.so` is embedded compressed as `user_libc_so_bin.o`; it is the dynamic linker the kernel loads for dynamic programs (section 6.10). `usr/musl/libnvxdemo.c` is built as `libnvxdemo.so`, turned into a C array by `tools/bin2c.py`, and compiled into `dyntest`, which is linked with `-pie -Wl,-dynamic-linker,/lib/ld-musl-x86_64.so.1`.
 
 `[ports]`. `NVX_MUSL` and `NVX_MUSL_SH` are exported and `tools/mcc-dyn` is used as the compiler. It passes through to `gcc -fPIE -nostdinc -isystem $NVX_MUSL/include` for `-c/-S/-E/-M/-MM`, and otherwise links a dynamic PIE with `Scrt1.o crti.o ... -lc libgcc crtn.o` from the shared musl. (`tools/mcc` is the static-PIE equivalent and is still there.) The `port()` helper builds `build/ports-dyn/<name>` only if it does not exist yet, then strips it. Delete `build/ports-dyn/<name>` to force a rebuild. BearSSL is compiled once into `build/bearssl/libbearssl.a`; `fetch` is relinked on every build because its sources are part of the tree.
 
@@ -1416,11 +1372,11 @@ gcc -static-pie -nostdlib -Wl,--no-dynamic-linker -Wl,-z,noexecstack -o $B/user/
 | `xz` | explicit list of liblzma (with the multi-threaded coder) + `xz/` sources, `-std=gnu11 -include third_party/xz/nvx_config.h` |
 | `zstd` | `lib/{common,compress,decompress}/*.c` + `programs/*`, `-DZSTD_MULTITHREAD -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_LEGACY_SUPPORT=0 -DZSTD_DISABLE_ASM ...` |
 | `kilo` | `third_party/kilo/kilo.c`, `-std=c99 -D_DEFAULT_SOURCE -D_BSD_SOURCE` |
-| `fetch` | `user/musl/fetch.c`, `nvxtls.c`, `build/bearssl/libbearssl.a` |
+| `fetch` | `usr/musl/fetch.c`, `nvxtls.c`, `build/bearssl/libbearssl.a` |
 
 #### 4.6 Lua, Doom, the web engine and NTFS
 
-- Lua (`[lua]`). `LUAF` is the kernel flag set *with* `-msse -msse2 -mfpmath=sse`, plus `-w -Ithird_party/lua/inc -Ithird_party/lua/src`. Every `src/*.c` plus `nvxlibc.c` and `nvxlua.c` is merged with `ld -r` into `lua_all.o`. The kernel reaches it through `extern const char* nvx_lua_run(const char*)` (declared in `mm/pmm_vmm.c`).
+- Lua (`[lua]`). `LUAF` is the kernel flag set *with* `-msse -msse2 -mfpmath=sse`, plus `-w -Ithird_party/lua/inc -Ithird_party/lua/src`. Every `src/*.c` plus `nvxlibc.c` and `nvxlua.c` is merged with `ld -r` into `lua_all.o`. The kernel reaches it through `extern const char* nvx_lua_run(const char*)` (declared in `mem/pmm_vmm.c`).
 - Doom (`[3b]`). `build_doom.sh` compiles every `*.c` except `test_host.c`, plus `webp_stub.c`, with `-O2 -ffreestanding -mno-red-zone -nostdinc -Ishim -DDOOMGENERIC_RESX=640 -DDOOMGENERIC_RESY=400`. SSE is not disabled. The objects are combined with `ld -r`, and `objcopy --keep-global-symbol` leaves only `doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_output`, `dsh_set_file`, `dsh_set_exit`, `dsh_set_heap` and `webp_decode` global. `build.sh` moves `doom_blob.o` into `build/` and deletes `obj/` and `doom_blob_all.o`.
 - Web engine (`[web]`). The engine files are compiled with `WEBF`: the kernel flag set with SSE allowed, `-O2`, freestanding, and musl's headers for C library declarations. QuickJS and the double and float functions of musl's `libm` are compiled the same way. After `ld -r`, `objcopy --keep-global-symbol=nwe_entry` hides everything else, and the step prints any symbol that is still undefined. Details are in section 13.1.
 - NTFS (`[3c]`). `NTFS_CFLAGS` is the kernel flag set plus `-nostdinc -isystem third_party/ntfs/compat -DHAVE_CONFIG_H -Ulinux -U__linux__ -U__linux -U__gnu_linux__ -fmacro-prefix-map=third_party/= -w`. It compiles `ntfs/lib/*.c`, `nvxntfs.c` and `ntfslibc.c`, then `mkntfs/*.c` with `-Dmain=mkntfs_main` (as `mk_*.o`).
@@ -1439,7 +1395,7 @@ ld -m elf_x86_64 -nostdlib -no-pie -z noexecstack -T arch/x86_64/kernel64.ld \
 Step `[6/6]` is an inline Python script that edits `build/kernel64.bin`:
 
 1. `assert len(b)<=8388608` ("kernel ... > 8 MiB (myboot FAT load limit)").
-2. `struct.pack_into('<I', b, 24, len(b))` writes the file size into the Multiboot header's `load_end_addr` slot. `boot64.S` explains that this lets a size-aware loader read exactly the right number of sectors. `init/installer.c` reads the same word (`*(u32*)(0x100000+24)`).
+2. `struct.pack_into('<I', b, 24, len(b))` writes the file size into the Multiboot header's `load_end_addr` slot. `boot64.S` explains that this lets a size-aware loader read exactly the right number of sectors. `core/init/installer.c` reads the same word (`*(u32*)(0x100000+24)`).
 3. It finds `NVX64SIG` and resolves `uefi_entry` and `__immutable_end` with `nm build/kernel64.elf`.
 4. It patches the signature fields: `build_epoch = time.time()`, `image_size = len(b)`, `uefi_entry`. It zeroes both hash fields, computes `sha256_full` over the whole file (with `sha256` zeroed) and stores it. Then it computes `sha256` over `[0 .. __immutable_end-0x100000)` (with the `sha256` field still zero) and stores that.
 5. It prints `build signature stamped @ <off>: sha256=...`; `check.py` treats this string as the success marker of the build.
@@ -1464,13 +1420,13 @@ static volatile const struct {
 | Offset in block | Field | Consumer |
 |---|---|---|
 | 0 | `magic` | `uefiboot.c` scans the file for it; `sig_self_check()` checks `magic[0]`/`magic[7]` |
-| 8 | `version` | `kcheck_run()` in `init/installer.c` prints it |
+| 8 | `version` | `kcheck_run()` in `core/init/installer.c` prints it |
 | 32 | `sha256` (immutable part) | `sig_self_check()` (`hash_off = sig_off+8+16+4+4`), `kimg_check()` (`ho=so+32`) |
 | 80 | `uefi_entry` | `uefiboot.c` (`k+i+8+16+4+4+32+16`) jumps here |
 | 88 | `sha256_full` | `kimg_check()` (`fo=so+88`) |
 | 120 | `bss_end` | `uefiboot.c` (`k+i+120`) protects `[0x1300000, bss_end)`; it falls back to `0x0B000000` if the value is out of range |
 
-At boot, `sig_self_check()` (`init/main.c`) re-hashes `[0x100000, __immutable_end)` with the hash field zeroed and compares. It hashes only `.text`/`.rodata`/`.sig` because "writable globals in .data change the instant the kernel starts". The result goes in `g_sig_ok`; `g_sig_enforce` (0 by default) decides whether a mismatch halts on the skull screen.
+At boot, `sig_self_check()` (`core/init/main.c`) re-hashes `[0x100000, __immutable_end)` with the hash field zeroed and compares. It hashes only `.text`/`.rodata`/`.sig` because "writable globals in .data change the instant the kernel starts". The result goes in `g_sig_ok`; `g_sig_enforce` (0 by default) decides whether a mismatch halts on the skull screen.
 
 #### 4.8 C++ in the kernel
 
@@ -1478,12 +1434,12 @@ Since v9.82 the kernel is written in C, C++ and assembly. A unit in `units.list`
 
 | Piece | Where | What it does |
 |---|---|---|
-| Runtime | `lib/cxxrt.cpp` | `operator new`/`delete` (all sizes) on `kmalloc`/`kfree`, `__cxa_pure_virtual`, `__cxa_atexit`, `__dso_handle`, `cxx_run_ctors()` |
-| Global constructors | `kernel64.ld`, `kernel64_mb.ld`, `init/main.c` | `.init_array` sits after `.rodata` (inside the signed part of the image) between `__init_array_start` and `__init_array_end`; `kmain` calls `cxx_run_ctors()` right after `heap_init`, so constructors may allocate |
+| Runtime | `lib/cxx/cxxrt.cpp` | `operator new`/`delete` (all sizes) on `kmalloc`/`kfree`, `__cxa_pure_virtual`, `__cxa_atexit`, `__dso_handle`, `cxx_run_ctors()` |
+| Global constructors | `kernel64.ld`, `kernel64_mb.ld`, `core/init/main.c` | `.init_array` sits after `.rodata` (inside the signed part of the image) between `__init_array_start` and `__init_array_end`; `kmain` calls `cxx_run_ctors()` right after `heap_init`, so constructors may allocate |
 | Helpers | `include/nvx/lib/cxx.h` | placement new, `nvx::KBuf<T>` (a `kmalloc` buffer freed by its destructor), `nvx::min`/`max`/`clamp`, `nvx::EdgeKeys` |
 | C headers | `include/nvx/...` | compile unchanged as C++ inside `extern "C" { }` |
 
-SSE code in C++ (floating point) goes into a separate object like the Quake one: `apps/r3d/build_r3d.sh` builds `r3d_blob.o` freestanding with SSE, `-mstackrealign` and `-nostdinc`, keeps only the `r3d_*` symbols global, and fails the build if it needs anything from the kernel except `memset`, `memcpy` or `memmove`. Its interface (`apps/r3d/r3d.h`) uses only integers, because kernel code cannot pass floats.
+SSE code in C++ (floating point) goes into a separate object like the Quake one: `apps/graphics/r3d/build_r3d.sh` builds `r3d_blob.o` freestanding with SSE, `-mstackrealign` and `-nostdinc`, keeps only the `r3d_*` symbols global, and fails the build if it needs anything from the kernel except `memset`, `memcpy` or `memmove`. Its interface (`apps/graphics/r3d/r3d.h`) uses only integers, because kernel code cannot pass floats.
 
 ### 5. Linker scripts
 
@@ -1535,15 +1491,15 @@ This script uses the same addresses and symbols, but it is meant to stay an ELF 
 | Limit | Value | Source |
 |---|---|---|
 | Flat kernel file | at most 8 MiB | `build.sh` assert; `stage2.c` `fat_read_file(e->kernel, scratch, 0x800000, &ksz)` |
-| Kernel via UEFI | at most `0x1000000-0x100000` (`KERNEL_MAX`, 15 MiB; 8 MiB in v9.08 to v9.10, `0x5C0000` before) | `bootloader/uefi/uefiboot.c`; both entry paths set `RSP = 0x1080000` |
+| Kernel via UEFI | at most `0x1000000-0x100000` (`KERNEL_MAX`, 15 MiB; 8 MiB in v9.08 to v9.10, `0x5C0000` before) | `boot/uefi/uefiboot.c`; both entry paths set `RSP = 0x1080000` |
 | Kernel end at link time | `__file_end` at most `0x1000000` | `kernel64.ld`, `kernel64_mb.ld` `ASSERT` |
 | Immutable region for self-check | at most `0x800000` | `sig_self_check()` |
-| Installer boot snapshot | `KSNAP_MAX 0x800000` (matches the 8 MiB file limit; was 3 MiB before v8.95) | `init/installer.c` |
+| Installer boot snapshot | `KSNAP_MAX 0x800000` (matches the 8 MiB file limit; was 3 MiB before v8.95) | `core/init/installer.c` |
 | `.bss` end | at most `0x09800000` | `kernel64.ld` `ASSERT` |
 
 ### 6. Bootloader build and image tools
 
-#### 6.1 `bootloader/Makefile`
+#### 6.1 `boot/Makefile`
 
 | Target | Recipe |
 |---|---|
@@ -1558,7 +1514,7 @@ This script uses the same addresses and symbols, but it is meant to stay an ELF 
 
 `linker.ld` puts `.text.boot` first at `0x8000` and keeps `.rodata`/`.data` inside `.text`. The NoovexOS pipeline only needs `make build/boot.bin build/stage2.bin` (this is what `check.py` runs). `mkhybrid.py` requires `boot.bin` to be exactly 512 bytes and `stage2.bin` at most 63 sectors.
 
-For a flat (non-ELF) kernel, `stage2.c` loads the file to scratch `0x1000000` and builds a Multiboot info block with the framebuffer. If `/doom/DOOM1.WAD` exists and is larger than 1,000,000 bytes, stage2 loads it to `0x0E000000` as module 0. It then calls `raw_boot(src, size, mbi)`. `boot.cfg` (`bootloader/stage/boot.cfg`) uses `timeout=2`, `default=0`, `video=1280x1024`, `bootlog=4`, `entry=NoovexOS 64`, `kernel=/boot/kernel64.bin`, `cmdline=noovexos`.
+For a flat (non-ELF) kernel, `stage2.c` loads the file to scratch `0x1000000` and builds a Multiboot info block with the framebuffer. If `/doom/DOOM1.WAD` exists and is larger than 1,000,000 bytes, stage2 loads it to `0x0E000000` as module 0. It then calls `raw_boot(src, size, mbi)`. `boot.cfg` (`boot/stage/boot.cfg`) uses `timeout=2`, `default=0`, `video=1280x1024`, `bootlog=4`, `entry=NoovexOS 64`, `kernel=/boot/kernel64.bin`, `cmdline=noovexos`.
 
 #### 6.2 UEFI loader (built by `build.sh` step `[efi]`)
 
@@ -1593,10 +1549,10 @@ On CD, the result boots through El Torito (BIOS: HDD emulation to MBR to stage2;
 
 | Script | Output |
 |---|---|
-| `bootloader/mkimage.py boot.bin stage2.bin disk.img [file ...]` | Raw MBR disk: stage1 at LBA 0, stage2 from LBA 1 (at most 64 sectors), one FAT32 partition at LBA 2048 of `PART_SECTORS = 131072` sectors (64 MiB) with CHS fields from `chs()`. Files go in the root by basename. Used by `bootloader/Makefile`. |
-| `myboot-dualfirmware/mkefi.py efi.elf out` | Hand-rolled PE32+ (`MZ`, machine `0x8664`, image base `0x400000`) from `objcopy -O binary` of `.text/.rodata/.data`, using `efi_main` and `__image_end`. |
-| `myboot-dualfirmware/mkimage.py ... --efi BOOTX64.EFI` | That variant's disk image with an EFI loader (Makefile target `build/disk.img`; `run-uefi` uses `qemu-system-x86_64 -bios OVMF.fd`). |
-| `kernel/tools/mkvdi.py raw.img out.vdi [MB]` | Fixed VirtualBox VDI (signature `0xBEDA107F`, version 1.1, type 2 = fixed, default 16 MB). |
+| `boot/mkimage.py boot.bin stage2.bin disk.img [file ...]` | Raw MBR disk: stage1 at LBA 0, stage2 from LBA 1 (at most 64 sectors), one FAT32 partition at LBA 2048 of `PART_SECTORS = 131072` sectors (64 MiB) with CHS fields from `chs()`. Files go in the root by basename. Used by `boot/Makefile`. |
+| `boot/myboot/mkefi.py efi.elf out` | Hand-rolled PE32+ (`MZ`, machine `0x8664`, image base `0x400000`) from `objcopy -O binary` of `.text/.rodata/.data`, using `efi_main` and `__image_end`. |
+| `boot/myboot/mkimage.py ... --efi BOOTX64.EFI` | That variant's disk image with an EFI loader (Makefile target `build/disk.img`; `run-uefi` uses `qemu-system-x86_64 -bios OVMF.fd`). |
+| `tools/mkvdi.py raw.img out.vdi [MB]` | Fixed VirtualBox VDI (signature `0xBEDA107F`, version 1.1, type 2 = fixed, default 16 MB). |
 | `mkuefi.py` | Not in the repository; it exists only as a document in the attached "noovex" project. It reads `BOOTX64.EFI` and writes `noovex7-uefi.img`: a GPT disk (protective MBR, primary + backup headers) with a 16 MiB FAT16 ESP at LBA 2048 holding `/EFI/BOOT/BOOTX64.EFI`, then re-parses the FAT to verify. |
 
 ### 7. Toolchain requirements
@@ -1610,14 +1566,14 @@ Derived from the commands the scripts run (`tools/README.md` lists Linux with gc
 | `make` | Bootloader, musl. |
 | `python3` | Signature/size step, `mkhybrid.py`, `mkimage.py`, `check.py`, `emulate.py`. |
 | POSIX `sh` | `build.sh`, `build_doom.sh`, `tools/mcc`; `nproc` is optional (fallback 4). |
-| x86-64 Linux host | `kernel/tools/rune` is a dynamically linked x86-64 Linux ELF executable. |
+| x86-64 Linux host | `tools/rune` is a dynamically linked x86-64 Linux ELF executable. |
 | optional | `clang-tidy` (`check.py` analyze group), `qemu-system-i386` / `qemu-system-x86_64` + OVMF (Makefile `run` targets). |
 
 Full build sequence (what `check.py --build` does):
 
 ```sh
-cd source/kernel && sh build.sh
-cp build/kernel64.bin ../bootloader/stage/kernel64.bin
+bash build.sh
+cp build/kernel64.bin boot/stage/kernel64.bin
 cd ../bootloader && make build/boot.bin build/stage2.bin
 python3 mkhybrid.py build/boot.bin build/stage2.bin out.iso NOOVEXOS \
   boot/kernel64.bin=stage/kernel64.bin boot.cfg=stage/boot.cfg README.txt=stage/README.txt
@@ -1630,42 +1586,42 @@ There is no central version macro; the version is a literal in several places. C
 | File | Use |
 |---|---|
 | `core/buildsig.c` | `g_buildsig.version = "8.96"` (printed by `kcheck_run()`) |
-| `fs/vfs.c` | `version` leaf: `"NoovexOS 64 v8.95 (from-scratch, Unix-like)\n"` |
-| `fs/unixfs.c` | `/sys/kernel/osrelease` to `"8.96\n"` |
-| `core/linux.c` | `uname` for Linux-ABI programs: sysname `NoovexOS`, release `8.95`, version `NoovexOS 64 v8.95`, machine `x86_64` |
-| `apps/files_classic.c` | About text `"Version 8.96"` |
-| `apps/file_explorer.c` | header comment and `"Version 8.96  -  from scratch"` |
-| `apps/small_apps.c` | neofetch-style lines `"NoovexOS 64 v8.95 (x86-64)"`, `"v8.95"` |
+| `fs/vfs/vfs.c` | `version` leaf: `"NoovexOS 64 v8.95 (from-scratch, Unix-like)\n"` |
+| `fs/vfs/unixfs.c` | `/sys/kernel/osrelease` to `"8.96\n"` |
+| `sys/linux/linux.c` | `uname` for Linux-ABI programs: sysname `NoovexOS`, release `8.95`, version `NoovexOS 64 v8.95`, machine `x86_64` |
+| `apps/system/files_classic.c` | About text `"Version 8.96"` |
+| `apps/system/file_explorer.c` | header comment and `"Version 8.96  -  from scratch"` |
+| `apps/accessories/small_apps.c` | neofetch-style lines `"NoovexOS 64 v8.95 (x86-64)"`, `"v8.95"` |
 | `tools/tests/linux/hh.c` | expects `"Hello from musl libc on NoovexOS 8.96 (x86_64)"` from `mhello` |
 
-Older strings still say `8.38`: `shell/terminal.c` (`"OS: NoovexOS 64 v8.38"`), `user/src/nvxbox.c` (`"NoovexOS %s 8.38 nvx64 x86_64\n"`) and the example comment in `core/buildsig.c`. A version bump means editing every row of the table above (and ideally these three) together; `tools/tests/linux/hh.c` will fail if `core/linux.c` and the test disagree.
+Older strings still say `8.38`: `shell/terminal.c` (`"OS: NoovexOS 64 v8.38"`), `usr/src/nvxbox.c` (`"NoovexOS %s 8.38 nvx64 x86_64\n"`) and the example comment in `core/buildsig.c`. A version bump means editing every row of the table above (and ideally these three) together; `tools/tests/linux/hh.c` will fail if `sys/linux/linux.c` and the test disagree.
 
 ## Part 2: Boot chain, kernel entry and kernel signatures
 
-This part follows a NoovexOS 64 boot from firmware to the main loop, then covers how the kernel image is signed and checked. Every statement is taken from the source tree. Paths are relative to `source/` unless noted. Numbers from the shipped build come from `kernel/build/kernel64.elf` / `kernel64.bin` (5,110,512 bytes).
+This part follows a NoovexOS 64 boot from firmware to the main loop, then covers how the kernel image is signed and checked. Every statement is taken from the source tree. Paths are relative to `source/` unless noted. Numbers from the shipped build come from `build/kernel64.elf` / `kernel64.bin` (5,110,512 bytes).
 
 ### 2.1 The boot paths at a glance
 
 | Path | Firmware loads | Loader | Kernel file | Kernel entered at | CPU mode at entry |
 |---|---|---|---|---|---|
-| BIOS (production) | MBR at LBA 0 of the hybrid image | myboot `bootloader/src` (stage1 + stage2) | `/boot/kernel64.bin` (flat binary) | `0x100000` (`_start`) | 32-bit protected mode, `EAX=0x2BADB002`, `EBX`=Multiboot info |
+| BIOS (production) | MBR at LBA 0 of the hybrid image | myboot `boot/src` (stage1 + stage2) | `/boot/kernel64.bin` (flat binary) | `0x100000` (`_start`) | 32-bit protected mode, `EAX=0x2BADB002`, `EBX`=Multiboot info |
 | BIOS from CD | El Torito default entry, HDD emulation of the whole image | the same myboot | same | same | same |
-| UEFI (production) | `\EFI\BOOT\BOOTX64.EFI` | `bootloader/uefi/uefiboot.c` | `\KERNEL64.BIN` or `\boot\kernel64.bin` | `uefi_entry` (address read from the NVX64SIG block) | 64-bit long mode |
+| UEFI (production) | `\EFI\BOOT\BOOTX64.EFI` | `boot/uefi/uefiboot.c` | `\KERNEL64.BIN` or `\boot\kernel64.bin` | `uefi_entry` (address read from the NVX64SIG block) | 64-bit long mode |
 | Third-party Multiboot (e.g. GRUB) | n/a | any Multiboot 1 loader | flat binary with Multiboot header | `0x100000` | 32-bit PM, `EAX=0x2BADB002` |
-| Legacy custom loaders | `kernel/arch/x86_64/boot/mbr.S`, `stage2.S`, `cdboot.S` | own asm | raw sectors | `0x100000` with `EAX=0` | 32-bit PM (see 2.5: no longer layout-compatible) |
+| Legacy custom loaders | `arch/x86_64/boot/mbr.S`, `stage2.S`, `cdboot.S` | own asm | raw sectors | `0x100000` with `EAX=0` | 32-bit PM (see 2.5: no longer layout-compatible) |
 
-All working paths converge on one contract: a framebuffer description at physical `0x5000`, the kernel image at `0x100000`, then `kmain()` in `kernel/init/main.c`.
+All working paths converge on one contract: a framebuffer description at physical `0x5000`, the kernel image at `0x100000`, then `kmain()` in `core/init/main.c`.
 
-The repository has no `bootx64.c` or `mkuefi.py`. The UEFI loader is `bootloader/uefi/uefiboot.c`, built by `kernel/build.sh` step `[efi]`. The dual-firmware myboot variant has its own `myboot-dualfirmware/src/efi.c` and `mkefi.py`.
+The repository has no `bootx64.c` or `mkuefi.py`. The UEFI loader is `boot/uefi/uefiboot.c`, built by `build.sh` step `[efi]`. The dual-firmware myboot variant has its own `boot/myboot/src/efi.c` and `mkefi.py`.
 
-### 2.2 Boot media: the hybrid image (`bootloader/mkhybrid.py`)
+### 2.2 Boot media: the hybrid image (`boot/mkhybrid.py`)
 
 `tools/check.py` (`g_build`) builds the release image like this:
 
 ```
-sh build.sh                                  # kernel/build/kernel64.bin, BOOTX64.EFI
-cp kernel/build/kernel64.bin bootloader/stage/kernel64.bin
-make build/boot.bin build/stage2.bin         # in bootloader/
+bash build.sh                                # build/kernel64.bin, BOOTX64.EFI
+cp build/kernel64.bin boot/stage/kernel64.bin
+make build/boot.bin build/stage2.bin         # in boot/
 python3 mkhybrid.py build/boot.bin build/stage2.bin OUT.iso NOOVEXOS \
     boot/kernel64.bin=stage/kernel64.bin boot.cfg=stage/boot.cfg README.txt=stage/README.txt
 ```
@@ -1687,7 +1643,7 @@ Rules the script enforces:
 - The El Torito default entry uses boot indicator `0x88`, media `0x04` (hard-disk emulation), load RBA 0. A BIOS booting from CD therefore sees the whole image as a hard disk and runs the same MBR to stage2 to FAT32 path as a USB stick.
 - The EFI section has header `0x91`, platform `0xEF`, one no-emulation entry.
 
-### 2.3 BIOS path: myboot (`bootloader/src`)
+### 2.3 BIOS path: myboot (`boot/src`)
 
 #### Stage 1 (`stage1.S`, 512 bytes, linked at `0x7C00`)
 
@@ -1727,7 +1683,7 @@ The file is plain text with one `key=value` per line. Blank lines and lines star
 | `kernel` | last entry | path, max 128 chars | - | FAT path of the kernel file. |
 | `cmdline` | last entry | max 128 chars | - | Copied into the Multiboot `cmdline` field. |
 
-`kernel` and `cmdline` lines that come before any `entry` are ignored. The shipped `bootloader/stage/boot.cfg` (identical to `kernel/assets/installer/inst_boot.cfg`, which the disk installer embeds) is:
+`kernel` and `cmdline` lines that come before any `entry` are ignored. The shipped `boot/stage/boot.cfg` (identical to `assets/installer/inst_boot.cfg`, which the disk installer embeds) is:
 
 ```
 timeout=2
@@ -1782,26 +1738,26 @@ Before handing over, `boot_animation()` prints the kernel path, size and cmdline
 
 `enter_long_mode()` (the ELF64 branch, unused by NoovexOS) stores the entry and mbi at `0x76000`. It builds a PML4 at `0x70000`, a PDPT at `0x71000` and four PDs at `0x72000..0x75FFF` that identity-map 0-4 GiB with 2 MiB pages. It then sets PAE and `EFER.LME`, enables paging, loads a 64-bit GDT and jumps to the entry with `RDI=RAX=0x2BADB002` and `RSI=RBX=mbi`.
 
-### 2.4 `myboot-dualfirmware/` (stand-alone variant)
+### 2.4 `boot/myboot/` (stand-alone variant)
 
-This is myboot 0.6 with a UEFI application (`src/efi.c`, PE built by `mkefi.py`). Compared with `bootloader/src/stage2.c` it differs in four ways:
+This is myboot 0.6 with a UEFI application (`src/efi.c`, PE built by `mkefi.py`). Compared with `boot/src/stage2.c` it differs in four ways:
 
 - Partition selection takes the first entry of type `0x0B`, `0x0C` or `0xEF`.
 - There is no VBE fallback list.
 - It has no flat-binary branch: a non-ELF kernel fails with `kernel is not an ELF image`.
 - The UEFI side opens `\KERNEL.ELF` (max 64 MiB), requires ELF64/x86-64, `AllocatePages`-reserves the PT_LOAD span at its physical address, builds a Multiboot info block from GOP and the UEFI memory map, retries `ExitBootServices` up to 8 times, and jumps with `RDI/RAX=0x2BADB002`, `RSI/RBX=mbi`.
 
-`kernel/arch/x86_64/boot/boot64_mb.S` is the matching kernel entry. It copies the mbi framebuffer fields to `0x5000` before zeroing `.bss`, zeroes `0x5010`/`0x5018`, zeroes `.bss`, switches to a 128 KiB stack in `.bss` and calls `kmain`. `build.sh` does not assemble it, so the shipped kernel cannot use this contract.
+`arch/x86_64/boot/boot64_mb.S` is the matching kernel entry. It copies the mbi framebuffer fields to `0x5000` before zeroing `.bss`, zeroes `0x5010`/`0x5018`, zeroes `.bss`, switches to a 128 KiB stack in `.bss` and calls `kmain`. `build.sh` does not assemble it, so the shipped kernel cannot use this contract.
 
-### 2.5 Legacy custom loaders in `kernel/arch/x86_64/boot/`
+### 2.5 Legacy custom loaders in `arch/x86_64/boot/`
 
 `README_CUSTOMBOOT.txt` documents an earlier v0.50 experiment:
 
 - `mbr.S` stores DL at `0x0500` and reads 32 sectors from LBA 1 to `0x8000`. On failure it prints `MBR disk err`.
 - `stage2.S` enables fast A20 and tries VBE modes `0x118`, `0x115` and `0x112`, keeping the first one with a linear framebuffer (`vinfo` attribute bit 7). It then enters unreal mode, streams `kern_secs` sectors from `kern_lba` (33) in 64-sector chunks through a buffer at `0x20000` to `0x100000`, and jumps to `0x08:0x100000` in 32-bit PM with `EAX=0` and ESP `0x9F000`.
-- `cdboot.S` does the same with 2048-byte CD sectors. Its `kern_lba`/`kern_secs` are patched by `kernel/tools/mkiso.py`.
+- `cdboot.S` does the same with 2048-byte CD sectors. Its `kern_lba`/`kern_secs` are patched by `tools/mkiso.py`.
 
-`kernel/tools/mkboot.py` assembles `boot/mbr.S` + `boot/stage2.S` (paths that no longer match the tree) into a raw disk with the kernel at LBA 33. `kernel/tools/splice.py` targets an older container and asserts a 1 MiB kernel limit, which the current 5 MB kernel exceeds.
+`tools/mkboot.py` assembles `boot/mbr.S` + `boot/stage2.S` (paths that no longer match the tree) into a raw disk with the kernel at LBA 33. `tools/splice.py` targets an older container and asserts a 1 MiB kernel limit, which the current 5 MB kernel exceeds.
 
 These loaders are not compatible with the current kernel. They write the *old* `0x5000` layout:
 
@@ -1815,7 +1771,7 @@ These loaders are not compatible with the current kernel. They write the *old* `
 
 Because they enter with `EAX=0`, `boot64.S` skips its Multiboot branch and does not rewrite the block. Only myboot (Multiboot handoff) and `uefiboot.c` produce the layout the kernel expects.
 
-### 2.6 UEFI path (`bootloader/uefi/uefiboot.c`)
+### 2.6 UEFI path (`boot/uefi/uefiboot.c`)
 
 `build.sh` step `[efi]` compiles `uefiboot.c` with `-fpic -fshort-wchar -mno-red-zone -fno-jump-tables` and links it with `efi.ld` and `dummyreloc.S` into a shared object. `objcopy --target=pei-x86-64 --subsystem=10` then produces `BOOTX64.EFI`. The result is copied to `build/inst_efi.bin` and linked into the kernel as a blob for the disk installer. Every firmware call uses `EFIAPI` = `ms_abi`. `check.py` verifies there are no relocations.
 
@@ -1869,11 +1825,11 @@ Progress markers: `mark()` in the loader and `uefi_mark` in `boot64.S` each draw
 
 On the BIOS path the rest of the `0x5000` page holds myboot's VGA font copy (`bios_get_font` writes to `0x5000`). `boot64.S` overwrites only the fields above, so `0x502C` is font data there, never the `UEFI` magic.
 
-`0x6000` Multiboot-style block (UEFI only, 136 bytes): the framebuffer at +88..+108 as in Multiboot, the RSDP (u64) at +120, and `0x50445352` (`"RSDP"`) at +128 when present. `acpi_find_rsdp()` (`kernel/core/power.c`) uses it first, then falls back to the EBDA and `0xE0000-0xFFFFF` scans.
+`0x6000` Multiboot-style block (UEFI only, 136 bytes): the framebuffer at +88..+108 as in Multiboot, the RSDP (u64) at +120, and `0x50445352` (`"RSDP"`) at +128 when present. `acpi_find_rsdp()` (`core/power.c`) uses it first, then falls back to the EBDA and `0xE0000-0xFFFFF` scans.
 
-`0x7000` memory summary (UEFI only, `mm_summarize`): u32 magic `0x4D58564E` (`"NVXM"`), then u32 `count | overflow<<31`, then up to `MM_MAX`=170 records of 24 bytes `{u64 start, u64 end, u32 type, u32 0}`. Types are collapsed: 7 stays 7 (conventional), other usable-after-exit types (1, 2, 3, 4) become 4, and the rest keep their UEFI type. Adjacent records of the same type are merged. `mm_load()` (`kernel/mm/pmm_vmm.c`) reads it only when `0x502C=="UEFI"` and sorts it into `g_mmr[]`. On BIOS, the kernel has no firmware memory map. The E820 map in the Multiboot info is not consumed.
+`0x7000` memory summary (UEFI only, `mm_summarize`): u32 magic `0x4D58564E` (`"NVXM"`), then u32 `count | overflow<<31`, then up to `MM_MAX`=170 records of 24 bytes `{u64 start, u64 end, u32 type, u32 0}`. Types are collapsed: 7 stays 7 (conventional), other usable-after-exit types (1, 2, 3, 4) become 4, and the rest keep their UEFI type. Adjacent records of the same type are merged. `mm_load()` (`mem/pmm_vmm.c`) reads it only when `0x502C=="UEFI"` and sorts it into `g_mmr[]`. On BIOS, the kernel has no firmware memory map. The E820 map in the Multiboot info is not consumed.
 
-Other fixed regions the kernel assumes (`kareas()` in `kernel/init/installer.c`, `in_kernel_area()` in `uefiboot.c`):
+Other fixed regions the kernel assumes (`kareas()` in `core/init/installer.c`, `in_kernel_area()` in `uefiboot.c`):
 
 | Range | Use |
 |---|---|
@@ -1887,11 +1843,11 @@ Other fixed regions the kernel assumes (`kareas()` in `kernel/init/installer.c`,
 | `0x0E000000-0x10000000` | module area (DOOM WAD) |
 | `0x10000000-` | heap (relocated by `heap_init` when a UEFI map is known) |
 
-### 2.8 Kernel entry: `kernel/arch/x86_64/boot/boot64.S`
+### 2.8 Kernel entry: `arch/x86_64/boot/boot64.S`
 
 #### Image layout
 
-`kernel/arch/x86_64/kernel64.ld` links the kernel at `0x100000`, with `.text.entry` first so `_start == 0x100000`. `__immutable_end` is defined after `.rodata` (aligned to 16), `.data` follows, `__file_end` closes the loadable part, and `.bss (NOLOAD)` is placed at `0x01300000`. `objcopy -O binary` emits `0x100000..__file_end` as the flat file. `.bss` is not in the file. The linker script names no `.sig` or `.aptramp` section, so `ld` places these orphans itself. In the shipped ELF the result is:
+`arch/x86_64/kernel64.ld` links the kernel at `0x100000`, with `.text.entry` first so `_start == 0x100000`. `__immutable_end` is defined after `.rodata` (aligned to 16), `.data` follows, `__file_end` closes the loadable part, and `.bss (NOLOAD)` is placed at `0x01300000`. `objcopy -O binary` emits `0x100000..__file_end` as the flat file. `.bss` is not in the file. The linker script names no `.sig` or `.aptramp` section, so `ld` places these orphans itself. In the shipped ELF the result is:
 
 | Section | VMA | Size | Notes |
 |---|---|---|---|
@@ -1944,7 +1900,7 @@ The size at +24 is read back by `inst_snapshot_data()` and `ip_run()` in the ins
 
 `gdt64`: null; `0x08` = `0x00209B0000000000` (64-bit code, P, DPL0); `0x10` = `0x0000930000000000` (data). There are two pseudo-descriptors: `gdt64_ptr` (6 bytes, used from 32-bit code) and `gdt64_ptr64` (10 bytes, used from 64-bit code). The per-CPU GDT/TSS (`PCPU->gdt`, `g_tss`) is installed later by the kernel.
 
-### 2.9 `kmain()` step by step (`kernel/init/main.c`)
+### 2.9 `kmain()` step by step (`core/init/main.c`)
 
 | # | Code | What it does |
 |---|---|---|
@@ -1963,7 +1919,7 @@ The size at +24 is read back by `inst_snapshot_data()` and `ip_run()` in the ins
 | 13 | `get_brand()` | CPUID brand string. |
 | 14 | `pci_scan()` | Function 0 of buses 0-3, slots 0-31, into `pci_ven/dev/cls/sub`. |
 | 15 | `pci_quiesce()` | Scans all 256 buses. For each type-0 function of class storage (`01`), network (`02`), multimedia (`04`) or wireless (`0D`), and for serial-bus (`0C`) functions other than SMBus (`0C/05`) and xHCI (`0C/03/30`), it clears the Bus-Master bit in the PCI command register. An xHCI controller is also stopped if its BAR0 is 64-bit and BAR1 is non-zero (located above 4 GiB). This stops DMA the firmware left running. |
-| 16 | `init_windows(); fs_init(); disk_init(); env_init(); vfs_init(); term_init();` | Default window rectangles. Seed RAM files (`readme.txt`, `hello.nvx`, `notes.md`, `noovex.cfg`, `demo.pptx`). `disk_init()` (`fs/nvxfs.c`) locates the system disk and mounts NVX4 when it finds magic `0x3458564E`. Default env (`PATH=/bin`, `HOME`, `USER=root`, `SHELL=/bin/nsh`, ...), procfs, terminal. AHCI/NVMe (`gdisk`) are probed lazily. |
+| 16 | `init_windows(); fs_init(); disk_init(); env_init(); vfs_init(); term_init();` | Default window rectangles. Seed RAM files (`readme.txt`, `hello.nvx`, `notes.md`, `noovex.cfg`, `demo.pptx`). `disk_init()` (`fs/nvx/nvxfs.c`) locates the system disk and mounts NVX4 when it finds magic `0x3458564E`. Default env (`PATH=/bin`, `HOME`, `USER=root`, `SHELL=/bin/nsh`, ...), procfs, terminal. AHCI/NVMe (`gdisk`) are probed lazily. |
 | 17 | `notify()`, `build_bg()` | Welcome toast; wallpaper rendered into `BG`. |
 | 18 | `arch_idt_init()` | Vectors 0-47 go to `isr_stubs`, 48-255 to `isr_ignore`, then `lidt`. |
 | 19 | `apic_virtual_wire()` | UEFI only. Software-enables the LAPIC (or x2APIC via MSRs `0x808/0x80F/0x835/0x836`), sets LINT0=ExtINT and LINT1=NMI, masks the LVT timer. |
@@ -1981,7 +1937,7 @@ The size at +24 is read back by `inst_snapshot_data()` and `ip_run()` in the ins
 
 ### 2.10 Main loop and state machine
 
-`g_state` is declared in `gui/theme.c` with initial value `ST_DESKTOP`, but `kmain` sets `ST_LIVE` before the loop.
+`g_state` is declared in `graphics/theme/theme.c` with initial value `ST_DESKTOP`, but `kmain` sets `ST_LIVE` before the loop.
 
 ```c
 enum { ST_SETUP, ST_LOGIN, ST_DESKTOP, ST_BOOTMENU, ST_RECOVERY, ST_DISKMGR, ST_INSTALL, ST_LIVE };
@@ -2025,14 +1981,14 @@ State transitions found in the code:
 
 ### 2.11 Boot menu, recovery, setup and splash
 
-- `init/bootmenu.c` holds the recovery environment. It has a menu stack (`g_recstack`, depth 5) over four menus: `RM_MAIN` (Continue, Restart, Troubleshoot, Startup Settings, Command Prompt, Turn off), `RM_TROUBLE`, `RM_ADVANCED` and `RM_STARTUP`, with actions `RA_*` handled in `recovery_act()`. Continue to `ST_SETUP`. Safe Mode sets `g_safemode=1`. Command Prompt sets safe mode and `g_rec_openterm=1`. Startup Diagnostics (`g_recmode=1`) lists CPU, RAM, display, IDE, NIC and USB. Reset Display Mode re-reads the `0x5000` block. Restart and shutdown call `power_reboot()`/`power_off()`. Startup Repair, System Restore, Reset PC and UEFI Settings only show info panels (`g_recmode=2`). Startup Repair prints "Kernel image: valid" unconditionally; it does not consult `g_sig_ok`.
-- The synthwave boot menu (`bootmenu_present/input/activate`, in `init/installer.c`) has five items: Desktop to `ST_SETUP`, Safe Mode to `ST_SETUP` with `g_safemode`, Recovery to `ST_RECOVERY`, Install to `ip_open(ST_BOOTMENU)`, and Boot Configuration (shows resolution, CPU and NIC, and toggles safe mode).
-- `init/setup.c` is the first-run wizard with `NSU`=7 pages (language, keyboard, timezone, personalisation, Noovex account, storage, done). `su_apply()` commits the user name, accent, theme and locale choices, enables cloud files if signed in, and calls `nvx_settings_save()`. It also contains the login screen (`login_present/input`).
-- `init/splash.c`: `splash_boot()` is the black wordmark hold called from `kmain`. `synthwave_scene()` (gradient, grid, sun, wordmark) is the background for the boot menu.
+- `core/init/bootmenu.c` holds the recovery environment. It has a menu stack (`g_recstack`, depth 5) over four menus: `RM_MAIN` (Continue, Restart, Troubleshoot, Startup Settings, Command Prompt, Turn off), `RM_TROUBLE`, `RM_ADVANCED` and `RM_STARTUP`, with actions `RA_*` handled in `recovery_act()`. Continue to `ST_SETUP`. Safe Mode sets `g_safemode=1`. Command Prompt sets safe mode and `g_rec_openterm=1`. Startup Diagnostics (`g_recmode=1`) lists CPU, RAM, display, IDE, NIC and USB. Reset Display Mode re-reads the `0x5000` block. Restart and shutdown call `power_reboot()`/`power_off()`. Startup Repair, System Restore, Reset PC and UEFI Settings only show info panels (`g_recmode=2`). Startup Repair prints "Kernel image: valid" unconditionally; it does not consult `g_sig_ok`.
+- The synthwave boot menu (`bootmenu_present/input/activate`, in `core/init/installer.c`) has five items: Desktop to `ST_SETUP`, Safe Mode to `ST_SETUP` with `g_safemode`, Recovery to `ST_RECOVERY`, Install to `ip_open(ST_BOOTMENU)`, and Boot Configuration (shows resolution, CPU and NIC, and toggles safe mode).
+- `core/init/setup.c` is the first-run wizard with `NSU`=7 pages (language, keyboard, timezone, personalisation, Noovex account, storage, done). `su_apply()` commits the user name, accent, theme and locale choices, enables cloud files if signed in, and calls `nvx_settings_save()`. It also contains the login screen (`login_present/input`).
+- `core/init/splash.c`: `splash_boot()` is the black wordmark hold called from `kmain`. `synthwave_scene()` (gradient, grid, sun, wordmark) is the background for the boot menu.
 
 ### 2.12 Kernel signatures and integrity
 
-#### The NVX64SIG block (`kernel/core/buildsig.c`)
+#### The NVX64SIG block (`core/buildsig.c`)
 
 ```c
 __attribute__((aligned(64), used, section(".sig")))
@@ -2063,7 +2019,7 @@ static volatile const struct {
 
 The block is 128 bytes (`.sig` size `0x80`) at file offset 4,802,816, VMA `0x594900`.
 
-#### Stamping (`kernel/build.sh`, step `[6/6]`)
+#### Stamping (`build.sh`, step `[6/6]`)
 
 After `objcopy` produces `build/kernel64.bin`, an inline Python script:
 
@@ -2088,7 +2044,7 @@ file offset 0                      imm_sz (= __immutable_end-0x100000)        le
 - `sha256_full` covers the whole file as written to disk. It can only be checked against an unmodified copy of the file (offline tools, or the installer's boot-time snapshot), not against live memory.
 - `.bss` is never hashed; it is not in the file.
 
-#### Runtime check: `sig_self_check()`, `g_sig_ok`, `g_sig_enforce` (`init/main.c`)
+#### Runtime check: `sig_self_check()`, `g_sig_ok`, `g_sig_enforce` (`core/init/main.c`)
 
 `sig_self_check()` returns 0 in any of these cases:
 
@@ -2113,13 +2069,13 @@ Warning: "Continue" exists so a developer can still boot a locally patched kerne
 
 Other places that report the result:
 
-- Settings (`apps/settings.c`) shows "Integrity check reported a mismatch at boot" with a "Mismatch" badge, instead of "Verified".
-- The `sig` shell command prints the block (magic, version, size, epoch, sha256, builder). It re-runs `sig_self_check()` live, printing `integrity: OK` or `MISMATCH`, and adds `boot check: passed` / `failed`. `arch/x86_64/interrupts.c` forward-declares `sig_self_check`, `g_sig_ok` and `g_sig_tampered` for this.
+- Settings (`apps/system/settings.c`) shows "Integrity check reported a mismatch at boot" with a "Mismatch" badge, instead of "Verified".
+- The `sig` shell command prints the block (magic, version, size, epoch, sha256, builder). It re-runs `sig_self_check()` live, printing `integrity: OK` or `MISMATCH`, and adds `boot check: passed` / `failed`. `arch/x86_64/interrupts/interrupts.c` forward-declares `sig_self_check`, `g_sig_ok` and `g_sig_tampered` for this.
 - `kcheck` prints `passed`, `FAILED - kernel code modified` or `not checked (unstamped build)`.
 
 Tested in QEMU (BIOS and UEFI): an unmodified image boots with `integrity check passed`; an image with one code byte flipped (offset 0x30000) stops at the skull screen, and C continues to the desktop.
 
-#### Installer integrity check (`init/installer.c`)
+#### Installer integrity check (`core/init/installer.c`)
 
 - `inst_snapshot_data()` (step 3 of `kmain`) takes `klen` from the size stamp at `0x100000+24`. If `klen` is outside `[4096, KSNAP_MAX]` it uses `__file_end-0x100000` instead, and if that is still above `KSNAP_MAX` it sets `klen=0`. It then copies `klen` bytes into `g_kimg_snap`. `KSNAP_MAX` is `0x800000` (8 MiB), the same as the build limit, so any kernel that builds can be captured. (Before v8.95 it was 3 MiB; the 5 MB kernel did not fit, `g_kimg_len` stayed 0 and the installer always stopped.)
 - `kimg_check()` redoes both build-time hashes on the snapshot. It works on a temporary copy from `kmalloc(klen)` (it used to be a second static 3 MiB buffer), zeroes `sha256` and hashes `[0, imm)`, compared with `g_buildsig.sha256`. It then also zeroes `sha256_full` and hashes `[0, klen)`, compared with `g_buildsig.sha256_full`. It returns 1 (no hashes) if `sha256_full` is all zero, and -1 if the allocation fails.
@@ -2141,9 +2097,9 @@ def signature_ok(k):
     return (b and a is not False), ...
 ```
 
-- `immutable_size_for(k)` returns `__immutable_end - 0x100000` from `nm kernel/build/kernel64.elf`, but only if `kernel/build/kernel64.bin` is byte-identical to `k`. Otherwise it returns `None` and only the full-file hash is checked; the immutable boundary cannot be known without the matching ELF.
+- `immutable_size_for(k)` returns `__immutable_end - 0x100000` from `nm build/kernel64.elf`, but only if `build/kernel64.bin` is byte-identical to `k`. Otherwise it returns `None` and only the full-file hash is checked; the immutable boundary cannot be known without the matching ELF.
 - `emulate_bios()` builds the real `fat.c`/`config.c`/`string.c` as a 32-bit program, pasting in the partition-selection code from `stage2.c`. It loads the kernel from the ISO's FAT32 partition and checks that the image is flat, `multiboot_header()` finds a valid header in the first 8 KiB, and `signature_ok()` passes. `emulate_uefi()` checks that the kernel on the CD and USB ESPs is identical to the BIOS-path kernel and runs the real `BOOTX64.EFI` in a PE/firmware simulator.
-- `check.py g_static()` runs `signature_ok()` on `kernel/build/kernel64.bin`, where both hashes are checked because the ELF matches.
+- `check.py g_static()` runs `signature_ok()` on `build/kernel64.bin`, where both hashes are checked because the ELF matches.
 
 #### Summary: who checks what
 
@@ -2182,20 +2138,20 @@ NoovexOS 64 has no general-purpose physical page allocator covering all of RAM. 
 
 | Allocator | Region | Granularity | Freed? | Source |
 |---|---|---|---|---|
-| `kmalloc` / `kfree` (heap) | largest clean run at least 128 MiB from `0x10000000` | 16 B (+24 B header) | yes (coalescing) | `mm/heap.c` |
-| `kslab_alloc` (slab) | 8 KiB slabs carved from the heap | 16 B ... 4 KiB classes | to its free list | `mm/slab.c` |
-| `dma_alloc` / `dma_alloc_pages` | DMA arena `0x0B000000-0x0C000000` | 64 B / 4 KiB | never | `mm/pmm_vmm.c` |
-| `pframe_alloc` / `pframe_free` | frame pool `0x0C000000-0x0E000000` | 4 KiB | yes (refcounted) | `mm/pmm_vmm.c` |
+| `kmalloc` / `kfree` (heap) | largest clean run at least 128 MiB from `0x10000000` | 16 B (+24 B header) | yes (coalescing) | `mem/heap.c` |
+| `kslab_alloc` (slab) | 8 KiB slabs carved from the heap | 16 B ... 4 KiB classes | to its free list | `mem/slab.c` |
+| `dma_alloc` / `dma_alloc_pages` | DMA arena `0x0B000000-0x0C000000` | 64 B / 4 KiB | never | `mem/pmm_vmm.c` |
+| `pframe_alloc` / `pframe_free` | frame pool `0x0C000000-0x0E000000` | 4 KiB | yes (refcounted) | `mem/pmm_vmm.c` |
 | fixed `#define` buffers | `0x1090000-0x1240000` | per driver | n/a | drivers |
 | `.bss` statics | `0x00C00000-__bss_end` | n/a | n/a | `arch/x86_64/kernel64.ld` |
 
-The memory code is five units: `lib/mem.c`, `mm/heap.c`, `mm/pmm_vmm.c`, `mm/slab.c` and `mm/heap_api.c`. Other units reach the allocators through their interface headers (`include/nvx/mm/heap.h`, `include/nvx/mm/pmm_vmm.h` and so on).
+The memory code is five units: `lib/base/mem.c`, `mem/heap.c`, `mem/pmm_vmm.c`, `mem/slab.c` and `mem/heap_api.c`. Other units reach the allocators through their interface headers (`include/nvx/mem/heap.h`, `include/nvx/mem/pmm_vmm.h` and so on).
 
 ---
 
 ### 3.1 Boot order
 
-`kmain` (`init/main.c`) sets memory up in this order:
+`kmain` (`core/init/main.c`) sets memory up in this order:
 
 ```c
 { extern char __bss_end[]; extern char boot_pt_end[];          /* zero .bss but keep the boot page tables */
@@ -2210,7 +2166,7 @@ pframe_init();                   /* frame pool; enabled only if g_ram_mb >= 272 
 if(mm_known()){ ... if(mm_area_conflicts()) klog("memory: WARNING ...run memmap"); }
 ```
 
-`detect_ram_mb` (`apps/files_classic.c`) returns `g_uefi_ram_mb`, capped at 4032, when the UEFI loader supplied one. Otherwise it writes and reads back a pattern at every 64 MiB step from 128 MiB to 4032 MiB and stops at the first step that fails. The result never exceeds 4032 MiB, which matches the 4 GiB identity map.
+`detect_ram_mb` (`apps/system/files_classic.c`) returns `g_uefi_ram_mb`, capped at 4032, when the UEFI loader supplied one. Otherwise it writes and reads back a pattern at every 64 MiB step from 128 MiB to 4032 MiB and stops at the first step that fails. The result never exceeds 4032 MiB, which matches the 4 GiB identity map.
 
 ---
 
@@ -2218,7 +2174,7 @@ if(mm_known()){ ... if(mm_area_conflicts()) klog("memory: WARNING ...run memmap"
 
 #### 3.2.1 Producer: UEFI loader
 
-`source/bootloader/uefi/uefiboot.c` calls `mm_summarize()` after `ExitBootServices` succeeds. The function reduces the EFI map to at most `MM_MAX = 170` regions:
+`boot/uefi/uefiboot.c` calls `mm_summarize()` after `ExitBootServices` succeeds. The function reduces the EFI map to at most `MM_MAX = 170` regions:
 
 - Type 7 (`EfiConventionalMemory`) stays 7.
 - Types 1-4 (loader code/data, boot-services code/data; see `usable_after_exit`) become 4, meaning "usable, but the firmware used it before boot".
@@ -2235,7 +2191,7 @@ The loader copies this summary to physical `0x7000`:
 
 The loader also works out how much RAM is usable. It starts at `0x10000000`, or at 1 MiB if nothing is usable there, and extends through contiguous usable regions. The end of that run, in MiB, goes to `0x5028` as `g_uefi_ram_mb`. The loader warns when non-usable firmware memory overlaps a kernel area (`{0x5000,0x8000}`, `{0x100000,0x980000}`, `{0x980000,0xC00000}`, `{0xC00000,kbss}`, `{0x10000000,0x11000000}`). It refuses to boot if the loader image or its stack lies where the kernel or the boot information must go.
 
-#### 3.2.2 Consumer: `mm_load` and queries (`mm/pmm_vmm.c`)
+#### 3.2.2 Consumer: `mm_load` and queries (`mem/pmm_vmm.c`)
 
 ```c
 typedef struct { u64 s,e; u32 t; } mmreg;
@@ -2258,7 +2214,7 @@ static mmreg g_mmr[MMR_MAX]; static int g_mmr_n=0, g_mmr_over=0;
 
 `mm_skip_bad` matters most: the DMA arena uses it so that no buffer lands in memory the firmware has used (section 3.6). `pframe_init` uses `mm_is_clean` per frame for the same reason.
 
-#### 3.2.3 Diagnostics (`init/installer.c`)
+#### 3.2.3 Diagnostics (`core/init/installer.c`)
 
 `kareas()` lists the kernel's own areas: boot information, kernel image and stack, USB and disk buffers, page tables and kernel data, DMA arena, page pool, module area, and heap. The DMA arena and page pool are marked `skips`, because they route around bad ranges instead of failing on them. `mm_area_conflicts()` counts non-`skips` areas that overlap non-usable firmware memory; `kmain` logs a warning if any do, and the installer refuses to run. The `memmap` shell command prints the firmware map below 4 GiB, each area with `ok`, `OVERLAPS` or `skips`, the heap range and its sizing mode, `dma_cur`, and the free frame count. `memtest` walks the heap block headers (checking `HBLK_MAGIC`), then fills free DMA-arena space, free frame-pool runs, the module area if unused, and up to 16 x 16 MiB `kmalloc` blocks with an address hash. It reads them back immediately and again after 3 s.
 
@@ -2270,10 +2226,10 @@ All addresses are physical, and also virtual through the identity map.
 
 | Range | Use | Defined in |
 |---|---|---|
-| `0x5000-0x5040` | Boot information block (64 B, details below) | `boot64.S`, `uefiboot.c`, `init/main.c` |
+| `0x5000-0x5040` | Boot information block (64 B, details below) | `boot64.S`, `uefiboot.c`, `core/init/main.c` |
 | `0x6000-0x6088` | Multiboot-style info from the UEFI loader; RSDP at `+120`, `'RSDP'` magic at `+128` | `uefiboot.c`, `core/power.c` (`acpi` RSDP lookup) |
 | `0x7000-0x7FF8` | Firmware memory-map summary (`NVXM`, 8 + 170x24 B) | `uefiboot.c`, `mm_load` |
-| `0x8000-...` | AP start-up trampoline (copied from `ap_tramp_start`) | `arch/x86_64/smp.c`, `ap_trampoline.S` |
+| `0x8000-...` | AP start-up trampoline (copied from `ap_tramp_start`) | `arch/x86_64/smp/smp.c`, `ap_trampoline.S` |
 | `0x8FD8` / `0x8FE0` / `0x8FF0` / `0x8FF8` | AP parameter block: CPU index, stack top, CR3, `ap_main` | `smp.c` |
 | `0xE0000-0x100000` | Read only: scanned in 16-byte steps for the BIOS MP table | `smp.c` line 5 |
 | `0x100000` | Kernel load address and `_start` (`. = 0x100000` in `kernel64.ld`); byte 24 holds the size stamp | `kernel64.ld`, `boot64.S` |
@@ -2286,14 +2242,14 @@ All addresses are physical, and also virtual through the identity map.
 | `0x1230000-0x1235000+` | NVMe: ASQ, ACQ, I/O SQ `0x1232000`, I/O CQ `0x1233000`, Identify `0x1234000`, data `NVME_BUF 0x1235000` | `drivers/storage/nvme.c` |
 | `0x1300000` | `__bss_start`. First come the boot page tables `pml4`, `pdpt`, `pd0-pd3` and `pdfb` (8 KiB), ending at `boot_pt_end = 0x1308000`. Then all kernel statics, including `SCENE`/`BG` (1920x1080x4 B each), `FS[]`, `pf_bitmap`/`pf_ref`, `g_ap_stacks`, `g_pstack`, and since v9.11 the TLS scratch buffers (`g_tls_inner`, `g_tls_rec`, `g_tls_rb`, `g_tls_mch`) and the HTTPS `g_tls_io`, which used to sit at fixed addresses `0x908000`-`0x930000` | `boot64.S`, `kernel64.ld`, `lib/crypto/nvxtls.c` |
 | `__bss_end` (must be at most `0x09800000`) | The linker `ASSERT` fails the build if `.bss` grows past this; in the v9.11 `build/kernel64.elf`, `__bss_end = 0x7D7ADB0` | `kernel64.ld` |
-| `0x0B000000-0x0C000000` | DMA arena, 16 MiB (`DMA_ARENA_BASE/TOP`) | `mm/pmm_vmm.c` |
-| `0x0C000000-0x0E000000` | Frame pool, 32 MiB = 8192 frames (`PF_BASE/PF_TOP`) | `mm/pmm_vmm.c` |
-| `0x0E000000-0x10000000` | Module area. The Multiboot path copies the first module (the Doom WAD) here and records its address and size at `0x5010`/`0x5018` | `boot64.S`, `apps/doom.c` |
-| `0x10000000-...` | Default heap base; the actual range depends on the firmware map (section 3.5) | `mm/heap.c` |
+| `0x0B000000-0x0C000000` | DMA arena, 16 MiB (`DMA_ARENA_BASE/TOP`) | `mem/pmm_vmm.c` |
+| `0x0C000000-0x0E000000` | Frame pool, 32 MiB = 8192 frames (`PF_BASE/PF_TOP`) | `mem/pmm_vmm.c` |
+| `0x0E000000-0x10000000` | Module area. The Multiboot path copies the first module (the Doom WAD) here and records its address and size at `0x5010`/`0x5018` | `boot64.S`, `apps/games/doom.c` |
+| `0x10000000-...` | Default heap base; the actual range depends on the firmware map (section 3.5) | `mem/heap.c` |
 | Framebuffer (`*(u64*)0x5000`) | Linear framebuffer; mapped explicitly when above 4 GiB (section 3.4) | `boot64.S` |
 | LAPIC `0xFEE00000` (default), HPET, ECAM, ... | MMIO below 4 GiB through the identity map; above 4 GiB through `acpi_hi_map` | `smp.c`, `hrtimer.c`, `acpi_dev.c` |
 
-Note: the comment at the top of `mm/pmm_vmm.c` says the frame pool covers "160 MB .. 256 MB". The code defines 192-224 MiB.
+Note: the comment at the top of `mem/pmm_vmm.c` says the frame pool covers "160 MB .. 256 MB". The code defines 192-224 MiB.
 
 Boot information block at `0x5000`, as read by `kmain` and written by `uefiboot.c` and `boot64.S`. The header comment in `boot64.S` describes an older layout and is out of date.
 
@@ -2347,7 +2303,7 @@ static u64 acpi_hi_map(u64 pa){
 
 ---
 
-### 3.5 Kernel heap (`mm/heap.c`, `mm/heap_api.c`)
+### 3.5 Kernel heap (`mem/heap.c`, `mem/heap_api.c`)
 
 #### Sizing: `heap_init(ram_mb)`
 
@@ -2384,17 +2340,17 @@ heap_base                                   heap_cur                 heap_top
 - `kcalloc(a,b)`: `kmalloc(a*b)` plus zeroing. It does not check `a*b` for overflow.
 - Every list walk is bounded at 1,000,000 iterations so that a damaged list cannot hang the kernel.
 
-`mm/heap_api.c` exports `malloc`, `free`, `realloc` and `calloc` as non-static aliases, so that ported C libraries (Lua, ntfs-3g, zstd, ...) link unchanged. It also defines `heap_used()`, the sum of used block sizes; unlike the allocator, it walks without `hblk_ok` and without a bound. The `mem` command prints the heap base, total size, bytes in use, bytes reserved (`heap_cur - heap_base`), and the result of a 1 MiB allocate/write/free self-test. Large consumers allocate on first use; for example `apps/doom.c` takes `kmalloc(24 MiB)` for Doom's private heap.
+`mem/heap_api.c` exports `malloc`, `free`, `realloc` and `calloc` as non-static aliases, so that ported C libraries (Lua, ntfs-3g, zstd, ...) link unchanged. It also defines `heap_used()`, the sum of used block sizes; unlike the allocator, it walks without `hblk_ok` and without a bound. The `mem` command prints the heap base, total size, bytes in use, bytes reserved (`heap_cur - heap_base`), and the result of a 1 MiB allocate/write/free self-test. Large consumers allocate on first use; for example `apps/games/doom.c` takes `kmalloc(24 MiB)` for Doom's private heap.
 
 #### High-memory extension
 
 The low arena is bounded below 4 GiB, but a laptop's usable RAM mostly sits above 4 GiB, and the sub-4 GiB window is further eaten by the PCI hole, the kernel image and the sysroot overlay. A large `sudo apt install` needs transient RAM per package (the downloaded `.deb`, the decompressed `data.tar`, the package index), and on the live ISO the writable filesystem is RAM-backed as well. Confined to the low arena, these exhausted it and failed with `E: out of space or memory while unpacking` even though gigabytes above 4 GiB were free.
 
-`kmalloc` therefore keeps a small table of extra arenas. When neither the free list nor the low arena can satisfy a request, it rounds the request up (at least a 64 MiB chunk, 2 MiB-aligned) and calls `hp_alloc_run(pages)` in `mm/pmm_vmm.c`, which scans the high frame pool for a contiguous run of free frames within one region, marks them used, zeroes them, and returns the base. Because `mm_map_high` identity-maps every high RAM region with 2 MiB pages at boot, that physical base is directly usable as a kernel pointer. The run becomes a new bump arena; later allocations fill the low arena and every high arena that has room. `hblk_ok` (used by `kfree`, `krealloc` and the list walks) accepts a pointer in the low arena or in any high arena, so frees and coalescing work uniformly across them. Coalescing never merges across arenas, since the physical-adjacency test in `kfree` only joins neighbours within one contiguous run.
+`kmalloc` therefore keeps a small table of extra arenas. When neither the free list nor the low arena can satisfy a request, it rounds the request up (at least a 64 MiB chunk, 2 MiB-aligned) and calls `hp_alloc_run(pages)` in `mem/pmm_vmm.c`, which scans the high frame pool for a contiguous run of free frames within one region, marks them used, zeroes them, and returns the base. Because `mm_map_high` identity-maps every high RAM region with 2 MiB pages at boot, that physical base is directly usable as a kernel pointer. The run becomes a new bump arena; later allocations fill the low arena and every high arena that has room. `hblk_ok` (used by `kfree`, `krealloc` and the list walks) accepts a pointer in the low arena or in any high arena, so frees and coalescing work uniformly across them. Coalescing never merges across arenas, since the physical-adjacency test in `kfree` only joins neighbours within one contiguous run.
 
 The extension depends on the high frame pool being up (`pf_ready`, RAM at least 500 MiB), which `hp_init` validates at boot with a three-point write/read probe before the pool is used. Drivers that need a buffer below 4 GiB for 32-bit DMA use `dma_alloc` (section 3.6), not `kmalloc`, and their init-time allocations run while the low arena is still plentiful, so they are unaffected.
 
-#### Slab allocator (`mm/slab.c`)
+#### Slab allocator (`mem/slab.c`)
 
 ```c
 #define SLAB_BACKING 8192ULL
@@ -2427,13 +2383,13 @@ The arena is a bump allocator over 16 MiB of identity-mapped memory below 4 GiB,
 
 | Caller | Purpose |
 |---|---|
-| `drivers/wifi/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
+| `drivers/net/wifi/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
 | `shell/commands.c` (`RXNUM`/`BENUM` rings) | Wi-Fi RX and beacon rings |
 | `drivers/usb/xhci.c` | xHCI scratchpad buffers when a controller needs more than 32 |
 | `drivers/video/nvidia/nvdisp.c` | display push buffer |
 | `drivers/acpi/acpi_dev.c` | `acpi_hi_map` page directories |
 | `core/proc/elf.c` | `nvx_dlload` module images and `nvx_alloc` for modules |
-| `core/kapi.c` | `kapi_dma_pages` for loadable driver modules |
+| `sys/native/kapi.c` | `kapi_dma_pages` for loadable driver modules |
 
 ---
 
@@ -2456,7 +2412,7 @@ The pool has two parts. Frame numbers below `PF_N` are the fixed 32 MiB at `PF_B
 - `pframe_free(pa)` ignores addresses outside the pool and frames not marked used. If `pf_ref > 1` it only decrements; otherwise it clears the bit.
 - `pframe_ref(pa)` adds a reference to an allocated frame, saturating at `0xFFFF`.
 - `pframe_refs(pa)` returns the reference count. It returns 1 for any address outside the pool, so the copy-on-write code treats those pages as unshared.
-- `pframe_free_count()` returns `pf_n - pf_used`, or 0 when the pool is off. It is used for the ENOMEM checks in `mmap` and `brk`, and as `freeram` in Linux `sysinfo` (`core/linux.c`).
+- `pframe_free_count()` returns `pf_n - pf_used`, or 0 when the pool is off. It is used for the ENOMEM checks in `mmap` and `brk`, and as `freeram` in Linux `sysinfo` (`sys/linux/linux.c`).
 
 The pool supplies every user page, every user page-table level (PML4/PDPT/PD/PT), and shared-memory segments (`shm_get_k` in `core/proc/sched.c`). Code that walks frames by number (the installer's memory test, the `mem` command) uses `pf_n` and `pf_pa`; code that asks "is this a pool frame" (copy-on-write in `vm_clone_user`) uses `pf_owned`.
 
@@ -2464,7 +2420,7 @@ Before v8.97 the pool was only the fixed 32 MiB, whatever the RAM size, so a sin
 
 ---
 
-### 3.8 Virtual memory (`mm/pmm_vmm.c`, `core/proc/jobs.c`)
+### 3.8 Virtual memory (`mem/pmm_vmm.c`, `core/proc/jobs.c`)
 
 #### PTE format
 
@@ -2529,7 +2485,7 @@ Cases 3 and 4 then call `pframe_ref(pa)`. If any parent PTE changed and the pare
 
 #### CR0.WP
 
-`arch_fpu_init` (`arch/x86_64/cpu_init.c`), which runs on the BSP from `kmain` and on each AP from `smp_sched.c`, sets CR0 bit 16 (WP). Ring-0 writes to read-only user pages therefore fault too. Before the kernel writes through a user pointer it calls `jc_umapped(p,n)` (`jobs.c`). This checks that the range lies in the user window, faults in lazy and COW pages with `vm_fault_user(cr3, v, 1)`, and requires `(e & 5) == 5` (present and user).
+`arch_fpu_init` (`arch/x86_64/cpu/cpu_init.c`), which runs on the BSP from `kmain` and on each AP from `smp_sched.c`, sets CR0 bit 16 (WP). Ring-0 writes to read-only user pages therefore fault too. Before the kernel writes through a user pointer it calls `jc_umapped(p,n)` (`jobs.c`). This checks that the range lies in the user window, faults in lazy and COW pages with `vm_fault_user(cr3, v, 1)`, and requires `(e & 5) == 5` (present and user).
 
 ---
 
@@ -2573,7 +2529,7 @@ User space is the single PML4 slot 8, `0x400_0000_0000-0x7FF_FFFF_FFFF` (4 TiB-8
 
 ---
 
-### 3.10 `mmap`, `munmap`, `brk` (`core/linux.c`)
+### 3.10 `mmap`, `munmap`, `brk` (`sys/linux/linux.c`)
 
 | Linux nr | Handler | Behaviour |
 |---|---|---|
@@ -2637,7 +2593,7 @@ No reclaim path frees frames for user memory. `fs_evict` (section 3.12) gives ba
 
 ---
 
-### 3.12 File-system memory (`fs/ramfs.c`)
+### 3.12 File-system memory (`fs/vfs/ramfs.c`)
 
 Every file lives in `FS[FS_N = 1024]` (`FsFile`). Its contents are a single contiguous `kmalloc` buffer, `data`, holding `len` bytes plus a NUL, with `cap` the allocated size. Disk backends (NVX4 or the root file system) load contents on demand.
 
@@ -2645,7 +2601,7 @@ Every file lives in `FS[FS_N = 1024]` (`FsFile`). Its contents are a single cont
 |---|---|
 | `fs_reserve(k, need)` | Returns at once if `cap > need`. Otherwise the new capacity is `cap * 1.5`, or 64 for an empty file, at least `need+1`, at most `FS_CAP+1` (1 GiB), rounded up to 64. If that allocation fails it retries with exactly `need+64`. It copies `min(len, nc-1)` bytes and frees the old buffer |
 | `fs_alloc(k, n)` | `kmalloc`; on failure `fs_evict(n+4096, k)` and one retry |
-| `fs_evict(want, keep)` | Two passes over all files. It skips `keep`, files with no data, lazy or dirty (`!clean`) files, files touched within the last 64 (pass 0) or 8 (pass 1) `fs_ensure` ticks, open files, and files that `fs_reloadable` (`fs/nvx4.c`) rejects: orphans, no disk, files in a tmp directory, or NVX4 files not fully stored. Evicted files have their buffer freed and `lazy = 1` |
+| `fs_evict(want, keep)` | Two passes over all files. It skips `keep`, files with no data, lazy or dirty (`!clean`) files, files touched within the last 64 (pass 0) or 8 (pass 1) `fs_ensure` ticks, open files, and files that `fs_reloadable` (`fs/nvx/nvx4.c`) rejects: orphans, no disk, files in a tmp directory, or NVX4 files not fully stored. Evicted files have their buffer freed and `lazy = 1` |
 | `fs_ensure(k)` | Bumps `tick` (LRU). If lazy, it reloads with `fs_backend_load` (`nk_root_read` or `n4_read_file`) and marks the file clean. If there is no data, it allocates a zero-filled buffer |
 | `fsd(k)` | Returns `fs_ensure(k)` data, or the static 64 KiB `g_fs_zero` on failure |
 | `fs_set` | Frees an oversized buffer (`cap > n + cap/2 + 64 KiB`) before writing |
@@ -2671,7 +2627,7 @@ The file cache and every other `kmalloc` user share one heap. When an allocation
 | User stack | up to 256 pages, 1 MiB (2 eager, the rest lazy) | `JS_STK_PAGES` |
 | `brk` heap | 32 MiB | `lx_brk` |
 | Single `mmap` | 1 GiB, and no more pages than free frames | `lx_mmap` |
-| RAM file size | 1 GiB (`FS_CAP`), 1024 files | `fs/ramfs.c` |
+| RAM file size | 1 GiB (`FS_CAP`), 1024 files | `fs/vfs/ramfs.c` |
 
 ### 3.14 Memory above 4 GiB
 
@@ -2691,7 +2647,7 @@ Before v9.14 the kernel identity-mapped only the first 4 GiB (`boot64.S`) and ca
 
 `detect_ram_mb` now returns the sum of all usable regions (types 7 and 4) when a map is known, so `g_ram_mb`, `/proc/meminfo` and Settings show the real size. `heap_init` clamps the heap top to `0xFC000000` so a large RAM size never pushes the heap above 4 GiB.
 
-#### Mapping: `mm_map_high` (`mm/pmm_vmm.c`)
+#### Mapping: `mm_map_high` (`mem/pmm_vmm.c`)
 
 For every 1 GiB slot from 4 GiB to 512 GiB whose PDPT entry is empty and that overlaps usable RAM, a page directory is taken from the heap (one 4 KiB page per slot, 64 KiB for 16 GiB, 512 KiB for 128 GiB). Each 2 MiB entry that overlaps usable RAM is mapped (`0x83`: present, writable, large page). Slots already in use (the framebuffer window, `acpi_hi_map`) are left alone. MMIO between RAM regions is not mapped.
 
@@ -2719,7 +2675,7 @@ Since v9.22 the low memory map is:
 |---|---|
 | 1 MiB - 101 MiB | kernel image (`ASSERT(__file_end <= 0x06500000)` in `kernel64.ld`, `assert len(b) <= 104857600` in `build.sh`) |
 | 152 - 154 MiB | boot stack (top `0x09A00000`, `boot64.S`) |
-| 154 - 156 MiB | fallback for the 2 MB device window (`DMW_FIXED`, `include/nvx/mm/dmawin.h`). Since v9.81 `dmw_init()` normally takes the window from the DMA arena instead; offsets inside it: xHCI rings 0x10000, HID areas 0x80000, USB stick 0xD0000, AHCI 0x180000, identify buffers 0x1A0000, VirtualBox request 0x1A1000, NVMe 0x1B0000, PCnet 0x1D0000 |
+| 154 - 156 MiB | fallback for the 2 MB device window (`DMW_FIXED`, `include/nvx/mem/dmawin.h`). Since v9.81 `dmw_init()` normally takes the window from the DMA arena instead; offsets inside it: xHCI rings 0x10000, HID areas 0x80000, USB stick 0xD0000, AHCI 0x180000, identify buffers 0x1A0000, VirtualBox request 0x1A1000, NVMe 0x1B0000, PCnet 0x1D0000 |
 | 176 - 192 MiB | DMA arena (unchanged) |
 | 192 - 224 MiB | frame pool (unchanged) |
 | 224 - 256 MiB | module area for the Doom WAD (unchanged) |
@@ -2738,13 +2694,13 @@ The frame pool now needs 500 MiB of RAM, because the heap it grows from starts a
 
 ## Part 4: CPU, interrupts, timers and multi-core
 
-This part describes everything between the bare CPU and the scheduler: the inline CPU helpers, descriptor tables, the interrupt and system-call entry paths, the legacy PIC/PIT, the high-resolution timers, and the symmetric-multiprocessing (SMP) layer with its big kernel lock. All paths are relative to `source/kernel/`. Each `.c` file is its own compilation unit with an interface header under `include/nvx/` (Part 1, section 3); functions another unit calls are declared there, everything else stays `static`. The four assembly files (`boot64.S`, `isr64.S`, `userspace.S`, `ap_trampoline.S`) are separate objects as before.
+This part describes everything between the bare CPU and the scheduler: the inline CPU helpers, descriptor tables, the interrupt and system-call entry paths, the legacy PIC/PIT, the high-resolution timers, and the symmetric-multiprocessing (SMP) layer with its big kernel lock. All paths are relative to the repository root. Each `.c` file is its own compilation unit with an interface header under `include/nvx/` (Part 1, section 3); functions another unit calls are declared there, everything else stays `static`. The four assembly files (`boot64.S`, `isr64.S`, `userspace.S`, `ap_trampoline.S`) are separate objects as before.
 
-Include order matters for this part. `arch/x86_64/cpu.h` and `arch/x86_64/percpu.c` come first (`kernel64.c` lines 25-26), so every later file can use `PCPU`, `cpu_id()` and the BKL. `ring3.c` and `smp.c` come early, `interrupts.c` and `core/panic.c` come in the middle, `hrtimer.c` comes late, and `smp_sched.c` and `cpu_init.c` come last, just before `init/main.c`.
+Include order matters for this part. `arch/x86_64/cpu/cpu.h` and `arch/x86_64/cpu/percpu.c` come first (`kernel64.c` lines 25-26), so every later file can use `PCPU`, `cpu_id()` and the BKL. `ring3.c` and `smp.c` come early, `interrupts.c` and `core/panic.c` come in the middle, `hrtimer.c` comes late, and `smp_sched.c` and `cpu_init.c` come last, just before `core/init/main.c`.
 
 ---
 
-### 4.1 `arch/x86_64/cpu.h`, the CPU interface
+### 4.1 `arch/x86_64/cpu/cpu.h`, the CPU interface
 
 `cpu.h` is the only header portable code uses for privileged instructions. `tools/check.py` rejects inline assembly outside `arch/`, and `tools/tests/linux/cpu_host.h` provides host stand-ins for the Linux-hosted test build. Every helper is `static inline`.
 
@@ -2759,31 +2715,31 @@ Include order matters for this part. `arch/x86_64/cpu.h` and `arch/x86_64/percpu
 | `cpu_irq_save` | `pushfq; popq; cli` | returns RFLAGS |
 | `cpu_irq_restore(f)` | `sti` if `f & 0x200` | restores IF only |
 | `cpu_get_pt` / `cpu_set_pt` | `mov cr3` | writing CR3 flushes the TLB (no CR4.PGE is set anywhere, so there are no global pages) |
-| `cpu_flush_page(v)` | `invlpg (v)` | `mm/pmm_vmm.c` `vm_map`/`vm_unmap`/COW, `core/linux.c` munmap |
-| `cpu_cache_flush` | `wbinvd` | `apps/files_classic.c` |
+| `cpu_flush_page(v)` | `invlpg (v)` | `mem/pmm_vmm.c` `vm_map`/`vm_unmap`/COW, `sys/linux/linux.c` munmap |
+| `cpu_cache_flush` | `wbinvd` | `apps/system/files_classic.c` |
 | `cpu_tsc` | `rdtsc` | |
-| `cpu_rand32` / `cpu_seed32` | `rdrand` / `rdseed` + `setc` | return CF; used by `net/http.c`, `nvxcrypto2.c` |
+| `cpu_rand32` / `cpu_seed32` | `rdrand` / `rdseed` + `setc` | return CF; used by `net/http/http.c`, `nvxcrypto2.c` |
 | `cpu_cpuid(leaf,sub,...)` | `cpuid` | |
 | `cpu_sp` | `mov rsp` | |
 | `cpu_fpu_save` / `cpu_fpu_restore` | `fxsave` / `fxrstor` | per-process `fx` area in `jc_enter` / `jc_leave` |
 | `cpu_bios_ebda_seg` | `movw 0x40E` | BDA EBDA segment, `core/power.c` RSDP scan |
 | `cpu_triple_fault` | `lidt` of a null IDT, then `int3` | last-resort reboot (`core/power.c`) |
 | `cpu_rdmsr` / `cpu_wrmsr` | `rdmsr` / `wrmsr` | |
-| `cpu_set_fsbase(v)` | `wrmsr 0xC0000100` (FS_BASE) | `arch_prctl(ARCH_SET_FS)` in `core/linux.c` case 158 |
+| `cpu_set_fsbase(v)` | `wrmsr 0xC0000100` (FS_BASE) | `arch_prctl(ARCH_SET_FS)` in `sys/linux/linux.c` case 158 |
 | `cpu_percpu()` | `mov %gs:16, ...` | reads `pcpu.self` (see 4.9) |
 | `cpu_set_percpu(p)` | `wrmsr 0xC0000101 = p`, `wrmsr 0xC0000102 = 0` | GS_BASE = per-CPU block, KERNEL_GS_BASE = 0 |
 | `cpu_cr2` | `mov cr2` | page-fault address |
-| `cpu_copy(d,s,n)` | `rep movsb` | `fs/ramfs.c` `kmemcpy` |
+| `cpu_copy(d,s,n)` | `rep movsb` | `fs/vfs/ramfs.c` `kmemcpy` |
 
 `cpu_set_percpu` puts the per-CPU pointer in the *active* GS base and zero in the *shadow* one. The first `swapgs` on the way to ring 3 swaps them, so user code always runs with GS base 0 and the kernel pointer waits in KERNEL_GS_BASE until the next entry.
 
 ---
 
-### 4.2 `arch/x86_64/cpu_init.c`
+### 4.2 `arch/x86_64/cpu/cpu_init.c`
 
 #### `arch_fpu_init`
 
-The BSP calls this early in `kmain` (`init/main.c`, after `percpu_init_bsp` and `mm_load`), and every AP calls it again in `ap_entry_c`.
+The BSP calls this early in `kmain` (`core/init/main.c`, after `percpu_init_bsp` and `mm_load`), and every AP calls it again in `ap_entry_c`.
 
 ```c
 cr0 &= ~(1<<2);            /* EM=0: x87/SSE not emulated            */
@@ -2793,7 +2749,7 @@ g_ssse3 = (cpuid(1).ecx >> 9) & 1;
 fninit; ldmxcsr 0x1F80;    /* all SSE exceptions masked             */
 ```
 
-Bit 16 is CR0.WP (Write Protect), not NE. With WP set, kernel writes to read-only user pages also fault, which the copy-on-write logic in `mm/pmm_vmm.c` relies on. `g_ssse3` selects SIMD paths (`simd.h`). XSAVE and AVX are not enabled. Only `fxsave` state is managed.
+Bit 16 is CR0.WP (Write Protect), not NE. With WP set, kernel writes to read-only user pages also fault, which the copy-on-write logic in `mem/pmm_vmm.c` relies on. `g_ssse3` selects SIMD paths (`simd.h`). XSAVE and AVX are not enabled. Only `fxsave` state is managed.
 
 #### `apic_virtual_wire`
 
@@ -2821,9 +2777,9 @@ Other gates are filled in later (see 4.4). There is one IDT, `static struct idt_
 
 ---
 
-### 4.3 GDT, selectors, TSS and IST stacks (`arch/x86_64/ring3.c`)
+### 4.3 GDT, selectors, TSS and IST stacks (`arch/x86_64/user/ring3.c`)
 
-At boot the kernel runs on the bootloader's GDT. `us_init()` installs the final GDT the first time anything needs ring 3. It is called from `ring3_run`, `elf.c`, `sched.c`, `jobs.c` (`jc_enter`), `core/syscall.c`, the shell, and every AP's `ap_entry_c`. `us_init` returns early if `g_us_ready` is set. Because `g_us_ready`, `g_gdt`, `g_gdtp` and `g_tss` are all per-CPU macros (4.9), each core builds and loads its own GDT and TSS exactly once.
+At boot the kernel runs on the bootloader's GDT. `us_init()` installs the final GDT the first time anything needs ring 3. It is called from `ring3_run`, `elf.c`, `sched.c`, `jobs.c` (`jc_enter`), `sys/native/syscall.c`, the shell, and every AP's `ap_entry_c`. `us_init` returns early if `g_us_ready` is set. Because `g_us_ready`, `g_gdt`, `g_gdtp` and `g_tss` are all per-CPU macros (4.9), each core builds and loads its own GDT and TSS exactly once.
 
 `gdt_set(i, base, limit, access, flags)` packs a legacy 8-byte descriptor into `g_gdt[i]`.
 
@@ -2851,7 +2807,7 @@ After that, `us_init` calls `idt_set128()`, `lsys_init()`, `idt_use_ist(2,1)` an
 
 ---
 
-### 4.4 IDT gates and the vector map (`arch/x86_64/interrupts.c`)
+### 4.4 IDT gates and the vector map (`arch/x86_64/interrupts/interrupts.c`)
 
 ```c
 struct idt_entry{ u16 lo; u16 sel; u8 ist; u8 attr; u16 mid; u32 hi; u32 z; };
@@ -2949,7 +2905,7 @@ void isr_dispatch(regs_t*r){
 2. Other exceptions (< 32). If `g_js_running` is set and the fault came from ring 3, `jc_fault(r)` runs. It saves the frame into the job's `ctx` and maps the vector to a signal: 0/16/19 to SIGFPE (8), 6 to SIGILL (4), 1/3 to SIGTRAP (5), anything else to SIGSEGV (11). If the signal is unhandled or masked, the job is finished; otherwise the signal is marked pending. Then `jc_leave()` runs. Any kernel-mode exception calls `panic(r,0)`.
 3. `HR_LAPIC_VEC` (BSP, user mode) to `hr_lapic_isr()`.
 4. IRQ0 (PIT). If a job is in ring 3, `jc_timer(r)` runs. It preempts after two ticks (`g_ticks - g_js_slice >= 2`): it saves `ctx`, sends `pic_eoi(0)` and calls `jc_leave()`. The older demo scheduler (`g_preempt_on`, used by `preempt`/`ipc`/`compositor`) round-robins over `g_proc[]`. It copies the frame into `g_proc[cur].ctx`, sets `g_tss.rsp0`, loads the next CR3 and overwrites `*r`, so `isr_common` irets into the next process. If no process is left, it calls `k_longjmp(g_preempt_kern,1)`.
-5. IRQ1 / IRQ12 to `ps2_byte()` (keyboard and mouse share one byte reader in `drivers/input/ps2.c`).
+5. IRQ1 / IRQ12 to `ps2_byte()` (keyboard and mouse share one byte reader in `drivers/input/ps2/ps2.c`).
 6. EOI. `pic_eoi(irq)` runs unless the vector is 255 (`isr_ignore`). EOI is sent to the slave for IRQ at least 8, then always to the master.
 
 #### RSOD (`core/panic.c`)
@@ -2977,11 +2933,11 @@ static void pic_remap(void){
 static void pit_init(u32 hz){ div=1193182/hz; outb(0x43,0x36); lo; hi; }  /* ch0, mode 3 */
 ```
 
-`kmain` runs `pic_remap(); pit_init(100);`, so `g_ticks` advances at 100 Hz (10 ms per tick). `g_ticks` is a `volatile u64` defined in `net/http.c` and declared in `include/nvx/net/http.h`. Everything else (USB, NVMe, Wi-Fi) is polled, so only IRQ 0, 1, 2 and 12 are unmasked.
+`kmain` runs `pic_remap(); pit_init(100);`, so `g_ticks` advances at 100 Hz (10 ms per tick). `g_ticks` is a `volatile u64` defined in `net/http/http.c` and declared in `include/nvx/net/http/http.h`. Everything else (USB, NVMe, Wi-Fi) is polled, so only IRQ 0, 1, 2 and 12 are unmasked.
 
-After `cpu_irq_on()`, `kmain` checks that ticks are actually arriving. If `g_ticks` does not move within 3,000,000 pauses, it clears `g_ticks_live` and the main loop calls `pit_poll_tick()` instead (`init/main.c`). That function latches channel 0 and counts reloads.
+After `cpu_irq_on()`, `kmain` checks that ticks are actually arriving. If `g_ticks` does not move within 3,000,000 pauses, it clears `g_ticks_live` and the main loop calls `pit_poll_tick()` instead (`core/init/main.c`). That function latches channel 0 and counts reloads.
 
-Boot order (`init/main.c`):
+Boot order (`core/init/main.c`):
 
 ```
 percpu_init_bsp -> arch_fpu_init -> ... -> arch_idt_init -> [UEFI] apic_virtual_wire
@@ -2991,7 +2947,7 @@ percpu_init_bsp -> arch_fpu_init -> ... -> arch_idt_init -> [UEFI] apic_virtual_
 
 ---
 
-### 4.8 High-resolution timers (`arch/x86_64/hrtimer.c`)
+### 4.8 High-resolution timers (`arch/x86_64/time/hrtimer.c`)
 
 All state lives in `static struct {...} g_hr`. `src` is the clock source (0 = PIT ticks, 1 = HPET, 2 = TSC). `ref` records what the calibration was measured against (0 nothing, 1 HPET, 2 PIT channel 2, 3 CPUID 0x15, 4 CPUID 0x16), and `timers_cmd` in `shell/commands.c` shows these names. `why[48]` holds the reason the HPET was rejected.
 
@@ -3028,7 +2984,7 @@ The main loop uses `hr_wake_at` on the desktop when the cursor moved. It arms a 
 
 ---
 
-### 4.9 Per-CPU state (`arch/x86_64/percpu.c`)
+### 4.9 Per-CPU state (`arch/x86_64/cpu/percpu.c`)
 
 ```c
 #define NCPU 16
@@ -3068,7 +3024,7 @@ The old global names are kept as macros over `PCPU->...`, so pre-SMP code became
 
 ---
 
-### 4.10 The big kernel lock (`arch/x86_64/percpu.c`)
+### 4.10 The big kernel lock (`arch/x86_64/cpu/percpu.c`)
 
 ```c
 struct bkl { volatile u32 next, serving; volatile int owner; volatile int depth; };
@@ -3161,7 +3117,7 @@ Any later kernel entry that decides to leave the job calls `jc_leave()`. It save
 
 ---
 
-### 4.12 Multi-core discovery (`arch/x86_64/smp.c`)
+### 4.12 Multi-core discovery (`arch/x86_64/smp/smp.c`)
 
 - `acpi_count_cores()` is the older, read-only scanner. It searches `0xE0000-0xFFFFF` for `"RSD PTR "`, follows the XSDT (revision at least 2) or the RSDT (both must be below `0xF0000000`), finds `APIC`, and counts MADT type-0 entries with the enabled flag. It cannot see a UEFI RSDP outside the BIOS area. The `cores`/`cpu` shell command uses it.
 - `madt_apic_ids(out,max)` is used for real startup. It reads the MADT through `acpi_find_table("APIC",0)`, which also works on UEFI, and walks the entries from offset 44 with bounds checks (`el>=2`, `p+el<=len`). It collects the APIC IDs of enabled type-0 (Local APIC, `id=m[p+3]`) and type-9 (Local x2APIC, 32-bit ID at `+4`, flags at `+8`) entries. x2APIC IDs at least 255 and duplicates are skipped.
@@ -3219,7 +3175,7 @@ The trampoline GDT has null, `0x08` 32-bit code, `0x10` 32-bit data, `0x18` 64-b
 
 ---
 
-### 4.14 AP runtime (`arch/x86_64/smp_sched.c`)
+### 4.14 AP runtime (`arch/x86_64/smp/smp_sched.c`)
 
 #### `ap_entry_c(id)`
 
@@ -3269,7 +3225,7 @@ On APs the time slice is counted in the core's own `ticks` (`jc_now()` returns `
 
 #### `smp_boot_auto` and the `/etc/smp` hang guard
 
-`kmain` calls `smp_boot_auto_c()` just before the main loop, after the integrity check (section 2.12) has had its chance to stop the boot. (The old comment in `init/main.c` saying the cores start only on demand was removed in v8.95.)
+`kmain` calls `smp_boot_auto_c()` just before the main loop, after the integrity check (section 2.12) has had its chance to stop the boot. (The old comment in `core/init/main.c` saying the cores start only on demand was removed in v8.95.)
 
 ```
 /etc/smp == "off"       -> stay single-core
@@ -3307,26 +3263,26 @@ Coherence relies on these properties in the current design:
 | `cores` / `cpu` | Legacy MADT count and `g_cores_online`. |
 | `smpwork` / `parallel`, `smpsched` | Prime-counting job queue demo and per-core counters (4.12). |
 
-Other places that report the core count: `/proc/cpuinfo` (`fs/vfs.c`, one entry per online `g_cpu[]`), `/sys/devices/system/cpu/online` (`fs/unixfs.c`), and Linux `sched_getaffinity` (syscall 204 in `core/linux.c`). All of them report `g_cores_online` only while `g_smp_on` is set, and 1 otherwise. The user program `user/musl/smptest.c` (named in the `smp` help line) forks workers, records which CPUs they ran on, and checks results as a stress test.
+Other places that report the core count: `/proc/cpuinfo` (`fs/vfs/vfs.c`, one entry per online `g_cpu[]`), `/sys/devices/system/cpu/online` (`fs/vfs/unixfs.c`), and Linux `sched_getaffinity` (syscall 204 in `sys/linux/linux.c`). All of them report `g_cores_online` only while `g_smp_on` is set, and 1 otherwise. The user program `usr/musl/smptest.c` (named in the `smp` help line) forks workers, records which CPUs they ran on, and checks results as a stress test.
 
 ## Part 5: Processes, scheduling, signals and the native system-call ABI
 
-This part covers how NoovexOS 64 runs user programs: the process table and its life cycle, the setjmp/longjmp scheduler, signals, job control on the terminal, pipes and file descriptors, the ELF loader, the program table, and the native `int 0x80` system-call ABI. Most of the code is in `source/kernel/core/proc/jobs.c` (the "job control" or `jc_*` layer). `core/proc/elf.c` loads programs, `core/syscall.c` holds the legacy dispatcher, and `core/proc/sched.c` holds the older demo schedulers. Each of these files is its own compilation unit; they share functions through `include/nvx/core/proc/jobs.h`, `elf.h`, `sched.h` and `include/nvx/core/syscall.h`. Every path below is relative to `source/kernel/`.
+This part covers how NoovexOS 64 runs user programs: the process table and its life cycle, the setjmp/longjmp scheduler, signals, job control on the terminal, pipes and file descriptors, the ELF loader, the program table, and the native `int 0x80` system-call ABI. Most of the code is in `core/proc/jobs.c` (the "job control" or `jc_*` layer). `core/proc/elf.c` loads programs, `sys/native/syscall.c` holds the legacy dispatcher, and `core/proc/sched.c` holds the older demo schedulers. Each of these files is its own compilation unit; they share functions through `include/nvx/core/proc/jobs.h`, `elf.h`, `sched.h` and `include/nvx/sys/native/syscall.h`. Every path below is relative to the repository root.
 
 There are two process systems in the tree, and they should not be confused:
 
 | System | Table | Where | Status |
 |---|---|---|---|
 | Job-control processes | `struct jproc g_jp[JMAX]` (256 slots, one per thread) | `core/proc/jobs.c` | The live system. It runs the shell's programs, init, the Linux ABI and SMP scheduling. |
-| Legacy staged processes | `struct proc g_proc[MAXPROC]` (6 slots) | `core/proc/sched.c`, `core/syscall.c` | Older demos: a cooperative scheduler, a preemption demo, IPC, a compositor demo and threads. |
+| Legacy staged processes | `struct proc g_proc[MAXPROC]` (6 slots) | `core/proc/sched.c`, `sys/native/syscall.c` | Older demos: a cooperative scheduler, a preemption demo, IPC, a compositor demo and threads. |
 
-`syscall_dispatch` (`core/syscall.c`) chooses between them on every `int 0x80`. If a job process is running on this CPU (`g_js_running && g_jcur>=0`), the call goes to `jc_syscall` first. A call that `jc_syscall` does not handle falls through to the legacy `switch`.
+`syscall_dispatch` (`sys/native/syscall.c`) chooses between them on every `int 0x80`. If a job process is running on this CPU (`g_js_running && g_jcur>=0`), the call goes to `jc_syscall` first. A call that `jc_syscall` does not handle falls through to the legacy `switch`.
 
 ---
 
 ### 5.1 Per-CPU scheduling state
 
-Several names in `jobs.c` that look like globals are really macros for fields of the current CPU's `struct pcpu` (`arch/x86_64/percpu.c`). The `%gs` base points at that struct, and `PCPU` is defined as `((struct pcpu*)cpu_percpu())`.
+Several names in `jobs.c` that look like globals are really macros for fields of the current CPU's `struct pcpu` (`arch/x86_64/cpu/percpu.c`). The `%gs` base points at that struct, and `PCPU` is defined as `((struct pcpu*)cpu_percpu())`.
 
 | Macro | Field | Meaning |
 |---|---|---|
@@ -3395,10 +3351,10 @@ int g_next_pid=2, g_js_dirty=0;
 | `sighand[32]` | u64 | `0` = `SIG_DFL`, `1` = `SIG_IGN`, anything above 1 = handler address |
 | `sigrest[32]` | u64 | Restorer (trampoline) address pushed as the handler's return address |
 | `sigamask[32]` | u32 | Extra mask applied while the handler runs (`sa_mask`) |
-| `saflags[32]` | u32 | `sa_flags`, written only by the Linux `rt_sigaction` (`core/linux.c`). Bit 2 (`SA_SIGINFO`) makes the kernel build a siginfo block |
+| `saflags[32]` | u32 | `sa_flags`, written only by the Linux `rt_sigaction` (`sys/linux/linux.c`). Bit 2 (`SA_SIGINFO`) makes the kernel build a siginfo block |
 | `fsbase` | u64 | TLS base. `jc_enter` loads it into `lsys_fsbase`, and `jc_resume` writes it to `MSR 0xC0000100` |
-| `pollwake` | u64 | Deadline for Linux `poll`/`select` (`core/linux.c`) |
-| `lxbrk` | u64 | Linux-ABI program break (`core/linux.c`) |
+| `pollwake` | u64 | Deadline for Linux `poll`/`select` (`sys/linux/linux.c`) |
+| `lxbrk` | u64 | Linux-ABI program break (`sys/linux/linux.c`) |
 | `susp`, `suspold` | int, u32 | `rt_sigsuspend` state: the temporary mask is active, and `suspold` holds the mask to restore |
 | `lx` | int | Set when the image is static-PIE (`g_elf_pie`) or when the process has made any Linux system call (`linux_syscall` sets `p->lx=1`). After that, native `int 0x80` calls are refused (see 5.12) |
 | `exitst` | int | Wait status in `wait()` encoding (see 5.4) |
@@ -3554,11 +3510,11 @@ static int jc_runnable(int i){
 ```
 - `jc_pick()` is a round-robin search that starts after `g_js_rr` and returns the first slot that is neither free nor a zombie and is runnable.
 - `jc_run()` calls `jc_pick`/`jc_enter` up to `JMAX*2` times, and stops early once 2 ticks have passed or nothing is runnable.
-- `jc_step()` is `jc_run()`, then `jc_poll()`, and returns whether anything ran or `g_js_dirty` was set. `init/main.c` calls `jc_step()` from the main loop in `ST_DESKTOP` and `ST_LIVE`. When `!jc_any_runnable()`, the BSP halts instead.
-- On application processors, `ap_loop` (`arch/x86_64/smp_sched.c`) takes the lock, calls `jc_pick()` and `jc_enter()` while `g_smp_sched` is set, and releases the lock.
+- `jc_step()` is `jc_run()`, then `jc_poll()`, and returns whether anything ran or `g_js_dirty` was set. `core/init/main.c` calls `jc_step()` from the main loop in `ST_DESKTOP` and `ST_LIVE`. When `!jc_any_runnable()`, the BSP halts instead.
+- On application processors, `ap_loop` (`arch/x86_64/smp/smp_sched.c`) takes the lock, calls `jc_pick()` and `jc_enter()` while `g_smp_sched` is set, and releases the lock.
 
 #### Time slices and preemption
-- The PIT runs at 100 Hz (`pit_init(100)` in `init/main.c`), so one tick is 10 ms.
+- The PIT runs at 100 Hz (`pit_init(100)` in `core/init/main.c`), so one tick is 10 ms.
 - BSP: IRQ0 in `isr_body` calls `jc_timer(r)` when the interrupt came from ring 3. `jc_timer` does nothing for 2 ticks after `g_js_slice`. After that it copies the frame into `ctx`, sends EOI and calls `jc_leave()`. The slice is therefore about 20 ms.
 - APs: `ap_timer` counts per-CPU `ticks` (the LAPIC timer at `lapic_hz/100`) and calls `jc_preempt(r)` after 2 ticks. `IPI_RESCHED` (0xF0) also calls `jc_preempt` when it lands in user mode. `jc_signal_proc` sends this IPI with `smp_kick` when the target process is running on another CPU.
 - `jc_now()` returns `g_ticks` on CPU 0 and `PCPU->ticks` on the APs.
@@ -3579,7 +3535,7 @@ If the process has no handler (`sighand<=1`) or the signal is blocked, `jc_finis
 
 ### 5.6 Blocking and restartable system calls
 
-A driver or VFS read or write that cannot finish returns `JS_BLOCK` (`-1000`, defined in `arch/x86_64/interrupts.c`). The syscall code then calls:
+A driver or VFS read or write that cannot finish returns `JS_BLOCK` (`-1000`, defined in `arch/x86_64/interrupts/interrupts.c`). The syscall code then calls:
 
 ```c
 static void jc_block(struct sysregs* r,int state,u64 wake){
@@ -3594,7 +3550,7 @@ static void jc_block(struct sysregs* r,int state,u64 wake){
 - `jc_save_sys` copies the `struct sysregs` frame (15 registers, then the hardware iret frame at `fr[15..19]`) into `regs_pt`.
 - `jc_yield_sys(r)` saves the context without changing the state, and leaves. Syscall 20 uses it, as do the paths that deliver a pending signal after a syscall.
 
-The Linux ABI uses the same mechanism. `core/linux.c` calls `jc_block(r,S_WAIT,g_ticks+1)` for blocking I/O and poll/select, and `S_SLEEP` for nanosleep, pause and `rt_sigsuspend`. A futex wait (section 5.15) is the one `S_WAIT` that does not poll: it blocks with `wake` at its timeout (or far in the future), and `FUTEX_WAKE` sets `wake=0` on the threads it wakes, so they run at once without retrying every tick.
+The Linux ABI uses the same mechanism. `sys/linux/linux.c` calls `jc_block(r,S_WAIT,g_ticks+1)` for blocking I/O and poll/select, and `S_SLEEP` for nanosleep, pause and `rt_sigsuspend`. A futex wait (section 5.15) is the one `S_WAIT` that does not poll: it blocks with `wake` at its timeout (or far in the future), and `FUTEX_WAKE` sets `wake=0` on the threads it wakes, so they run at once without retrying every tick.
 
 ---
 
@@ -3643,7 +3599,7 @@ Delivery happens in `jc_enter` before the process resumes, and after any system 
 The code checks that the 1 KB below `rsp` and the handler address are in the user window (`jc_uok`). It then switches to the process's CR3 and checks that the frame is mapped and writable (`jc_umapped`, which can also resolve COW and lazy faults). After writing the frame, it sets `rip=sighand[s]`, `rsp=sp`, `rdi=signo`, `rsi=info or 0` and `rdx=rax=0`, and `sigmask |= (1<<s) | sigamask[s]`. KILL and STOP can never be masked.
 
 #### Returning: `sigreturn` (143)
-The user library installs a trampoline (`user/libc/src/libc.c`, and also `legacy_posix.h`):
+The user library installs a trampoline (`usr/libc/src/libc.c`, and also `legacy_posix.h`):
 ```asm
 __nvx_sigtramp: mov %rsp,%rbx ; mov $143,%eax ; int $0x80 ; hlt
 ```
@@ -3722,7 +3678,7 @@ struct job { int used, id, pgid, state, bg, notified_stop; char cmd[64]; };
 ### 5.9 File descriptors and pipes
 
 #### Descriptor tables
-- `FDMAX=256` per process and `VMAXOPEN=1024` system-wide (`fs/ramfs.c`; 32 and 32 before v8.97). Open files are `struct vfile g_vf[VMAXOPEN]`, shared by all processes, with a reference count `ref`. The threads of a process share the leader's table.
+- `FDMAX=256` per process and `VMAXOPEN=1024` system-wide (`fs/vfs/ramfs.c`; 32 and 32 before v8.97). Open files are `struct vfile g_vf[VMAXOPEN]`, shared by all processes, with a reference count `ref`. The threads of a process share the leader's table.
 - `fdt()` returns the descriptor table of the running process (the thread-group leader's `fd[]`, so all threads share it) while a job process runs, and the kernel shell's `g_fd` otherwise. `fdce()` does the same for the cloexec arrays (`g_kcloexec` for the kernel).
 - `vf_ref`/`vf_unref` manage the count. When it reaches zero: a pipe end decrements its pipe's `readers` or `writers`, and the pipe buffer is freed once both are zero. The console vfile is never freed (its `ref` is reset to 1). Framebuffer and mouse open counts go down. A dirty file is written back (`fs_wb_mark`), and an orphaned inode is released (`fs_orphan_close`).
 - `vfile.dev` codes used in this part: `0` regular file, `5` console tty, `6` pipe read end, `7` pipe write end, `9` `/dev/fb0`, `10` mouse.
@@ -3802,7 +3758,7 @@ Auxiliary vector (`aux[]`):
 | 31 | `AT_EXECFN` | `argv[0]` |
 | 0 | `AT_NULL` | 0 |
 
-argv and env sources: unless a caller has already filled `g_xa_*` (`g_xa_set`, which the Linux `execve` does), `elf_args_from_string(g_exec_args)` splits the command line on spaces. Unless `g_xe_set` is set, `env_pack` fills the environment from the kernel's `g_env[24]`. `env_init` sets the defaults: `PATH=/bin`, `HOME=/home`, `PWD=/home`, `USER=root`, `SHELL=/bin/nsh`, `TERM=noovex` and `XZ_DEFAULTS=--memlimit-compress=20MiB` (`core/syscall.c`). The native context also passes `argc` in `rdi` and `argv` in `rsi` (`jc_ctx_fresh`), so the native crt0 can use either the registers or the stack.
+argv and env sources: unless a caller has already filled `g_xa_*` (`g_xa_set`, which the Linux `execve` does), `elf_args_from_string(g_exec_args)` splits the command line on spaces. Unless `g_xe_set` is set, `env_pack` fills the environment from the kernel's `g_env[24]`. `env_init` sets the defaults: `PATH=/bin`, `HOME=/home`, `PWD=/home`, `USER=root`, `SHELL=/bin/nsh`, `TERM=noovex` and `XZ_DEFAULTS=--memlimit-compress=20MiB` (`sys/native/syscall.c`). The native context also passes `argc` in `rdi` and `argv` in `rsi` (`jc_ctx_fresh`), so the native crt0 can use either the registers or the stack.
 
 #### Other loaders in `elf.c`
 - `elf_load_run(elf,len)`: a single-run path with no scheduler. It calls `k_setjmp(g_kjmp)`, loads the new CR3 and calls `enter_ring3_args`. Legacy exit (syscall 0 with no scheduler) does `k_longjmp(g_kjmp,1)` to come back. `sys_exec` uses it.
@@ -3829,7 +3785,7 @@ Lookup order in `jc_find_prog(name,&len)`:
 4. Look up the path in the Unix file system (`ux_lookup`). If the file has ELF magic and is at least 64 bytes, it is used, but a non-root user also needs an execute bit (`mode & 0111`).
 5. Try `fat_read_file(name, g_spawnbuf, 64 KB)` for an ELF on the FAT volume.
 
-`jc_is_prog` is how `jc_launch` decides whether a stage is a program. `fs/unixfs.c` (`k_readdir_extra`) lists the `JS_BIN` names in `/bin` and `init` in `/sbin`, and `ux_stat2` reports them as mode `0100755`.
+`jc_is_prog` is how `jc_launch` decides whether a stage is a program. `fs/vfs/unixfs.c` (`k_readdir_extra`) lists the `JS_BIN` names in `/bin` and `init` in `/sbin`, and `ux_stat2` reports them as mode `0100755`.
 
 ---
 
@@ -3837,7 +3793,7 @@ Lookup order in `jc_find_prog(name,&len)`:
 
 Entry: `idt_set128` installs vector `0x80` with DPL 3 (`attr=0xEE`). `isr128` (`userspace.S`) runs `swapgs` if the call came from ring 3, pushes `rax...r15` (a `struct sysregs`: `r15,...,rbx,rax` from low to high addresses), and calls `isr128_c`, which takes the big kernel lock, counts `PCPU->syscalls`, and calls `syscall_dispatch`.
 
-Convention (`user/src/user.h`, `nvx_sys`): the number goes in `rax` and the arguments in `rbx, rcx, rdx, rsi, rdi`. The result comes back in `rax`. Errors are `-1` unless noted otherwise; the native layer has no errno.
+Convention (`usr/src/user.h`, `nvx_sys`): the number goes in `rax` and the arguments in `rbx, rcx, rdx, rsi, rdi`. The result comes back in `rax`. Errors are `-1` unless noted otherwise; the native layer has no errno.
 
 Guards in `jc_syscall` run before its main switch:
 - If `p->lx` is set (a static-PIE image, or a process that has used the Linux ABI), the kernel sends SIGSYS (31) and returns `-38`.
@@ -3937,19 +3893,19 @@ These "stage" and "rung" demos come from before `jobs.c` and are still in the tr
 - IPC: shared memory (`SHM_MAX 4`, up to 24 frames each, mapped at `0x40000600000 + id*1 MB`) and message queues (`MSGQ_MAX 6`, 32 deep, 64-byte messages).
 - Compositor demo (`compositor_run`): three copies of `user_compdemo`. Messages are `struct wmsg` with types `WM_CREATE/WM_DAMAGE/WM_CLOSE`, sent on queue 0.
 - Fork and threads: `do_fork` copies every user page eagerly. `thread_create_k` shares the caller's CR3 and gives each thread a 64 KB-spaced user stack from `0x40000200000`.
-- `core/syscall.c` helpers: `sys_spawn` loads from FAT and checks `perm_can_exec`, `sys_waitpid` returns the status stored in `g_last_exit[]`, and `sys_exec` uses `elf_load_run`.
+- `sys/native/syscall.c` helpers: `sys_spawn` loads from FAT and checks `perm_can_exec`, `sys_waitpid` returns the status stored in `g_last_exit[]`, and `sys_exec` uses `elf_load_run`.
 
 ---
 
 ### 5.14 init (PID 1) and `/etc/rc`
 
-- Start: `jc_start_init()` (`fs/unixfs.c`) is called from `ux_desktop_start` when the main loop enters `ST_DESKTOP`. If PID 1 does not exist yet, it runs `jc_create("init",0,0)`, which resolves to `+init`, and then sets `pid=1`, `pgid=1`, `ppid=0` and `uid=gid=0`. The live terminal (`ST_LIVE`) sets up the Unix layer with `ux_core_start` but does not start init.
+- Start: `jc_start_init()` (`fs/vfs/unixfs.c`) is called from `ux_desktop_start` when the main loop enters `ST_DESKTOP`. If PID 1 does not exist yet, it runs `jc_create("init",0,0)`, which resolves to `+init`, and then sets `pid=1`, `pgid=1`, `ppid=0` and `uid=gid=0`. The live terminal (`ST_LIVE`) sets up the Unix layer with `ux_core_start` but does not start init.
 - `/etc/rc` is created by `ux_boot_layout` with this content:
   ```
   # /etc/rc - run by init (PID 1) at boot
   echo NoovexOS: init started
   ```
-- The init program (`user/src/init.c`):
+- The init program (`usr/src/init.c`):
   1. installs a SIGCHLD handler
   2. reads `/etc/rc` (up to 4 KB) line by line. `run_line` splits each line on spaces and tabs (up to 11 arguments), skips `#` comments, and treats a final `&` as background. Then it runs `fork()` and `execv(argv[0], argv)`; on failure it prints "init: cannot run ..." and exits with 127. Foreground lines are waited for with `waitpid`.
   3. appends `boot: init started, /etc/rc done at <ctime>` to `/var/log/boot.log`
@@ -3978,7 +3934,7 @@ Since v8.97 a process can have several threads that run at the same time on diff
 
 #### Creating a thread: `clone` with `CLONE_THREAD`
 
-`lx_clone` (`core/linux.c`) handles the flags musl's `pthread_create` uses: `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED`. `CLONE_THREAD` requires `CLONE_VM` and `CLONE_SIGHAND` (EINVAL otherwise).
+`lx_clone` (`sys/linux/linux.c`) handles the flags musl's `pthread_create` uses: `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED`. `CLONE_THREAD` requires `CLONE_VM` and `CLONE_SIGHAND` (EINVAL otherwise).
 
 `jc_clone_thread(r, stack, tls, settls)` (`core/proc/jobs.c`) copies the calling slot, gives the copy a new ID from `g_next_pid`, keeps `tg` (so it joins the same group), copies `tgid`, `ppid`, `pgid` and `sid` from the leader, clears pending signals, timers, futex state and its unused descriptor array, saves the caller's registers with `rax = 0`, and sets `rsp` and the TLS base if asked. The new slot is `S_RUN` and `smp_kick_idle` wakes an idle core for it. Then `lx_clone` stores `ctid` for `CLONE_CHILD_CLEARTID`, writes the new ID through `CLONE_CHILD_SETTID` and `CLONE_PARENT_SETTID`, and returns it.
 
@@ -4015,7 +3971,7 @@ Because the address space is only freed by the last thread, and a thread that is
 
 #### Futexes
 
-`lx_futex` (`core/linux.c`) implements `FUTEX_WAIT`, `FUTEX_WAKE`, `FUTEX_REQUEUE`, `FUTEX_CMP_REQUEUE`, `FUTEX_WAKE_OP`, `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, with or without `FUTEX_PRIVATE_FLAG`, and `FUTEX_CLOCK_REALTIME` for the bitset wait. A futex is identified by the thread group and the user address (`fx_tg`, `fx_addr`), so futexes work between the threads of one process but not between processes through shared memory.
+`lx_futex` (`sys/linux/linux.c`) implements `FUTEX_WAIT`, `FUTEX_WAKE`, `FUTEX_REQUEUE`, `FUTEX_CMP_REQUEUE`, `FUTEX_WAKE_OP`, `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, with or without `FUTEX_PRIVATE_FLAG`, and `FUTEX_CLOCK_REALTIME` for the bitset wait. A futex is identified by the thread group and the user address (`fx_tg`, `fx_addr`), so futexes work between the threads of one process but not between processes through shared memory.
 
 - Wait: under the big kernel lock the call reads the word; if it differs from the expected value it returns EAGAIN. Otherwise it records the wait in the thread (`fx_wait = 1`, address, bitset, and `fx_dead` for a timeout: relative for `FUTEX_WAIT`, absolute for `FUTEX_WAIT_BITSET`), and blocks in `S_WAIT` with `wake` set to the timeout tick (or far in the future).
 - Because blocked calls restart (section 5.6), the thread re-enters `lx_futex` when it is woken. With `fx_wait` already set it returns 0 if `fx_woken` is set, ETIMEDOUT (110) once `fx_dead` has passed, or EINTR if a signal is deliverable; otherwise it blocks again.
@@ -4050,17 +4006,17 @@ NoovexOS 64 runs two kinds of user programs side by side:
 
 | Kind | System-call gate | C library | Link type | Loaded at | Source |
 |---|---|---|---|---|---|
-| Native ("legacy") | `int $0x80`, number in `rax`, args in `rbx rcx rdx rsi rdi` | nvxlibc (`user/libc`) or the header-only `user/src/user.h` | static `ET_EXEC`, `user/src/user.ld` | `0x40000000000` | `user/src/*.c` |
-| Linux ABI, static | `syscall` instruction, Linux x86-64 numbers and registers | musl 1.2.6 (`third_party/musl`), `libc.a` | static-PIE `ET_DYN` | `0x40000400000` (`ELF_PIE_BASE`) | `user/musl/*.c` test programs |
+| Native ("legacy") | `int $0x80`, number in `rax`, args in `rbx rcx rdx rsi rdi` | nvxlibc (`usr/libc`) or the header-only `usr/src/user.h` | static `ET_EXEC`, `usr/src/user.ld` | `0x40000000000` | `usr/src/*.c` |
+| Linux ABI, static | `syscall` instruction, Linux x86-64 numbers and registers | musl 1.2.6 (`third_party/musl`), `libc.a` | static-PIE `ET_DYN` | `0x40000400000` (`ELF_PIE_BASE`) | `usr/musl/*.c` test programs |
 | Linux ABI, dynamic (v8.97) | same | musl 1.2.6 shared, `/lib/ld-musl-x86_64.so.1` | PIE `ET_DYN` with `PT_INTERP` | program at `0x40000400000`, dynamic linker at `0x7F000000000` | `third_party/*` ports, `dyntest` |
 
-Both run under the same job scheduler (`core/proc/jobs.c`, `struct jproc`), share the same VFS file table and the same signal machinery. This part documents the Linux layer (`core/linux.c`), the two libcs, the ported programs and how to add your own.
+Both run under the same job scheduler (`core/proc/jobs.c`, `struct jproc`), share the same VFS file table and the same signal machinery. This part documents the Linux layer (`sys/linux/linux.c`), the two libcs, the ported programs and how to add your own.
 
 ---
 
 ### 6.1 How a Linux system call reaches the kernel
 
-`arch/x86_64/ring3.c: lsys_init()` programs the `syscall` MSRs:
+`arch/x86_64/user/ring3.c: lsys_init()` programs the `syscall` MSRs:
 
 ```c
 cpu_wrmsr(0xC0000080,cpu_rdmsr(0xC0000080)|1ULL);
@@ -4077,9 +4033,9 @@ EFER.SCE is set, STAR selects the kernel/user segments, LSTAR points at `lsys_en
 void lsys_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; linux_syscall(r); bkl_unlock(); }
 ```
 
-Every Linux system call runs under the big kernel lock (`arch/x86_64/interrupts.c`).
+Every Linux system call runs under the big kernel lock (`arch/x86_64/interrupts/interrupts.c`).
 
-`linux_syscall()` (end of `core/linux.c`):
+`linux_syscall()` (end of `sys/linux/linux.c`):
 
 ```c
 void linux_syscall(struct sysregs* r){
@@ -4141,9 +4097,9 @@ static int lx_ok(u64 p,u64 n){ return jc_umapped(p,n); }
 
 #### `open` / `openat` (`lx_open`)
 
-Flags decoded: access mode `flags&3`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_NONBLOCK 0x800` (kept in `vfile.flags`), `O_DIRECTORY 0x10000`, `O_CLOEXEC 0x80000`. Device paths (`dev_id()` in `fs/ramfs.c`) and `/proc` (`vfs_lookup`) bypass the file checks. A directory opened read-only becomes a `LX_DIRDEV` vfile whose `fs_idx` is the directory node. Permission checks use `ux_perm_ok(k,2)` for write/truncate and `ux_perm_ok(k,4)` for read. New files get `0100000|(mode&07777&~umask)`. `O_TRUNC` on disk triggers `fs_sync`.
+Flags decoded: access mode `flags&3`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_NONBLOCK 0x800` (kept in `vfile.flags`), `O_DIRECTORY 0x10000`, `O_CLOEXEC 0x80000`. Device paths (`dev_id()` in `fs/vfs/ramfs.c`) and `/proc` (`vfs_lookup`) bypass the file checks. A directory opened read-only becomes a `LX_DIRDEV` vfile whose `fs_idx` is the directory node. Permission checks use `ux_perm_ok(k,2)` for write/truncate and `ux_perm_ok(k,4)` for read. New files get `0100000|(mode&07777&~umask)`. `O_TRUNC` on disk triggers `fs_sync`.
 
-Limits from `fs/ramfs.c` and `jobs.h`: `FDMAX 256` fds per process, `VMAXOPEN 1024` vfile slots for the whole system (the console shares one slot), and `PIPE_MAX 128` pipes system-wide, each with a 4096-byte buffer (`jc_pipe_new(4096,...)`). Before v8.97 these were 32, 32 and 12.
+Limits from `fs/vfs/ramfs.c` and `jobs.h`: `FDMAX 256` fds per process, `VMAXOPEN 1024` vfile slots for the whole system (the console shares one slot), and `PIPE_MAX 128` pipes system-wide, each with a 4096-byte buffer (`jc_pipe_new(4096,...)`). Before v8.97 these were 32, 32 and 12.
 
 #### Read and write
 
@@ -4395,7 +4351,7 @@ Not present (ENOSYS): `epoll_*`, `eventfd`, `timerfd`, `signalfd`, `inotify`, `m
 ( cd $B/musl-obj && CC=gcc ../../third_party/musl/configure --prefix=$M --disable-shared --disable-wrapper CFLAGS="-fPIE -O2" ... && make ... && make install ... )
 ```
 
-The in-tree programs (`user/musl/mhello.c`, `musltest.c`, `smptest.c`) are compiled and linked explicitly:
+The in-tree programs (`usr/musl/mhello.c`, `musltest.c`, `smptest.c`) are compiled and linked explicitly:
 
 ```sh
 MCFLAGS="-fPIE -O2 -nostdinc -isystem $M/include -isystem $(gcc -print-file-name=include) -Wall ..."
@@ -4426,11 +4382,11 @@ exec gcc -fPIE -nostdinc -isystem "$M/include" -isystem "$GI" -pie -nostdlib \
 
 It uses the same headers as the static build and needs `NVX_MUSL_SH` (exported by `build.sh`) as well. The ports are linked with it; the test programs `musltest`, `smptest`, `nettest` and `featest` stay static so both paths are exercised. Section 6.10 explains how a dynamic program starts.
 
-Start-up stack. `elf_build_space()` (`core/proc/elf.c`) builds a Linux start stack in an 8 KiB image (`g_stkimg`) copied into the top two stack pages: `argc`, `argv[]`, NULL, `envp[]`, NULL, then the auxiliary vector `AT_PHDR(3) AT_PHENT(4) AT_PHNUM(5) AT_PAGESZ(6)=4096 AT_BASE(7) (0, or the dynamic linker's base) AT_FLAGS(8)=0 AT_ENTRY(9) AT_UID/EUID/GID/EGID(11-14) AT_HWCAP(16)=0 AT_CLKTCK(17)=100 AT_SECURE(23)=0 AT_RANDOM(25) AT_EXECFN(31)`, with 16 random bytes for `AT_RANDOM`. The same registers also carry `argc`/`argv` in `rdi`/`rsi` (`jc_ctx_fresh`) for nvxlibc's `crt0`. When started from the shell the environment comes from `env_pack()` (`core/syscall.c`, 24 entries, defaults `PATH=/bin HOME=/home PWD=/home USER=root SHELL=/bin/nsh TERM=xterm-256color XZ_DEFAULTS=--memlimit-compress=20MiB`; `TERM` was `noovex` before the terminal understood escape sequences); after `execve` it is the caller's `envp`.
+Start-up stack. `elf_build_space()` (`core/proc/elf.c`) builds a Linux start stack in an 8 KiB image (`g_stkimg`) copied into the top two stack pages: `argc`, `argv[]`, NULL, `envp[]`, NULL, then the auxiliary vector `AT_PHDR(3) AT_PHENT(4) AT_PHNUM(5) AT_PAGESZ(6)=4096 AT_BASE(7) (0, or the dynamic linker's base) AT_FLAGS(8)=0 AT_ENTRY(9) AT_UID/EUID/GID/EGID(11-14) AT_HWCAP(16)=0 AT_CLKTCK(17)=100 AT_SECURE(23)=0 AT_RANDOM(25) AT_EXECFN(31)`, with 16 random bytes for `AT_RANDOM`. The same registers also carry `argc`/`argv` in `rdi`/`rsi` (`jc_ctx_fresh`) for nvxlibc's `crt0`. When started from the shell the environment comes from `env_pack()` (`sys/native/syscall.c`, 24 entries, defaults `PATH=/bin HOME=/home PWD=/home USER=root SHELL=/bin/nsh TERM=xterm-256color XZ_DEFAULTS=--memlimit-compress=20MiB`; `TERM` was `noovex` before the terminal understood escape sequences); after `execve` it is the caller's `envp`.
 
 #### nvxlibc (native `int 0x80`)
 
-`user/libc` is the native C library. Its single source of truth is `user/libc/src/legacy_posix.h` (the former header-only `posix.h`). `user/libc/gen.py` generates from it:
+`usr/libc` is the native C library. Its single source of truth is `usr/libc/src/legacy_posix.h` (the former header-only `posix.h`). `usr/libc/gen.py` generates from it:
 
 * `src/libc.c`, the implementation with top-level `static` removed and `__sys` turned into an extern;
 * `include/nvx/_all.h`, `_types.h`, `_std.h` (351 standard prototypes) and `extras.h` (457 NoovexOS helpers such as `append_file`, `base64_encode`, `arr_*`), plus the standard header names (`stdio.h`, `unistd.h`, `dirent.h`, `pthread.h`, ... each just includes `<nvx/_std.h>`).
@@ -4447,16 +4403,16 @@ long __sys(long n,long a,long b,long c,long d,long e){
 
 `crt0.S` aligns the stack and does `exit(main(argc,argv))` using the `rdi`/`rsi` the kernel set. `sys_host.c` + `crt0_host.S` let the same libc run on Linux for differential testing. Notable semantics in `legacy_posix.h`: `execve` ignores `envp`; `pthread_create` maps to the legacy `thread_create` syscall 61 and `pthread_join` is a no-op; `dlopen` always fails with "dynamic loading not supported (static linking only)"; `isatty` is native syscall 172.
 
-`build.sh` builds it with `LFLAGS` (`-ffreestanding -nostdinc -isystem user/libc/include -fno-pie -mcmodel=large -Os -ffunction-sections -fdata-sections`), archives `libc.a`, and links each program with `ld -nostdlib -no-pie --gc-sections -T user/src/user.ld crt0.o prog.o [extra] libc.a`.
+`build.sh` builds it with `LFLAGS` (`-ffreestanding -nostdinc -isystem usr/libc/include -fno-pie -mcmodel=large -Os -ffunction-sections -fdata-sections`), archives `libc.a`, and links each program with `ld -nostdlib -no-pie --gc-sections -T usr/src/user.ld crt0.o prog.o [extra] libc.a`.
 
-#### `user/src` programs
+#### `usr/src` programs
 
 * `user.h` programs (`user_demo`, `user_fork`, `user_app`, `user_thread`, `user_preempt`, `user_ipc`, `user_wmapp`, `user_compdemo`, `user_posix`, `user_mem`, plus `hello.c`, `proc.c`): built with `user_crt0.S` and `UFLAGS`, embedded as `user_*_elf.o`, and started by shell demo commands through `elf_load_run`/`proc_create` (e.g. `shell/commands.c:758`), not through `JS_BIN`.
-* `posix.h` programs (now `posix.h` just includes `<nvx/extras.h>` and `<setjmp.h>`): `count spin sigdemo upper greet pipetest nvxbox init libc8` are built against nvxlibc and listed in `JS_BIN`. Other `posix.h` files in the directory (`captest`, `devtest`, `libc2`-`libc6`, `libctest`, `mathtest`, `nettest`, `ptest`, `unixtest`, `files`) are not built by `build.sh`; prebuilt ELFs of several exist in `user/bin/`.
+* `posix.h` programs (now `posix.h` just includes `<nvx/extras.h>` and `<setjmp.h>`): `count spin sigdemo upper greet pipetest nvxbox init libc8` are built against nvxlibc and listed in `JS_BIN`. Other `posix.h` files in the directory (`captest`, `devtest`, `libc2`-`libc6`, `libctest`, `mathtest`, `nettest`, `ptest`, `unixtest`, `files`) are not built by `build.sh`; prebuilt ELFs of several exist in `usr/bin/`.
 
 #### nvxbox
 
-`user/src/nvxbox.c` + `coreutils.c` form one multi-call binary (65 KB). `main` dispatches on `basename(argv[0])`: first `coreutils_main()` (head, tail, wc, sort, grep, cut, tr, uniq, seq, basename, dirname, rev, tac, nl, fold, paste, comm, cmp, md5sum, sha256sum, base64, find, yes, printenv/env; returns `-1000` if not its command), then the built-ins in `nvxbox.c` (ls, cat, echo, mkdir, rmdir, rm, mv, cp, touch, ln, chmod (octal only), chown, stat, pwd, hostname, whoami, id, uname, date, sleep, mount, umount, readlink, tee, true, false). `nvxbox CMD args` re-dispatches on `argv[1]`. Every name is a `NVXB("...")` row in `JS_BIN` pointing at the same blob.
+`usr/src/nvxbox.c` + `coreutils.c` form one multi-call binary (65 KB). `main` dispatches on `basename(argv[0])`: first `coreutils_main()` (head, tail, wc, sort, grep, cut, tr, uniq, seq, basename, dirname, rev, tac, nl, fold, paste, comm, cmp, md5sum, sha256sum, base64, find, yes, printenv/env; returns `-1000` if not its command), then the built-ins in `nvxbox.c` (ls, cat, echo, mkdir, rmdir, rm, mv, cp, touch, ln, chmod (octal only), chown, stat, pwd, hostname, whoami, id, uname, date, sleep, mount, umount, readlink, tee, true, false). `nvxbox CMD args` re-dispatches on `argv[1]`. Every name is a `NVXB("...")` row in `JS_BIN` pointing at the same blob.
 
 ### 6.6 How programs are embedded and found
 
@@ -4469,7 +4425,7 @@ emb user_${p}_bin.o $p
 objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents $B/user_${p}_bin.o
 ```
 
-`ld -r -b binary` wraps the file in an object whose symbols are derived from the path: `user/sqlite3.elf` to `_binary_user_sqlite3_elf_start` / `_end`. The rename moves the blob from `.data` to `.rodata`, which `arch/x86_64/kernel64.ld` places before `__immutable_end`, i.e. inside the region whose SHA-256 is stamped into the `NVX64SIG` build signature. Every object must also be listed in `BLOBS` in step `[4/6]`.
+`ld -r -b binary` wraps the file in an object whose symbols are derived from the path: `usr/sqlite3.elf` to `_binary_user_sqlite3_elf_start` / `_end`. The rename moves the blob from `.data` to `.rodata`, which `arch/x86_64/kernel64.ld` places before `__immutable_end`, i.e. inside the region whose SHA-256 is stamped into the `NVX64SIG` build signature. Every object must also be listed in `BLOBS` in step `[4/6]`.
 
 The musl programs, the ports and the shared C library are embedded compressed (v8.97). `embz` runs `tools/nvz.py`, which writes `NVZ1`, the 32-bit little-endian original size and a raw DEFLATE stream (zlib level 9), and wraps that under the same symbol names:
 
@@ -4479,7 +4435,7 @@ embz(){ mkdir -p $B/zz/user; python3 tools/nvz.py $B/user/$2.elf $B/zz/user/$2.e
 
 `jc_unz` (`core/proc/jobs.c`) inflates such a blob with the kernel's `pz_inflate_raw` the first time it is needed and keeps the result in a 24-entry cache, so later runs cost nothing extra. This took the kernel from 5.46 MB to 3.86 MB before the shared libc, BearSSL client and the other v8.97 programs were added; the current `build/kernel64.bin` is about 4.28 MB. The UEFI loader's limit is `0x5C0000` bytes (section 3.13).
 
-`core/proc/jobs.c` declares each pair `extern const unsigned char _binary_user_X_elf_start[], _binary_user_X_elf_end[];` and lists it in `JS_BIN[]` (name, start, end). Several names may share one blob (`gzip/gunzip/zcat`, `xz/unxz/xzcat/lzma/unlzma/lzcat`, ...); the program sees the name in `argv[0]`. `+init` is the init program. `fs/unixfs.c:351` lists every non-`+` `JS_BIN` name as a regular file in `/bin`.
+`core/proc/jobs.c` declares each pair `extern const unsigned char _binary_user_X_elf_start[], _binary_user_X_elf_end[];` and lists it in `JS_BIN[]` (name, start, end). Several names may share one blob (`gzip/gunzip/zcat`, `xz/unxz/xzcat/lzma/unlzma/lzcat`, ...); the program sees the name in `argv[0]`. `+init` is the init program. `fs/vfs/unixfs.c:351` lists every non-`+` `JS_BIN` name as a regular file in `/bin`.
 
 #### Lookup (`jc_find_prog`)
 
@@ -4510,7 +4466,7 @@ port(){ n=$1; shift; if [ ! -f $P/$n ]; then "$@" || { echo "PORT BUILD FAILED: 
 | `xz unxz xzcat lzma unlzma lzcat` | XZ Utils 5.8.4 | `-std=gnu11 -include third_party/xz/nvx_config.h`, explicit file list | `nvx_config.h` replaces `configure`: `ASSUME_RAM 128`, `TUKLIB_CPUCORES_SCHED_GETAFFINITY`, `TUKLIB_PHYSMEM_SYSCONF`, `MYTHREAD_POSIX` (with `stream_encoder_mt.c`, `stream_decoder_mt.c`, `outqueue.c`, `hardware_cputhreads.c`, `tuklib_cpucores.c`), so `xz -T` works; `XZ_DEFAULTS` limits compression memory to 20 MiB |
 | `zstd unzstd zstdcat` | Zstandard 1.5.7 | `-DZSTD_MULTITHREAD -DZSTD_NOBENCH -DZSTD_NODICT -DZSTD_LEGACY_SUPPORT=0 -DZSTD_DISABLE_ASM -DBACKTRACE_ENABLE=0 -DZSTD_NOTRACE` | `zstd -T` works; built through `sh -c` for the globs |
 | `kilo` | kilo (antirez, BSD 2-clause), `third_party/kilo` | `-std=c99 -D_DEFAULT_SOURCE -D_BSD_SOURCE` | a full-screen text editor: raw mode, escape sequences, syntax colours (section 11.12) |
-| `fetch` | `user/musl/fetch.c`, `nvxtls.c` with BearSSL (`third_party/bearssl`) | `-Wall`, linked with `build/bearssl/libbearssl.a`; rebuilt every time | HTTP and HTTPS downloader (section 6.11) |
+| `fetch` | `usr/musl/fetch.c`, `nvxtls.c` with BearSSL (`third_party/bearssl`) | `-Wall`, linked with `build/bearssl/libbearssl.a`; rebuilt every time | HTTP and HTTPS downloader (section 6.11) |
 | `qjs` | QuickJS-ng, `third_party/quickjs` (MIT) | `-D_GNU_SOURCE`, `qjs.c quickjs.c libregexp.c libunicode.c dtoa.c quickjs-libc.c gen/repl.c gen/standalone.c -lm` | JavaScript interpreter with the `std` and `os` modules and a REPL; listed in the program table in `core/proc/jobs.c` (section 13.13) |
 
 After building, each is copied to `build/user/<n>.elf`, embedded compressed (`embz`) and renamed to `.rodata` like the musl programs. Delete `build/ports-dyn/<n>` to force a rebuild. Linking dynamically made the ports about 0.5 MB smaller in total before compression (sqlite3 1.41 MB, zstd 750 KB, xz 256 KB, gzip 96 KB, bzip2 91 KB, kilo 31 KB, fetch 186 KB).
@@ -4518,14 +4474,14 @@ After building, each is copied to `build/user/<n>.elf`, embedded compressed (`em
 Three other third-party components are kernel code, not user programs:
 
 * Lua 5.5.1 (`third_party/lua`): compiled with `LUAF` (freestanding, SSE enabled) against its own mini libc `nvxlibc.c` (190 lines, output through `lua_emit`), linked as `lua_all.o`; `nvxlua.c` exposes `nvx.window/clear/rect/text/present/waitkey...` and `nvx_lua_run()` backs the shell's `lua <code>` command.
-* Doom (`third_party/doom`, doomgeneric): `build_doom.sh` compiles it with SSE at 640x400, `ld -r` combines it and `objcopy --keep-global-symbol` keeps only the interface (`doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_*`, `webp_decode`). `apps/doom.c` loads the WAD from a boot module or `DOOM1.WAD`/`FREEDOOM.WAD`/... on the FAT disk (32 MiB buffer).
-* NTFS (ntfs-3g, `third_party/ntfs`): built with `-Ulinux -U__linux__ ...` against `compat/` headers and `ntfslibc.c`, mkntfs with `-Dmain=mkntfs_main`; used by `fs/ntfsk.c`.
+* Doom (`third_party/doom`, doomgeneric): `build_doom.sh` compiles it with SSE at 640x400, `ld -r` combines it and `objcopy --keep-global-symbol` keeps only the interface (`doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_*`, `webp_decode`). `apps/games/doom.c` loads the WAD from a boot module or `DOOM1.WAD`/`FREEDOOM.WAD`/... on the FAT disk (32 MiB buffer).
+* NTFS (ntfs-3g, `third_party/ntfs`): built with `-Ulinux -U__linux__ ...` against `compat/` headers and `ntfslibc.c`, mkntfs with `-Dmain=mkntfs_main`; used by `fs/ntfs/ntfsk.c`.
 
 ### 6.8 Test programs
 
-`user/musl/mhello.c`, prints `uname()` and a float; `mhello x` exits 3; `mhello env` prints `MT_VAR` and exits 4/5. `musltest` and the host harness use these exit codes to check `execve`, `posix_spawn` and environment passing.
+`usr/musl/mhello.c`, prints `uname()` and a float; `mhello x` exits 3; `mhello env` prints `MT_VAR` and exits 4/5. `musltest` and the host harness use these exit codes to check `execve`, `posix_spawn` and environment passing.
 
-`user/musl/musltest.c`, a libc and kernel self-test that also runs on real Linux as the reference. It works in `$MT_DIR/mt<pid>` (default `/tmp`) and prints `ok`/`FAIL` per check:
+`usr/musl/musltest.c`, a libc and kernel self-test that also runs on real Linux as the reference. It works in `$MT_DIR/mt<pid>` (default `/tmp`) and prints `ok`/`FAIL` per check:
 
 | Group | Exercises |
 |---|---|
@@ -4535,26 +4491,26 @@ Three other third-party components are kernel code, not user programs:
 | `t_signals`, `t_time` | SA_SIGINFO, masks and `sigpending`, `kill`+`WTERMSIG`, EINTR from `nanosleep`, `sigsuspend`, clocks, `strftime` |
 | `t_sys`, `t_errors`, `t_fixes` | `uname`, `sysconf`, `getrandom`, `/dev/null`, `dup2`, poll, and ~30 exact errno checks (EFAULT on unmapped buffers, ESPIPE, EAGAIN, EISDIR, ENOTDIR, ENOTTY ...), sendfile into a full pipe, `/proc` read far past the end, permission checks after `setuid(1000)` |
 
-`user/musl/smptest.c`, `smptest [workers] [rounds] [spin]` (defaults 8/24/3,000,000, max 12 workers) forks workers that spin, record `getcpu` in a CPU bitmask, write/read/verify/unlink files in `/tmp`, fork children over pipes every 4th round and test copy-on-write of a 64 KiB anonymous mapping every 5th round. Reports go back through one pipe; output goes to stdout and `/dev/kmsg`. PASS needs all reports, no errors, clean exits and, with at least 2 CPUs (`sysconf(_SC_NPROCESSORS_ONLN)`), at least two CPUs used.
+`usr/musl/smptest.c`, `smptest [workers] [rounds] [spin]` (defaults 8/24/3,000,000, max 12 workers) forks workers that spin, record `getcpu` in a CPU bitmask, write/read/verify/unlink files in `/tmp`, fork children over pipes every 4th round and test copy-on-write of a 64 KiB anonymous mapping every 5th round. Reports go back through one pipe; output goes to stdout and `/dev/kmsg`. PASS needs all reports, no errors, clean exits and, with at least 2 CPUs (`sysconf(_SC_NPROCESSORS_ONLN)`), at least two CPUs used.
 
-`user/musl/featest.c` (v8.97), `featest [group]` runs the checks for the features added in v8.97 and prints `featest: ok ...` or `featest: FAIL ...` lines and a `featest: done N passed, M failed` summary to stdout and `/dev/kmsg`. Groups: `fds` (200 open files, `select` and `poll` on descriptor 150, 60 pipes), `mem` (96 MiB `malloc`, two 64 MiB `mmap`s), `timers` (`alarm`, `pause`, `setitimer` with a 50 ms interval, disarming, the default action), `server` (listen/accept over loopback, non-blocking accept, `accept4` flags, refused connection, UDP over loopback), `threads` (section 5.15), `tty` (termios, window size, cursor position reports, scroll region, VMIN/VTIME, alternate screen; only when stdin is the console). `featest listen` is not part of the default run: it waits up to 60 s for a connection to port 9200 from another machine and answers it (the network check uses it).
+`usr/musl/featest.c` (v8.97), `featest [group]` runs the checks for the features added in v8.97 and prints `featest: ok ...` or `featest: FAIL ...` lines and a `featest: done N passed, M failed` summary to stdout and `/dev/kmsg`. Groups: `fds` (200 open files, `select` and `poll` on descriptor 150, 60 pipes), `mem` (96 MiB `malloc`, two 64 MiB `mmap`s), `timers` (`alarm`, `pause`, `setitimer` with a 50 ms interval, disarming, the default action), `server` (listen/accept over loopback, non-blocking accept, `accept4` flags, refused connection, UDP over loopback), `threads` (section 5.15), `tty` (termios, window size, cursor position reports, scroll region, VMIN/VTIME, alternate screen; only when stdin is the console). `featest listen` is not part of the default run: it waits up to 60 s for a connection to port 9200 from another machine and answers it (the network check uses it).
 
-`user/musl/dyntest.c` (v8.97) is linked dynamically. It checks that it was started through the dynamic linker (`AT_BASE`), `dl_iterate_phdr`, `malloc` and threads in the shared libc, then writes a small library (`libnvxdemo.so`, embedded in the program) to `/tmp`, loads it with `dlopen`, looks up functions and a variable with `dlsym`, calls into it, checks that its constructor ran and that it can call back into libc, and closes it.
+`usr/musl/dyntest.c` (v8.97) is linked dynamically. It checks that it was started through the dynamic linker (`AT_BASE`), `dl_iterate_phdr`, `malloc` and threads in the shared libc, then writes a small library (`libnvxdemo.so`, embedded in the program) to `/tmp`, loads it with `dlopen`, looks up functions and a variable with `dlsym`, calls into it, checks that its constructor ran and that it can call back into libc, and closes it.
 
-`user/musl/nettest.c`, `nettest [host]` (default `noovex.test`) exercises the Linux socket layer against the test peer in `tools/tests/net/netpeer.py`: `getaddrinfo`, a 300 KB HTTP download checked byte by byte, a 100 KB TCP echo with `shutdown(SHUT_WR)`, UDP `sendto`/`poll`/`recvfrom`, a non-blocking `connect` + `poll` + `SO_ERROR`, `ECONNREFUSED` on a closed port and `EAFNOSUPPORT` for IPv6. It prints `nettest: PASS` or `nettest: FAIL` to stdout and `/dev/kmsg`. `tools/check.py --only net` runs it in QEMU.
+`usr/musl/nettest.c`, `nettest [host]` (default `noovex.test`) exercises the Linux socket layer against the test peer in `tools/tests/net/netpeer.py`: `getaddrinfo`, a 300 KB HTTP download checked byte by byte, a 100 KB TCP echo with `shutdown(SHUT_WR)`, UDP `sendto`/`poll`/`recvfrom`, a non-blocking `connect` + `poll` + `SO_ERROR`, `ECONNREFUSED` on a closed port and `EAFNOSUPPORT` for IPv6. It prints `nettest: PASS` or `nettest: FAIL` to stdout and `/dev/kmsg`. `tools/check.py --only net` runs it in QEMU.
 
-Host harness. `source/tools/tests/linux/hh.c` compiles the whole kernel as a Linux program (`hk_glue.c` does `#include "kernel64.c"`), traps user `syscall`/`int 0x80` with seccomp and feeds them to `linux_syscall`/`syscall_dispatch`. It runs mhello, legacy programs, every compressor round trip, the SQLite sequence, `smptest 3 3 200000`, `musltest` (requires at least 80 `ok`), optionally `lxfuzz.c` (random system calls with hostile arguments), and then checks that no frames, vfile slots or pipes leaked. Arguments with spaces are passed with `\037` exactly as the shell does.
+Host harness. `tools/tests/linux/hh.c` compiles the whole kernel as a Linux program (`hk_glue.c` does `#include "kernel64.c"`), traps user `syscall`/`int 0x80` with seccomp and feeds them to `linux_syscall`/`syscall_dispatch`. It runs mhello, legacy programs, every compressor round trip, the SQLite sequence, `smptest 3 3 200000`, `musltest` (requires at least 80 `ok`), optionally `lxfuzz.c` (random system calls with hostile arguments), and then checks that no frames, vfile slots or pipes leaked. Arguments with spaces are passed with `\037` exactly as the shell does.
 
 ### 6.9 Step-by-step porting guide
 
 #### Step 1, port a portable C command-line program with musl
 
 1. Run `./build.sh` once so `build/musl` exists.
-2. Put the sources under `third_party/<name>/` (or a single file under `user/musl/`).
+2. Put the sources under `third_party/<name>/` (or a single file under `usr/musl/`).
 3. Build by hand to see what breaks:
 
 ```sh
-cd source/kernel
+cd NoovexOS-64-bit
 export NVX_MUSL=$(pwd)/build/musl
 tools/mcc -O2 -w -o /tmp/myprog third_party/myprog/*.c
 file /tmp/myprog
@@ -4562,7 +4518,7 @@ file /tmp/myprog
 
 `file` must say `static-pie linked`. Typical fixes: replace `configure` output with a hand-written config header passed via `-include` (as `third_party/xz/nvx_config.h` does), disable threads (`SQLITE_THREADSAFE=0`, no `HAVE_PTHREAD`), assembly (`ZSTD_DISABLE_ASM`), and plugin loading (`SQLITE_OMIT_LOAD_EXTENSION`).
 
-Minimal template, the same shape as `user/musl/mhello.c`:
+Minimal template, the same shape as `usr/musl/mhello.c`:
 
 ```c
 #include <stdio.h>
@@ -4596,7 +4552,7 @@ and a row before `{"+init",...}`:
     {"myprog",_binary_user_myprog_elf_start,_binary_user_myprog_elf_end},
 ```
 
-5. Rebuild. The program appears in `/bin` and runs as `myprog args`, in pipes and in the background. Watch the 8 MiB kernel assertion. For a single test file in `user/musl/`, add its name to `for p in mhello musltest smptest` instead of using `port`.
+5. Rebuild. The program appears in `/bin` and runs as `myprog args`, in pipes and in the background. Watch the 8 MiB kernel assertion. For a single test file in `usr/musl/`, add its name to `for p in mhello musltest smptest` instead of using `port`.
 
 #### Step 3, run it from disk instead
 
@@ -4610,7 +4566,7 @@ Limits: the whole image is read from memory (`FsFile.data`), so it must fit the 
 
 #### Step 4, find missing system calls and add one
 
-A missing call shows up as `ENOSYS` (`-38`). To see which one, temporarily add a `klog(...)` of `nr` before the final `return -LX_ENOSYS;` in `lx_dispatch`. Then add a `case` to the switch in `core/linux.c`. Rules that follow from the existing code:
+A missing call shows up as `ENOSYS` (`-38`). To see which one, temporarily add a `klog(...)` of `nr` before the final `return -LX_ENOSYS;` in `lx_dispatch`. Then add a `case` to the switch in `sys/linux/linux.c`. Rules that follow from the existing code:
 
 * Read arguments from `a1...a6` (`rdi rsi rdx r10 r8 r9`); return `-LX_E...` on error.
 * Never dereference a user pointer without `lx_ok`/`lx_get`/`lx_put`/`lx_str`; turn paths into absolute ones with `PATH1(dirfd,ptr,empty_ok)`.
@@ -4639,7 +4595,7 @@ int main(int argc,char** argv){
 }
 ```
 
-1. Save as `user/src/mycat.c` (`upper.c` and `greet.c` are good models).
+1. Save as `usr/src/mycat.c` (`upper.c` and `greet.c` are good models).
 2. Add `mycat` to `for p in count spin sigdemo upper greet pipetest nvxbox init libc8; do`. The loop compiles with `LFLAGS`, links with `user.ld`, `crt0.o` and `libc.a`, embeds `user_mycat_bin.o`, renames to `.rodata`.
 3. Add `user_mycat_bin.o` to `BLOBS`, the `extern` and the `JS_BIN` row as in step 2.
 
@@ -4653,11 +4609,11 @@ There is no X11/Wayland/SDL; a Linux program can draw on the raw screen:
 |---|---|---|
 | `/proc/fb` | procfs | text `"W H 32 PITCH\n"`, the only way to learn the resolution (no `FBIOGET_*` ioctls) |
 | `/dev/fb0` | 9 | `W*H*4` bytes of 0x00RRGGBB pixels (`SCENE`, stride `SW == W`); `lseek` + `write`/`read`; `mmap` is `-ENODEV` |
-| `/dev/input/mouse`, `/dev/input/mice` | 10 | 3-byte PS/2 packets: `0x08\|buttons\|sign bits`, dx, dy (positive dy is up: the desktop does `my-=dy` in `gui/input.c`); blocks when empty unless `O_NONBLOCK`; works with `poll` |
+| `/dev/input/mouse`, `/dev/input/mice` | 10 | 3-byte PS/2 packets: `0x08\|buttons\|sign bits`, dx, dy (positive dy is up: the desktop does `my-=dy` in `graphics/ui/input.c`); blocks when empty unless `O_NONBLOCK`; works with `poll` |
 | `/dev/dsp`, `/dev/audio` | 12 | 16-bit little-endian stereo PCM at `g_snd.rate` (48 kHz by default) on HDA or AC'97 |
 | `/dev/kmsg` | 13 | lines go to `klog` |
 
-While any process holds `/dev/fb0` open (`g_fb0_open > 0`), `init/main.c` stops drawing the desktop and blits `SCENE` whenever the program wrote to it (`g_fb0_dirty`); closing it restores the desktop. Mouse packets are only queued while the mouse device is open (`ux_mouse_push`).
+While any process holds `/dev/fb0` open (`g_fb0_open > 0`), `core/init/main.c` stops drawing the desktop and blits `SCENE` whenever the program wrote to it (`g_fb0_dirty`); closing it restores the desktop. Mouse packets are only queued while the mouse device is open (`ux_mouse_push`).
 
 ```c
 #include <fcntl.h>
@@ -4712,7 +4668,7 @@ Things to know:
   `ENETUNREACH` while there is no link.
 - DNS works without `/etc/resolv.conf`: queries to musl's default `127.0.0.1:53`
   are forwarded to the DHCP DNS server.
-- For HTTPS, link the program with BearSSL and `user/musl/nvxtls.c` as `fetch`
+- For HTTPS, link the program with BearSSL and `usr/musl/nvxtls.c` as `fetch`
   does (section 6.11). It then checks certificates against the same roots as
   the kernel's `https` command.
 - Server programs can `bind`, `listen` and `accept` (section 9.7.4), on the
@@ -4776,10 +4732,10 @@ For a shared library, compile with `-fPIC` against the musl headers and link wit
 | Piece | Where | What it is |
 |---|---|---|
 | BearSSL | `third_party/bearssl` | Upstream BearSSL (master, commit 3c04036, June 2024; `VERSION.txt`), MIT licence. TLS 1.0-1.2 client and server, X.509 validation, no TLS 1.3. `tools/build_bearssl.sh` compiles its 294 files with `mcc-dyn` into `build/bearssl/libbearssl.a`, with `BR_USE_GETENTROPY` and `BR_USE_URANDOM` |
-| The kernel's root store | `/etc/ssl/nvx-anchors.pem` | Written at boot by `ux_write_anchors` (`fs/unixfs.c`) from the kernel's 120 Mozilla roots (`lib/crypto/nvxroots.c`), and rewritten only when the kernel's store has changed. Each root is two PEM objects, `TRUST ANCHOR NAME` (the subject name, DER) and `PUBLIC KEY` (SubjectPublicKeyInfo), which is exactly what a trust anchor needs |
+| The kernel's root store | `/etc/ssl/nvx-anchors.pem` | Written at boot by `ux_write_anchors` (`fs/vfs/unixfs.c`) from the kernel's 120 Mozilla roots (`lib/crypto/nvxroots.c`), and rewritten only when the kernel's store has changed. Each root is two PEM objects, `TRUST ANCHOR NAME` (the subject name, DER) and `PUBLIC KEY` (SubjectPublicKeyInfo), which is exactly what a trust anchor needs |
 | Local CAs | `/etc/ssl/local-ca.pem` | The same file the kernel's `https` command reads: ordinary PEM certificates |
-| Helper | `user/musl/nvxtls.c`, `nvxtls.h` | `nvx_anchors_load(&a, roots, local_ca)` turns both files into an array of `br_x509_trust_anchor` (RSA and EC P-256/P-384/P-521 keys); `nvx_tls_error(err)` gives a readable message for a BearSSL error code |
-| `fetch` | `user/musl/fetch.c` | Downloads a URL over HTTP or HTTPS |
+| Helper | `usr/musl/nvxtls.c`, `nvxtls.h` | `nvx_anchors_load(&a, roots, local_ca)` turns both files into an array of `br_x509_trust_anchor` (RSA and EC P-256/P-384/P-521 keys); `nvx_tls_error(err)` gives a readable message for a BearSSL error code |
+| `fetch` | `usr/musl/fetch.c` | Downloads a URL over HTTP or HTTPS |
 
 #### `fetch`
 
@@ -4805,7 +4761,7 @@ fetch -s -o /dev/null https://noovex.test:9443/big
 
 #### Using BearSSL in your own program
 
-1. Link with `-I third_party/bearssl/inc -I user/musl user/musl/nvxtls.c build/bearssl/libbearssl.a`.
+1. Link with `-I third_party/bearssl/inc -I usr/musl usr/musl/nvxtls.c build/bearssl/libbearssl.a`.
 2. Load the anchors: `nvx_anchors a; nvx_anchors_load(&a, "/etc/ssl/nvx-anchors.pem", "/etc/ssl/local-ca.pem");`
 3. Set up the client as in BearSSL's `samples/client_basic.c`: `br_ssl_client_init_full(&sc, &xc, a.v, a.n)`, `br_ssl_engine_set_buffer`, `br_ssl_client_reset(&sc, host, 0)`, then `br_sslio_init` with `read`/`write` callbacks on the socket.
 4. After a failure, `nvx_tls_error(br_ssl_engine_last_error(&sc.eng))` explains it.
@@ -4814,7 +4770,7 @@ The kernel's own TLS 1.3 client (`https` command, section 9.9) and BearSSL in us
 
 ### 6.12 FFmpeg and the `play` command
 
-`play` (`user/musl/play.c`) is a video and audio player built on FFmpeg 8.1.2. The source in `third_party/ffmpeg` is the ffmpeg-rockchip fork; its Rockchip hardware decoders only run on Rockchip ARM chips, so they are left out and everything is decoded on the CPU.
+`play` (`usr/musl/play.c`) is a video and audio player built on FFmpeg 8.1.2. The source in `third_party/ffmpeg` is the ffmpeg-rockchip fork; its Rockchip hardware decoders only run on Rockchip ARM chips, so they are left out and everything is decoded on the CPU.
 
 Build. `build.sh` configures FFmpeg once into `build/ffmpeg` with `tools/mcc-dyn` as a cross compiler for `x86_64-linux`, then builds the static libraries and links `play` as a dynamic musl program like the other ports (section 6.9):
 
@@ -4861,7 +4817,7 @@ QEMU's default CPU model has no SSSE3, so the colour conversion falls back to pl
 
 Limits: no subtitles and no hardware decoding. The Video Player window and the browser's `<video>` use the same program (sections 6.13 and 6.14).
 
-Since v9.12 `play` also accepts an `http://` or `https://` URL (read with Range requests through `user/musl/httpio.c`, which keeps the last 8 MB in a ring so the demuxer can seek back without a new request), and has an embedded mode used by the media service (section 6.13).
+Since v9.12 `play` also accepts an `http://` or `https://` URL (read with Range requests through `usr/musl/httpio.c`, which keeps the last 8 MB in a ring so the demuxer can seek back without a new request), and has an embedded mode used by the media service (section 6.13).
 
 ### 6.13 The media service (`/dev/media`)
 
@@ -4890,7 +4846,7 @@ Inside `play`, the input is an `AVIOContext`: a local file, `httpio`, or `ks_rea
 
 `media_tick` runs in the kernel main loop and compacts the stream buffers. `media_free` sends `QUIT` and kills the process.
 
-### 6.14 The Video Player window (`apps/videoplayer.c`)
+### 6.14 The Video Player window (`apps/media/videoplayer.c`)
 
 `W_VIDEO` is a window like the others. `video_open_url` starts a media slot for a path or URL, sized to the window; `video_open_slot` builds the full path of a file from the directory tree. Files with the extensions mp4, m4v, mov, mkv, webm, mp3, m4a, aac, ogg, oga, ogv, opus and wav open in it from Files and the desktop, and `video` (or `player`) does the same from the terminal (in the live terminal it switches to the desktop first). Closing the window frees the slot.
 
@@ -4902,9 +4858,9 @@ The kernel main loop calls `video_fast` and then `browser_media_fast` when nothi
 
 #### Building glibc
 
-`tools/build_glibc.sh` builds glibc 2.44 from `source/third_party_src/glibc-2.44.tar.gz` (`--prefix=/usr`, `--libdir=/usr/lib/x86_64-linux-gnu`, `--enable-kernel=4.4`) into `build/glibc-root` and is skipped when that directory already holds `lib64/libc.so.6`. glibc's `configure` needs GNU awk.
+`tools/build_glibc.sh` builds glibc 2.44 from `third_party/src/glibc-2.44.tar.gz` (`--prefix=/usr`, `--libdir=/usr/lib/x86_64-linux-gnu`, `--enable-kernel=4.4`) into `build/glibc-root` and is skipped when that directory already holds `lib64/libc.so.6`. glibc's `configure` needs GNU awk.
 
-#### The sysroot (`fs/sysroot.c`, `tools/mksysroot.py`)
+#### The sysroot (`fs/vfs/sysroot.c`, `tools/mksysroot.py`)
 
 `build.sh` copies into `build/sysroot-stage`:
 
@@ -4956,7 +4912,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 
 ### 6.16 Debian packages: apt and dpkg
 
-`apt` (also `apt-get`, `apt-cache`) and `dpkg` are Terminal commands in the kernel (`fs/apt.c`). Commands that change the system need root (`sudo apt install ...`).
+`apt` (also `apt-get`, `apt-cache`) and `dpkg` are Terminal commands in the kernel (`fs/pkg/apt.c`). Commands that change the system need root (`sudo apt install ...`).
 
 | Command | What it does |
 |---|---|
@@ -4979,7 +4935,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 
 #### Unpacking
 
-- `ar` members `control.tar.*` and `data.tar.*`; compression gzip (`pz_inflate_raw`), xz (`lib/xzk.c`, xz-embedded) or zstd (`lib/zstdk.c`, the zstd decoder); `lib/unpack.c` picks by magic bytes.
+- `ar` members `control.tar.*` and `data.tar.*`; compression gzip (`pz_inflate_raw`), xz (`lib/compress/xzk.c`, xz-embedded) or zstd (`lib/compress/zstdk.c`, the zstd decoder); `lib/compress/unpack.c` picks by magic bytes.
 - The tar reader handles ustar prefixes, GNU long names (`L`, `K`), pax headers (`path=`, `linkpath=`), symlinks (relative targets made absolute) and hard links (copied).
 - The files become one `NVS2` layer with a single stored block, written to `/var/lib/nvpkg/PKG.nvs` and added with `sysroot_add_layer("pkg:PKG", ...)`. Programs in `/usr/bin` run at once; libraries are found by the glibc loader.
 - `/var/lib/dpkg/status` keeps Package, Version, Architecture, Depends, Description and Auto-Installed.
@@ -4997,7 +4953,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 
 ### 6.17 Python 3.13
 
-CPython 3.13 is built from `source/third_party_src/cpython-3.13.tar.xz` by `tools/build_python.sh` (cached in `build/python-root`; `--prefix=/usr`, position-independent like every program the build machine's gcc makes). `tools/stage_python.sh` puts into the sysroot:
+CPython 3.13 is built from `third_party/src/cpython-3.13.tar.xz` by `tools/build_python.sh` (cached in `build/python-root`; `--prefix=/usr`, position-independent like every program the build machine's gcc makes). `tools/stage_python.sh` puts into the sysroot:
 
 | Path | Content |
 |---|---|
@@ -5011,7 +4967,7 @@ CPython 3.13 is built from `source/third_party_src/cpython-3.13.tar.xz` by `tool
 
 ### 6.18 The Python IDE package (`python3-ide`)
 
-The sysroot carries a small local package repository in `/usr/share/noovex/repo` (`Packages` plus `pool/*.deb`), built by `build.sh` from `source/kernel/packages/*/` with `dpkg-deb` and `tools/mkrepo.py`. `apt` always reads it, after the downloaded lists, as source `file:/usr/share/noovex/repo/`; `file:` URIs are read from the sysroot or the file system, so it works without a network and without `apt update`.
+The sysroot carries a small local package repository in `/usr/share/noovex/repo` (`Packages` plus `pool/*.deb`), built by `build.sh` from `usr/packages/*/` with `dpkg-deb` and `tools/mkrepo.py`. `apt` always reads it, after the downloaded lists, as source `file:/usr/share/noovex/repo/`; `file:` URIs are read from the sysroot or the file system, so it works without a network and without `apt update`.
 
 `sudo apt install python3-ide` (also `ide`, `idle`, `idle3`, `pyide`, `python-ide`, `python3-idle`; so `sudo apt install python3 ide` works) installs the package: `/usr/share/applications/python3-ide.desktop`, an example program and a README. Debian's own `idle3` needs Tk and an X server, which NoovexOS does not have, so these names are redirected.
 
@@ -5021,13 +4977,13 @@ The sysroot carries a small local package repository in `/usr/share/noovex/repo`
 | Start menu, modern style | Productivity lists "Python IDE"; searching "python" or "idle" finds it |
 | Terminal | `python3-ide`, `idle`, `idle3` and `pyide` open it |
 
-The IDE is the Editor window in Python mode (`ed_py`, `apps/editor.c`): the title reads "Python IDE - main.py", keywords, built-ins, strings, numbers, comments and `def`/`class` names are coloured, Save writes `/root/main.py`, and Run saves and runs `python3 /root/main.py` in the Terminal, so `input()` works. Opening the plain Editor or a file leaves Python mode. Removing the package (`sudo apt remove python3-ide`) takes the entries away again.
+The IDE is the Editor window in Python mode (`ed_py`, `apps/office/editor.c`): the title reads "Python IDE - main.py", keywords, built-ins, strings, numbers, comments and `def`/`class` names are coloured, Save writes `/root/main.py`, and Run saves and runs `python3 /root/main.py` in the Terminal, so `input()` works. Opening the plain Editor or a file leaves Python mode. Removing the package (`sudo apt remove python3-ide`) takes the entries away again.
 
-### 6.19 X11: the X.Org server (`startx`, `apps/xdisplay.c`)
+### 6.19 X11: the X.Org server (`startx`, `apps/x11/xdisplay.c`)
 
 The server is X.Org's: Xvfb is the same program as Xorg built with a memory framebuffer as its output instead of a graphics card driver, and it implements the whole X11 protocol and its extensions (XTEST, XKB, RENDER, RANDR, ...).
 
-The sysroot carries X.Org's `Xvfb` (the X server with a memory framebuffer), `xkbcomp`, the XKB keyboard data (`/usr/share/X11/xkb`), `XErrorDB`, `protocol.txt`, an Xlib test program `xdemo` (`user/x11/xdemo.c`) and every library they need (libX11, libxcb, pixman, libXfont2, freetype, ...), copied from the build machine like the GNU tools.
+The sysroot carries X.Org's `Xvfb` (the X server with a memory framebuffer), `xkbcomp`, the XKB keyboard data (`/usr/share/X11/xkb`), `XErrorDB`, `protocol.txt`, an Xlib test program `xdemo` (`usr/x11/xdemo.c`) and every library they need (libX11, libxcb, pixman, libXfont2, freetype, ...), copied from the build machine like the GNU tools.
 
 `startx` in the Terminal creates `/tmp` and `/var/lib/xkb`, sets `DISPLAY=127.0.0.1:0` and starts
 
@@ -5045,9 +5001,9 @@ then opens the **X Display** window (also in the start menu: Development, or Sys
 
 | Piece | How it works |
 |---|---|
-| Kernel queue | `xdisp_mouse` (called from the mouse handler in `gui/input.c`) and `xdisp_key` (keyboard dispatch when the X Display window has focus) push 8-byte records into a 512-entry ring in `apps/xdisplay.c`: type (1 motion, 2 button, 3 key), button or character, pressed, x and y in X screen coordinates. Wheel steps become buttons 4 and 5. |
+| Kernel queue | `xdisp_mouse` (called from the mouse handler in `graphics/ui/input.c`) and `xdisp_key` (keyboard dispatch when the X Display window has focus) push 8-byte records into a 512-entry ring in `apps/x11/xdisplay.c`: type (1 motion, 2 button, 3 key), button or character, pressed, x and y in X screen coordinates. Wheel steps become buttons 4 and 5. |
 | `/dev/nvxxin` | device 16; `read` returns whole records, `poll` and `epoll` report it readable while records wait |
-| `nvx-xinput` | started by `startx`; an X client (`user/x11/nvx-xinput.c`) that reads `/dev/nvxxin` and replays the records with the XTEST extension (`XTestFakeMotionEvent`, `XTestFakeButtonEvent`, `XTestFakeKeyEvent`). Characters are turned into keysyms (Return, BackSpace, Tab, Escape and the arrow keys included); Shift is pressed around characters that need it. Log in `/tmp/nvx-xinput.log`. |
+| `nvx-xinput` | started by `startx`; an X client (`usr/x11/nvx-xinput.c`) that reads `/dev/nvxxin` and replays the records with the XTEST extension (`XTestFakeMotionEvent`, `XTestFakeButtonEvent`, `XTestFakeKeyEvent`). Characters are turned into keysyms (Return, BackSpace, Tab, Escape and the arrow keys included); Shift is pressed around characters that need it. Log in `/tmp/nvx-xinput.log`. |
 
 #### The full-screen X session (`startx full`)
 
@@ -5067,11 +5023,11 @@ then opens the **X Display** window (also in the start menu: Development, or Sys
 
 | Piece | Where it comes from |
 |---|---|
-| Tcl/Tk 8.6 | `tools/build_tcltk.sh` builds Tcl and Tk 8.6 from `source/third_party_src/tcltk-8.6.tar.xz` (cached in `build/tcltk-root`). `libtcl8.6.so` and `libtk8.6.so` go to `/lib64`, the script libraries to `/usr/lib/tcl8.6` and `/usr/lib/tk8.6`, `wish` to `/usr/bin`. |
+| Tcl/Tk 8.6 | `tools/build_tcltk.sh` builds Tcl and Tk 8.6 from `third_party/src/tcltk-8.6.tar.xz` (cached in `build/tcltk-root`). `libtcl8.6.so` and `libtk8.6.so` go to `/lib64`, the script libraries to `/usr/lib/tcl8.6` and `/usr/lib/tk8.6`, `wish` to `/usr/bin`. |
 | `_tkinter` | built by the same script from CPython 3.13's `Modules/_tkinter.c` against that Tk, into `lib-dynload` |
 | `tkinter`, `idlelib` | the standard library packages, now staged (without `idlelib/idle_test`), with IDLE's `.def` configuration files and icons |
 | `/usr/bin/idle3.13` | `from idlelib.pyshell import main`; `idle3` and `idle` link to it |
-| `nvxwm` | a small window manager (`user/x11/nvxwm.c`), started by `startx`: a title bar with the window name and a close button (sends `WM_DELETE_WINDOW`), drag the title bar to move, click to raise and focus, the new window gets the focus |
+| `nvxwm` | a small window manager (`usr/x11/nvxwm.c`), started by `startx`: a title bar with the window name and a close button (sends `WM_DELETE_WINDOW`), drag the title bar to move, click to raise and focus, the new window gets the focus |
 
 Tcl is built **without threads** (`--disable-threads`). The threaded Tcl notifier waits in `pthread_cond_timedwait` and only woke up on the next X event here, so IDLE showed its prompt, colours and output one keystroke late. Without threads, Tcl waits in `select` with a timeout, and `_tkinter` polls its interpreter every 20 ms, which is what CPython does with a non-threaded Tcl.
 
@@ -5085,7 +5041,7 @@ IDLE runs in its normal mode, with the user code in a second Python process conn
 
 ### 6.21 X programs as normal desktop apps (v9.28)
 
-`startx` (and every automatic start, for example `idle3`) now runs the X server at the size of the screen in **overlay mode** (`g_xover`, `apps/xdisplay.c`): there is no X Display window, X windows are drawn straight onto the NoovexOS desktop.
+`startx` (and every automatic start, for example `idle3`) now runs the X server at the size of the screen in **overlay mode** (`g_xover`, `apps/x11/xdisplay.c`): there is no X Display window, X windows are drawn straight onto the NoovexOS desktop.
 
 | Piece | How it works |
 |---|---|
@@ -5098,7 +5054,7 @@ IDLE runs in its normal mode, with the user code in a second Python process conn
 
 #### Apps from packages in the start menu
 
-`apps/xapps.c` reads every `/usr/share/applications/*.desktop` file in the system image and installed packages (Name, Exec without `%` codes, Icon, Terminal, NoDisplay). Each appears in the start menu (Development in the classic menu, Productivity in the modern menu) and in search, with its own icon: `Icon=` is looked up as a PNG in `/usr/share/icons/hicolor/{48,64,128,32,256}x.../apps/` and `/usr/share/pixmaps/`, decoded with `png_decode` and scaled to 48x48 with its alpha channel. IDLE uses CPython's own icon (`idlelib/Icons/idle_48.png`). Launching runs the `Exec` line through `x_launch` (or the Terminal for `Terminal=true`). So `sudo apt install vlc` adds **VLC media player** with its cone icon to the menu; whether VLC itself runs is not tested (it needs Qt, which needs more of the Linux layer).
+`apps/x11/xapps.c` reads every `/usr/share/applications/*.desktop` file in the system image and installed packages (Name, Exec without `%` codes, Icon, Terminal, NoDisplay). Each appears in the start menu (Development in the classic menu, Productivity in the modern menu) and in search, with its own icon: `Icon=` is looked up as a PNG in `/usr/share/icons/hicolor/{48,64,128,32,256}x.../apps/` and `/usr/share/pixmaps/`, decoded with `png_decode` and scaled to 48x48 with its alpha channel. IDLE uses CPython's own icon (`idlelib/Icons/idle_48.png`). Launching runs the `Exec` line through `x_launch` (or the Terminal for `Terminal=true`). So `sudo apt install vlc` adds **VLC media player** with its cone icon to the menu; whether VLC itself runs is not tested (it needs Qt, which needs more of the Linux layer).
 
 #### Opening Python files
 
@@ -5108,7 +5064,7 @@ A double click on a `.py` file (Files, desktop icons, search results) opens it i
 
 NoovexOS 64 has no block cache layer under a generic inode cache the way Linux does. Every file the system knows about lives in one fixed in-memory table, `FS[]`, and every directory in a second table, `DT[]`. The on-disk formats (NVX4, or NTFS/FAT when installed that way) are back ends that fill those tables at mount, load file contents on demand, and get the changes written back. The rest of the kernel, the shell, the desktop apps and the Linux system-call layer all work on `FS[]`/`DT[]` through a small set of helpers.
 
-Every file here is its own compilation unit with a header under `include/nvx/fs/`. Before v8.96, `fs/unixfs.c` included `fs/nvx4.c` and `fs/ntfsk.c` included `fs/vfat.c`; they are now separate units too.
+Every file here is its own compilation unit with a header under `include/nvx/fs/`. Before v8.96, `fs/vfs/unixfs.c` included `fs/nvx/nvx4.c` and `fs/ntfs/ntfsk.c` included `fs/fat/vfat.c`; they are now separate units too.
 
 ```
               shell / desktop apps / core/linux.c (Linux syscalls)
@@ -5131,7 +5087,7 @@ Every file here is its own compilation unit with a header under `include/nvx/fs/
 
 ---
 
-### 7.1 The in-memory file table (`fs/ramfs.c`)
+### 7.1 The in-memory file table (`fs/vfs/ramfs.c`)
 
 #### Constants
 
@@ -5158,7 +5114,7 @@ static FsFile FS[FS_N];
 | `data`, `cap` | Heap buffer from `kmalloc` and its size. `data` may be `NULL` while `len > 0`, for a file that has not been loaded yet or has been evicted. The buffer always keeps one spare byte so `data[len]` can be `0`. |
 | `len` | Logical file size in bytes. |
 | `used` | Slot is in use. |
-| `folder` | Legacy category index used by the file explorer (`apps/file_explorer.c` filters on `FS[k].folder`). Not part of the directory tree. |
+| `folder` | Legacy category index used by the file explorer (`apps/system/file_explorer.c` filters on `FS[k].folder`). Not part of the directory tree. |
 | `dir` | Index of the parent directory in `DT[]`. `-2` marks an orphan (see 7.3). |
 | `mode`, `uid`, `gid`, `nlink`, `mtime`, `ctime`, `atime` | Unix metadata. Times are seconds since the epoch from `ux_now()` (= `k_realtime_ms()/1000`). |
 | `lazy` | The contents are on disk but not in memory. The next `fs_ensure` loads them. |
@@ -5218,11 +5174,11 @@ static volatile int g_fs_wb_pending; static u64 g_fs_wb_due;
 static void fs_wb_mark(int k){ (void)k; if(!g_fs_wb_pending){ g_fs_wb_pending=1; g_fs_wb_due=g_ticks+100; } }
 ```
 
-When the last reference to a file `vfile` goes away (`vf_unref` in `core/proc/jobs.c`) and `g_fs_dirty[k]` is set, the flag is cleared and `fs_wb_mark` is called. Then `fs_orphan_close(k)` runs. The kernel main loop (`init/main.c`) checks `if(g_fs_wb_pending&&g_ticks>=g_fs_wb_due)nvx3_sync_all();`, so a burst of closes becomes one commit about 100 ticks (one second at 100 Hz) later. `nvx3_sync_all` and `nvx3_flush_meta` both clear `g_fs_wb_pending`.
+When the last reference to a file `vfile` goes away (`vf_unref` in `core/proc/jobs.c`) and `g_fs_dirty[k]` is set, the flag is cleared and `fs_wb_mark` is called. Then `fs_orphan_close(k)` runs. The kernel main loop (`core/init/main.c`) checks `if(g_fs_wb_pending&&g_ticks>=g_fs_wb_due)nvx3_sync_all();`, so a burst of closes becomes one commit about 100 ticks (one second at 100 Hz) later. `nvx3_sync_all` and `nvx3_flush_meta` both clear `g_fs_wb_pending`.
 
 Synchronous paths bypass the timer:
 
-* `fs_sync(k)` to `nvx3_sync(k)` to `n4_sync_file` + `n4_commit`. This is used by `k_fsync`, `k_truncate_idx`, `k_rename`, `ux_mkfile`, `ux_symlink`, package extraction and `fs_save_bin` in `core/syscall.c`.
+* `fs_sync(k)` to `nvx3_sync(k)` to `n4_sync_file` + `n4_commit`. This is used by `k_fsync`, `k_truncate_idx`, `k_rename`, `ux_mkfile`, `ux_symlink`, package extraction and `fs_save_bin` in `sys/native/syscall.c`.
 * `nvx3_flush_meta()` commits metadata after link, unlink, chmod, chown and utime.
 
 #### File descriptors (declared in `ramfs.c`)
@@ -5249,7 +5205,7 @@ There is one global table of open files, `g_vf`. Per-process descriptor tables c
 
 ---
 
-### 7.2 The directory tree (`fs/dirtree.c`)
+### 7.2 The directory tree (`fs/vfs/dirtree.c`)
 
 ```c
 #define DN_MAX 512
@@ -5266,7 +5222,7 @@ static DNode DT[DN_MAX];
 | `dt_mkdir_at(parent, name)` | Returns an existing child of that name, or allocates a slot with mode `0040755` owned by `g_uid:g_gid`. It updates the parent's mtime and ctime. Names must be 1..63 characters. |
 | `dt_child(parent, name)` | Linear search for a child directory. |
 | `dt_resolve_dir(p)` | Walks an absolute or relative (from `g_dcwd`) path one component at a time, handling `.` and `..`. A component longer than 63 characters fails. Returns a `DT` index or -1. |
-| `dt_path_n(node, out, cap)` | Builds an absolute path by climbing parents, at most 16 levels. `dt_path(n, o)` is a macro in `core/syscall.c` that passes `sizeof(o)` as the capacity. |
+| `dt_path_n(node, out, cap)` | Builds an absolute path by climbing parents, at most 16 levels. `dt_path(n, o)` is a macro in `sys/native/syscall.c` that passes `sizeof(o)` as the capacity. |
 | `dt_is_tmp(d)` | Climbs up to 32 levels. Returns true if the ancestor directly under `/` is named `tmp`. |
 | `dt_save()` | Persists the tree: `nk_root_dt_save()` on NTFS/FAT, otherwise `nvx3_flush_meta()`. |
 | `dt_dir_ok`, `dt_dir_empty`, `k_is_ancestor` | Validity, emptiness and ancestry tests. A directory is not empty while it holds files, subdirectories or hard links (`ux_links_in`). |
@@ -5304,7 +5260,7 @@ static DNode DT[DN_MAX];
 
 ---
 
-### 7.3 Unix semantics (`fs/unixfs.c`)
+### 7.3 Unix semantics (`fs/vfs/unixfs.c`)
 
 #### Lookup and symlinks
 
@@ -5445,7 +5401,7 @@ static int ux_perm_ok(int k,int want){            /* want: 4=r 2=w 1=x */
 
 ---
 
-### 7.4 The VFS layer (`fs/vfs.c`)
+### 7.4 The VFS layer (`fs/vfs/vfs.c`)
 
 ```c
 struct vfs_fs_ops {
@@ -5482,7 +5438,7 @@ The output is built into the 4 KiB `g_procbuf` on every read. This set differs f
 7. `O_TRUNC` on a non-empty file to `fs_truncate_to(k, 0)`. Create and truncate both set `g_fs_dirty`.
 8. The starting offset is `len` for `O_APPEND`, otherwise 0. Descriptors 0-2 are not handed out when no process is current (`g_jcur < 0`). `O_CLOEXEC` (`0x80000`) is recorded in `fdce()`.
 
-Flag values: `O_RDONLY 0`, `O_WRONLY 1`, `O_RDWR 2`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_CLOEXEC 0x80000`. The Linux layer (`core/linux.c`) also decodes `O_DIRECTORY` (`0x10000`).
+Flag values: `O_RDONLY 0`, `O_WRONLY 1`, `O_RDWR 2`, `O_CREAT 0x40`, `O_EXCL 0x80`, `O_TRUNC 0x200`, `O_APPEND 0x400`, `O_CLOEXEC 0x80000`. The Linux layer (`sys/linux/linux.c`) also decodes `O_DIRECTORY` (`0x10000`).
 
 #### `vfs_read` / `vfs_write`
 
@@ -5511,7 +5467,7 @@ Flag values: `O_RDONLY 0`, `O_WRONLY 1`, `O_RDWR 2`, `O_CREAT 0x40`, `O_EXCL 0x8
 
 ---
 
-### 7.5 Locating the data area (`fs/nvxfs.c`)
+### 7.5 Locating the data area (`fs/nvx/nvxfs.c`)
 
 `disk_init()` (called from `kmain` after `fs_init`) calls `nvx_locate()`, which picks the disk interface and the base LBA `g_nvx_base`. The legacy ATA driver is used when `ata_detect` finds a drive. Otherwise the generic disk is used: `gdisk_*` for AHCI or NVMe, with `g_nvx_generic = 1` and partition LBAs scaled by `dk_ratio()` on 4 KiB-sector drives.
 
@@ -5542,7 +5498,7 @@ The legacy readers `nvx_rd`/`nvx_rdn` return -1 whenever `g_rootfs` is set, so t
 
 ---
 
-### 7.6 The NVX4 on-disk format (`fs/nvx4.c`)
+### 7.6 The NVX4 on-disk format (`fs/nvx/nvx4.c`)
 
 #### Geometry
 
@@ -5788,7 +5744,7 @@ If power fails at any earlier point, sector 0 still carries the NVX2/NVX3 magic 
 
 ---
 
-### 7.8 NTFS and FAT root file systems (`fs/ntfsk.c`)
+### 7.8 NTFS and FAT root file systems (`fs/ntfs/ntfsk.c`)
 
 When no NoovexFS location is found, the system can run from an NTFS, FAT32 or FAT16 volume. Every back end is reached through one table:
 
@@ -5827,13 +5783,13 @@ static const rfs_ops g_rfs_fat16 = {"FAT16", vf_mount, ..., vf_fmt16};
   * `nk_root_flush()`: deletes on the volume every known path that no longer matches a live `FS` slot (this is how deletes and renames reach the disk), then rewrites the meta file.
   * `nk_root_dt_save()`: creates the directories, then removes known directories that no longer resolve, longest path first (up to 8 per call).
   * `nvx3_sync`, `nvx3_flush_meta`, `nvx3_sync_all` and `dt_save` all route here while `g_rootfs` is set.
-* Installing (`nk_install`, used by `init/installer.c`): format with the chosen ops (volume label `NOOVEXOS`), mount, write `/.noovexos` = `"NoovexOS\n"`, create every directory, copy every file (reporting progress), write the meta file, then unmount. The installer sets the data partition's MBR type to `0x07` (NTFS), `0x0C` (FAT32), `0x0E` (FAT16) or `0x7F` (NoovexFS).
+* Installing (`nk_install`, used by `core/init/installer.c`): format with the chosen ops (volume label `NOOVEXOS`), mount, write `/.noovexos` = `"NoovexOS\n"`, create every directory, copy every file (reporting progress), write the meta file, then unmount. The installer sets the data partition's MBR type to `0x07` (NTFS), `0x0C` (FAT32), `0x0E` (FAT16) or `0x7F` (NoovexFS).
 
 ---
 
 ### 7.9 FAT drivers
 
-#### `fs/vfat.c`, read/write FAT16/FAT32 on sector callbacks
+#### `fs/fat/vfat.c`, read/write FAT16/FAT32 on sector callbacks
 
 * State. The state is `g_vfat`:
   * geometry: `spc`, `rsvd`, `nfats`, `fatsz`, `root_lba`, `data_lba`, `clusters`, `rootclus`, `fsinfo`, `cbytes`;
@@ -5854,7 +5810,7 @@ static const rfs_ops g_rfs_fat16 = {"FAT16", vf_mount, ..., vf_fmt16};
   * on FAT32 a backup boot sector goes in sector 6 and FSInfo in sectors 1 and 7;
   * a volume-label entry is written in the root.
 
-#### `fs/fat_ata.c`, boot-media reader
+#### `fs/fat/fat_ata.c`, boot-media reader
 
 A minimal read-only FAT16/FAT32 reader on the legacy ATA drive (`ata_read`). It handles an MBR partition (types `0x01,0x04,0x06,0x0B,0x0C,0x0E`) or a superfloppy whose sector 0 starts with a jump. It supports only the root directory and 8.3 names (`fat_name83`):
 
@@ -5875,7 +5831,7 @@ On the file-system side (`unixfs.c`):
 
 ---
 
-### 7.10 Packages (`fs/pkg.c`)
+### 7.10 Packages (`fs/pkg/pkg.c`)
 
 `pkg_install(file, n, extract)` (shell command in `shell/commands.c`) works from an 8 MiB raw buffer (`g_pkg_raw`) and an 8 MiB inflate buffer (`g_pkg_inf`).
 
@@ -5901,11 +5857,11 @@ Without `extract`, only the file count and total size (`g_pkg_nfiles`, `g_pkg_to
 
 ## Part 8: Storage drivers, PCI and the installer
 
-This part covers everything between the PCI bus and a finished installation on disk: PCI configuration access, the four block-device back ends (ATA PIO, AHCI, NVMe, VirtIO-blk), the generic `gdisk_*` layer and its buffer cache, the graphical installer and disk manager in `init/installer.c`, USB mass storage, and the shell commands that work with disks.
+This part covers everything between the PCI bus and a finished installation on disk: PCI configuration access, the four block-device back ends (ATA PIO, AHCI, NVMe, VirtIO-blk), the generic `gdisk_*` layer and its buffer cache, the graphical installer and disk manager in `core/init/installer.c`, USB mass storage, and the shell commands that work with disks.
 
-All paths are relative to `source/kernel/`. The storage code is split into units (`drivers/bus/pci.c`, `drivers/storage/ahci.c`, `ata.c`, `gdisk.c`, `nvme.c`, `fs/nvxfs.c`, `fs/fat_ata.c`, `init/installer.c`), each with a header under `include/nvx/`. VirtIO-blk is a `MODS` driver that sees only `include/kapi.h` (see 8.6).
+All paths are relative to the repository root. The storage code is split into units (`drivers/bus/pci.c`, `drivers/storage/ahci.c`, `ata.c`, `gdisk.c`, `nvme.c`, `fs/nvx/nvxfs.c`, `fs/fat/fat_ata.c`, `core/init/installer.c`), each with a header under `include/nvx/`. VirtIO-blk is a `MODS` driver that sees only `include/kapi.h` (see 8.6).
 
-The file names do not match their contents. The code is not split up the way the file names suggest: | File | What it actually contains | |---|---| | `drivers/storage/ahci.c` | A standalone, read-only `ahci_identify()` probe with its own static buffers. It is used only by the `disks` command. The rest of the file is the PCnet NIC driver (`wcsr`, `nic_up_raw`, `nic_send`, ...). | | `drivers/storage/gdisk.c` | The real AHCI driver: `AHCI_*` addresses, `ahci_cmd`, `ahci_read`, `ahci_write1`, `ahci_flush` and `ahci_init`. | | `drivers/storage/nvme.c` | The NVMe driver, then the generic disk layer (`DK_*`, `gdisk_*`, buffer cache, `dk_ratio`), then the first installer helper (`ins83`, the `_binary_inst_*` externs). | | `init/installer.c` | The Disk Manager (`dm_*`), the kernel snapshot and checks (`inst_snapshot_data`, `kimg_check`, `kcheck_run`, `memmap_run`, `memtest_run`), the boot-partition builder (`inst_build_fs`), the installer UI and its run logic (`ip_*`), and the boot menu (`bootmenu_*`). |
+The file names do not match their contents. The code is not split up the way the file names suggest: | File | What it actually contains | |---|---| | `drivers/storage/ahci.c` | A standalone, read-only `ahci_identify()` probe with its own static buffers. It is used only by the `disks` command. The rest of the file is the PCnet NIC driver (`wcsr`, `nic_up_raw`, `nic_send`, ...). | | `drivers/storage/gdisk.c` | The real AHCI driver: `AHCI_*` addresses, `ahci_cmd`, `ahci_read`, `ahci_write1`, `ahci_flush` and `ahci_init`. | | `drivers/storage/nvme.c` | The NVMe driver, then the generic disk layer (`DK_*`, `gdisk_*`, buffer cache, `dk_ratio`), then the first installer helper (`ins83`, the `_binary_inst_*` externs). | | `core/init/installer.c` | The Disk Manager (`dm_*`), the kernel snapshot and checks (`inst_snapshot_data`, `kimg_check`, `kcheck_run`, `memmap_run`, `memtest_run`), the boot-partition builder (`inst_build_fs`), the installer UI and its run logic (`ip_*`), and the boot menu (`bootmenu_*`). |
 
 ---
 
@@ -5920,13 +5876,13 @@ static u32 pci_cfg(int bus,int slot,int fn,int off){ u32 a=(1u<<31)|((u32)bus<<1
 static void pci_cfgw(int bus,int slot,int fn,int off,u32 v){ ... outl(0xCF8,a); outl(0xCFC,v); }
 ```
 
-`drivers/net/nic.c:39` defines an identical writer called `pci_wcfg`. The `disks` command and the PCnet code use that one.
+`drivers/net/ethernet/nic.c:39` defines an identical writer called `pci_wcfg`. The `disks` command and the PCnet code use that one.
 
 #### Functions
 
 | Symbol | Scope | Behaviour |
 |---|---|---|
-| `pci_scan()` | buses 0-3, function 0 only | Fills the parallel arrays `pci_ven/pci_dev/pci_cls/pci_sub/pci_bus/pci_slot`, holding at most `PCI_MAX` = 24 entries, with the count in `pci_n`. `kmain` calls it (`init/main.c:145`, logged as `"boot: pci scanned"`). Consumers such as `pci`, `net`, `disks`, `wifi` and Settings rescan lazily with `if(!pci_n)pci_scan()`. |
+| `pci_scan()` | buses 0-3, function 0 only | Fills the parallel arrays `pci_ven/pci_dev/pci_cls/pci_sub/pci_bus/pci_slot`, holding at most `PCI_MAX` = 24 entries, with the count in `pci_n`. `kmain` calls it (`core/init/main.c:145`, logged as `"boot: pci scanned"`). Consumers such as `pci`, `net`, `disks`, `wifi` and Settings rescan lazily with `if(!pci_n)pci_scan()`. |
 | `pci_find(cls,sub,prog,&bus,&slot,&fn)` | all 256 buses, all functions of multifunction devices (header bit `0x800000` at offset `0x0C`) | Returns the first device that matches class and subclass. `prog<0` means any programming interface. The source comment gives the reason for the full scan: "NVMe/AHCI often live on high buses". |
 | `pci_quiesce()` | all 256 buses and functions, header type 0 only | Clears Bus-Master Enable (command bit 2) on devices that the firmware may have left doing DMA. It counts them in `g_pci_quiesced`, which `memmap` reports. It runs right after `pci_scan` at boot and logs `"boot: stopped DMA on devices the firmware left running"`. |
 
@@ -5953,7 +5909,7 @@ None of the storage drivers map BARs. They cast the 32-bit physical BAR value st
 | NVMe (`nvme_init`, `nvme.c`) | BAR0 (`0x10`) plus BAR1 (`0x14`) | BAR1 is non-zero (the 64-bit BAR has a high half) to `nvme_failstage=2`; it is an I/O BAR to 3; `base<0x1000` or `base>=0xF0000000` to 4 |
 | VirtIO (`vio_open`, `virtio.c`) | BAR0 | it is not an I/O BAR (`!(bar&1)`). Only the legacy I/O-port interface is supported. |
 
-Before touching registers, AHCI and NVMe set command bits `0x06` (Memory Space and Bus Master). `kapi_pci_enable` (`core/kapi.c:16`), which the VirtIO module uses, ORs in `0x407` instead: I/O, Memory, Bus Master and INTx-disable.
+Before touching registers, AHCI and NVMe set command bits `0x06` (Memory Space and Bus Master). `kapi_pci_enable` (`sys/native/kapi.c:16`), which the VirtIO module uses, ORs in `0x407` instead: I/O, Memory, Bus Master and INTx-disable.
 
 ---
 
@@ -5985,7 +5941,7 @@ For drive 0 and then drive 1, `ata_detect()` does the following:
 
 `ata_poll()` returns `-1` on ERR (`0x01`) or DF (`0x20`), and `0` once BSY is clear and DRQ is set. Every loop is bounded at 4,000,000 iterations.
 
-Two other files call `ata_detect()` directly: `fs/fat_ata.c` (`fat_mount`) and `fs/nvxfs.c` (`nvx_locate`, which runs from `disk_init()` at boot). When an IDE disk exists, NVXFS uses the `ata_*` functions directly (`g_nvx_generic=0`) rather than the gdisk layer.
+Two other files call `ata_detect()` directly: `fs/fat/fat_ata.c` (`fat_mount`) and `fs/nvx/nvxfs.c` (`nvx_locate`, which runs from `disk_init()` at boot). When an IDE disk exists, NVXFS uses the `ata_*` functions directly (`g_nvx_generic=0`) rather than the gdisk layer.
 
 ---
 
@@ -6140,7 +6096,7 @@ static int g_dktype=DK_NONE; static u32 g_dksectors=0;
 3. NVMe (`nvme_init`)
 4. VirtIO (`virtio_blk_probe`)
 
-`gdisk_ensure()` runs `gdisk_init` once and records that in `g_gdisk_probed`. The source comments call this lazy ("only when disks/installer is used"). However, `disk_init()` to `nvx_locate()` calls `gdisk_ensure()` at boot whenever no IDE drive exists (`fs/nvxfs.c:32`), so on AHCI, NVMe and VirtIO machines the probe actually happens during `kmain`.
+`gdisk_ensure()` runs `gdisk_init` once and records that in `g_gdisk_probed`. The source comments call this lazy ("only when disks/installer is used"). However, `disk_init()` to `nvx_locate()` calls `gdisk_ensure()` at boot whenever no IDE drive exists (`fs/nvx/nvxfs.c:32`), so on AHCI, NVMe and VirtIO machines the probe actually happens during `kmain`.
 
 `gdisk_name()` returns `"IDE/ATA"`, `"AHCI/SATA"`, `"NVMe"`, `"VirtIO"` or `"none"`.
 
@@ -6162,10 +6118,10 @@ static struct { u32 lba; u32 tick; int valid; u8 data[512]; } g_bc[BC_N];
 ```
 
 - `gdisk_read_cached(lba,cnt,buf)`: when `cnt==1`, it looks the sector up and fills a slot on a miss. The victim is the first invalid slot, otherwise the slot with the lowest tick. When `cnt!=1`, it calls `bc_invalidate(lba,cnt)` and then reads straight from the disk.
-- `bc_invalidate(lba,cnt)` is called from `gdisk_writen`, `gdisk_readn`, `gdisk_write_through` and `nk_wr` (`fs/ntfsk.c`).
+- `bc_invalidate(lba,cnt)` is called from `gdisk_writen`, `gdisk_readn`, `gdisk_write_through` and `nk_wr` (`fs/ntfs/ntfsk.c`).
 - `g_bc_hits` and `g_bc_miss` are the counters that `bcstat` prints.
 
-`nvx_rd()` in `fs/nvxfs.c` is the cached reader for NVXFS in generic mode.
+`nvx_rd()` in `fs/nvx/nvxfs.c` is the cached reader for NVXFS in generic mode.
 
 All LBAs and sector counts in this layer are `u32`, so every back end is limited to 2^32 x 512 B.
 
@@ -6188,13 +6144,13 @@ Reads and writes are split into chunks of at most 128 sectors and are bounds-che
 
 ---
 
-### 8.7 The installer (`init/installer.c`)
+### 8.7 The installer (`core/init/installer.c`)
 
 #### Entry points
 
 | Caller | Call |
 |---|---|
-| Boot menu item 3, "Install NoovexOS" (`init/bootmenu.c` `BM_ITEMS`) | `bootmenu_activate` to `ip_open(ST_BOOTMENU)` |
+| Boot menu item 3, "Install NoovexOS" (`core/init/bootmenu.c` `BM_ITEMS`) | `bootmenu_activate` to `ip_open(ST_BOOTMENU)` |
 | Shell `install` (requires root via `need_root`) | `ip_open(ST_DESKTOP)` |
 | Disk Manager buttons "Install to selected" / "Install whole disk" | `dm_do_install` to `ip_open_preset(ret, mode, part)` |
 
@@ -6220,7 +6176,7 @@ Install mode. "Continue" on the disk page always sets `ip_mode=0` (whole disk). 
 
 | `g_ip_fs` | UI label | Data partition type | Formatter | Minimum data size enforced in `ip_run` |
 |---|---|---|---|---|
-| 0 | NoovexFS ("native, recommended") | `NVX_PTYPE` = `0x7F` (`fs/nvxfs.c:10`) | `n4_format(dsz)` (`fs/nvx4.c`) | - |
+| 0 | NoovexFS ("native, recommended") | `NVX_PTYPE` = `0x7F` (`fs/nvx/nvxfs.c:10`) | `n4_format(dsz)` (`fs/nvx/nvx4.c`) | - |
 | 1 | NTFS | `0x07` | `nk_install(&g_rfs_ntfs,...)` | 32768 sectors: "NTFS needs at least 16 MB - choose FAT16 instead." |
 | 2 | FAT32 | `0x0C` | `nk_install(&g_rfs_fat32,...)` to `vf_fmt32` | 66600 sectors: "FAT32 needs at least 33 MB - choose FAT16 instead." |
 | 3 | FAT16 ("partitions up to 2 GB") | `0x0E` | `nk_install(&g_rfs_fat16,...)` to `vf_fmt16` | 8400 sectors: "FAT16 needs at least 4 MB." The size is also capped at 4186112 sectors. |
@@ -6238,7 +6194,7 @@ Size constants:
 
 In whole-disk mode the data partition is fixed at `INST_DATAP` sectors ( about 51 MiB) and starts right after the boot partition. In partition mode it fills the rest of the chosen partition.
 
-`nk_install(o,base,nsect,copy,prog)` (`fs/ntfsk.c:168`) does the following:
+`nk_install(o,base,nsect,copy,prog)` (`fs/ntfs/ntfsk.c:168`) does the following:
 
 1. Formats the partition with label `"NOOVEXOS"` and mounts it.
 2. Writes `/.noovexos`.
@@ -6250,7 +6206,7 @@ Its return codes: -1 = format failed; -2 = mount failed; -3 = marker write faile
 
 #### The kernel snapshot
 
-`kmain` calls `inst_snapshot_data()` first, right after `.bss` is zeroed (`init/main.c:124`). This happens before anything can modify the loaded image. The function copies the kernel image at `0x100000` into `g_kimg_snap[KSNAP_MAX]` (`KSNAP_MAX` = `0x800000`, 8 MiB, the same as the build limit). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`.
+`kmain` calls `inst_snapshot_data()` first, right after `.bss` is zeroed (`core/init/main.c:124`). This happens before anything can modify the loaded image. The function copies the kernel image at `0x100000` into `g_kimg_snap[KSNAP_MAX]` (`KSNAP_MAX` = `0x800000`, 8 MiB, the same as the build limit). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`.
 
 Note: Up to v8.94 the buffer was 3 MiB while the kernel had grown past 5 MB, so the snapshot was always empty and every installation stopped with "The kernel image could not be captured at boot." The buffer lives in `.bss`, which starts at `0xC00000`, so the larger size does not touch the fixed low-memory regions.
 
@@ -6287,7 +6243,7 @@ Contents (all directory timestamps are fixed at `0x6000`/`0x5B3B`):
 /boot/kernel64.bin       (copy 1 of the snapshot)
 /boot.cfg                (assets/installer/inst_boot.cfg: kernel=/boot/kernel64.bin, cmdline=noovexos, ...)
 /KERNEL64.BIN            (copy 2)
-/EFI/BOOT/BOOTX64.EFI    (bootloader/uefi/BOOTX64.EFI, embedded by build.sh as inst_efi.bin)
+/EFI/BOOT/BOOTX64.EFI    (boot/uefi/BOOTX64.EFI, embedded by build.sh as inst_efi.bin)
 ```
 
 The installer writes only `used = dstart + (next-2)` sectors, which ends at the last allocated cluster. The FAT, however, describes the whole partition. `ko1` and `ko2` are the byte offsets of the two kernel copies inside the image. `ip_mem_verify` uses them to compare the copies against the snapshot, both after building and after verification. If a copy differs, it rewrites the copy, waits 1 s and compares again, to tell RAM that does not hold data apart from something else overwriting it.
@@ -6349,7 +6305,7 @@ Partition entries are written in native blocks (`/R`). Everything else in the in
 
 ---
 
-### 8.8 Disk Manager (`dm_*`, `init/installer.c` lines 1-104)
+### 8.8 Disk Manager (`dm_*`, `core/init/installer.c` lines 1-104)
 
 The Disk Manager is a graphical MBR editor. It works on `g_dm_p[4]` (`dmpart {used,type,start,size}`), loaded by `dm_load()` from LBA 0 with `*dk_ratio()` scaling.
 
@@ -6403,7 +6359,7 @@ This is a Bulk-Only Transport class driver on top of the xHCI stack.
 - The FAT is cached one sector at a time in `ufatcache`, and `ufat_flush` writes the cached sector to every FAT copy.
 - Only the root directory is supported, with 8.3 names.
 
-This driver is separate from `fs/fat_ata.c` (`fat_mount`, `fat_listdir`, `fat_read_file`), a read-only FAT reader that works only through IDE PIO.
+This driver is separate from `fs/fat/fat_ata.c` (`fat_mount`, `fat_listdir`, `fat_read_file`), a read-only FAT reader that works only through IDE PIO.
 
 ---
 
@@ -6426,7 +6382,7 @@ This driver is separate from `fs/fat_ata.c` (`fat_mount`, `fat_listdir`, `fat_re
 | `kcheck` / `memmap` / `memtest` | 1537-1541 | Installer diagnostics: snapshot integrity, the firmware memory map against kernel areas (plus the `g_pci_quiesced` count), and a fill/verify/re-verify test of free RAM. |
 | `pci` | 696 | Prints `vendor:device class=`, flagging network devices. Covers only the `pci_scan` set (buses 0-3, function 0). |
 
-### 8.11 Partition scanner (`fs/parts.c`)
+### 8.11 Partition scanner (`fs/vfs/parts.c`)
 
 #### Disks (`bd_scan`)
 
@@ -6455,7 +6411,7 @@ Each partition is probed for its file system: NTFS, exFAT, FAT12/16/32, BitLocke
 |---|---|
 | `parts`, `lsblk`, `partitions` | list every disk and partition (also written to the log as `parts:` lines) |
 | `disks` | controller details, then the same list |
-| `nk_scan` (`fs/ntfsk.c`) | the root file system search walks `parts_scan_main` instead of its own four-entry MBR and 128-entry GPT loops |
+| `nk_scan` (`fs/ntfs/ntfsk.c`) | the root file system search walks `parts_scan_main` instead of its own four-entry MBR and 128-entry GPT loops |
 
 Limits: reads only (writing is still through the main disk); LBAs above 2^32 on the main and USB disks are not reachable through their 32-bit readers; one NVMe namespace.
 
@@ -6470,31 +6426,31 @@ interrupts: every driver exposes "send" and "poll receive", and the stack spins
 on the PIT counter while it waits. A program blocked on a socket does not spin:
 it sleeps for one scheduler tick and retries (section 9.7.2).
 
-All paths below are relative to `source/kernel/`.
+All paths below are relative to the repository root.
 
 ### 9.1 Where the code lives
 
 | File | Role | Compiled as |
 |---|---|---|
-| `include/kapi.h`, `core/kapi.c` | Kernel API exported to separately compiled modules | header + unit |
+| `include/kapi.h`, `sys/native/kapi.c` | Kernel API exported to separately compiled modules | header + unit |
 | `include/drivers.h` | `struct nvx_nic`, probe prototypes (also `nvx_snd`, virtio-blk) | header |
-| `drivers/net/nic_names.c` | `nic_name()`, `nic_index()` (PCI ID to name) | unit |
-| `drivers/net/nic.c` | PCnet DMA memory, globals (`my_ip`, `gw_ip`, ...), byte helpers, `netlog` | unit |
+| `drivers/net/ethernet/nic_names.c` | `nic_name()`, `nic_index()` (PCI ID to name) | unit |
+| `drivers/net/ethernet/nic.c` | PCnet DMA memory, globals (`my_ip`, `gw_ip`, ...), byte helpers, `netlog` | unit |
 | `drivers/storage/ahci.c` | also holds PCnet CSR access, `nic_detect`, `nic_up_raw`, `nic_send`, `nic_recv`, `arp_request`, `net_poll` | unit |
-| `drivers/net/e1000.c`, `rtl8139.c`, `rtl8169.c` | Wired NIC modules | separate `.o` |
+| `drivers/net/ethernet/e1000.c`, `rtl8139.c`, `rtl8169.c` | Wired NIC modules | separate `.o` |
 | `drivers/virtio/virtio.c`, `virtio.h`, `virtio_net.c` | Legacy virtio-PCI transport + virtio-net | separate `.o` |
-| `net/tcpip.c` | netdev indirection, ARP resolve, ping, UDP, DHCP, DNS, TCP | unit |
-| `net/sockets.c` | 8-slot TCP socket table (native `int 0x80` sockets) | unit |
-| `net/lxsock.c` | 32-slot TCP/UDP socket layer behind the Linux socket system calls (device 14) | unit |
-| `net/http.c` | HTTP client, cookie jar, entropy, streaming TCP for TLS, HTTPS, OAuth helpers | unit |
+| `net/stack/tcpip.c` | netdev indirection, ARP resolve, ping, UDP, DHCP, DNS, TCP | unit |
+| `net/stack/sockets.c` | 8-slot TCP socket table (native `int 0x80` sockets) | unit |
+| `sys/linux/lxsock.c` | 32-slot TCP/UDP socket layer behind the Linux socket system calls (device 14) | unit |
+| `net/http/http.c` | HTTP client, cookie jar, entropy, streaming TCP for TLS, HTTPS, OAuth helpers | unit |
 | `lib/crypto/nvxcrypto.c`, `nvxtls.c`, `nvxcrypto2.c`, `nvxwpa.c` | Crypto primitives, TLS 1.3, WPA2 crypto | units |
 | `lib/crypto/nvxx509.c` | Big-number Montgomery arithmetic, RSA (PKCS#1 v1.5 and PSS), ECDSA P-256/P-384, DER/X.509 parser, chain and host-name checks | unit |
 | `lib/crypto/nvxroots.c`, `lib/crypto/roots/mozilla-cacert.pem` | 120 trusted root CAs (subject + public key), generated by `tools/mkroots.py` from the Mozilla bundle | unit |
-| `drivers/wifi/rtw_efuse.c`, `rtw8821ce.c`, `rtw_sec.c`, `rtw_tables.h` | RTL8821CE driver | unit |
+| `drivers/net/wifi/rtw_efuse.c`, `rtw8821ce.c`, `rtw_sec.c`, `rtw_tables.h` | RTL8821CE driver | unit |
 | `net/wifi/wpa2.c`, `net/wifi/wifi_netdev.c` | EAPOL TX/RX, PTK derivation, CCMP netdev | unit |
 | `shell/commands.c` | `net`, `dhcp`, `ping`, `dns`, `http`, `netlog`, `wifi ...` | unit |
 
-Each of these files is a unit with a header under `include/nvx/` (for example `include/nvx/net/tcpip.h`, `include/nvx/lib/crypto/nvxtls.h`). `nvxtls.c` calls into the X.509 code (`x509_verify_chain`, `x509_leaf_cv`, `x509_reason`) and into `http.c` (`tls_prepare`, `tls_clock_now`) through those headers.
+Each of these files is a unit with a header under `include/nvx/` (for example `include/nvx/net/stack/tcpip.h`, `include/nvx/lib/crypto/nvxtls.h`). `nvxtls.c` calls into the X.509 code (`x509_verify_chain`, `x509_leaf_cv`, `x509_reason`) and into `http.c` (`tls_prepare`, `tls_clock_now`) through those headers.
 
 ### 9.2 The driver module API (`kapi.h`, `drivers.h`)
 
@@ -6515,7 +6471,7 @@ functions, which the kernel defines, and the `*_probe` functions, which the
 modules define. PCnet, the TCP/IP stack and the Wi-Fi driver are not modules.
 They are compiled into `kernel64.o`.
 
-#### 9.2.2 `kapi_*` reference (`core/kapi.c`)
+#### 9.2.2 `kapi_*` reference (`sys/native/kapi.c`)
 
 | Function | Implementation |
 |---|---|
@@ -6545,7 +6501,7 @@ int rtl8169_probe(struct nvx_nic*); int virtio_net_probe(struct nvx_nic*);
 ```
 
 A probe returns 1 after it has filled `out`. The kernel keeps a single instance,
-`g_mnic` (`drivers/net/nic.c`).
+`g_mnic` (`drivers/net/ethernet/nic.c`).
 
 ### 9.3 NIC bring-up and probe order
 
@@ -6561,7 +6517,7 @@ nic_detect()                       PCnet 1022:2000 on buses 0..3, slot fn0 only
 
 PCnet is tried first because the driver's comment calls it "prefer PCnet - proven".
 `nic_send`/`nic_recv` dispatch on `nic_kind`: kind 2 forwards to `g_mnic.send/recv`,
-and kind 0 uses the in-kernel PCnet rings. `nic_up()` (`net/tcpip.c`) wraps
+and kind 0 uses the in-kernel PCnet rings. `nic_up()` (`net/stack/tcpip.c`) wraps
 `nic_up_raw()` and runs `dhcp_config()` once (`g_dhcp_done`).
 
 Helper routines in `ahci.c`:
@@ -6604,7 +6560,7 @@ The init sequence in `nic_up_raw` runs as follows:
 `nic_send` pads the frame to 60 bytes, writes `-len` with STP|ENP|OWN, kicks with
 TDMD (`CSR0=0x000A`) and spins until OWN clears.
 
-#### 9.4.2 Intel e1000 (`drivers/net/e1000.c`)
+#### 9.4.2 Intel e1000 (`drivers/net/ethernet/e1000.c`)
 
 - IDs: 8086: 100E 100F 1004 1010 1015 1017 1019 101A 1026-1028 1013 1014 1076-107B 10D3.
 - BAR: BAR0 must be MMIO and below 4 GiB, because it is used through the identity map.
@@ -6660,7 +6616,7 @@ device has no status field.
 
 ### 9.5 The netdev indirection (Ethernet vs Wi-Fi)
 
-`net/tcpip.c` routes all I/O through function pointers so that the same stack can
+`net/stack/tcpip.c` routes all I/O through function pointers so that the same stack can
 run over a Wi-Fi link:
 
 ```c
@@ -6695,11 +6651,11 @@ link:
 
 Note: Before v8.95, sockets and HTTPS read only from the wired card and the senders checked the wired-only `net_ok` flag, so they could not work over Wi-Fi. The Wi-Fi path has been checked in code review; the QEMU tests cover only wired cards.
 
-### 9.6 TCP/IP stack (`net/tcpip.c`)
+### 9.6 TCP/IP stack (`net/stack/tcpip.c`)
 
 #### 9.6.1 Addressing and defaults
 
-`drivers/net/nic.c` defaults to the QEMU/VirtualBox NAT layout: `my_ip=10.0.2.15`,
+`drivers/net/ethernet/nic.c` defaults to the QEMU/VirtualBox NAT layout: `my_ip=10.0.2.15`,
 `gw_ip=10.0.2.2`, `dns_ip=10.0.2.3`, `my_mask=255.255.255.0`. DHCP overwrites them.
 If DHCP fails, the previous values are restored ("DHCP failed - static ip=").
 Routing is a single rule, used by every sender:
@@ -6729,7 +6685,7 @@ broadcasts a request and polls up to 20 slices for an ARP reply (`op 2`) whose
 sender IP matches. `dhcp_config` resets `gw_known=0` when it gets a new lease.
 
 Since v8.95 the stack answers ARP requests for its own address.
-`arp_auto_reply(frame, len)` (`net/tcpip.c`) checks for an ARP request
+`arp_auto_reply(frame, len)` (`net/stack/tcpip.c`) checks for an ARP request
 (op 1, IPv4) whose target is `my_ip`, sends the reply with `nd_tx2`, and returns 1
 so the caller drops the frame. `net_poll`, `nd_poll` and the Linux socket pump
 all call it.
@@ -6831,11 +6787,11 @@ The implementation has these properties:
   -4 RST. A non-negative value is the number of bytes received. The `http`
   shell command maps these codes to messages.
 
-### 9.7 Sockets (`net/sockets.c`)
+### 9.7 Sockets (`net/stack/sockets.c`)
 
 `g_sock[NSOCK=8]` holds `nsock_t {used, connected, dip, sp, dport, dmac[6], snd, rcv}`.
 
-| Native syscall (`core/syscall.c`) | Kernel function | Semantics |
+| Native syscall (`sys/native/syscall.c`) | Kernel function | Semantics |
 |---|---|---|
 | 100 `socket()` | `sock_alloc` | First free slot, zeroed; returns sid or -1 |
 | 101 `connect(sid, ip, port)` | `sock_connect(rbx,rcx,rdx)` | Numeric IPv4 only (DNS is the caller's job). ARP, flush, 3-way handshake. 0 on success; -2 NIC, -3 ARP, -4 RST, -5 timeout |
@@ -6846,7 +6802,7 @@ The implementation has these properties:
 These numbers belong to the native NoovexOS syscall ABI (`syscall_dispatch`, with
 arguments in rbx/rcx/rdx). Linux programs use the separate socket layer below.
 
-#### 9.7.1 Linux socket system calls (`core/linux.c`)
+#### 9.7.1 Linux socket system calls (`sys/linux/linux.c`)
 
 Since v8.95, Linux programs (musl or any static Linux binary) can use the network
 through ordinary BSD sockets. A socket is a file descriptor whose `vfile.dev` is
@@ -6883,7 +6839,7 @@ Loopback (v8.97). TCP and UDP to `127.0.0.0/8` or to the machine's own address
 stay inside the machine (section 9.7.3), so a server and a client on the same
 NoovexOS system can talk to each other, even with no network card.
 
-#### 9.7.2 How the socket layer works (`net/lxsock.c`)
+#### 9.7.2 How the socket layer works (`sys/linux/lxsock.c`)
 
 ```
 struct lxsock { type (1 TCP, 2 UDP), st (NEW, SYN, EST, DEAD, LISTEN, SYNRCVD), err,
@@ -6925,7 +6881,7 @@ after the MSS and window changes, compared with about 6 s with the old fixed
 
 #### 9.7.3 Loopback
 
-`tcp_send` and `udp_send` (`net/tcpip.c`) build the frame as usual. When the
+`tcp_send` and `udp_send` (`net/stack/tcpip.c`) build the frame as usual. When the
 destination passes `lxs_is_lo` (127.x.x.x, or `my_ip` once it is set) the
 frame goes to `lxs_lo_tx` instead of the network card, and the card does not
 have to be up. The source address is the destination itself for 127.x.x.x, so
@@ -6968,7 +6924,7 @@ to the real DNS server when one is known.
 (section 12.2) has the host connect to `featest listen` on port 9200 through
 the tap device, which tests the same path over the network card.
 
-### 9.8 HTTP, entropy and HTTPS (`net/http.c`)
+### 9.8 HTTP, entropy and HTTPS (`net/http/http.c`)
 
 - `http_fetch_to(host, path, buf, cap)`: if `parse_ip` fails, the host goes
   through `dns_query`, and a DNS failure returns -100. It builds
@@ -6976,7 +6932,7 @@ the tap device, which tests the same path over the network card.
   a `Cookie:` header from the jar, then calls `tcp_get(ip, 80, ...)` into the
   256 KiB `http_buf`.
 - Cookie jar: since v9.08 `ck_parse` and `ck_header` are thin wrappers around
-  the shared jar in `net/cookies.c` (400 cookies with domain, path, expiry,
+  the shared jar in `net/http/cookies.c` (400 cookies with domain, path, expiry,
   Secure and HttpOnly, saved to `cookies.txt`), so the `http` command, the
   account code and the browser see the same cookies (section 13.10). Before
   v9.08 this was a private 32-entry table.
@@ -7200,7 +7156,7 @@ rings load dump`. The join paths refuse to run until `wifi rings` has been done
 
 #### 9.10.2 Firmware loading
 
-`build.sh` step `[3a2]` links `firmware/rtw8821c_fw.bin` into the kernel with
+`build.sh` step `[3a2]` links `assets/firmware/rtw8821c_fw.bin` into the kernel with
 `ld -r -b binary`. The result is the symbols `_binary_rtw8821c_fw_bin_start/_end`.
 
 `rtw_fw_download_iddma` reads the firmware header to locate each memory region:
@@ -7345,7 +7301,7 @@ by `wifi dhcp` when it fails.
 | `ping A.B.C.D` | `do_ping()` | One echo request: "reply from ..." or "no reply (timeout)". Numeric IPs only |
 | `dns host` | `dns_query()` | `host -> a.b.c.d` or "could not resolve" |
 | `http`/`https`/`wget`/`get [-k] host[:port][/path]` | `http_fetch` / `https_fetch` | Accepts an `http(s)://` prefix. Prints the status line, the byte count and up to 1400 characters of text with tags stripped. Error codes are mapped to messages (DNS failed, ARP failed, no SYN-ACK, RST, `HTTPS/TLS failed (code -N): <reason>`). `-k` turns off certificate checks for that request; `:port` applies to HTTPS |
-| `nettest [host]` | `user/musl/nettest.c` | musl self-test of the Linux socket layer against the test peer (`tools/tests/net/netpeer.py`): DNS, 300 KB HTTP download, 100 KB TCP echo, UDP echo, non-blocking connect, refused port, IPv6 refusal |
+| `nettest [host]` | `usr/musl/nettest.c` | musl self-test of the Linux socket layer against the test peer (`tools/tests/net/netpeer.py`): DNS, 300 KB HTTP download, 100 KB TCP echo, UDP echo, non-blocking connect, refused port, IPv6 refusal |
 | `netlog` | `NETLOG[18][52]` ring | The last 18 stack events (e.g. "ARP no reply", "DHCP offer ...", "TLS handshake start", "TLS result N: reason"). Since v8.95 every entry is also written to the kernel log as `net: ...`, so it shows up on the serial port |
 | `wifi [sub]` | section 9.10.1 | Wi-Fi bring-up, scan, join, WPA2, and `dhcp`/`eth` link switching |
 
@@ -7357,11 +7313,11 @@ Wi-Fi, the sequence the code expects is `wifi init` to `wifi allbuilt` to
 
 ## Part 10: Input, USB, ACPI, sound and graphics drivers
 
-This part goes through the device drivers that are not storage, network or Wi-Fi. For each one it covers the hardware interface, how the driver starts, how data moves, where waits are bounded, which shell command shows its state, and what it does not do. All paths are relative to `source/kernel/`. Every file here is a kernel unit with a header under `include/nvx/`, except the two sound back ends. `build.sh` compiles `drivers/sound/ac97.c` and `drivers/sound/hda.c` as separate objects (`MODS=...`) against `include/kapi.h`.
+This part goes through the device drivers that are not storage, network or Wi-Fi. For each one it covers the hardware interface, how the driver starts, how data moves, where waits are bounded, which shell command shows its state, and what it does not do. All paths are relative to the repository root. Every file here is a kernel unit with a header under `include/nvx/`, except the two sound back ends. `build.sh` compiles `drivers/sound/ac97.c` and `drivers/sound/hda.c` as separate objects (`MODS=...`) against `include/kapi.h`.
 
 ### 10.1 Where the drivers start and how they are polled
 
-All bring-up runs from `kmain` (`init/main.c`) in a fixed order once the PIC and PIT are up:
+All bring-up runs from `kmain` (`core/init/main.c`) in a fixed order once the PIC and PIT are up:
 
 ```c
 if(inb(0x64)==0xFF){ klog("boot: no PS/2 controller (USB keyboard/mouse only)"); }
@@ -7388,7 +7344,7 @@ When there is no USB HID device and no runnable JS job, the loop halts (`cpu_hal
 
 ### 10.2 Shared input state and the key queue
 
-Every input driver writes into one set of globals declared in `net/http.c` (the include order puts them there):
+Every input driver writes into one set of globals declared in `net/http/http.c` (the include order puts them there):
 
 ```c
 static volatile int mouse_dx=0, mouse_dy=0;        /* accumulated deltas     */
@@ -7405,7 +7361,7 @@ static int kpop(void){ if(kh==kt)return -1; char c=kbuf[kt]; kt=(kt+1)%KBUFN; re
 
 - `kbuf` is a 64-entry single-producer/single-consumer ring. It holds 63 characters, and when it is full new keys are dropped (`kpush` checks `n!=kt`). `kpop()` returns -1 when the ring is empty.
 - Arrow keys are encoded as control codes: left 17, right 18, up 19, down 20. Both the PS/2 path (`kbd_feed`) and the USB path (`usb_key_code`) use them. Escape is 27.
-- `kdown[]` is a held-key table indexed by PS/2 set-1 scancode. USB keyboards fill it through `hid2scan()`, which maps letters, digits, arrows, Enter, Esc, Backspace, Tab and Space, plus modifiers at 0x1D/0x2A/0x38/0x5B. That lets shortcuts such as Win+R (`gui/input.c`: `kdown[0x5B]` and `kdown[0x13]`) work with either keyboard.
+- `kdown[]` is a held-key table indexed by PS/2 set-1 scancode. USB keyboards fill it through `hid2scan()`, which maps letters, digits, arrows, Enter, Esc, Backspace, Tab and Space, plus modifiers at 0x1D/0x2A/0x38/0x5B. That lets shortcuts such as Win+R (`graphics/ui/input.c`: `kdown[0x5B]` and `kdown[0x13]`) work with either keyboard.
 
 `drivers/input/input.c` (7 lines) adds the helpers that the touchpad drivers use. Each one wraps its update in `cpu_irq_save` so it cannot race the IRQ12 handler:
 
@@ -7414,11 +7370,11 @@ static int kpop(void){ if(kh==kt)return -1; char c=kbuf[kt]; kt=(kt+1)%KBUFN; re
 | `in_rel(dx,dy)` | `mouse_dx+=dx; mouse_dy-=dy; mouse_evt=1` |
 | `in_buttons(l,r,m)` | sets the three button globals |
 | `in_scroll(v,h)` | `mouse_scroll+=v; mouse_hscroll+=h` |
-| `in_gesture(g)` | `g_gesture=g` (consumed once by `gui/input.c`) |
+| `in_gesture(g)` | `g_gesture=g` (consumed once by `graphics/ui/input.c`) |
 
-The consumer is `process_input()` in `gui/input.c`. It disables interrupts, snapshots and clears the deltas, and feeds `ux_mouse_push()` (the `/dev/input/mouse` device, VFS dev 10). It applies optional acceleration (`g_mouse_accel`) and moves the cursor. Gestures map to desktop actions there: swipe up opens the launcher, swipe down closes the launcher and notifications, and swipe left or right switches workspace. The pinch gestures are produced but not acted on in `gui/input.c`.
+The consumer is `process_input()` in `graphics/ui/input.c`. It disables interrupts, snapshots and clears the deltas, and feeds `ux_mouse_push()` (the `/dev/input/mouse` device, VFS dev 10). It applies optional acceleration (`g_mouse_accel`) and moves the cursor. Gestures map to desktop actions there: swipe up opens the launcher, swipe down closes the launcher and notifications, and swipe left or right switches workspace. The pinch gestures are produced but not acted on in `graphics/ui/input.c`.
 
-### 10.3 PS/2 keyboard and mouse (`drivers/input/ps2.c`, `ps2_mouse.c`)
+### 10.3 PS/2 keyboard and mouse (`drivers/input/ps2/ps2.c`, `ps2_mouse.c`)
 
 Hardware. The i8042 data port is 0x60 and the status/command port is 0x64. `pic_remap()` unmasks IRQ0-2 on the master (`outb(0x21,0xF8)`) and IRQ12 on the slave (`outb(0xA1,0xEF)`). `isr_body` routes both IRQ1 and IRQ12 to one function:
 
@@ -7455,7 +7411,7 @@ Inspect: `mousetest` prints movement, buttons and wheel for up to 3000 ticks (30
 
 Limits: only the first PS/2 port gets a keyboard; there is no hot-plug and no 5-button mice.
 
-### 10.4 Elan PS/2 touchpad (`drivers/input/elan_ps2.c`)
+### 10.4 Elan PS/2 touchpad (`drivers/input/ps2/elan_ps2.c`)
 
 This is a native Elantech v3/v4 decoder. It feeds the shared gesture engine (section 10.5.4) instead of plain mouse emulation.
 
@@ -7507,7 +7463,7 @@ This is MMIO only. `dw_present(base)` requires a page-aligned base below 4 GB an
 
 `dw_xfer(c,addr,w,wn,r,rn)` does one combined write-then-read. It disables the controller, sets the target and re-enables it. It then keeps the TX FIFO full with write bytes followed by read commands (RESTART on the first read, STOP on the last byte), while keeping at most `rxd-1` reads outstanding. The loop is bounded at 400000 iterations. Return codes: `-1` bad args or not initialised, `-2` enable timeout, `-3` abort (NACK, arbitration loss), `-4` timeout. No interrupts and no DMA are used.
 
-#### 10.5.2 Finding the touchpad (`drivers/input/touchpad.c`)
+#### 10.5.2 Finding the touchpad (`drivers/input/touchpad/touchpad.c`)
 
 `tp_init_ex(scan_all)` uses the raw AML pre-scanner (`aml_scan.c`, section 10.7.2), not the interpreter, because it runs before `acpi_aml_init()`:
 
@@ -7524,7 +7480,7 @@ This is MMIO only. `dw_present(base)` requires a page-aligned base below 4 GB an
 
 Once a descriptor register returns a valid HID descriptor, no other register is tried at that address. `ih_get_desc` decodes into a local copy and writes `t->d` only after the descriptor is valid, so a later failed probe cannot overwrite a good vendor and product. The `_CRS` address that is put in front of the static resource list is removed from the rest of the list (paths compared without `_` and `\`), so it is tried once. A device whose `_HID` starts with `ELAN` is a candidate even without PNP0C50; it is tried with HID first and the ELAN protocol second, like any HID pad with vendor 0x04F3.
 
-#### 10.5.3 HID over I2C (`drivers/input/i2c_hid.c`) and report parsing (`tp_hid.c`)
+#### 10.5.3 HID over I2C (`drivers/input/touchpad/i2c_hid.c`) and report parsing (`tp_hid.c`)
 
 `ih_setup` walks through numbered stages. The stage number is stored in `t->stage` and `tpinfo` prints it when a probe fails:
 
@@ -7555,7 +7511,7 @@ The physical size comes from Unit/Unit Exponent through `tp_unit_um` (cm or inch
 
 `ih_process` checks the 2-byte length and the report ID, and gathers contacts whose Tip (and Confidence, if present) are set. Hybrid-mode reports that are split across frames (Contact Count > fingers per report) are buffered in `pend[]` until complete.
 
-#### 10.5.4 Gesture engine (`drivers/input/tp_gesture.c`)
+#### 10.5.4 Gesture engine (`drivers/input/touchpad/tp_gesture.c`)
 
 `tpe_frame(E, contacts, n, button, ms, &out)` is shared by I2C-HID, ELAN-I2C and ELAN-PS/2. All its thresholds are in micrometres, converted using `upmm_x/upmm_y` (units per mm):
 
@@ -7568,7 +7524,7 @@ The physical size comes from Unit/Unit Exponent through `tp_unit_um` (cm or inch
 | Pinch | finger distance changes by >8000 um and by more than half the accumulated movement to `GES_ZOOM_IN/OUT` |
 | 3+ finger swipe | 15000 um along the dominant axis to one `GES_SWIPE_*` per touch |
 
-#### 10.5.5 ELAN native I2C (`drivers/input/elan_i2c.c`)
+#### 10.5.5 ELAN native I2C (`drivers/input/touchpad/elan_i2c.c`)
 
 `el_setup` writes `0x0100` (reset) to register 0x0005 and waits 100 ms. It then reads the 30-byte descriptor (all-0xFF means no device) and the 158-byte report descriptor. Next it reads pattern (0x0100), product (0x0101), firmware (0x0102), IC type (0x0103 or 0x0110 depending on pattern), SM version (0x0104; bit 4 means clickpad), max X/Y (0x0106/0x0107) and resolution (0x0108). It selects absolute mode (0x0300 = 1), wakes the device (0x0005 = 0x0800) and clears the power-off bit in 0x0307. Reports are 34 bytes (pattern at most 1, ID 0x5D) or 39 bytes (high-precision, ID 0x60), with five 5-byte finger records gated by `touch` bits 3..7. Report IDs 0x5E/0x5F carry trackpoint data.
 
@@ -7730,7 +7686,7 @@ Embedded controller. Ports come from the ECDT, or from a `PNP0C09` device's `_CR
 
 Power button. `acpi_poll` reads PM1a_STS bit 8 (PWRBTN_STS), clears it, debounces for 100 ticks and calls `acpi_power_button()` to `power_off()`. This works only in polled, non-HW-reduced mode. No SCI interrupt handler is used.
 
-Battery. It reads `_BIX` (at least 20 elements) or `_BIF` (at least 13) for design/full capacity, model, serial, type and OEM, and `_BST` for state, rate, remaining and voltage. Percentage = sumremaining/sumfull, rounded. Minutes to empty or full come from the rate (discarded above 99 h). It is refreshed every 500 ticks, and also when a battery or AC device gets a notification (0x81 forces a full `_BIX` re-read). `gui/desktop.c` prefers this data (`bat_via_ec=2`). With no ACPI battery it falls back to an older fixed-port EC reader on 0x62/0x66 that guesses the percentage from offsets {0x2A,0x32,0x42,0x90,0xB0,0x14,0x24} and the charging state from offset 0x01 bit 0.
+Battery. It reads `_BIX` (at least 20 elements) or `_BIF` (at least 13) for design/full capacity, model, serial, type and OEM, and `_BST` for state, rate, remaining and voltage. Percentage = sumremaining/sumfull, rounded. Minutes to empty or full come from the rate (discarded above 99 h). It is refreshed every 500 ticks, and also when a battery or AC device gets a notification (0x81 forces a full `_BIX` re-read). `graphics/ui/desktop.c` prefers this data (`bat_via_ec=2`). With no ACPI battery it falls back to an older fixed-port EC reader on 0x62/0x66 that guesses the percentage from offsets {0x2A,0x32,0x42,0x90,0xB0,0x14,0x24} and the charging state from offset 0x01 bit 0.
 
 Backlight (`bl_*`).
 - `bl_find` looks for a device with both `_BCM` and `_BCL`. Its levels are the de-duplicated `_BCL` entries from index 2 on, in the range 0-100.
@@ -7775,7 +7731,7 @@ static inline int sring_free(const struct sring* r){ u64 used=r->wr-r->rd; u32 g
 
 The DMA engine loops over the whole buffer forever. The driver never takes an interrupt; it learns the position by polling (`snd_poll` every 20 ms, and also inside every `write`).
 
-`/dev/dsp` (also `/dev/audio`, VFS dev 12): `snd_dev_write` starts the stream and writes whole frames (`len&~3`). If the ring is full it retries every 1 ms for up to 2000 tries. A JS-runtime process gets `JS_BLOCK` instead and is rescheduled. `core/linux.c` answers two OSS ioctls for the same device: 0xC0045002 (`SNDCTL_DSP_SPEED`, returns the rate) and 0x8010500C (`SNDCTL_DSP_GETOSPACE`, 32 fragments of 4096).
+`/dev/dsp` (also `/dev/audio`, VFS dev 12): `snd_dev_write` starts the stream and writes whole frames (`len&~3`). If the ring is full it retries every 1 ms for up to 2000 tries. A JS-runtime process gets `JS_BLOCK` instead and is rescheduled. `sys/linux/linux.c` answers two OSS ioctls for the same device: 0xC0045002 (`SNDCTL_DSP_SPEED`, returns the rate) and 0x8010500C (`SNDCTL_DSP_GETOSPACE`, 32 fragments of 4096).
 
 Shell: `audio`/`sound` (back end and HDA codec/paths), `audio vol <0-100>`, `audio tone [50-8000 Hz]` (one second of a +/-6000 triangle wave from `snd_tone`).
 
@@ -7801,13 +7757,13 @@ The device is PCI class 04/03 with a 32-bit MMIO BAR (BARs above 4 GB are refuse
 
 `hda_volume` scales each path's output-amp gain from 0 to the offset step, and mutes at 0 %.
 
-Host-side tests for both probes, including codec timeout and muted-codec cases, are in `source/tools/tests/drivers/drvsim.c`.
+Host-side tests for both probes, including codec timeout and muted-codec cases, are in `tools/tests/drivers/drvsim.c`.
 
 Sound limits: playback only, no capture; one stream; a fixed format; no jack detection or switching (all found paths are routed at the same time); no HDMI audio codecs beyond what the path search happens to find; the first matching PCI device only.
 
 ### 10.10 Video
 
-#### 10.10.1 Boot framebuffer (`drivers/video/framebuffer.c`)
+#### 10.10.1 Boot framebuffer (`drivers/video/fb/framebuffer.c`)
 
 There is no display-mode driver. The kernel draws into the linear framebuffer that the bootloader handed over at 0x5000:
 
@@ -7821,7 +7777,7 @@ There is no display-mode driver. The kernel draws into the linear framebuffer th
 
 All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpaper and icons. Primitives include `fill_rect`, anti-aliased `fill_round` and `fill_circle` (coverage from `isqrt32`), `shadow_soft`, the 8x14 bitmap font (`dchar/dstr`) and proportional anti-aliased text from `fontaa` (`pdstr`). `blit_all()` copies `SCENE` to the hardware buffer row by row, honouring pitch, 24/32 bpp and the RGB swap. If `g_panel_oled` is set, the whole image shifts by 1 px through 4 positions every 3000 ticks (30 s) to protect OLED panels.
 
-#### 10.10.2 SIMD blitting (`arch/x86_64/simd.c`)
+#### 10.10.2 SIMD blitting (`arch/x86_64/cpu/simd.c`)
 
 `arch_fpu_init` enables SSE (CR0.MP, clears EM, CR4.OSFXSR/OSXMMEXCPT) and sets `g_ssse3` from CPUID.1:ECX bit 9. The kernel itself is compiled with `-mno-sse`, so these inline-asm routines are the only code that touches XMM registers:
 
@@ -7833,11 +7789,11 @@ All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpape
 
 `g_accel2d` (default 1, toggled in Settings > "2D acceleration") chooses between these and plain loops.
 
-#### 10.10.3 Effects (`gui/effects.c`)
+#### 10.10.3 Effects (`graphics/theme/effects.c`)
 
 `glass_panel` and `glass_liquid` do in-place frosted-glass effects on `SCENE`: two or three passes of a horizontal running-sum box blur of radius `blurR` (one row buffer `g_glasstmp[MAXW]`), a tint blend, top highlight gradients, and 1 px rim lines that follow the rounded-corner mask (`cut()`). `soft_ring` draws a blended annulus. Everything runs on the CPU.
 
-#### 10.10.4 Write-combining and Intel graphics (`drivers/video/igpu.c`)
+#### 10.10.4 Write-combining and Intel graphics (`drivers/video/intel/igpu.c`)
 
 `igpu_early()` runs right after the framebuffer is known. `pat_cpu_init()` programs IA32_PAT (MSR 0x277) as `0x0007040600070106`: entry 1 (PWT only) becomes write-combining, the others keep their defaults (nothing else in the kernel uses PWT alone). Every CPU runs it, the application processors in `ap_entry_c`. `wc_map()` then sets PWT and clears PCD and the PAT bit on the 2 MB (or 4 KB) page-table entries that cover the framebuffer, flushes the caches and reloads CR3. Firmware MTRRs normally make the framebuffer uncached; MTRR UC combined with PAT WC gives WC, so screen writes are combined into bursts. It is only done when the framebuffer is at least 2 MB, so the 2 MB pages stay inside the display BAR. `gpuinfo` shows "write-combining" when it was applied.
 
@@ -7869,7 +7825,7 @@ Every submission resets the ring head to 0 and sets the tail in the saved contex
 
 Render engine (base 0x2000, started after the blitter is ready, `rcs_init()`): the same submission code with a 23-page context (status page plus 22 pages of render state) whose image adds `BB_PER_CTX_PTR`, `INDIRECT_CTX`, `INDIRECT_CTX_OFFSET` and a third `MI_LOAD_REGISTER_IMM` for `R_PWR_CLK_STATE` (0x20C8). On Apollo Lake and Gemini Lake the value is computed like Linux does: the enabled subslices from `FUSE2` (0x9120, bits 22:20 are disable bits) and the enabled EUs per subslice from 0x9134 (8 bits per subslice, 6 used), giving enable (bit 31), subslice count enable (bit 11), the subslice count (bits 10:8) and the minimum and maximum EU count (bits 3:0 and 7:4); a full UHD 605 gives 0x80000B66. Without this request power gating can leave EUs switched off. Other chips keep 0. Completion is signalled by `PIPE_CONTROL` (CS stall, render-target and data-cache flush, post-sync write of the sequence number to the status page through the GGTT). Steps: 7 `MI_STORE_DATA_IMM` into the status page and read back; 8 `PIPE_CONTROL` flush then `PIPELINE_SELECT` GPGPU (0x69040302); 9 `STATE_BASE_ADDRESS` (all bases 0, sizes maximal); 10 `MEDIA_VFE_STATE` (32 threads, 4 URB entries); 11 ready; then the shaders below are started. While the GPU path is used, `blit_all()` has the blitter copy `SCENE` into the hidden buffer and then flips; three failed copies turn it off and the CPU copy takes over. `gpu blit gpu` and `gpu blit cpu` choose by hand. QEMU has no Intel graphics, so only the fallback was tested.
 
-GPU instruction assembler (`drivers/video/gen9asm.c`, stage 2). It encodes native 128-bit gen 9 EU instructions in align1 mode, never compacted, with NoMask: `mov`, `and`, `or`, `shr`, `shl`, `add` with register regions (`<8;8,1>`, scalars `<0;1,0>`) and 32-bit or packed-vector (`:uv`) immediates, and `send` with an immediate message descriptor and the end-of-thread bit. `g9_kernel_fill()` and `g9_kernel_copy()` build the two first shaders. Both were checked bit for bit against Intel's own assembler (IGA, platform gen 9) and its semantic checks (`-Wall`) during development.
+GPU instruction assembler (`drivers/video/intel/gen9asm.c`, stage 2). It encodes native 128-bit gen 9 EU instructions in align1 mode, never compacted, with NoMask: `mov`, `and`, `or`, `shr`, `shl`, `add` with register regions (`<8;8,1>`, scalars `<0;1,0>`) and 32-bit or packed-vector (`:uv`) immediates, and `send` with an immediate message descriptor and the end-of-thread bit. `g9_kernel_fill()` and `g9_kernel_copy()` build the two first shaders. Both were checked bit for bit against Intel's own assembler (IGA, platform gen 9) and its semantic checks (`-Wall`) during development.
 
 | Shader | What one thread does (one 8x8 pixel block, SIMD8, one thread per thread group) |
 |---|---|
@@ -7893,7 +7849,7 @@ One dispatch (`sh_run()`): `PIPE_CONTROL` (CS stall, render-target and data-cach
 
 If a shader does not finish within 50 ms the render engine is marked stopped and the scene buffer is not switched, so a late GPU write cannot reach the screen. The blitter and CPU drawing are not affected. QEMU has no Intel graphics, so only the fallback was tested.
 
-GPU drawing (stages 3 to 5: `drivers/video/gpukern.c`, `gq.c`, `gfx.c`). `gpukern.c` builds 12 shaders with the assembler; all share a prologue that computes the 8x8 block, a per-pixel mask for the rectangle edges and the media block reads, and an epilogue that writes the block. Constant data per operation holds the block origin, the negated rectangle, colours, alpha, source and mask offsets, gradient step and colour key.
+GPU drawing (stages 3 to 5: `drivers/video/intel/gpukern.c`, `gq.c`, `gfx.c`). `gpukern.c` builds 12 shaders with the assembler; all share a prologue that computes the 8x8 block, a per-pixel mask for the rectangle edges and the media block reads, and an epilogue that writes the block. Constant data per operation holds the block origin, the negated rectangle, colours, alpha, source and mask offsets, gradient step and colour key.
 
 | Shader | Pixel result |
 |---|---|
@@ -7982,7 +7938,7 @@ Copy engine for other code (v9.82): `nvgsp_ce_ready()` says whether the channels
 
 Limits: untested on a real card; only the simulator (`tools/tests/nvidia/nvsim.c`, `check.py nvidia`) has run it. The firmware has no TU117 booter, so a TU117 uses the TU116 one unless `booter_load-535.113.01.bin` for TU117 is put in Files. FWSEC cannot run twice: if WPR2 is still set from an earlier try the driver stops and asks for a full power-off. After `nvgsp boot` a monitor on the NVIDIA card may go dark, because GSP-RM takes over the display engine and there is no mode setting yet. No interrupts are used; every wait polls with a time limit.
 
-### 10.11 CPU information (`arch/x86_64/cpuinfo.c`)
+### 10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)
 
 The file defines the `cpuid()` and `rdmsr()` inline wrappers that the rest of the kernel uses (`tp_is_amd`, `arch_fpu_init`, timers). `get_brand()` reads leaves 0x80000002-4 into `g_brand[52]` and strips leading spaces, or uses "x86-64 CPU" when the extended leaves are missing. It sets `g_lma` from IA32_EFER (MSR 0xC0000080) bit 10. The `cpu`/`cpuid` command prints these two values. The later `cores`/`cpu` command branch (SMP view) responds only to `cores`, because the earlier `seq(cmd,"cpu")` takes `cpu`. Frequency, cache and feature-flag reporting are not in this file. TSC/HPET calibration lives in `hrtimer.c` (`timers` command).
 
@@ -8009,37 +7965,37 @@ Each GUI and app file is its own compilation unit with a header under `include/n
 
 | File | Contents |
 |---|---|
-| `assets/font.c`, `assets/fontaa.c`, `lib/js.c` | bitmap font, anti-aliased font, the small integer JS interpreter (the web engine and its QuickJS are in Part 13) |
-| `rune/rune_gfx.h` | prototypes for the Rune-compiled object |
-| `gui/effects.c` | glass/blur panels |
-| `gui/theme.c` | colour constants, `g_state`, cursor drawing |
-| `gui/wm.c` | `WN[]`, open/close/focus, notifications, window frame |
+| `assets/font.c`, `assets/fontaa.c`, `lib/js/js.c` | bitmap font, anti-aliased font, the small integer JS interpreter (the web engine and its QuickJS are in Part 13) |
+| `lang/rune/rune_gfx.h` | prototypes for the Rune-compiled object |
+| `graphics/theme/effects.c` | glass/blur panels |
+| `graphics/theme/theme.c` | colour constants, `g_state`, cursor drawing |
+| `graphics/ui/wm.c` | `WN[]`, open/close/focus, notifications, window frame |
 | `shell/terminal.c` | terminal grid, scrollback, prompt, `neofetch` text |
 | `shell/commands.c` | parser, pipes, scripting, `run_cmd_one`, live terminal |
 | `apps/*.c` | editor, calculator, chatgpt, browser, settings, files_classic, (fs/pkg.c), file_explorer, small_apps, doom, logs |
-| `gui/desktop.c`, `gui/input.c` | compositor, dock, launcher, `process_input` |
-| `init/splash.c`, `bootmenu.c`, `installer.c`, `setup.c` | boot UI, installer, OOBE and login |
+| `graphics/ui/desktop.c`, `graphics/ui/input.c` | compositor, dock, launcher, `process_input` |
+| `core/init/splash.c`, `bootmenu.c`, `installer.c`, `setup.c` | boot UI, installer, OOBE and login |
 
-Note: the file names do not always match what is inside. `gui/theme.c` also holds the mouse-cursor code (`ARROW[]`, `draw_cursor`). `gui/effects.c` holds `glass_panel`/`glass_liquid`. `apps/logs.c` holds the central `draw_app`/`app_click` dispatchers. The Lua drawing canvas is in `gui/input.c`.
+Note: the file names do not always match what is inside. `graphics/theme/theme.c` also holds the mouse-cursor code (`ARROW[]`, `draw_cursor`). `graphics/theme/effects.c` holds `glass_panel`/`glass_liquid`. `apps/system/logs.c` holds the central `draw_app`/`app_click` dispatchers. The Lua drawing canvas is in `graphics/ui/input.c`.
 
 ---
 
 ### 11.1 UI states and the main loop
 
-`gui/theme.c` defines the global UI state machine:
+`graphics/theme/theme.c` defines the global UI state machine:
 
 ```c
 enum { ST_SETUP, ST_LOGIN, ST_DESKTOP, ST_BOOTMENU, ST_RECOVERY, ST_DISKMGR, ST_INSTALL, ST_LIVE };
 static int g_state=ST_DESKTOP;
 ```
 
-The default is `ST_DESKTOP`, but `init/main.c` changes the state to `ST_LIVE` before the main loop starts:
+The default is `ST_DESKTOP`, but `core/init/main.c` changes the state to `ST_LIVE` before the main loop starts:
 
 ```c
 g_state=ST_LIVE; live_init(); ... live_present();
 ```
 
-The OS therefore always boots into the full-screen live terminal. Each pass of the main loop in `init/main.c` (lines ~173-227) sends input to the handler for the current state:
+The OS therefore always boots into the full-screen live terminal. Each pass of the main loop in `core/init/main.c` (lines ~173-227) sends input to the handler for the current state:
 
 | `g_state` | input handler | redraw |
 |---|---|---|
@@ -8072,7 +8028,7 @@ Other things the loop does in desktop mode:
 
 ---
 
-### 11.2 Window manager (`gui/wm.c`)
+### 11.2 Window manager (`graphics/ui/wm.c`)
 
 #### Fixed window table
 
@@ -8113,7 +8069,7 @@ There are two separate mechanisms:
 
 ---
 
-### 11.3 Desktop shell and compositor (`gui/desktop.c`)
+### 11.3 Desktop shell and compositor (`graphics/ui/desktop.c`)
 
 #### Scene buffers
 
@@ -8212,26 +8168,26 @@ Below the tiles are a brightness slider (`bl_set`, only when `g_bl.ok`) and a vo
 
 "Run as administrator" builds the command `sudo /path/NAME`, opens the Terminal, and passes the command to `run_cmd()`. "New > Code (.nvx)" creates `script.nvx` containing a C-style `int main(){ printf(...); }` template.
 
-#### Themes and effects (`gui/theme.c`, `gui/effects.c`, `apps/settings.c`)
+#### Themes and effects (`graphics/theme/theme.c`, `graphics/theme/effects.c`, `apps/system/settings.c`)
 
 | Item | Where | Values |
 |---|---|---|
 | Accent | `ACC/ACC2`, `ACV[5]`/`ACN[5]` | Blue, Violet, Teal, Rose, Amber (`ACC2 = mix(ACC,black,60)`) |
-| Wallpaper theme | `g_theme`, `THN[NWALL]` | 0-5 = Porsche, Crane, Wireframe, Peaks, Earth, Yosemite, decoded from embedded JPEGs by `wall_decode()`. The default is 1 (Crane) in `gui/theme.c`. |
-| Custom wallpaper | `g_wallmode=1`, `wall_custom_slot` | any PNG/JPEG/WebP file ("Set as wallpaper"), cover-scaled by `wall_blit_cover()` with bilinear filtering (`wall_smooth()`, once per change); then `wall_enhance()` (`gui/wallfx.c`) removes colour bands, adds glow, depth blur, vignette and light. Built-in wallpapers are 1920x1080 JPEGs in `assets/wall_hd.c` (six, chosen with `g_theme` 0-5); smaller pictures are enlarged with Catmull-Rom filtering |
+| Wallpaper theme | `g_theme`, `THN[NWALL]` | 0-5 = Porsche, Crane, Wireframe, Peaks, Earth, Yosemite, decoded from embedded JPEGs by `wall_decode()`. The default is 1 (Crane) in `graphics/theme/theme.c`. |
+| Custom wallpaper | `g_wallmode=1`, `wall_custom_slot` | any PNG/JPEG/WebP file ("Set as wallpaper"), cover-scaled by `wall_blit_cover()` with bilinear filtering (`wall_smooth()`, once per change); then `wall_enhance()` (`graphics/theme/wallfx.c`) removes colour bands, adds glow, depth blur, vignette and light. Built-in wallpapers are 1920x1080 JPEGs in `assets/wall_hd.c` (six, chosen with `g_theme` 0-5); smaller pictures are enlarged with Catmull-Rom filtering |
 | Safe mode | `g_safemode` | flat gradient wallpaper, no animation |
 | Cursor | `g_cursor`, `CUN[5]` | Arrow, Large, White, Cross, Dot (`draw_cursor`); hidden while DOOM holds the mouse |
 | Terminal theme | `g_tth`, `TTH[6]` | Midnight, Dracula, Solarized, Paper (light), Matrix, Noovex |
 
 `TTH[]` is defined in commands.c. The fixed shell colours (`WHT`, `GREY`, `GREEN`, `RED`, `CYAN`, and the prompt blue) are remapped per theme by `tmap()`. Light themes also darken bright custom colours.
 
-`gui/effects.c` provides `glass_panel()` and `glass_liquid()`. Both use a running-sum box blur over `SCENE` (2 or 3 passes of radius `blurR`), a tint blend, a top highlight, and a 1-px rim. The terminal window has its own frosted background, `term_glass()`. It is a separable horizontal and vertical box blur (radius 10) into `g_blurtmp`, followed by an opacity blend `g_topa`. Settings to Terminal sets `g_topa` (Off/Low/Medium/High map to 100/90/80/<80) and `g_tblur`.
+`graphics/theme/effects.c` provides `glass_panel()` and `glass_liquid()`. Both use a running-sum box blur over `SCENE` (2 or 3 passes of radius `blurR`), a tint blend, a top highlight, and a 1-px rim. The terminal window has its own frosted background, `term_glass()`. It is a separable horizontal and vertical box blur (radius 10) into `g_blurtmp`, followed by an opacity blend `g_topa`. Settings to Terminal sets `g_topa` (Off/Low/Medium/High map to 100/90/80/<80) and `g_tblur`.
 
 Wallpaper and accent sync with the signed-in Noovex account. `nvx_settings_save()` POSTs `{"accent":N,"theme":N}` to `/api/public/settings`, and `nvx_settings_load()` applies the returned values.
 
 ---
 
-### 11.4 Input routing (`gui/input.c`, `process_input`)
+### 11.4 Input routing (`graphics/ui/input.c`, `process_input`)
 
 `process_input()` returns `changed`, which tells the main loop whether a full frame is needed. Its order of operations:
 
@@ -8296,7 +8252,7 @@ Output from programs does not go through `term_putc` but through the escape-sequ
 
 ---
 
-### 11.6 Setup (OOBE) and login (`init/setup.c`)
+### 11.6 Setup (OOBE) and login (`core/init/setup.c`)
 
 The path to the desktop runs through two screens:
 
@@ -8329,7 +8285,7 @@ Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 
 ### 11.7 Applications (`apps/`)
 
-`draw_app(i)` and `app_click(i,...)` in `apps/logs.c` dispatch drawing and clicks to each app.
+`draw_app(i)` and `app_click(i,...)` in `apps/system/logs.c` dispatch drawing and clicks to each app.
 
 | Window | Source | Key functions | What it does |
 |---|---|---|---|
@@ -8347,9 +8303,9 @@ Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 | Clock, Task Manager, Calendar, Snake, Flappy Bird, neofetch, Paint | `small_apps.c` | `clock_draw`, `sysmon_draw/_click`, `calendar_draw/cal_key`, `snake_*`, `flappy_*`, `neofetch_draw`, `paint_*` | small utilities and games |
 | Welcome, About | `file_explorer.c` | `welcome_draw`, `about_draw` | static pages |
 
-#### Browser (`apps/browser.c`, 698 lines)
+#### Browser (`apps/internet/browser.c`, 698 lines)
 
-Since v9.08 the Browser window is a front end for the web engine in `web/`, which is described in Part 13. `apps/browser.c` keeps the window, the toolbar (back, reload, bookmark star, address bar, Go, Save, Home, Find, Cookies), up to 6 tabs, bookmarks and history (saved with `bm_save_fs` and `hist_save_fs`, history also pulled from the account by `nvx_hist_fetch`), downloads, the image viewer and the about: pages (`about:blank`, `about:js`, `about:cookies`, `about:console`, `about:history`, `about:bookmarks`). It decodes images for the engine (`nwk_image`: PNG, baseline JPEG, WebP, GIF, BMP, ICO) and routes mouse, wheel and keys into it (section 13.11).
+Since v9.08 the Browser window is a front end for the web engine in `web/`, which is described in Part 13. `apps/internet/browser.c` keeps the window, the toolbar (back, reload, bookmark star, address bar, Go, Save, Home, Find, Cookies), up to 6 tabs, bookmarks and history (saved with `bm_save_fs` and `hist_save_fs`, history also pulled from the account by `nvx_hist_fetch`), downloads, the image viewer and the about: pages (`about:blank`, `about:js`, `about:cookies`, `about:console`, `about:history`, `about:bookmarks`). It decodes images for the engine (`nwk_image`: PNG, baseline JPEG, WebP, GIF, BMP, ICO) and routes mouse, wheel and keys into it (section 13.11).
 
 `browser_go(push)` loads the page in `g_url`. Input that is not URL-like becomes a DuckDuckGo query; a URL without a scheme tries HTTPS first and falls back to HTTP; the back stack holds 16 entries. Network errors show an error page with the reason. The engine and its HTTP client are described in sections 13.2 and 13.9.
 
@@ -8361,7 +8317,7 @@ There are two implementations.
 
 `file_explorer.c` (header "v8.95") browses the directory tree.
 
-- This PC (`fx_mode`), modelled on Windows 11: an address bar with "This PC", "Search This PC", a command bar (Properties, Open, Refresh, Open Settings), a "Devices and drives" group with one tile per volume (drive icon, name with drive letter, a usage bar that turns red above 90 percent, "X free of Y"), selection on click and open on double-click, the drives listed under This PC in the side bar, an item count in the status bar, and a Properties dialog (General tab: label, type, file system, location, used, free and capacity in bytes and short form, a used/free ring chart). The volume list comes from `vol_scan()` in `fs/volumes.c`: C: is the running system (NoovexOS on disk or the live RAM disk); then every partition of every disk (`gdisk_read_on()` reads another disk without changing the current one) and of the USB stick, in MBR (with logical partitions) or GPT (EFI, Microsoft reserved, recovery, BIOS boot and swap types and entries with the hidden or no-drive-letter attribute are left out). Each partition is identified as FAT12/16/32, NTFS, exFAT, ext2/3/4 or NVX4 and gets its label (FAT root-directory label or boot-sector label, NTFS `$Volume` name, exFAT label entry, ext volume name) and free space (FAT32 FSInfo or a count of free FAT entries up to a 16 MB FAT, the NTFS `$Bitmap` data runs, the exFAT allocation bitmap, the ext superblock). Letters follow from C: in that order. The list is rebuilt on Refresh, when the USB stick changes and when the USB device list changes; a USB stick that was plugged in before boot is set up on the first scan, skipping ports that already belong to a keyboard, mouse, camera or printer (`msd_autoinit_safe`). Double-clicking C: opens the folder tree, a FAT USB stick opens the USB view and other drives open Properties. Win+E opens File Explorer; the `explorer`, `files` and `thispc` commands do the same from the kernel console.
+- This PC (`fx_mode`), modelled on Windows 11: an address bar with "This PC", "Search This PC", a command bar (Properties, Open, Refresh, Open Settings), a "Devices and drives" group with one tile per volume (drive icon, name with drive letter, a usage bar that turns red above 90 percent, "X free of Y"), selection on click and open on double-click, the drives listed under This PC in the side bar, an item count in the status bar, and a Properties dialog (General tab: label, type, file system, location, used, free and capacity in bytes and short form, a used/free ring chart). The volume list comes from `vol_scan()` in `fs/vfs/volumes.c`: C: is the running system (NoovexOS on disk or the live RAM disk); then every partition of every disk (`gdisk_read_on()` reads another disk without changing the current one) and of the USB stick, in MBR (with logical partitions) or GPT (EFI, Microsoft reserved, recovery, BIOS boot and swap types and entries with the hidden or no-drive-letter attribute are left out). Each partition is identified as FAT12/16/32, NTFS, exFAT, ext2/3/4 or NVX4 and gets its label (FAT root-directory label or boot-sector label, NTFS `$Volume` name, exFAT label entry, ext volume name) and free space (FAT32 FSInfo or a count of free FAT entries up to a 16 MB FAT, the NTFS `$Bitmap` data runs, the exFAT allocation bitmap, the ext superblock). Letters follow from C: in that order. The list is rebuilt on Refresh, when the USB stick changes and when the USB device list changes; a USB stick that was plugged in before boot is set up on the first scan, skipping ports that already belong to a keyboard, mouse, camera or printer (`msd_autoinit_safe`). Double-clicking C: opens the folder tree, a FAT USB stick opens the USB view and other drives open Properties. Win+E opens File Explorer; the `explorer`, `files` and `thispc` commands do the same from the kernel console.
 - Views: browse mode, list and grid views, sort and filter-as-you-type (`fx_filter`), back/forward/up history (`fx_hist`), and a preview pane (`fx_preview`).
 - Clipboard: copy/cut/paste (`fx_clip`, `fx_paste`).
 - Rename and new items: `fx_start_input` modes 0-3 cover renaming a file or folder and creating a new folder or file.
@@ -8409,7 +8365,7 @@ int main(){
 
 This works because `js.h` accepts C type keywords as declarations (`js_isctype`), hoists `type name(...)` functions (`js_hoist`), implements `printf` with `%d %i %u %s %c %%`, and calls `main()` automatically after the top-level code (`js_run`).
 
-#### ChatGPT (`apps/chatgpt.c`)
+#### ChatGPT (`apps/internet/chatgpt.c`)
 
 `cg_send()` builds `{"message":"...","source":"noovexos"}` with minimal escaping and calls:
 
@@ -8419,7 +8375,7 @@ https_request(CG_HOST,"/api/public/chat","POST","Content-Type: application/json\
 
 `CG_HOST` is a `*.lovable.app` preview host. The client takes `"reply"` (or `"error"`) from the JSON body with `json_str`. The conversation keeps the last 24 messages (`CG_MAXMSG`), each up to 400 characters, with role 0 = user, 1 = assistant, 2 = system note.
 
-#### DOOM (`apps/doom.c`)
+#### DOOM (`apps/games/doom.c`)
 
 The game is linked as a blob (`doomgeneric_Create/Tick`). The kernel implements the platform hooks `DG_DrawFrame` (copies the 640x400 `DG_ScreenBuffer` into `SCENE`), `DG_GetKey`, `DG_GetMouse`, `DG_GetTicksMs` (`g_ticks*10`) and `DG_SleepMs`.
 
@@ -8440,9 +8396,9 @@ Input.
 - `sc_to_doomkey()` maps scan codes: WASD/arrows, Ctrl fires, E/Space use, Shift runs, Alt strafes, and 1-7 choose weapons.
 - Clicking inside DOOM captures the mouse (`g_doom_mcap`); Esc releases it.
 
-#### Gears (`apps/gpu3d.cpp`, `apps/r3d/r3d.cpp`)
+#### Gears (`apps/graphics/gpu3d.cpp`, `apps/graphics/r3d/r3d.cpp`)
 
-Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Drivers & Hardware, or `gears` (`gpu3d`, `glgears`) in the terminal. `apps/r3d/r3d.cpp` is a software 3D renderer: vector and matrix classes, meshes built at start (glxgears-style gears, a torus knot, a sphere, a cube, a floor), near-plane clipping, a triangle rasterizer with edge functions, a depth buffer, perspective-correct normals and positions, Blinn-Phong light with a sky/ground ambient term, rim light, fog, planar shadows and a wireframe mode. `apps/gpu3d.cpp` is the window: it renders into a frame buffer, shows a large FPS counter and an information bar, and hands the frame to the screen in one of three ways:
+Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Drivers & Hardware, or `gears` (`gpu3d`, `glgears`) in the terminal. `apps/graphics/r3d/r3d.cpp` is a software 3D renderer: vector and matrix classes, meshes built at start (glxgears-style gears, a torus knot, a sphere, a cube, a floor), near-plane clipping, a triangle rasterizer with edge functions, a depth buffer, perspective-correct normals and positions, Blinn-Phong light with a sky/ground ambient term, rim light, fog, planar shadows and a wireframe mode. `apps/graphics/gpu3d.cpp` is the window: it renders into a frame buffer, shows a large FPS counter and an information bar, and hands the frame to the screen in one of three ways:
 
 | Path | When | How |
 |---|---|---|
@@ -8452,7 +8408,7 @@ Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Driver
 
 Keys: 1 gears, 2 3 4 other scenes (showcase, materials, 192 cubes), W wireframe, S shadows, H half resolution, Space pause, arrows and + - for the camera, R reset, G start the NVIDIA card. Speed: a gears frame at 996x586 takes 8.7 ms on one core of the build machine (about 115 frames a second); in QEMU without hardware acceleration it is 1-2 frames a second.
 
-#### Settings (`apps/settings.c`)
+#### Settings (`apps/system/settings.c`)
 
 The sidebar lists `SC_LBL[8]`. Each category holds the following:
 
@@ -8469,7 +8425,7 @@ The sidebar lists `SC_LBL[8]`. Each category holds the following:
 
 The window opens at up to 1000 x 800, sized to the screen and centred above the taskbar. The sidebar is 190-256 px wide with 42-px items 50 px apart; the selected page is an accent-coloured pill. Content has 40-px margins and 28 px between cards. Toggles (`st_toggle`) are 48 x 26 with a shadowed knob and a hover state, buttons (`st_btn`) are 34 px tall with rounded corners, the segmented control (`st_seg`) is a soft tray with a raised white chip, and text uses the proportional font.
 
-#### Small apps (`apps/small_apps.c`)
+#### Small apps (`apps/accessories/small_apps.c`)
 
 - Clock: an analog face drawn with the integer `isin`/`icos` and `clock_hand`.
 - Task Manager (`sysmon_draw`): one row per open window. Each row shows a per-app memory figure from `tm_app_kb()`, which the source calls "representative" (for example Browser 149504 KB and DOOM 33792 KB). Seven background rows (`TM_BG_N`: System, Compositor, Input, Network stack, NVXFS, TLS engine, Heap manager) use fixed `TM_BG_KB` values. "End task" calls `close_win()` on the selected row.
@@ -8479,7 +8435,7 @@ The window opens at up to 1000 x 800, sized to the screen and centred above the 
 - neofetch: a graphical page that is separate from the text `neofetch()` in terminal.c.
 - Paint: a 540x360 `paint_buf` with a 12-colour `PPAL`, three brush radii (2/4/8) and Clear.
 
-#### Logs and Terminal Finder (`apps/logs.c`)
+#### Logs and Terminal Finder (`apps/system/logs.c`)
 
 `logs_draw()` shows the kernel base/size, DMA arena, `CR3`, kernel `RSP`, tick count, and a live 8-row hexdump of memory at `0x00100000`. The dump offset advances with `g_ticks/30`.
 
@@ -8540,7 +8496,7 @@ Important properties:
 
 #### Environment variables
 
-`core/syscall.c` keeps `g_env[NENV=24]` entries, each with a 24-byte name and a 128-byte value.
+`sys/native/syscall.c` keeps `g_env[NENV=24]` entries, each with a 24-byte name and a 128-byte value.
 
 - `env_init()` seeds `PATH=/bin HOME=/home PWD=/home USER=root SHELL=/bin/nsh TERM=xterm-256color XZ_DEFAULTS=--memlimit-compress=20MiB`.
 - `env_set()` is called by `su`, `cd` (sets `PWD`), the `setuid` syscall (131), and login (`HOME`, `USER` in fs/unixfs.c).
@@ -8682,7 +8638,7 @@ The table lists every `seq(cmd,"...")` branch of `run_cmd_one()` (shell/commands
 
 ### 11.9 Scripting languages
 
-#### JavaScript / C-script interpreter (`lib/js.c`)
+#### JavaScript / C-script interpreter (`lib/js/js.c`)
 
 This is a tree-walking interpreter that runs directly over tokens (there is no AST). Its limits are compile-time constants:
 
@@ -8724,9 +8680,9 @@ Callers: the Editor's Run button (`ed_run_cb`, which also runs `.nvx` files open
 4. on error, appends `error: ...`;
 5. closes the state and returns the captured output buffer `g_lua_out[16384]`. `lua_emit` is the print sink.
 
-The `nvx` library maps to C functions in `gui/input.c`. Those functions draw into a centred canvas window with its own chrome (`lc_chrome`) directly on the framebuffer:
+The `nvx` library maps to C functions in `graphics/ui/input.c`. Those functions draw into a centred canvas window with its own chrome (`lc_chrome`) directly on the framebuffer:
 
-| Lua | C (`gui/input.c`) | Notes |
+| Lua | C (`graphics/ui/input.c`) | Notes |
 |---|---|---|
 | `nvx.window(title,w,h)` | `nvxlc_window` | clamps to 120x80 ... (W-40)x(H-100); centres |
 | `nvx.clear(c)` / `nvx.rect(x,y,w,h,c)` / `nvx.pixel(x,y,c)` / `nvx.line(...)` / `nvx.text(x,y,s,c)` | `nvxlc_*` | clipped to the canvas |
@@ -8745,17 +8701,17 @@ else if(cmd[0]=='l'&&cmd[1]=='u'&&cmd[2]=='a'&&(cmd[3]==' '||cmd[3]==0)){
     else { const char* out=nvx_lua_run(cmd+4); ... } }
 ```
 
-Because `run_cmd_one` copies only the first word into `cmd[24]`, `cmd[3]` is always 0 for `lua ...`. As written, the shell therefore always prints the usage text and never calls `nvx_lua_run`; the code would have to use `arg` instead of `cmd+4`. `mm/pmm_vmm.c:9` declares `extern const char* nvx_lua_run(const char*)`.
+Because `run_cmd_one` copies only the first word into `cmd[24]`, `cmd[3]` is always 0 for `lua ...`. As written, the shell therefore always prints the usage text and never calls `nvx_lua_run`; the code would have to use `arg` instead of `cmd+4`. `mem/pmm_vmm.c:9` declares `extern const char* nvx_lua_run(const char*)`.
 
-#### Rune (`rune/`)
+#### Rune (`lang/rune/`)
 
-`rune/rune_gfx.rn` is written in the user's Rune language. `build.sh` step 3a compiles it into an object, which is linked into the kernel as a blob (`rune_gfx.o` in `BLOBS`):
+`lang/rune/rune_gfx.rn` is written in the user's Rune language. `build.sh` step 3a compiles it into an object, which is linked into the kernel as a blob (`rune_gfx.o` in `BLOBS`):
 
 ```
 tools/rune build rune/rune_gfx.rn --freestanding --target=x86_64-none -o $B/rune_gfx.o
 ```
 
-The C side is the two prototypes in `rune/rune_gfx.h`: `rune_render(u32* buf,int w,int h,int t)` and `rune_fib(int n)`. The Rune source:
+The C side is the two prototypes in `lang/rune/rune_gfx.h`: `rune_render(u32* buf,int w,int h,int t)` and `rune_fib(int n)`. The Rune source:
 
 ```rust
 fn rune_render(buf: *u32, w: i32, h: i32, t: i32) -> void {
@@ -8778,7 +8734,7 @@ There is no HexLang code in this repository. A case-insensitive search for "hexl
 
 ---
 
-### 11.10 Kernel modules: `mod/hello_mod.c` and the `.MOD` format
+### 11.10 Kernel modules: `usr/mod/hello_mod.c` and the `.MOD` format
 
 A `.MOD` file is a position-independent ELF64 shared object; `HELLO.MOD` has `e_type` = 3 (`ET_DYN`), x86-64, entry `0x1070`, 11 program headers. It imports kernel functions by name:
 
@@ -8812,13 +8768,13 @@ Separately, `build.sh` line 21 uses the word `MODS` for drivers that are compile
 
 ---
 
-### 11.11 Fonts and assets (`source/kernel/assets/`)
+### 11.11 Fonts and assets (`assets/`)
 
 | File | Contents | Used by |
 |---|---|---|
 | `font.h` | `FONT814[95][14]`: 8x14 1-bpp ASCII 32-126, LSB-first | Pixel terminal font |
 | `fontaa.h` | `fontaa[95][112]`: DejaVu Sans Mono anti-aliased 8x14 alpha atlas (`AA_CW 8`, `AA_CH 14`) | `dchar/dstr/dstr_ctr` (blended, fixed 8-px advance), `tglyph` (terminal), proportional text `pdch/pdstr` |
-| `nvx_assets.h` | Wallpapers as baseline JPEG byte arrays: `wall_cobalt_jpg` (13153 B), `wall_wire_jpg`, `wall_crane_jpg`, plus 640x360 `wall_porsche_jpg`, `wall_field_jpg`, `wall_desert_jpg`; `wordmark_a` (448x184 8-bit coverage) | included by `apps/browser.c:70`; decoded by `wall_decode()` |
+| `nvx_assets.h` | Wallpapers as baseline JPEG byte arrays: `wall_cobalt_jpg` (13153 B), `wall_wire_jpg`, `wall_crane_jpg`, plus 640x360 `wall_porsche_jpg`, `wall_field_jpg`, `wall_desert_jpg`; `wordmark_a` (448x184 8-bit coverage) | included by `apps/internet/browser.c:70`; decoded by `wall_decode()` |
 | `demo_pptx.h` | `demo_pptx[8360]` | `fs_init()` to `demo.pptx` |
 | `nyc_pptx.h` | `nyc_pptx[897654]` | not included anywhere |
 | `installer/` | `inst_boot.bin` (512 B), `inst_stage2.bin`, `inst_boot.cfg` (`timeout=2`, `video=auto`, `kernel=/boot/kernel64.bin`) | linked as installer blobs (`inst_boot.o`, `inst_stage2.o`, `inst_cfg.o` in `BLOBS`) |
@@ -8881,7 +8837,7 @@ The console has one termios, `g_tios` (`struct vt_tios`, the same 36-byte layout
 | `VMIN`, `VTIME` (raw) | `VMIN > 0`: `read` waits for input and returns what is there. `VMIN = 0, VTIME = 0`: returns at once, possibly 0 bytes. `VMIN = 0, VTIME = t`: waits up to t tenths of a second (the deadline is kept in the thread's `pollwake`) |
 | `OPOST`, `ONLCR` | LF on output also returns to column 0 (the default); a program that clears `OPOST` must send CR LF itself, as full-screen programs do |
 
-The keyboard drivers deliver the extra keys as codes 2 (Home), 5 (End), 6 (Page Up), 7 (Page Down), 14 (Delete) and 15 (Insert) besides the arrows 17-20 (PS/2 in `drivers/input/ps2.c`, USB in `drivers/usb/xhci.c`). While a job owns the terminal, Ctrl+letter is passed as `0x100 | code` so it cannot be confused with those key codes.
+The keyboard drivers deliver the extra keys as codes 2 (Home), 5 (End), 6 (Page Up), 7 (Page Down), 14 (Delete) and 15 (Insert) besides the arrows 17-20 (PS/2 in `drivers/input/ps2/ps2.c`, USB in `drivers/usb/xhci.c`). While a job owns the terminal, Ctrl+letter is passed as `0x100 | code` so it cannot be confused with those key codes.
 
 `TIOCGWINSZ` reports `trows` x `tcols` (for example 58 x 158 on a 1280 x 1024 screen in live mode).
 
@@ -8897,13 +8853,13 @@ When the foreground job finishes or stops, `jc_tty_restore` resets the terminal:
 
 ### Task Manager and Settings (v9.73)
 
-Task Manager (`apps/taskmgr.c`) has a left rail with Processes, Performance, Devices and Services. Performance samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
+Task Manager (`apps/system/taskmgr.c`) has a left rail with Processes, Performance, Devices and Services. Performance samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
 
-Settings (`apps/settings.c`) keeps the current page in `g_stpg`. Pages 0-8 are the category pages (tiles), higher numbers are sub-pages; `pg_parent()` gives each page its parent, which builds the path at the top and the back button. The previous per-category pages are drawn by `old_leaf()` and reused as sub-pages. `settings <page>` opens a page from the terminal.
+Settings (`apps/system/settings.c`) keeps the current page in `g_stpg`. Pages 0-8 are the category pages (tiles), higher numbers are sub-pages; `pg_parent()` gives each page its parent, which builds the path at the top and the back button. The previous per-category pages are drawn by `old_leaf()` and reused as sub-pages. `settings <page>` opens a page from the terminal.
 
 ## Part 12: Testing, quality gates, debugging and history
 
-This part covers how NoovexOS 64 is tested and debugged: the automatic checker `source/tools/check.py`, the boot emulator `source/tools/emulate.py`, the host-side harnesses in `source/tools/tests/`, the serial log and crash screen in the kernel, the shell commands for diagnosis, running in a VM, a troubleshooting table, a glossary and a version history. Paths starting with `tools/`, `kernel/` or `bootloader/` are relative to `source/`; kernel paths without a prefix (`core/klog.c`, `fs/vfs.c`) are relative to `source/kernel/`.
+This part covers how NoovexOS 64 is tested and debugged: the automatic checker `tools/check.py`, the boot emulator `tools/emulate.py`, the host-side harnesses in `tools/tests/`, the serial log and crash screen in the kernel, the shell commands for diagnosis, running in a VM, a troubleshooting table, a glossary and a version history. Paths starting with `tools/`, the repository root or `boot/` are relative to `source/`; kernel paths without a prefix (`core/klog.c`, `fs/vfs/vfs.c`) are relative to the repository root.
 
 ---
 
@@ -8914,7 +8870,7 @@ The test tools do not emulate a CPU (`tools/README.md`: "There is no CPU emulato
 | Technique | How it works | Used by groups |
 |---|---|---|
 | Generated tests | `check.py` cuts functions out of the current driver source (with `defn()` or by `find()` markers), swaps hardware accessors for simulator calls with exact string replacements, adds a template from `tools/tests/*_template.txt`, then compiles and runs the result on the host | `usb`, `acpi`, `nvme`, `touchpad`, `memory`, `aml`, `timers`, `gpu` |
-| Whole kernel as a host object | `kernel64.c` (every kernel unit included into one file, kept for this purpose) is compiled for Linux with host versions of `arch/x86_64/cpu.h` and `io.h`, then linked with a harness | `linux`, `fs` |
+| Whole kernel as a host object | `kernel64.c` (every kernel unit included into one file, kept for this purpose) is compiled for Linux with host versions of `arch/x86_64/cpu/cpu.h` and `io.h`, then linked with a harness | `linux`, `fs` |
 | Separately built modules | the `MODS` drivers (they include only `include/kapi.h` and `include/drivers.h`) are linked against a device simulator that implements `kapi_*` | `drivers` |
 | Differential testing | the same program is built against nvxlibc and glibc, or nvxbox is compared with GNU coreutils, and the outputs must be identical | `libc`, `coreutils` |
 
@@ -8952,9 +8908,9 @@ Groups run in a fixed order (build, static, boot, usb, acpi, gpu, nvme, touchpad
 Most generated tests print lines ending in ` ok` / ` FAIL` and a final `ALL PASS` or `FAILURES`; `check.py` counts those lines for the "(N checks)" in the summary and shows the first failing lines.
 
 #### Group `build` (`g_build`)
-1. `sh build.sh` in `kernel/` (timeout 30 min, log saved as `build.log`); passes only if the exit code is 0 and the output contains `signature stamped` (printed by the stamping step in `build.sh`).
+1. `sh build.sh` in the repository root (timeout 30 min, log saved as `build.log`); passes only if the exit code is 0 and the output contains `signature stamped` (printed by the stamping step in `build.sh`).
 2. "no implicit function declarations": any build-output line containing `implicit declaration` fails it.
-3. Copies `build/kernel64.bin` to `bootloader/stage/kernel64.bin`, runs `make build/boot.bin build/stage2.bin` in `bootloader/`.
+3. Copies `build/kernel64.bin` to `boot/stage/kernel64.bin`, runs `make build/boot.bin build/stage2.bin` in `boot/`.
 4. `mkhybrid.py build/boot.bin build/stage2.bin <iso> NOOVEXOS boot/kernel64.bin=... boot.cfg=... README.txt=...` must succeed (its own FAT32-size and FAT16-EFI-image asserts must hold).
 
 #### Group `static` (`g_static`)
@@ -8966,9 +8922,9 @@ Most generated tests print lines ending in ` ok` / ` FAIL` and a final `ALL PASS
 | BOOTX64.EFI PE structure | `tests/pecheck.py` |
 | GDT pointer in `uefi_entry` | `gdt64_check()`: disassembles 64 bytes at `uefi_entry`, finds the RIP-relative `lgdt`, reads the 10-byte pointer from `kernel64.bin`, requires the base to be a symbol starting with `gdt`, limit at least 0x17, and selector 0x08 to be a present 64-bit code segment (bits 47 and 53). Catches a 6-byte (32-bit) GDT pointer used in long mode |
 | no raw keyboard-controller resets | regex `outb(0x64, 0xFE)` anywhere except `core/power.c` |
-| no inline assembly outside `arch/` | regex `__asm__` / `asm(` in `.c`/`.h` outside `arch, third_party, user, build, mod, tools`; portable code must use `arch/x86_64/cpu.h` |
+| no inline assembly outside `arch/` | regex `__asm__` / `asm(` in `.c`/`.h` outside `arch, third_party, user, build, mod, tools`; portable code must use `arch/x86_64/cpu/cpu.h` |
 | zero strict warnings | `gcc` with the `CFLAGS` parsed from `build.sh` plus `STRICT` (`-Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wnull-dereference -Wshift-negative-value -Wint-conversion -Wempty-body -Wmaybe-uninitialized -Warray-bounds`, with a few noisy warnings turned off) on `kernel64.c` and every file in `MODS`; any `warning:`/`error:` fails |
-| no fixed regions inside `.bss` | `fixed_regions_in_bss()`: scans kernel `.c/.h` (not ntfs, musl, sqlite, zlib, bzip2, xz, zstd, user, wifi, doom), `boot64.S` and `bootloader/src/stage2.c` for page-aligned constants such as `(u8*)0x...` or `#define X 0x...` between `0xC06000` and `__bss_end` (from `nm kernel64.elf`); `stage2.c`'s `0x1000000` is whitelisted as transient (`STAGE2_TRANSIENT`) |
+| no fixed regions inside `.bss` | `fixed_regions_in_bss()`: scans kernel `.c/.h` (not ntfs, musl, sqlite, zlib, bzip2, xz, zstd, user, wifi, doom), `boot64.S` and `boot/src/stage2.c` for page-aligned constants such as `(u8*)0x...` or `#define X 0x...` between `0xC06000` and `__bss_end` (from `nm kernel64.elf`); `stage2.c`'s `0x1000000` is whitelisted as transient (`STAGE2_TRANSIENT`) |
 | no unbounded hardware polling loops | `unbounded_hw_loops()`: every `while(...)` whose condition calls `inb/inw/inl/kapi_in*/cmos/XMR` and has no `&&`/`||` (i.e. no counter or timeout) is reported with file:line |
 | USB HID regions below the USB-stick buffers | parses `XHID_MAX`, `XHID_BASE(r)` and `MSD_INPUTCTX` from `drivers/usb/xhci.c` and requires `base + max*stride <= MSD_INPUTCTX` |
 
@@ -8982,7 +8938,7 @@ Runs `tools/emulate.py <iso>` and records "emulate.py: N of M checks passed". Fa
 
 #### Group `usb` (`g_usb` + `g_xhci_init`)
 - HID/hub test: extracts ~40 functions from `xhci.c` (`hid_pick`, `hid_parse`, `xh_interval`, `xhci_hid_enum`, `xhub_*`, `hid2ascii`, `kbd_report`, `usb_kbd_repeat`, `hid_report_decode`, `xhci_poll_one`, `xhid_remove_port`, `xhc_save/load/select`, ...), renames `xh_ctrl` to `real_xh_ctrl` so the template can intercept control transfers, and runs `usb_template.txt` against recorded devices (Logitech Unifying receiver, a vendor-first receiver, a USB stick, per `tools/README.md`). Covers receivers, routing, key repeat, key mapping, hot-unplug and hubs; also non-boot devices through their report descriptors.
-- Controller set-up: copies `xhci.c` from `#define XHC_MAX` to `/* mouse state` plus the memory-map code of `mm/pmm_vmm.c`, built with UBSan; checks that every scratchpad page the simulated controller asks for is valid memory.
+- Controller set-up: copies `xhci.c` from `#define XHC_MAX` to `/* mouse state` plus the memory-map code of `mem/pmm_vmm.c`, built with UBSan; checks that every scratchpad page the simulated controller asks for is valid memory.
 
 #### Group `acpi` (`g_acpi`)
 All of `core/power.c` with `acpi_find_rsdp` replaced by a test RSDP, plus `acpi_template.txt`: S5 parsing, ACPI enable through SMI_CMD, the reset register, hardware-reduced sleep, and malformed tables.
@@ -8991,7 +8947,7 @@ All of `core/power.c` with `acpi_find_rsdp` replaced by a test RSDP, plus `acpi_
 `tests/gpu_t.c` includes `drivers/video/nvidia/nvmon.c` verbatim (marker `#include "NVMON_C"`) and simulates the DDC port register (`nvr32`/`nvw32` with SCL/SDA lines, clock stretching) and an EDID EEPROM: DCB outputs, EDID over simulated I2C, head timings.
 
 #### Group `nvidia` (`g_nvidia`)
-`tests/nvidia/nvsim.c` includes `nvflcn.c`, `nvmem.c` and `nvgsp.c` and runs them against a simulated TU116 with 6 GB: registers, the PRAMIN window over a sparse VRAM, falcon IMEM/DMEM ports, a synthetic VBIOS with a BIT table and an FWSEC image, a GSP that checks the checksum and sequence number of every queue element and answers the RPCs, BAR1/BAR2 windows that walk the GPU page tables, and a copy engine that runs the push buffer (single copies, pitched multi-line copies and semaphore releases). The firmware comes from `kernel/assets/nvidia` (unpacked with Python) or from `NVX_NVFW`. 26 checks.
+`tests/nvidia/nvsim.c` includes `nvflcn.c`, `nvmem.c` and `nvgsp.c` and runs them against a simulated TU116 with 6 GB: registers, the PRAMIN window over a sparse VRAM, falcon IMEM/DMEM ports, a synthetic VBIOS with a BIT table and an FWSEC image, a GSP that checks the checksum and sequence number of every queue element and answers the RPCs, BAR1/BAR2 windows that walk the GPU page tables, and a copy engine that runs the push buffer (single copies, pitched multi-line copies and semaphore releases). The firmware comes from `assets/nvidia` (unpacked with Python) or from `NVX_NVFW`. 26 checks.
 
 #### Group `nvme` (`g_nvme`)
 The driver part of `drivers/storage/nvme.c` (from `#define NVME_ASQ` to `/* ---- generic disk layer`) against a simulated controller with UBSan: init, 4 KB sectors, queue limits, queue wrap, stray completions, flush, timeout recovery, namespaces.
@@ -9000,13 +8956,13 @@ The driver part of `drivers/storage/nvme.c` (from `#define NVME_ASQ` to `/* ----
 Concatenates `aml_scan.c`, `dw_i2c.c` (register accessors swapped for `sim_rd/sim_wr`), `tp_hid.c`, `tp_gesture.c`, `input.c`, `i2c_hid.c` (GPIO pin read swapped for `g_gpio_reg[]`), `elan_i2c.c`, parts of `ps2.c`/`ps2_mouse.c`, `elan_ps2.c` and `touchpad.c` with `tp_template.txt`: discovery from hand-made ACPI tables, I2C, HID over I2C, ELAN I2C with trackpoint, Elantech v3/v4 PS/2, gestures and fuzzing.
 
 #### Group `memory` (`g_memory`)
-The memory-map code of `mm/pmm_vmm.c` (without `mm_load`) and the heap of `mm/heap.c` (`typedef struct hblk` to `krealloc`) against an AMD-style firmware map: reserved/ACPI-NVS detection, DMA arena skipping, heap bounds, block headers.
+The memory-map code of `mem/pmm_vmm.c` (without `mm_load`) and the heap of `mem/heap.c` (`typedef struct hblk` to `krealloc`) against an AMD-style firmware map: reserved/ACPI-NVS detection, DMA arena skipping, heap bounds, block headers.
 
 #### Group `aml` (`g_aml`)
 `drivers/acpi/aml.c` + selected `power.c` table helpers + `pci_cfg` + `acpi_dev.c` (SystemMemory access redirected to `sim_mem`). Data embedded as C arrays from `tests/aml/`: `calc.aml` with `calc.expected` (results recorded from ACPICA `acpiexec`; `ae_parse.py` parses that output), `lenovo.aml`, `hp.aml`, `hp_ssdt.aml`, `edge.aml`. The `.aml` files are compiled with `iasl` and committed (old doc section 21), so the checker does not need ACPICA. Checks interpreter results against ACPICA, laptop battery/AC/backlight/EC events, and corrupted tables.
 
 #### Group `timers` (`g_timers`)
-`arch/x86_64/hrtimer.c` with `hr_rdtsc`, `hr_cpuid`, `hr_rdmsr/wrmsr`, `hr_rd32/rd64/wr64`, `hr_irqsave/restore` and the LAPIC write replaced by simulator functions, plus `madt_apic_ids` from `smp.c`: HPET/PIT/CPUID calibration, 32-bit HPET wrap, x2APIC, APIC one-shot and periodic modes, MADT parsing.
+`arch/x86_64/time/hrtimer.c` with `hr_rdtsc`, `hr_cpuid`, `hr_rdmsr/wrmsr`, `hr_rd32/rd64/wr64`, `hr_irqsave/restore` and the LAPIC write replaced by simulator functions, plus `madt_apic_ids` from `smp.c`: HPET/PIT/CPUID calibration, 32-bit HPET wrap, x2APIC, APIC one-shot and periodic modes, MADT parsing.
 
 #### Group `linux` (`g_linux`), see 12.4.1
 Requires `build/musl/lib/libc.a`, `build/user/musltest.elf`, `build/user/mhello.elf` and the `build/user_*_bin.o` blobs ("run check.py --build first"). Records: kernel compiles as a host object; seccomp harness links; `lxfuzz` builds against musl; `musltest` passes on real Linux (the reference); then three harness runs with fuzz seeds 1, 2, 3 (`/tmp/lxfuzz 60000 <trace-off> <seed>`), each must end in `ALL PASS`.
@@ -9035,11 +8991,11 @@ qemu-system-x86_64 [-L $NVX_QEMU_BIOS] -m 1024 -smp 4 -accel tcg,thread=multi \
 #### Group `tls` (`g_tls`)
 Builds `tests/tls/x509h.c` (the kernel's `nvxcrypto.c`, `nvxtls.c`, `nvxcrypto2.c`, `nvxx509.c` and `nvxroots.c` compiled for the host, with `--sanitize` under ASan+UBSan) and checks:
 1. every embedded root's public key parses (120);
-2. the self-signature of every certificate in `kernel/lib/crypto/roots/mozilla-cacert.pem` verifies with the kernel's RSA/ECDSA code (117 pass; the one P-521 root is expected to fail and 3 SHA-1/PSS roots are skipped);
+2. the self-signature of every certificate in `lib/crypto/roots/mozilla-cacert.pem` verifies with the kernel's RSA/ECDSA code (117 pass; the one P-521 root is expected to fail and 3 SHA-1/PSS roots are skipped);
 3. `tests/tls/tlsvec.py` (needs the Python `cryptography` module) generates chains and signatures and runs 31 positive and negative cases (section 9.9.3).
 
 #### Group `fetch` (`g_fetch`)
-Tests the user-space TLS client on the host (needs the Python `cryptography` module). It compiles all of `third_party/bearssl/src` and links `user/musl/fetch.c` and `nvxtls.c` with `-Wall` (any warning fails the check) and, with `--sanitize`, ASan+UBSan and leak checking. `tests/tls/fetchpeer.py` starts four TLS 1.2 servers on 127.0.0.1 with certificates from a fresh test CA (ECDSA for `localhost` and 127.0.0.1, RSA for the same names, ECDSA for `other.test` only, and an expired one) and writes the Mozilla roots in the `nvx-anchors.pem` format. The checks: the anchors file and the local CA load (121 anchors), ECDSA and RSA downloads with the body's SHA-256 matching, an IP address host, a redirect to a chunked body, an unknown root, a wrong name and an expired certificate refused with exit status 3, `-k`, HTTP 404 giving exit status 4, a bad URL giving 1, and no sanitizer or leak report in any run.
+Tests the user-space TLS client on the host (needs the Python `cryptography` module). It compiles all of `third_party/bearssl/src` and links `usr/musl/fetch.c` and `nvxtls.c` with `-Wall` (any warning fails the check) and, with `--sanitize`, ASan+UBSan and leak checking. `tests/tls/fetchpeer.py` starts four TLS 1.2 servers on 127.0.0.1 with certificates from a fresh test CA (ECDSA for `localhost` and 127.0.0.1, RSA for the same names, ECDSA for `other.test` only, and an expired one) and writes the Mozilla roots in the `nvx-anchors.pem` format. The checks: the anchors file and the local CA load (121 anchors), ECDSA and RSA downloads with the body's SHA-256 matching, an IP address host, a redirect to a chunked body, an unknown root, a wrong name and an expired certificate refused with exit status 3, `-k`, HTTP 404 giving exit status 4, a bad URL giving 1, and no sanitizer or leak report in any run.
 
 #### Group `net` (`g_net`)
 Runs only when `NVX_NET_TAP=1` and QEMU is available. `tests/net/netpeer.py` creates the tap device `nvxtap0` with the QEMU NAT addresses (10.0.2.2 gateway, 10.0.2.3 DNS), generates a test CA with ECDSA and RSA server certificates for `noovex.test`, and serves DNS (every name to 10.0.2.2), HTTP on 80 and 8080 (with `/big`, a 300 KB pattern, `/redir`, a redirect to it, and `/chunked`, the pattern with chunked encoding), TCP echo on 7777, UDP echo on 7778, TLS 1.3 only on 443 (ECDSA) and 8443 (RSA), and TLS 1.2 on 9443 (ECDSA) and 9444 (RSA). It also tries to connect to 10.0.2.15:9200 every second and logs the answer. QEMU boots with `-netdev tap -device e1000`. The group then types:
@@ -9052,12 +9008,12 @@ Runs only when `NVX_NET_TAP=1` and QEMU is available. `tests/net/netpeer.py` cre
 7. `featest listen >/dev/kmsg` to the peer's log must show `inbound pong from noovex`, i.e. a musl server accepted a connection that came in through the network card.
 
 #### Group `drivers` (`g_drivers`)
-Compiles each file in `MODS` (`build.sh` line 21: `drivers/net/e1000.c rtl8139.c rtl8169.c drivers/virtio/virtio.c virtio_net.c virtio_blk.c drivers/sound/ac97.c hda.c`) for the host, links them with `tests/drivers/drvsim.c`, see 12.4.3.
+Compiles each file in `MODS` (`build.sh` line 21: `drivers/net/ethernet/e1000.c rtl8139.c rtl8169.c drivers/virtio/virtio.c virtio_net.c virtio_blk.c drivers/sound/ac97.c hda.c`) for the host, links them with `tests/drivers/drvsim.c`, see 12.4.3.
 
 #### Groups `libc` and `coreutils`
-- `host_libc()` builds `user/libc/src/{libc.c, printf.c, stdlib2.c, stdio2.c, sys_host.c, crt0_host.S}` with `-ffreestanding -nostdinc` against nvxlibc's own headers into `libc.a`; `sys_host.c` maps NoovexOS syscall numbers to Linux ones, so real nvxlibc programs run on Linux.
+- `host_libc()` builds `usr/libc/src/{libc.c, printf.c, stdlib2.c, stdio2.c, sys_host.c, crt0_host.S}` with `-ffreestanding -nostdinc` against nvxlibc's own headers into `libc.a`; `sys_host.c` maps NoovexOS syscall numbers to Linux ones, so real nvxlibc programs run on Linux.
 - `libc`: `tests/libc/pfuzz.c` (random printf formats and doubles; 100 000 iterations, 20 000 with `--quick`) and `ltest.c` (strtol/strtoul bases and edge values, strtod, sscanf, qsort, ctype, malloc, files, strftime, setjmp) are built once with glibc and once with nvxlibc; every output line and the exit code must match. `sfile.c` reads inputs generated by `gen_strtod_inputs()` (exact halfway points between adjacent doubles printed with up to 120 digits, random decimal strings, 300-700-digit denormal cases, hex floats, overflow/underflow and malformed strings) and prints the bit pattern and end offset; 0 differences required.
-- `coreutils`: links `user/src/nvxbox.c` + `coreutils.c` against the host libc and runs the 65-entry `COREUTILS` table (cat, wc, head, tail, grep, sort, cut, tr, uniq, seq, basename, dirname, rev, tac, nl, fold, paste, comm, cmp, md5sum, sha256sum, base64, find, yes, echo, true/false, mkdir/rmdir, cp, ln/readlink, tee, ls) in a fixture folder. stdout, exit status and "stderr empty or not" must equal GNU's (`sort` runs with `LC_ALL=C`).
+- `coreutils`: links `usr/src/nvxbox.c` + `coreutils.c` against the host libc and runs the 65-entry `COREUTILS` table (cat, wc, head, tail, grep, sort, cut, tr, uniq, seq, basename, dirname, rev, tac, nl, fold, paste, comm, cmp, md5sum, sha256sum, base64, find, yes, echo, true/false, mkdir/rmdir, cp, ln/readlink, tee, ls) in a fixture folder. stdout, exit status and "stderr empty or not" must equal GNU's (`sort` runs with `LC_ALL=C`).
 
 ---
 
@@ -9079,7 +9035,7 @@ python3 tools/emulate.py tools/out/check.iso
 ```
 
 Prerequisites per group, from the code:
-- `static` reads `build/kernel64.elf`/`kernel64.bin` and `bootloader/uefi/uefiboot.so`/`BOOTX64.EFI` when they exist; the signature, relocation, PE, GDT and `.bss` checks need a previous build (`fixed_regions_in_bss` takes `__bss_end` from `nm`).
+- `static` reads `build/kernel64.elf`/`kernel64.bin` and `boot/uefi/uefiboot.so`/`BOOTX64.EFI` when they exist; the signature, relocation, PE, GDT and `.bss` checks need a previous build (`fixed_regions_in_bss` takes `__bss_end` from `nm`).
 - `boot` and `qemu` need an image (`--build` or `--iso`).
 - `linux` needs `build/musl` and the musl programs from `build.sh`.
 - `coreutils` needs the host libc that `libc` builds; asking for `coreutils` alone still runs the `libc` build step (`want('libc') or want('coreutils')`).
@@ -9090,7 +9046,7 @@ The existing groups show the pattern:
 1. If the driver can be written against `include/kapi.h` only, add it to `MODS` in `build.sh`; it is then automatically compiled with strict warnings in `static`, analysed in `analyze` and compiled for the host in `drivers`. Add a simulated device and `rec(...)` checks to `tools/tests/drivers/drvsim.c`, ending with the existing `ALL PASS`/`FAILURES` summary.
 2. Otherwise write a `g_<name>(work)` function in `check.py` that cuts the driver code out of its file by stable markers (`defn(src, name)` returns one `static` function by brace matching), replaces each hardware accessor with an exact `str.replace` guarded by `assert a in src` (as `g_touchpad` and `g_timers` do), prepends a `*_template.txt` `HDR` part with the simulator and appends a `TEST` part, compiles with `SAN`, and records "... builds against the current ..." and the result line.
 3. Add the group name to the `--only` help string and call it from `main()`.
-4. For code that needs the whole kernel (file system, syscalls), use the `fs`/`linux` approach: copy `kernel/`, swap in `cpu_host.h`/`io_host.h`, and add `hk_*`/`fk_*` accessor functions to the glue file.
+4. For code that needs the whole kernel (file system, syscalls), use the `fs`/`linux` approach: copy the source tree, swap in `cpu_host.h`/`io_host.h`, and add `hk_*`/`fk_*` accessor functions to the glue file.
 
 #### Reading kernel sources from a generator (since v8.96)
 
@@ -9112,8 +9068,8 @@ The generators were written when every kernel file was one big translation unit.
 `python3 tools/emulate.py IMAGE.iso` prints sections and ends with `N of M checks passed`; exit 1 on failure.
 
 BIOS (`emulate_bios`)
-- MBR has `0x55AA` and non-empty boot code; stage2 at sector 1 is byte-identical to `bootloader/build/stage2.bin`.
-- Copies the partition-selection block out of `bootloader/src/stage2.c` (from `    uint32_t part_lba = 0;` to `if(!part_lba) fail`) into `tests/bios_emu.c` (`@@PARTSEL@@`) and builds it with the real `fat.c`, `config.c`, `string.c` as a 32-bit freestanding program (`-m32 -march=i386 -mno-sse`); its `disk_read` uses raw `int $0x80` Linux i386 syscalls on the image.
+- MBR has `0x55AA` and non-empty boot code; stage2 at sector 1 is byte-identical to `boot/build/stage2.bin`.
+- Copies the partition-selection block out of `boot/src/stage2.c` (from `    uint32_t part_lba = 0;` to `if(!part_lba) fail`) into `tests/bios_emu.c` (`@@PARTSEL@@`) and builds it with the real `fat.c`, `config.c`, `string.c` as a 32-bit freestanding program (`-m32 -march=i386 -mno-sse`); its `disk_read` uses raw `int $0x80` Linux i386 syscalls on the image.
 - The program must print `PART`, `MOUNT ok`, parse `/boot.cfg` (`CFG entries=... default=...`), load the default kernel (`format=flat`).
 - The loaded kernel needs a Multiboot header (`0x1BADB002`, checksum OK) in its first 8 KB and a valid build signature.
 
@@ -9135,7 +9091,7 @@ Other helpers: `tests/pecheck.py` (MZ/PE, x86-64, PE32+, subsystem 10, section a
 
 #### 12.4.1 `linux/`, the seccomp harness (`hh.c`, `hk_glue.c`, `cpu_host.h`, `io_host.h`, `lxfuzz.c`)
 
-Build. `g_linux` copies `kernel/` (without `build/`, musl, doom, lua) to a work dir, replaces `arch/x86_64/cpu.h` with `cpu_host.h` and `io.h` with `io_host.h`, and compiles `hk_glue.c` (which is `#include "kernel64.c"` plus accessor functions) with the kernel's own flags. Kernel symbols that clash with libc (`malloc, free, memcpy, strlen, ..., panic`) are renamed with `-D<name>=kh_<name>`. `hh.c` is linked with this object and the embedded user-program blobs, with `--unresolved-symbols=ignore-all`.
+Build. `g_linux` copies the source tree (without `build/`, musl, doom, lua) to a work dir, replaces `arch/x86_64/cpu/cpu.h` with `cpu_host.h` and `io.h` with `io_host.h`, and compiles `hk_glue.c` (which is `#include "kernel64.c"` plus accessor functions) with the kernel's own flags. Kernel symbols that clash with libc (`malloc, free, memcpy, strlen, ..., panic`) are renamed with `-D<name>=kh_<name>`. `hh.c` is linked with this object and the embedded user-program blobs, with `--unresolved-symbols=ignore-all`.
 
 Shims.
 - `cpu_host.h`: interrupts on/off and halt are no-ops; `cpu_get_pt/cpu_set_pt/cpu_flush_page` call `h_get_pt/h_set_pt/h_flush_page` in the harness; FPU save/restore go to the signal context; `cpu_stop`/`cpu_triple_fault` call `h_fatal`; MSRs read 0; the per-CPU pointer is a plain variable.
@@ -9194,7 +9150,7 @@ Templates are split into named parts with `@@NAME@@` lines (`template()` in `che
 
 #### 12.4.6 `tools/webhost.c`, the web engine on the host
 
-The web engine (Part 13) builds for Linux unchanged except for `web/krt.c`, whose job glibc does. Compile every `web/*.c` file except `krt.c`, the QuickJS sources and `tools/webhost.c` with `gcc -O1 -g -D_GNU_SOURCE -I.` from `source/kernel` and link with `-lm`. Then:
+The web engine (Part 13) builds for Linux unchanged except for `web/krt.c`, whose job glibc does. Compile every `web/*.c` file except `krt.c`, the QuickJS sources and `tools/webhost.c` with `gcc -O1 -g -D_GNU_SOURCE -I.` from the repository root and link with `-lm`. Then:
 
 ```
 webhost page.html out.ppm [width] [height] [maxheight] [javascript]
@@ -9202,26 +9158,26 @@ webhost page.html out.ppm [width] [height] [maxheight] [javascript]
 
 `webhost` serves `file://` URLs for subresources, decodes no real images (it returns a gradient of the right size), keeps cookies and storage in memory, prints every fetch, console message and script error, and reports load and paint times. The optional JavaScript is evaluated after the page has loaded and 20 timer ticks have run; its result is printed and the page is painted afterwards, so a test can click buttons (`document.getElementById('x').click()`) or set input values and check the outcome in the picture.
 
-### 12.5 The serial debug log (`kernel/core/klog.c`)
+### 12.5 The serial debug log (`core/klog.c`)
 
 - `klog_init()` probes COM1 by writing `0xA5` to the scratch register (`0x3F8+7`) and reading it back; if it differs, logging stays off. Otherwise it programs 115200 baud (divisor 1), 8N1, FIFO on.
 - `klog_c()` waits at most 100 000 polls for THR-empty (`LSR` bit 5); on timeout it sets `g_klog_ok = 0` so a dead UART never slows the system down again.
 - `klog(s)` writes `[<g_ticks>] <s>\r\n` (ticks are 10 ms PIT ticks). `klog2(a, b)` joins two strings (max 159 chars).
-- `g_klog_hook`: early in `kmain` it points at `bootlog_line()` (`init/main.c`), which also draws each log line on screen from y = 200 (32-bpp framebuffers only). It is cleared just before `splash_boot()`, so on-screen boot logging ends at "boot: splash start".
-- `kapi_log()` (`core/kapi.c`) forwards module logging to `klog`.
-- `/dev/kmsg` (vfile device 13, `fs/vfs.c`): writes are split at newlines, non-printable bytes dropped, and each line goes to `klog`. So `prog > /dev/kmsg` sends a program's output to the serial port (the `qemu` group uses this for `musltest`; `user/musl/smptest.c` writes its reports there).
+- `g_klog_hook`: early in `kmain` it points at `bootlog_line()` (`core/init/main.c`), which also draws each log line on screen from y = 200 (32-bpp framebuffers only). It is cleared just before `splash_boot()`, so on-screen boot logging ends at "boot: splash start".
+- `kapi_log()` (`sys/native/kapi.c`) forwards module logging to `klog`.
+- `/dev/kmsg` (vfile device 13, `fs/vfs/vfs.c`): writes are split at newlines, non-printable bytes dropped, and each line goes to `klog`. So `prog > /dev/kmsg` sends a program's output to the serial port (the `qemu` group uses this for `musltest`; `usr/musl/smptest.c` writes its reports there).
 
-Boot lines (in order, `init/main.c`): `boot: kmain entered, fb ok`, `boot: heap ok`, memory-map lines (`memory: firmware map received...`, `memory: WARNING the firmware uses memory inside a kernel area - run memmap`), `boot: frame pool ON (>=272MB RAM)` / `OFF`, `boot: pci scanned`, `boot: stopped DMA on devices...`, `boot: windows/fs/disk/vfs/term ok`, `boot: pic+pit ok`, timer lines (`timers: clock = ...`), `boot: no PS/2 controller...` or `boot: ps2 mouse ok`, `usb: ... xHCI controller(s) found`, `boot: xhci probe done`, `touchpad: ...`, `boot: touchpad probe done`, `acpi: ...`, `boot: ACPI AML done`, `boot: splash start/done`, `boot: integrity check done`, `boot: live_init start/done`, `boot: first frame presented`, possibly `boot: timer interrupts are not arriving - using a polled timer`, `smp: ...`, and finally `boot: interrupts on, entering main loop`.
+Boot lines (in order, `core/init/main.c`): `boot: kmain entered, fb ok`, `boot: heap ok`, memory-map lines (`memory: firmware map received...`, `memory: WARNING the firmware uses memory inside a kernel area - run memmap`), `boot: frame pool ON (>=272MB RAM)` / `OFF`, `boot: pci scanned`, `boot: stopped DMA on devices...`, `boot: windows/fs/disk/vfs/term ok`, `boot: pic+pit ok`, timer lines (`timers: clock = ...`), `boot: no PS/2 controller...` or `boot: ps2 mouse ok`, `usb: ... xHCI controller(s) found`, `boot: xhci probe done`, `touchpad: ...`, `boot: touchpad probe done`, `acpi: ...`, `boot: ACPI AML done`, `boot: splash start/done`, `boot: integrity check done`, `boot: live_init start/done`, `boot: first frame presented`, possibly `boot: timer interrupts are not arriving - using a polled timer`, `smp: ...`, and finally `boot: interrupts on, entering main loop`.
 
 Runtime lines. `cmd: <line>` for every live-terminal command (`shell/commands.c`), `live: job took the terminal` / `live: job finished, prompt back`, `nvx4: mounted, files=N` / `nvx4: mount failed: ...`, `rootfs: ...`, `ntfs: ...`, `usb: ...`, `acpi: power button pressed, shutting down`, `power: power off did not take effect`.
 
 Heartbeat. Every 500 ticks (5 s) the main loop logs `alive: main loop running` (or `... (live)` in the live terminal). If the screen freezes but `alive:` lines continue, the main loop is fine and the problem is drawing or input; if they stop, the last line shows where it hung (old doc section 13).
 
-The BIOS loader mirrors its own text to COM1 at 115200 8N1 too (`bootloader/README.md`).
+The BIOS loader mirrors its own text to COM1 at 115200 8N1 too (`boot/README.md`).
 
 ---
 
-### 12.6 Panic and the Red Screen of Death (`kernel/core/panic.c`)
+### 12.6 Panic and the Red Screen of Death (`core/panic.c`)
 
 `panic(regs_t* r, const char* msg)`:
 1. `smp_halt_others()` sends the halt IPI (`IPI_HALT`, `0xF2`) to the other cores; interrupts off.
@@ -9230,9 +9186,9 @@ The BIOS loader mirrors its own text to COM1 at 115200 8N1 too (`bootloader/READ
 4. With a register frame for an exception (`vector < 32`): `KERNEL PANIC - <name> (vector N)` from the `EXC[32]` table, `error=`, `RIP=`, `RSP=`, `RFLAGS=` and all 16 general registers. Without one: `KERNEL PANIC` and `msg`.
 5. `blit_all()` and halt forever. It does not write to the serial log, so the last `klog` line before the RSOD is the last thing on COM1.
 
-Who calls it: `isr_body` (`arch/x86_64/interrupts.c`) for a CPU exception in kernel mode, after `vm_user_pf` had a chance to resolve a page fault; exceptions in user mode go to `jc_fault` instead, which turns the vector into a signal (SIGFPE 8, SIGILL 4, SIGTRAP 5, else SIGSEGV 11) and kills the process unless it has a handler. The shell command `panic` and Settings' crash test call it deliberately. Double faults run on their own IST stack and show the crash screen; NMIs are ignored (old doc, Linux ABI "Safety").
+Who calls it: `isr_body` (`arch/x86_64/interrupts/interrupts.c`) for a CPU exception in kernel mode, after `vm_user_pf` had a chance to resolve a page fault; exceptions in user mode go to `jc_fault` instead, which turns the vector into a signal (SIGFPE 8, SIGILL 4, SIGTRAP 5, else SIGSEGV 11) and kills the process unless it has a handler. The shell command `panic` and Settings' crash test call it deliberately. Double faults run on their own IST stack and show the crash screen; NMIs are ignored (old doc, Linux ABI "Safety").
 
-A separate "WRONG VERSION" screen exists in `init/main.c` for a failed build-signature check, but `g_sig_enforce = 0`: `sig_self_check()` only reports (see `kcheck`).
+A separate "WRONG VERSION" screen exists in `core/init/main.c` for a failed build-signature check, but `g_sig_enforce = 0`: `sig_self_check()` only reports (see `kcheck`).
 
 ---
 
@@ -9242,12 +9198,12 @@ All in `shell/commands.c` (`run_cmd_one`), some implemented elsewhere:
 
 | Command | What it shows / does |
 |---|---|
-| `memmap` (`init/installer.c`) | firmware memory map (UEFI loader only, regions below 4 GB), each kernel area (boot info, kernel image, USB/disk buffers, page tables + .bss, DMA arena, page pool, module area, heap) with `ok`, `OVERLAPS <type>` or `skips`; heap placement; devices whose DMA was stopped; DMA arena and free frames |
-| `memtest` (`init/installer.c`) | walks heap block headers (`HBLK_MAGIC`), then fills free DMA arena, page pool, module area and up to 16 x 16 MB heap blocks with an address pattern, re-reads, waits 3 s and reads again; reports words that did not hold and words "changed by something else within 3 s" (leftover device DMA) |
-| `kcheck` (`init/installer.c`) | build version, size stamp, boot-image snapshot vs. its own hashes (code / whole file MATCHES/DIFFERS), and up to 12 code pages changed in memory since boot |
+| `memmap` (`core/init/installer.c`) | firmware memory map (UEFI loader only, regions below 4 GB), each kernel area (boot info, kernel image, USB/disk buffers, page tables + .bss, DMA arena, page pool, module area, heap) with `ok`, `OVERLAPS <type>` or `skips`; heap placement; devices whose DMA was stopped; DMA arena and free frames |
+| `memtest` (`core/init/installer.c`) | walks heap block headers (`HBLK_MAGIC`), then fills free DMA arena, page pool, module area and up to 16 x 16 MB heap blocks with an address pattern, re-reads, waits 3 s and reads again; reports words that did not hold and words "changed by something else within 3 s" (leftover device DMA) |
+| `kcheck` (`core/init/installer.c`) | build version, size stamp, boot-image snapshot vs. its own hashes (code / whole file MATCHES/DIFFERS), and up to 12 code pages changed in memory since boot |
 | `timers` / `timertest` | clock source, TSC frequency and reference used, HPET address/frequency/width, LAPIC timer rate and interrupt count, uptime by clock vs. ticks / 1-s cross-check of PIT, HPET and TSC (ppm), five 5-ms APIC one-shots, 250 us delay |
 | `usbinfo`, `usb`/`xhci` | USB state; `usb` rescans all controllers then runs `usbinfo` |
-| `tpinfo` (`drivers/input/touchpad.c`), `tpinfo scan`, `tpdump` | ACPI touchpad candidates with I2C address, controller, speed and GPIO pin; DesignWare controllers; ELAN PS/2 state and packet counters; the touchpad's protocol, layout and last gesture, or the stage/abort code of the last failed try |
+| `tpinfo` (`drivers/input/touchpad/touchpad.c`), `tpinfo scan`, `tpdump` | ACPI touchpad candidates with I2C address, controller, speed and GPIO pin; DesignWare controllers; ELAN PS/2 state and packet counters; the touchpad's protocol, layout and last gesture, or the stage/abort code of the last failed try |
 | `smp`, `smp on`, `smp off`, `smpstart` | per-core table; start/park the other cores (`/etc/smp`) |
 | `cores`/`cpu`, `cpuid` | CPU brand and core information |
 | `pci`, `disks`/`lsblk`, `mem`, `slabinfo`, `bcstat`/`bufcache` | PCI list, disks, memory, slab caches, buffer-cache hit rate |
@@ -9271,7 +9227,7 @@ QEMU (tested configuration). The only scripted run is `g_qemu` (12.2): `-m 1024 
 - Networking: QEMU builds without slirp have no user-mode network. Use a tap device (`-netdev tap,id=n0,ifname=nvxtap0,script=no,downscript=no -device e1000,netdev=n0`); `tools/tests/net/netpeer.py` sets one up together with test servers.
 - Old doc section 11.2: "use the AHCI + xHCI + standard-VGA/virtio-gpu combination the drivers already handle"; VirtIO-net/blk are also probed (old doc v8.90).
 
-VirtualBox. Boot the hybrid ISO as a CD (the El Torito EFI entry is the "CD/DVD/VirtualBox" path in `emulate.py`), or wrap a raw disk image as a VDI with `kernel/tools/mkvdi.py RAW VDI [MB]` (fixed VDI, attaches without `VBoxManage convert`). Serial log: Settings > Serial Ports > Port 1 > Enable, mode "Raw File" (old doc section 13).
+VirtualBox. Boot the hybrid ISO as a CD (the El Torito EFI entry is the "CD/DVD/VirtualBox" path in `emulate.py`), or wrap a raw disk image as a VDI with `tools/mkvdi.py RAW VDI [MB]` (fixed VDI, attaches without `VBoxManage convert`). Serial log: Settings > Serial Ports > Port 1 > Enable, mode "Raw File" (old doc section 13).
 
 ---
 
@@ -9319,25 +9275,25 @@ VirtualBox. Boot the hybrid ISO as a CD (the El Torito EFI entry is the "CD/DVD/
 | `JS_BLOCK` (-1000) | return value of pipe/device reads and writes meaning "would block, reschedule" (`interrupts.c`, `jobs.c`, `unixfs.c`, `sound.c`) |
 | `jc_*` | job control / scheduler (`jc_fault`, `jc_pick`, `jc_resume`, `jc_step`) |
 | `g_proc[MAXPROC]` | older ring-3 demo scheduler (`core/proc/sched.c`, `MAXPROC` 6) |
-| `FS[FS_N]` | in-memory files, `FsFile`, `FS_N` 1024, `FS_CAP` 1 GB (`fs/ramfs.c`) |
-| `DT[DN_MAX]` | directories, `DNode`, `DN_MAX` 512 (`fs/dirtree.c`) |
-| `g_lk[NLINKS]` | extra hard links, 256 (`fs/unixfs.c`) |
-| `g_vf[VMAXOPEN]` | open-file (vfile) slots, 1024 (`fs/ramfs.c`) |
-| NVX2 / NVX3 / NVX4 | on-disk formats: before v8.13, v8.13-v8.90, from v8.91 (`fs/nvx4.c`) |
+| `FS[FS_N]` | in-memory files, `FsFile`, `FS_N` 1024, `FS_CAP` 1 GB (`fs/vfs/ramfs.c`) |
+| `DT[DN_MAX]` | directories, `DNode`, `DN_MAX` 512 (`fs/vfs/dirtree.c`) |
+| `g_lk[NLINKS]` | extra hard links, 256 (`fs/vfs/unixfs.c`) |
+| `g_vf[VMAXOPEN]` | open-file (vfile) slots, 1024 (`fs/vfs/ramfs.c`) |
+| NVX2 / NVX3 / NVX4 | on-disk formats: before v8.13, v8.13-v8.90, from v8.91 (`fs/nvx/nvx4.c`) |
 | `g_n4`, `g_n4_err`, `g_nvx_note` | NVX4 mounted flag, last error, mount/convert note |
-| BKL, `g_bkl` | big kernel lock: recursive ticket lock `bkl_lock/unlock/drop/take/yield` (`arch/x86_64/percpu.c`) |
+| BKL, `g_bkl` | big kernel lock: recursive ticket lock `bkl_lock/unlock/drop/take/yield` (`arch/x86_64/cpu/percpu.c`) |
 | `struct pcpu`, `g_cpu[NCPU]`, `PCPU` | per-CPU state, `NCPU` 16, pointer in GS base |
-| `PF_BASE/PF_TOP` | page-frame pool `0x0C000000-0x0E000000` (`mm/pmm_vmm.c`) |
+| `PF_BASE/PF_TOP` | page-frame pool `0x0C000000-0x0E000000` (`mem/pmm_vmm.c`) |
 | `DMA_ARENA_BASE` | `0x0B000000` |
 | `PTE_LAZY` / `PTE_COW` | software PTE bits 0x400 / 0x200 |
-| `HBLK_MAGIC` | heap block header magic `0x4E56484B` (`mm/heap.c`) |
+| `HBLK_MAGIC` | heap block header magic `0x4E56484B` (`mem/heap.c`) |
 | `HR_LAPIC_VEC` | 0x40, local APIC timer vector |
 | `g_ticks` | 100 Hz PIT tick counter |
 | `g_state`, `ST_*` | top-level state machine (`ST_LIVE`, `ST_DESKTOP`, ...) |
 | `FBB`, `SCENE`, `W/H/PITCHB` | framebuffer, off-screen scene buffer, geometry |
 | `NVX64SIG` | build-signature block checked by `sig_self_check`, `kcheck`, `emulate.py` |
 | `MODS` | separately compiled driver modules (`build.sh`) |
-| `kapi_*` | module API (`include/kapi.h`, `core/kapi.c`) |
+| `kapi_*` | module API (`include/kapi.h`, `sys/native/kapi.c`) |
 | `hk_*` / `fk_*` | host accessors in `hk_glue.c` / `fs_glue.c` |
 | `xhc_t`, `xhid_*`, `xhub_*` | xHCI controller state, HID entries, hub code |
 
@@ -9345,13 +9301,13 @@ VirtualBox. Boot the hybrid ISO as a CD (the El Torito EFI entry is the "CD/DVD/
 
 ### 12.11 Version history
 
-Compiled from version tags in the old `ARCHITECTURE.md` and in the sources. Only versions with evidence are listed; the current version string is `9.29` (`core/buildsig.c`, `fs/vfs.c` `/proc/version`, `core/linux.c` `uname`, `/sys/kernel/osrelease`).
+Compiled from version tags in the old `ARCHITECTURE.md` and in the sources. Only versions with evidence are listed; the current version string is `9.29` (`core/buildsig.c`, `fs/vfs/vfs.c` `/proc/version`, `sys/linux/linux.c` `uname`, `/sys/kernel/osrelease`).
 
 | Version | Evidence | Change |
 |---|---|---|
-| v8.08 | `user/libc/src/legacy_posix.h` section headers | nvxlibc: more math, file/path helpers, crypto, general utilities |
-| v8.13 | `fs/dirtree.c` comment; old doc NVX4 "Conversion" | path-aware kernel file-management helpers; on-disk format NVX3 begins (NVX2 before) |
-| v8.38 | `core/syscall.c` comment, `shell/terminal.c` | identity, real-time and file-management syscalls |
+| v8.08 | `usr/libc/src/legacy_posix.h` section headers | nvxlibc: more math, file/path helpers, crypto, general utilities |
+| v8.13 | `fs/vfs/dirtree.c` comment; old doc NVX4 "Conversion" | path-aware kernel file-management helpers; on-disk format NVX3 begins (NVX2 before) |
+| v8.38 | `sys/native/syscall.c` comment, `shell/terminal.c` | identity, real-time and file-management syscalls |
 | (undated) | old doc "Linux system-call ABI and musl libc" | Linux `syscall` ABI and musl 1.2.6 static-PIE programs (`mhello`, `musltest`); already present when the v8.88 items below were added. No v8.87 tag exists in the old doc or code |
 | v8.88 | old doc, same section | file permissions via `perm_file`/`perm_dir`; `fs_drop_name`/`fs_slot_freed` deletion; name length limits and no "file name anywhere" lookup |
 | (undated) | old doc "Ported programs" | sqlite3 3.53.4, zlib 1.3.2, bzip2 1.0.8, XZ 5.8.4, zstd 1.5.7 via `tools/mcc`. No v8.89 tag found |
@@ -9364,7 +9320,7 @@ Compiled from version tags in the old `ARCHITECTURE.md` and in the sources. Only
 | v8.96 | this document, "What changed in v8.96" | The kernel is split into 104 separately compiled units with interface headers under `include/nvx/`; incremental parallel builds with `tools/kbuild.py`; code-bearing `.h` files renamed to `.c` |
 | v8.97 | this document, "What changed in v8.97" | Threads and futexes, dynamic linking with the shared musl, an escape-sequence terminal with termios, interval timers, limits that scale with RAM, server sockets and loopback, BearSSL and `fetch` for HTTPS in programs, compressed embedded programs; `featest`, `dyntest` and the `fetch` checker group |
 | v8.98 to v9.07 | this document, "What changed in v8.98 to v9.07" | UEFI loader stops firmware DMA before copying the kernel; AHCI/NVMe bus-master order; 16 queued USB HID reads; classic taskbar, start menu and window frames; better CSS and images in the old browser |
-| v9.08 | this document, "What changed in v9.08" | Web engine in `web/` with QuickJS, the cookie jar in `net/cookies.c`, the `qjs`, `browse` and `desktop` commands, boot stack moved to `0x980000` and the kernel limit raised to 8 MiB (Part 13) |
+| v9.08 | this document, "What changed in v9.08" | Web engine in `web/` with QuickJS, the cookie jar in `net/http/cookies.c`, the `qjs`, `browse` and `desktop` commands, boot stack moved to `0x980000` and the kernel limit raised to 8 MiB (Part 13) |
 | v9.09 | this document, "What changed in v9.09" | Fix for a heap overflow in the web engine allocator that crashed the kernel in QuickJS |
 | v9.10 | this document, "What changed in v9.10" | contenteditable editing, Selection/Range, MutationObserver, Streams, oklch and other colour functions, CSS nesting, auto-margin centring fix, ellipsis, line-clamp, sticky |
 | v9.11 | this document, "What changed in v9.11" | FFmpeg and the `play` command, kernel image limit raised to 15 MiB, HD Audio response fix |
@@ -9391,7 +9347,7 @@ Compiled from version tags in the old `ARCHITECTURE.md` and in the sources. Only
 
 Since v9.08 the browser is a real layout engine with a full JavaScript runtime. This part describes it: how it is built and linked into the kernel, how the kernel talks to it, the HTML parser and DOM, the CSS cascade, layout (block, inline, floats, positioning, tables, flexbox and grid), painting and fonts, the QuickJS bindings and the JavaScript prelude, networking and the cookie jar, the browser window around it, the `qjs` command, and how to test and extend it.
 
-Paths are relative to `source/kernel/`. The engine lives in `web/`; the kernel side is `apps/webglue.c`, `apps/browser.c` and `net/cookies.c`.
+Paths are relative to the repository root. The engine lives in `web/`; the kernel side is `apps/internet/webglue.c`, `apps/internet/browser.c` and `net/http/cookies.c`.
 
 | File | Lines | Contents |
 |---|---|---|
@@ -9410,9 +9366,9 @@ Paths are relative to `source/kernel/`. The engine lives in `web/`; the kernel s
 | `web/js.c` | 1274 | QuickJS runtime, DOM bindings, timers, module loader |
 | `web/prelude.js` (to `web/prelude_gen.c`) | 895 | The browser API written in JavaScript on top of the bindings |
 | `web/engine.c` | 1209 | Images, scripts, navigation, forms, focus and editing, events, `nwe_entry` |
-| `apps/webglue.c` | 289 | Engine stack, HTTP client `nwk_fetch`, the `nwk_*` callbacks, console ring |
-| `net/cookies.c` | 454 | Cookie jar and `localStorage`/`sessionStorage`, both saved to disk |
-| `apps/browser.c` | 698 | The Browser window: tabs, toolbar, about: pages, input routing, image decoding for the engine |
+| `apps/internet/webglue.c` | 289 | Engine stack, HTTP client `nwk_fetch`, the `nwk_*` callbacks, console ring |
+| `net/http/cookies.c` | 454 | Cookie jar and `localStorage`/`sessionStorage`, both saved to disk |
+| `apps/internet/browser.c` | 698 | The Browser window: tabs, toolbar, about: pages, input routing, image decoding for the engine |
 | `third_party/quickjs/` | | QuickJS-ng, unmodified |
 | `tools/mkwebfont.py`, `tools/js2c.py`, `tools/webhost.c` | | Font converter, prelude embedder, host test harness |
 
@@ -9458,7 +9414,7 @@ The engine calls back into the kernel only through `nwk_*` functions: `nwk_fetch
 
 #### The engine stack
 
-`web_call(op, r)` in `apps/webglue.c` runs every op on a separate 2 MiB stack through the assembly trampoline `nwe_call_stack` (`arch/x86_64/stack_call.c`). QuickJS and the recursive layout code need more stack than the kernel's boot stack can spare. A guard (`g_in_engine`) refuses re-entry: if a callback such as a fetch pumps the GUI and something tries to call the engine again, `web_busy()` is true and the browser draws "Loading..." instead.
+`web_call(op, r)` in `apps/internet/webglue.c` runs every op on a separate 2 MiB stack through the assembly trampoline `nwe_call_stack` (`arch/x86_64/user/stack_call.c`). QuickJS and the recursive layout code need more stack than the kernel's boot stack can spare. A guard (`g_in_engine`) refuses re-entry: if a callback such as a fetch pumps the GUI and something tries to call the engine again, `web_busy()` is true and the browser draws "Loading..." instead.
 
 #### Failure handling
 
@@ -9573,7 +9529,7 @@ Tested with: React 19.2 (bundled todo app, state, effects, controlled inputs), j
 
 Binary data (v9.12): `N.fetch(url, method, body, ctype, bin)` returns the body as an `ArrayBuffer` when `bin` is true, and the body argument may be a string or any `ArrayBuffer`/typed array/`DataView` (read with `jbytes` in `js.c`). `fetch` always asks for bytes; `Response` keeps them in `_u8` and decodes text only for `text()`/`json()`. `XMLHttpRequest` asks for bytes when `responseType` is `arraybuffer` or `blob`. `Blob` keeps either a string or bytes. `TextDecoder` (UTF-8) and `TextEncoder` call the natives `utf8dec` and `utf8enc` instead of looping in JavaScript.
 
-### 13.9 Networking and the HTTP client (`apps/webglue.c`)
+### 13.9 Networking and the HTTP client (`apps/internet/webglue.c`)
 
 `nwk_fetch(url, method, ctype, body, blen, referer, resp)` is the only HTTP client the engine uses:
 
@@ -9586,7 +9542,7 @@ Binary data (v9.12): `N.fetch(url, method, body, ctype, bin)` returns the body a
 
 Typed addresses without a scheme try HTTPS first and fall back to HTTP.
 
-### 13.10 Cookies and web storage (`net/cookies.c`)
+### 13.10 Cookies and web storage (`net/http/cookies.c`)
 
 The jar holds up to 400 cookies (`CK_MAX`). For each cookie it keeps name, value (511 bytes), domain, path, expiry, creation time and the flags secure, HttpOnly, host-only and SameSite.
 
@@ -9602,9 +9558,9 @@ The jar holds up to 400 cookies (`CK_MAX`). For each cookie it keeps name, value
 
 Persistence. Cookies with an expiry are saved to `cookies.txt` in the user's file system (`fs_save_bin`), at most every 3 seconds while something changed. Session cookies live until reboot. `localStorage` (keyed by origin; 600 entries in total) is saved to `webstorage.txt` the same way; `sessionStorage` entries are kept in memory only.
 
-The old `ck_*` functions in `net/http.c` (used by the `http` command and the account code) are now wrappers around the same jar.
+The old `ck_*` functions in `net/http/http.c` (used by the `http` command and the account code) are now wrappers around the same jar.
 
-### 13.11 The Browser window (`apps/browser.c`)
+### 13.11 The Browser window (`apps/internet/browser.c`)
 
 The window keeps the toolbar from earlier versions (back, reload, bookmark star, address bar, Go, Save, Home, Find, and a new Cookies button) and up to 6 tabs. Switching tabs reloads the page of that tab.
 
@@ -9618,7 +9574,7 @@ The window keeps the toolbar from earlier versions (back, reload, bookmark star,
 
 Downloads (`Content-Disposition: attachment` or a file extension like `.zip`) go to Downloads, and a direct link to an image opens the image viewer. Network errors show an error page with the reason (DNS, connect, timeout, TLS).
 
-Input. Mouse moves send `MOVE` (hover styles, link cursor, status-bar URL); a click sends `DOWN` and `UP`; the wheel goes to `browser_wheel`; keys are mapped by `map_key` (the kernel's arrow, Home, End, Page and Delete codes become `NWE_K_*`). `browser_tick` sends `TICK` from the main loop (`gui/input.c`) and asks for a redraw when the page changed.
+Input. Mouse moves send `MOVE` (hover styles, link cursor, status-bar URL); a click sends `DOWN` and `UP`; the wheel goes to `browser_wheel`; keys are mapped by `map_key` (the kernel's arrow, Home, End, Page and Delete codes become `NWE_K_*`). `browser_tick` sends `TICK` from the main loop (`graphics/ui/input.c`) and asks for a redraw when the page changed.
 
 Shell. `browse <url>` (or `www <url>`) opens the browser at a URL; in the live terminal it first switches to the desktop. `desktop` switches from the live terminal to the desktop without opening anything.
 
@@ -9676,7 +9632,7 @@ In QEMU. The test site used for v9.08 runs a small HTTP server on a tap device t
 
 - A new CSS property: add it to `PROPS` in `web/css.h`, parse it in `apply()` in `web/cssstyle.c`, add a field to `style` in `web/nwe.h`, and use it in layout or paint. If it is inherited, add it to the inheritance copy in `compute()`.
 - A new DOM method: if it needs engine internals, add a native function to the right table in `web/js.c`; otherwise write it in `web/prelude.js` (it is rebuilt by `build.sh`).
-- A new kernel service for the engine: add an `nwk_` function to `nwe_api.h`, implement it in `apps/webglue.c` (and a stub in `tools/webhost.c`), and remember that it runs on the engine stack.
+- A new kernel service for the engine: add an `nwk_` function to `nwe_api.h`, implement it in `apps/internet/webglue.c` (and a stub in `tools/webhost.c`), and remember that it runs on the engine stack.
 - After any change, render a few pages with `webhost` before booting: it is much faster than QEMU and errors print to the terminal.
 
 ### 13.17 Video and audio in the browser
@@ -9760,7 +9716,7 @@ On the host, a page with 18,000 rules that adds 60 `<style>` elements and forces
 
 ### 13.22 Crash containment
 
-The engine runs on its own 2 MiB stack (`g_estack`, `apps/webglue.c`). When a CPU exception happens in kernel mode, `isr_body` (`arch/x86_64/interrupts.c`) first calls `web_fault_redirect`. If the browser is inside an engine call and the faulting stack pointer is in the engine stack (or just below it, for an overflow), the interrupt frame is changed so that `iretq` lands in `web_fault_land` on a safe part of that stack. `web_fault_land` calls `nwe_fail`, which unwinds to the `setjmp` in `nwe_entry`; the engine marks the page dead and returns -1.
+The engine runs on its own 2 MiB stack (`g_estack`, `apps/internet/webglue.c`). When a CPU exception happens in kernel mode, `isr_body` (`arch/x86_64/interrupts/interrupts.c`) first calls `web_fault_redirect`. If the browser is inside an engine call and the faulting stack pointer is in the engine stack (or just below it, for an overflow), the interrupt frame is changed so that `iretq` lands in `web_fault_land` on a safe part of that stack. `web_fault_land` calls `nwe_fail`, which unwinds to the `setjmp` in `nwe_entry`; the engine marks the page dead and returns -1.
 
 `web_call` then sets `g_web_failed`. `browser_tick` sees it and shows "This page crashed" (`browser_crashed`); the next load resets the engine. NMI, double fault and machine check are never redirected, and after 64 redirected faults the normal error screen is shown again, so a broken engine cannot loop forever.
 
@@ -9768,9 +9724,9 @@ The engine runs on its own 2 MiB stack (`g_estack`, `apps/webglue.c`). When a CP
 
 ### 13.23 YouTube player page
 
-Since v9.15 `yt_try` is no longer called, so YouTube addresses load the real site. The description below is kept for the code that is still in `apps/browser.c`.
+Since v9.15 `yt_try` is no longer called, so YouTube addresses load the real site. The description below is kept for the code that is still in `apps/internet/browser.c`.
 
-YouTube's desktop site needs far more JavaScript and layout than the engine handles, so `yt_try` (`apps/browser.c`) recognises watch addresses before any network request: `youtube.com`, `www.`, `m.`, `music.` and `youtube-nocookie.com` with `/watch?v=`, `/shorts/`, `/embed/` or `/live/`, and `youtu.be/ID`. The video ID (letters, digits, `-` and `_`) is put in a built-in page.
+YouTube's desktop site needs far more JavaScript and layout than the engine handles, so `yt_try` (`apps/internet/browser.c`) recognises watch addresses before any network request: `youtube.com`, `www.`, `m.`, `music.` and `youtube-nocookie.com` with `/watch?v=`, `/shorts/`, `/embed/` or `/live/`, and `youtu.be/ID`. The video ID (letters, digits, `-` and `_`) is put in a built-in page.
 
 The page's script posts to `https://www.youtube.com/youtubei/v1/player` with the clients `ANDROID_VR`, `IOS`, `TVHTML5_SIMPLY_EMBEDDED_PLAYER` and `WEB_EMBEDDED_PLAYER` in turn, and takes the first answer with `streamingData`. From `formats` (progressive streams that carry video and audio together) it picks the highest one up to 720p in MP4 or WebM, never AV1, sets it as the `src` of a `<video>`, and shows the title, channel, view count and the chosen quality. Playback goes through the media service and `play` with HTTP Range requests (section 13.17).
 
@@ -9781,7 +9737,7 @@ Limits: this could not be tested against youtube.com from the development machin
 | Limit | Value | Where |
 |---|---|---|
 | Script time | 15 s per call, plus 1 s per 40 KB of script source (at most 120 s more) | `arm`, `js_run_script` (`web/js.c`) |
-| Engine arena | first of 768, 512, 384, 256, 160, 96, 64, 32 MiB that the heap can give while keeping 320 MiB free | `nwe_arena_init` (`web/krt.c`), `nwk_alloc_arena` (`apps/webglue.c`) |
+| Engine arena | first of 768, 512, 384, 256, 160, 96, 64, 32 MiB that the heap can give while keeping 320 MiB free | `nwe_arena_init` (`web/krt.c`), `nwk_alloc_arena` (`apps/internet/webglue.c`) |
 | JavaScript heap | 70 percent of the arena | `js_init` |
 | JavaScript stack | 3 MiB | `JS_SetMaxStackSize` |
 | Engine stack | 6 MiB | `ESTACK_SZ` |
@@ -9796,9 +9752,9 @@ The engine still runs on the desktop thread. Instead of a second thread, the lon
 |---|---|
 | QuickJS interrupt handler (`interrupt_cb`, `web/js.c`) | on every check, rate-limited to one pump per 10 ms in `nwk_busy` |
 | `style_tree` (`web/cssstyle.c`) and `layout_blocks` (`web/layout.c`) | `nwe_check_stop` every 128 elements or blocks |
-| `net_poll` (`drivers/storage/ahci.c`) and `nd_poll` (`net/tcpip.c`) | `g_wait_pump` once per millisecond of waiting |
+| `net_poll` (`drivers/storage/ahci.c`) and `nd_poll` (`net/stack/tcpip.c`) | `g_wait_pump` once per millisecond of waiting |
 
-`busy_pump` (`gui/desktop.c`) polls USB mice, takes the PS/2 movement accumulated by the interrupt handler, moves the pointer with the same acceleration as the desktop and redraws only the pointer (`present_cursor`). Button presses are left for the main loop. It does nothing outside the desktop and is not re-entered.
+`busy_pump` (`graphics/ui/desktop.c`) polls USB mice, takes the PS/2 movement accumulated by the interrupt handler, moves the pointer with the same acceleration as the desktop and redraws only the pointer (`present_cursor`). Button presses are left for the main loop. It does nothing outside the desktop and is not re-entered.
 
 If Esc is held while one engine call has been running for more than 1.5 seconds, `nwk_busy` returns 1. The interrupt handler then stops the running script and sets `g_nwe_user_stop`; in style or layout `nwe_check_stop` calls `nwe_fail` directly. `nwe_entry` unwinds, and the browser shows "This page stopped" (section 13.22).
 
@@ -9832,7 +9788,7 @@ After the fixes the header, hero, buttons, SVG logo with its text, separator and
 
 `scrollHeight` returns the larger of the content height plus padding and the box height minus borders.
 
-The new tab page (`g_page == 0` in `apps/browser.c`) is drawn by the browser itself, not by the web engine. "I'm Feeling Lucky" opens a random Wikipedia article. Up to 16 clickable areas are kept per page.
+The new tab page (`g_page == 0` in `apps/internet/browser.c`) is drawn by the browser itself, not by the web engine. "I'm Feeling Lucky" opens a random Wikipedia article. Up to 16 clickable areas are kept per page.
 
 ### 13.29 Faster loading and form controls
 
@@ -9848,6 +9804,6 @@ The host harness now takes `WH_ACT`, a list of actions separated by semicolons: 
 | Extra for a large script | 1 s per 200 KB, at most 8 s | `js_run_script` |
 | All page scripts during a load | 8 s, counted from `js_init`; later scripts are skipped | `g_load_js_ms` |
 | Forced layouts for scripts | 60 ms per second | `js_flush_n` |
-| Pointer pump during network waits | once per 10 ms tick | `busy_pump` (`gui/desktop.c`) |
+| Pointer pump during network waits | once per 10 ms tick | `busy_pump` (`graphics/ui/desktop.c`) |
 
-`nwk_fetch` (`apps/webglue.c`) adds up the time and number of requests in `g_fetch_ms` and `g_fetch_n`. `browser_go` reports the time to fetch the page, the files fetched while the engine built it, and the engine's own time. The report also goes to the kernel log.
+`nwk_fetch` (`apps/internet/webglue.c`) adds up the time and number of requests in `g_fetch_ms` and `g_fetch_n`. `browser_go` reports the time to fetch the page, the files fetched while the engine built it, and the engine's own time. The report also goes to the kernel log.

@@ -2,7 +2,7 @@
 
 Since v9.08 the browser is a real layout engine with a full JavaScript runtime. This part describes it: how it is built and linked into the kernel, how the kernel talks to it, the HTML parser and DOM, the CSS cascade, layout (block, inline, floats, positioning, tables, flexbox and grid), painting and fonts, the QuickJS bindings and the JavaScript prelude, networking and the cookie jar, the browser window around it, the `qjs` command, and how to test and extend it.
 
-Paths are relative to `source/kernel/`. The engine lives in `web/`; the kernel side is `apps/webglue.c`, `apps/browser.c` and `net/cookies.c`.
+Paths are relative to the repository root. The engine lives in `web/`; the kernel side is `apps/internet/webglue.c`, `apps/internet/browser.c` and `net/http/cookies.c`.
 
 | File | Lines | Contents |
 |---|---|---|
@@ -21,9 +21,9 @@ Paths are relative to `source/kernel/`. The engine lives in `web/`; the kernel s
 | `web/js.c` | 1274 | QuickJS runtime, DOM bindings, timers, module loader |
 | `web/prelude.js` (to `web/prelude_gen.c`) | 895 | The browser API written in JavaScript on top of the bindings |
 | `web/engine.c` | 1209 | Images, scripts, navigation, forms, focus and editing, events, `nwe_entry` |
-| `apps/webglue.c` | 289 | Engine stack, HTTP client `nwk_fetch`, the `nwk_*` callbacks, console ring |
-| `net/cookies.c` | 454 | Cookie jar and `localStorage`/`sessionStorage`, both saved to disk |
-| `apps/browser.c` | 698 | The Browser window: tabs, toolbar, about: pages, input routing, image decoding for the engine |
+| `apps/internet/webglue.c` | 289 | Engine stack, HTTP client `nwk_fetch`, the `nwk_*` callbacks, console ring |
+| `net/http/cookies.c` | 454 | Cookie jar and `localStorage`/`sessionStorage`, both saved to disk |
+| `apps/internet/browser.c` | 698 | The Browser window: tabs, toolbar, about: pages, input routing, image decoding for the engine |
 | `third_party/quickjs/` | | QuickJS-ng, unmodified |
 | `tools/mkwebfont.py`, `tools/js2c.py`, `tools/webhost.c` | | Font converter, prelude embedder, host test harness |
 
@@ -69,7 +69,7 @@ The engine calls back into the kernel only through `nwk_*` functions: `nwk_fetch
 
 ### The engine stack
 
-`web_call(op, r)` in `apps/webglue.c` runs every op on a separate 2 MiB stack through the assembly trampoline `nwe_call_stack` (`arch/x86_64/stack_call.c`). QuickJS and the recursive layout code need more stack than the kernel's boot stack can spare. A guard (`g_in_engine`) refuses re-entry: if a callback such as a fetch pumps the GUI and something tries to call the engine again, `web_busy()` is true and the browser draws "Loading..." instead.
+`web_call(op, r)` in `apps/internet/webglue.c` runs every op on a separate 2 MiB stack through the assembly trampoline `nwe_call_stack` (`arch/x86_64/user/stack_call.c`). QuickJS and the recursive layout code need more stack than the kernel's boot stack can spare. A guard (`g_in_engine`) refuses re-entry: if a callback such as a fetch pumps the GUI and something tries to call the engine again, `web_busy()` is true and the browser draws "Loading..." instead.
 
 ### Failure handling
 
@@ -184,7 +184,7 @@ Tested with: React 19.2 (bundled todo app, state, effects, controlled inputs), j
 
 Binary data (v9.12): `N.fetch(url, method, body, ctype, bin)` returns the body as an `ArrayBuffer` when `bin` is true, and the body argument may be a string or any `ArrayBuffer`/typed array/`DataView` (read with `jbytes` in `js.c`). `fetch` always asks for bytes; `Response` keeps them in `_u8` and decodes text only for `text()`/`json()`. `XMLHttpRequest` asks for bytes when `responseType` is `arraybuffer` or `blob`. `Blob` keeps either a string or bytes. `TextDecoder` (UTF-8) and `TextEncoder` call the natives `utf8dec` and `utf8enc` instead of looping in JavaScript.
 
-## 13.9 Networking and the HTTP client (`apps/webglue.c`)
+## 13.9 Networking and the HTTP client (`apps/internet/webglue.c`)
 
 `nwk_fetch(url, method, ctype, body, blen, referer, resp)` is the only HTTP client the engine uses:
 
@@ -197,7 +197,7 @@ Binary data (v9.12): `N.fetch(url, method, body, ctype, bin)` returns the body a
 
 Typed addresses without a scheme try HTTPS first and fall back to HTTP.
 
-## 13.10 Cookies and web storage (`net/cookies.c`)
+## 13.10 Cookies and web storage (`net/http/cookies.c`)
 
 The jar holds up to 400 cookies (`CK_MAX`). For each cookie it keeps name, value (511 bytes), domain, path, expiry, creation time and the flags secure, HttpOnly, host-only and SameSite.
 
@@ -213,9 +213,9 @@ The jar holds up to 400 cookies (`CK_MAX`). For each cookie it keeps name, value
 
 Persistence. Cookies with an expiry are saved to `cookies.txt` in the user's file system (`fs_save_bin`), at most every 3 seconds while something changed. Session cookies live until reboot. `localStorage` (keyed by origin; 600 entries in total) is saved to `webstorage.txt` the same way; `sessionStorage` entries are kept in memory only.
 
-The old `ck_*` functions in `net/http.c` (used by the `http` command and the account code) are now wrappers around the same jar.
+The old `ck_*` functions in `net/http/http.c` (used by the `http` command and the account code) are now wrappers around the same jar.
 
-## 13.11 The Browser window (`apps/browser.c`)
+## 13.11 The Browser window (`apps/internet/browser.c`)
 
 The window keeps the toolbar from earlier versions (back, reload, bookmark star, address bar, Go, Save, Home, Find, and a new Cookies button) and up to 6 tabs. Switching tabs reloads the page of that tab.
 
@@ -229,7 +229,7 @@ The window keeps the toolbar from earlier versions (back, reload, bookmark star,
 
 Downloads (`Content-Disposition: attachment` or a file extension like `.zip`) go to Downloads, and a direct link to an image opens the image viewer. Network errors show an error page with the reason (DNS, connect, timeout, TLS).
 
-Input. Mouse moves send `MOVE` (hover styles, link cursor, status-bar URL); a click sends `DOWN` and `UP`; the wheel goes to `browser_wheel`; keys are mapped by `map_key` (the kernel's arrow, Home, End, Page and Delete codes become `NWE_K_*`). `browser_tick` sends `TICK` from the main loop (`gui/input.c`) and asks for a redraw when the page changed.
+Input. Mouse moves send `MOVE` (hover styles, link cursor, status-bar URL); a click sends `DOWN` and `UP`; the wheel goes to `browser_wheel`; keys are mapped by `map_key` (the kernel's arrow, Home, End, Page and Delete codes become `NWE_K_*`). `browser_tick` sends `TICK` from the main loop (`graphics/ui/input.c`) and asks for a redraw when the page changed.
 
 Shell. `browse <url>` (or `www <url>`) opens the browser at a URL; in the live terminal it first switches to the desktop. `desktop` switches from the live terminal to the desktop without opening anything.
 
@@ -287,7 +287,7 @@ In QEMU. The test site used for v9.08 runs a small HTTP server on a tap device t
 
 - A new CSS property: add it to `PROPS` in `web/css.h`, parse it in `apply()` in `web/cssstyle.c`, add a field to `style` in `web/nwe.h`, and use it in layout or paint. If it is inherited, add it to the inheritance copy in `compute()`.
 - A new DOM method: if it needs engine internals, add a native function to the right table in `web/js.c`; otherwise write it in `web/prelude.js` (it is rebuilt by `build.sh`).
-- A new kernel service for the engine: add an `nwk_` function to `nwe_api.h`, implement it in `apps/webglue.c` (and a stub in `tools/webhost.c`), and remember that it runs on the engine stack.
+- A new kernel service for the engine: add an `nwk_` function to `nwe_api.h`, implement it in `apps/internet/webglue.c` (and a stub in `tools/webhost.c`), and remember that it runs on the engine stack.
 - After any change, render a few pages with `webhost` before booting: it is much faster than QEMU and errors print to the terminal.
 
 ## 13.17 Video and audio in the browser
@@ -371,7 +371,7 @@ On the host, a page with 18,000 rules that adds 60 `<style>` elements and forces
 
 ## 13.22 Crash containment
 
-The engine runs on its own 2 MiB stack (`g_estack`, `apps/webglue.c`). When a CPU exception happens in kernel mode, `isr_body` (`arch/x86_64/interrupts.c`) first calls `web_fault_redirect`. If the browser is inside an engine call and the faulting stack pointer is in the engine stack (or just below it, for an overflow), the interrupt frame is changed so that `iretq` lands in `web_fault_land` on a safe part of that stack. `web_fault_land` calls `nwe_fail`, which unwinds to the `setjmp` in `nwe_entry`; the engine marks the page dead and returns -1.
+The engine runs on its own 2 MiB stack (`g_estack`, `apps/internet/webglue.c`). When a CPU exception happens in kernel mode, `isr_body` (`arch/x86_64/interrupts/interrupts.c`) first calls `web_fault_redirect`. If the browser is inside an engine call and the faulting stack pointer is in the engine stack (or just below it, for an overflow), the interrupt frame is changed so that `iretq` lands in `web_fault_land` on a safe part of that stack. `web_fault_land` calls `nwe_fail`, which unwinds to the `setjmp` in `nwe_entry`; the engine marks the page dead and returns -1.
 
 `web_call` then sets `g_web_failed`. `browser_tick` sees it and shows "This page crashed" (`browser_crashed`); the next load resets the engine. NMI, double fault and machine check are never redirected, and after 64 redirected faults the normal error screen is shown again, so a broken engine cannot loop forever.
 
@@ -379,9 +379,9 @@ The engine runs on its own 2 MiB stack (`g_estack`, `apps/webglue.c`). When a CP
 
 ## 13.23 YouTube player page
 
-Since v9.15 `yt_try` is no longer called, so YouTube addresses load the real site. The description below is kept for the code that is still in `apps/browser.c`.
+Since v9.15 `yt_try` is no longer called, so YouTube addresses load the real site. The description below is kept for the code that is still in `apps/internet/browser.c`.
 
-YouTube's desktop site needs far more JavaScript and layout than the engine handles, so `yt_try` (`apps/browser.c`) recognises watch addresses before any network request: `youtube.com`, `www.`, `m.`, `music.` and `youtube-nocookie.com` with `/watch?v=`, `/shorts/`, `/embed/` or `/live/`, and `youtu.be/ID`. The video ID (letters, digits, `-` and `_`) is put in a built-in page.
+YouTube's desktop site needs far more JavaScript and layout than the engine handles, so `yt_try` (`apps/internet/browser.c`) recognises watch addresses before any network request: `youtube.com`, `www.`, `m.`, `music.` and `youtube-nocookie.com` with `/watch?v=`, `/shorts/`, `/embed/` or `/live/`, and `youtu.be/ID`. The video ID (letters, digits, `-` and `_`) is put in a built-in page.
 
 The page's script posts to `https://www.youtube.com/youtubei/v1/player` with the clients `ANDROID_VR`, `IOS`, `TVHTML5_SIMPLY_EMBEDDED_PLAYER` and `WEB_EMBEDDED_PLAYER` in turn, and takes the first answer with `streamingData`. From `formats` (progressive streams that carry video and audio together) it picks the highest one up to 720p in MP4 or WebM, never AV1, sets it as the `src` of a `<video>`, and shows the title, channel, view count and the chosen quality. Playback goes through the media service and `play` with HTTP Range requests (section 13.17).
 
@@ -392,7 +392,7 @@ Limits: this could not be tested against youtube.com from the development machin
 | Limit | Value | Where |
 |---|---|---|
 | Script time | 15 s per call, plus 1 s per 40 KB of script source (at most 120 s more) | `arm`, `js_run_script` (`web/js.c`) |
-| Engine arena | first of 768, 512, 384, 256, 160, 96, 64, 32 MiB that the heap can give while keeping 320 MiB free | `nwe_arena_init` (`web/krt.c`), `nwk_alloc_arena` (`apps/webglue.c`) |
+| Engine arena | first of 768, 512, 384, 256, 160, 96, 64, 32 MiB that the heap can give while keeping 320 MiB free | `nwe_arena_init` (`web/krt.c`), `nwk_alloc_arena` (`apps/internet/webglue.c`) |
 | JavaScript heap | 70 percent of the arena | `js_init` |
 | JavaScript stack | 3 MiB | `JS_SetMaxStackSize` |
 | Engine stack | 6 MiB | `ESTACK_SZ` |
@@ -407,9 +407,9 @@ The engine still runs on the desktop thread. Instead of a second thread, the lon
 |---|---|
 | QuickJS interrupt handler (`interrupt_cb`, `web/js.c`) | on every check, rate-limited to one pump per 10 ms in `nwk_busy` |
 | `style_tree` (`web/cssstyle.c`) and `layout_blocks` (`web/layout.c`) | `nwe_check_stop` every 128 elements or blocks |
-| `net_poll` (`drivers/storage/ahci.c`) and `nd_poll` (`net/tcpip.c`) | `g_wait_pump` once per millisecond of waiting |
+| `net_poll` (`drivers/storage/ahci.c`) and `nd_poll` (`net/stack/tcpip.c`) | `g_wait_pump` once per millisecond of waiting |
 
-`busy_pump` (`gui/desktop.c`) polls USB mice, takes the PS/2 movement accumulated by the interrupt handler, moves the pointer with the same acceleration as the desktop and redraws only the pointer (`present_cursor`). Button presses are left for the main loop. It does nothing outside the desktop and is not re-entered.
+`busy_pump` (`graphics/ui/desktop.c`) polls USB mice, takes the PS/2 movement accumulated by the interrupt handler, moves the pointer with the same acceleration as the desktop and redraws only the pointer (`present_cursor`). Button presses are left for the main loop. It does nothing outside the desktop and is not re-entered.
 
 If Esc is held while one engine call has been running for more than 1.5 seconds, `nwk_busy` returns 1. The interrupt handler then stops the running script and sets `g_nwe_user_stop`; in style or layout `nwe_check_stop` calls `nwe_fail` directly. `nwe_entry` unwinds, and the browser shows "This page stopped" (section 13.22).
 
@@ -443,7 +443,7 @@ After the fixes the header, hero, buttons, SVG logo with its text, separator and
 
 `scrollHeight` returns the larger of the content height plus padding and the box height minus borders.
 
-The new tab page (`g_page == 0` in `apps/browser.c`) is drawn by the browser itself, not by the web engine. "I'm Feeling Lucky" opens a random Wikipedia article. Up to 16 clickable areas are kept per page.
+The new tab page (`g_page == 0` in `apps/internet/browser.c`) is drawn by the browser itself, not by the web engine. "I'm Feeling Lucky" opens a random Wikipedia article. Up to 16 clickable areas are kept per page.
 
 ## 13.29 Faster loading and form controls
 
@@ -459,6 +459,6 @@ The host harness now takes `WH_ACT`, a list of actions separated by semicolons: 
 | Extra for a large script | 1 s per 200 KB, at most 8 s | `js_run_script` |
 | All page scripts during a load | 8 s, counted from `js_init`; later scripts are skipped | `g_load_js_ms` |
 | Forced layouts for scripts | 60 ms per second | `js_flush_n` |
-| Pointer pump during network waits | once per 10 ms tick | `busy_pump` (`gui/desktop.c`) |
+| Pointer pump during network waits | once per 10 ms tick | `busy_pump` (`graphics/ui/desktop.c`) |
 
-`nwk_fetch` (`apps/webglue.c`) adds up the time and number of requests in `g_fetch_ms` and `g_fetch_n`. `browser_go` reports the time to fetch the page, the files fetched while the engine built it, and the engine's own time. The report also goes to the kernel log.
+`nwk_fetch` (`apps/internet/webglue.c`) adds up the time and number of requests in `g_fetch_ms` and `g_fetch_n`. `browser_go` reports the time to fetch the page, the files fetched while the engine built it, and the engine's own time. The report also goes to the kernel log.
