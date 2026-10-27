@@ -23,11 +23,6 @@ This repository contains kernel code, build scripts, and documentation to run No
 - Simple VGA text-mode output
 - Educational examples and documentation for OS concepts
 
-## Demo
-
-Add a screenshot or short GIF under `images/` and reference it here, for example:
-
-![Demo](images/demo.gif)
 
 ---
 
