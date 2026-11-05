@@ -3,5 +3,6 @@
 #include "types.h"
 int fat_mount(uint32_t partition_lba);
 int fat_read_file(const char* path, uint8_t* dest, uint32_t max, uint32_t* size_out);
+int fat_file_lba(const char* path, uint32_t* lba, uint32_t* size);
 int fat_readdir(int index, char* name, uint32_t* size, int* isdir);
 #endif

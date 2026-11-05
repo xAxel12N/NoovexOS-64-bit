@@ -1,10 +1,10 @@
 #include "include/nvx/base.h"
+#include "include/nvx/mem/pmm_vmm.h"
 #include "include/nvx/fs/vfs/sysroot.h"
 #include "include/nvx/fs/vfs/vfs.h"
 #include "include/nvx/mem/heap.h"
 extern int pz_inflate_raw(const unsigned char* src,int slen,unsigned char* out,int outcap);
 extern long xzk_decode_into(const u8* in,long n,u8* out,long cap);
-extern const u8 _binary_sysroot_bin_start[], _binary_sysroot_bin_end[];
 
 typedef struct { char name[120]; char tgt[120]; u32 mode, off, clen, ulen; } sr_v1;
 typedef struct { u32 type, off, clen, ulen; } sr_blk;
@@ -120,20 +120,63 @@ static const u8* ent_data(sr_ent* e){
     const u8* b=blk_get(l,e->blk); if(!b)return 0; return b+e->boff; }
 
 static int sr_addlayer(const char* tag,const u8* blob,u32 size,int owned){
-    int li=-1; for(int i=0;i<g_nly;i++) if(!g_ly[i].used){ li=i; break; }
-    if(li<0){ if(g_nly>=SR_MAXL)return -1; li=g_nly++; }
+    int base=sr_eq(tag,"base"), li=-1;
+    if(base){ if(g_nly>0&&g_ly[0].used)return -1; li=0; if(g_nly<1)g_nly=1; }
+    else { for(int i=1;i<g_nly;i++) if(!g_ly[i].used){ li=i; break; }
+        if(li<0){ if(g_nly<1)g_nly=1; if(g_nly>=SR_MAXL)return -1; li=g_nly++; } }
     sr_layer* l=&g_ly[li]; int k=0; for(;tag[k]&&k<63;k++)l->tag[k]=tag[k]; l->tag[k]=0;
     l->blob=blob; l->size=size; l->owned=owned; l->used=1; l->bcache=0; l->nblk=0;
     int ne0=g_ne;
     if(!sr_parse(li)){ g_ne=ne0; l->used=0; if(l->bcache)kfree(l->bcache); return -1; }
     return li; }
 
+#define SR_MOD SR_SLOT
+#define SR_MODMAX SR_SLOTMAX
+static u32 g_sr_tab[256]; static int g_sr_tabok;
+int g_sr_src;
+u32 sysroot_crc(const u8* p,u32 n){
+    if(!g_sr_tabok){ for(u32 i=0;i<256;i++){ u32 c=i; for(int k=0;k<8;k++)c=(c&1)?0xEDB88320u^(c>>1):c>>1; g_sr_tab[i]=c; } g_sr_tabok=1; }
+    u32 c=0xFFFFFFFFu; for(u32 i=0;i<n;i++)c=g_sr_tab[(c^p[i])&255]^(c>>8); return c^0xFFFFFFFFu; }
+extern const u8 nvx_kimg_hdr[] __attribute__((weak));
+u32 sysroot_want_crc(void){ if(!nvx_kimg_hdr)return 0; return *(volatile const u32*)(nvx_kimg_hdr+16); }
+u32 sysroot_want_size(void){ if(!nvx_kimg_hdr)return 0; return *(volatile const u32*)(nvx_kimg_hdr+20); }
+static u64 g_srb;
+static int sr_magic(u64 a){ return *(volatile const u32*)a==0x3253564Eu; }
+u64 sysroot_slot_base(void){
+    if(g_srb)return g_srb;
+    volatile u32* m=(volatile u32*)0x502CULL; volatile u64* a=(volatile u64*)0x5030ULL;
+    if(*m==0x49464555u&&*a>=0x100000ULL&&*a<0x100000000ULL&&!(*a&0xFFFULL)){ g_srb=*a; return g_srb; }
+    if(sr_magic(SR_MOD)){ g_srb=SR_MOD; return g_srb; }
+    if(mm_known()){ u64 best=0; for(int i=0;i<g_mmr_n;i++){ if(g_mmr[i].t!=7&&g_mmr[i].t!=4)continue; u64 s=g_mmr[i].s<SR_MOD?SR_MOD:g_mmr[i].s, e=g_mmr[i].e>0x100000000ULL?0x100000000ULL:g_mmr[i].e;
+            s=(s+0x1FFFFFULL)&~0x1FFFFFULL; for(u64 p=s;p+0x200000ULL<=e;p+=0x200000ULL) if(sr_magic(p)&&p>best)best=p; }
+        if(best){ g_srb=best; return g_srb; } }
+    return SR_MOD; }
+u64 sysroot_slot_end(void){ u32 sz=sysroot_want_size(); if(sz<8||sz>SR_MODMAX)return 0; return (sysroot_slot_base()+(u64)sz+0x1FFFFFULL)&~0x1FFFFFULL; }
+void sysroot_file_name(u32 crc,char* out){
+    const char* d="/sysroot/"; int o=0; while(*d)out[o++]=*d++;
+    for(int i=7;i>=0;i--){ u32 v=(crc>>(i*4))&15; out[o++]=(char)(v<10?'0'+v:'A'+v-10); }
+    out[o++]='.'; out[o++]='B'; out[o++]='I'; out[o++]='N'; out[o]=0; }
+int sysroot_base_ok(void){ return g_nly>0&&g_ly[0].used; }
+const u8* sysroot_base_blob(u32* size){ if(!sysroot_base_ok())return 0; if(size)*size=g_ly[0].size; return g_ly[0].blob; }
+int sysroot_set_base(const u8* blob,u32 size,int owned){
+    if(sysroot_base_ok())return 1;
+    if(!size||size!=sysroot_want_size()||sysroot_crc(blob,size)!=sysroot_want_crc())return 0;
+    if(sr_addlayer("base",blob,size,owned)<0)return 0;
+    sr_rebuild(); return 1; }
+
 void sysroot_init(void){
-    const u8* b=_binary_sysroot_bin_start; u32 sz=(u32)(_binary_sysroot_bin_end-_binary_sysroot_bin_start);
-    sr_addlayer("base",b,sz,0); sr_rebuild(); }
+    g_nly=1; g_ly[0].used=0; g_sr_src=0;
+    u32 sz=sysroot_want_size(), c=sysroot_want_crc();
+    extern unsigned long long heap_base;
+    extern unsigned long long heap_top; u64 sb=sysroot_slot_base(), se=sysroot_slot_end();
+    if(sz>=8&&sz<=SR_MODMAX&&(heap_base>=se||heap_top<=sb)){ const u8* m=(const u8*)sb; if(sysroot_crc(m,sz)==c&&sr_addlayer("base",m,sz,0)>=0)g_sr_src=1; }
+    { extern void klog(const char*); char t[96]; const char* p=g_sr_src?"linux files: found at 0x":"linux files: not found in memory, looked at 0x"; int k=0; while(*p)t[k++]=*p++;
+      for(int i=28;i>=0;i-=4)t[k++]="0123456789ABCDEF"[(sb>>i)&15]; t[k]=0; klog(t); }
+    sr_rebuild(); }
 
 int sysroot_add_layer(const char* tag,const u8* blob,u32 size,int owned){
-    for(int i=0;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag))sysroot_del_layer(tag);
+    if(sr_eq(tag,"base"))return sysroot_set_base(blob,size,owned);
+    for(int i=1;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag))sysroot_del_layer(tag);
     int li=sr_addlayer(tag,blob,size,owned); if(li<0)return 0; sr_rebuild(); return 1; }
 
 int sysroot_del_layer(const char* tag){
@@ -143,6 +186,7 @@ int sysroot_del_layer(const char* tag){
     if(l->bcache){ for(int i=0;i<l->nblk;i++) if(l->bcache[i])kfree(l->bcache[i]); kfree(l->bcache); }
     if(l->owned)kfree((void*)l->blob); l->used=0; l->blob=0; sr_rebuild(); return 1; }
 
+const u8* sysroot_layer_blob(const char* tag,u32* size){ for(int i=0;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)){ if(size)*size=g_ly[i].size; return g_ly[i].blob; } return 0; }
 int sysroot_has_layer(const char* tag){ for(int i=0;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag))return 1; return 0; }
 
 int sysroot_layer_files(const char* tag,int idx,char* name,int cap){
@@ -155,6 +199,7 @@ int sysroot_stats(int* files,int* layers){ int n=0; for(int i=0;i<g_nly;i++) if(
 const u8* sysroot_get(const char* path,u32* len,int* exec){
     int v=sr_walk(path,1,0,0,0); if(v<0||g_nd[v].kind!=1)return 0; sr_ent* e=&g_e[g_nd[v].ent];
     const u8* d=ent_data(e); if(!d)return 0; if(len)*len=e->ulen; if(exec)*exec=(int)(e->mode&1); return d; }
+u32 sysroot_ino(const char* path,int follow){ int v=sr_walk(path,follow,0,0,0); if(v<=0)return 0; return 0x10000000u|(sr_hash(g_nd[v].path)&0x0FFFFFFFu); }
 int sysroot_isdir(const char* path){ int v=sr_walk(path,1,0,0,0); return v>0&&g_nd[v].kind==0; }
 int sysroot_exists(const char* path){ int v=sr_walk(path,1,0,0,0); return v>0; }
 int sysroot_islink(const char* path){ int v=sr_walk(path,0,0,0,0); return v>0&&g_nd[v].kind==2; }
@@ -168,6 +213,7 @@ int sysroot_list(const char* dir,int idx,char* name,int cap,int* isdir){
 static int sr_match(const char* p){ int v=sr_walk(p,1,0,0,0); return v>0&&g_nd[v].kind==1; }
 static int sr_read(const char* p,char* buf,int off,int len){ u32 L; const u8* d=sysroot_get(p,&L,0); if(!d)return -1; if(off<0||(u32)off>=L)return 0; if((u32)(off+len)>L)len=(int)(L-(u32)off); for(int i=0;i<len;i++)buf[i]=(char)d[off+i]; return len; }
 static int sr_size(const char* p){ int v=sr_walk(p,1,0,0,0); if(v<=0||g_nd[v].kind!=1)return -1; return (int)g_e[g_nd[v].ent].ulen; }
+int sysroot_fsize(const char* p){ return sr_size(p); }
 const vfs_fs_ops SYSROOTFS={ "sysroot", sr_match, sr_read, sr_size };
 extern int dt_mkdir_at(int parent,const char* name);
 extern int dt_child(int parent,const char* name);

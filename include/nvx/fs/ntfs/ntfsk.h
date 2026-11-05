@@ -14,6 +14,8 @@ extern const rfs_ops g_rfs_fat32;
 extern const rfs_ops g_rfs_fat16;
 extern const rfs_ops* g_rfs;
 
+int nk_blk_rd(unsigned long long lba,int n,void* buf);
+int nk_blk_wr(unsigned long long lba,int n,const void* buf);
 int nk_mount(int ro);
 void nk_lscb(const char* name,int isdir,unsigned long long size,void* ctx);
 int nk_root_sync_file(int k);

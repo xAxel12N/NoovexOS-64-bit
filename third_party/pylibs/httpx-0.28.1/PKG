@@ -1,0 +1,6 @@
+Name: httpx
+Version: 0.28.1
+Requires-Dist: certifi
+Requires-Dist: httpcore==1.*
+Requires-Dist: anyio
+Requires-Dist: idna

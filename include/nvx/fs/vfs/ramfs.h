@@ -20,7 +20,7 @@ typedef struct{ char name[64]; char* data; int len; int cap; int used; int folde
 #define VMAXOPEN 1024
 #define FDMAX    256
 typedef struct vfs_fs_ops vfs_fs_ops;
-struct vfile { int used, fs_idx, off, flags, dev, ref; const vfs_fs_ops* vfs; char vpath[128]; };
+struct vfile { int used, fs_idx, off, flags, dev, ref; const vfs_fs_ops* vfs; char vpath[128]; u32 gen; };
 
 extern FsFile FS[FS_N];
 extern u8 g_fs_dirty[FS_N];

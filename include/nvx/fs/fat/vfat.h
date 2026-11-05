@@ -18,6 +18,12 @@ long vf_write(const char* path,const char* buf,long len);
 int vf_mkdir(const char* path);
 int vf_delete(const char* path);
 int vf_ls(const char* path,nvxntfs_lscb cb,void* ctx);
+int vf_reclaim(void);
+void vf_swap_out(struct nvx_g_vfat_t* save);
+void vf_swap_in(const struct nvx_g_vfat_t* save);
+long vf_size(const char* path);
+u32 vf_free_bytes_kb(void);
+long vf_inplace(const char* path,const char* buf,long len);
 int vf_format(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long long nsect,const char* label,int type);
 
 #endif

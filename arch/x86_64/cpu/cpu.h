@@ -24,10 +24,15 @@ static inline void cpu_fpu_save(void* p){ __asm__ volatile("fxsave (%0)"::"r"(p)
 static inline void cpu_fpu_restore(const void* p){ __asm__ volatile("fxrstor (%0)"::"r"(p):"memory"); }
 static inline u16 cpu_bios_ebda_seg(void){ u16 v; __asm__ volatile("movw 0x40E, %0":"=r"(v)); return v; }
 static inline void cpu_triple_fault(void){ struct { u16 l; u64 b; } __attribute__((packed)) nul={0,0}; __asm__ volatile("lidt %0; int3"::"m"(nul)); }
+extern volatile int g_msr_probe, g_msr_fault;
+static inline int cpu_rdmsr_safe(u32 m,u64* v){ u32 a=0,d=0; g_msr_fault=0; g_msr_probe=1; __asm__ volatile("rdmsr":"=a"(a),"=d"(d):"c"(m):"memory"); g_msr_probe=0; if(g_msr_fault)return -1; *v=((u64)d<<32)|a; return 0; }
+static inline int cpu_wrmsr_safe(u32 m,u64 v){ g_msr_fault=0; g_msr_probe=1; __asm__ volatile("wrmsr"::"a"((u32)v),"d"((u32)(v>>32)),"c"(m):"memory"); g_msr_probe=0; return g_msr_fault?-1:0; }
 static inline u64 cpu_rdmsr(u32 m){ u32 a,d; __asm__ volatile("rdmsr":"=a"(a),"=d"(d):"c"(m)); return ((u64)d<<32)|a; }
 static inline void cpu_wrmsr(u32 m,u64 v){ __asm__ volatile("wrmsr"::"a"((u32)v),"d"((u32)(v>>32)),"c"(m)); }
 static inline void cpu_set_fsbase(u64 v){ cpu_wrmsr(0xC0000100,v); }
 static inline void* cpu_percpu(void){ void* p; __asm__("mov %%gs:16,%0":"=r"(p)); return p; }
 static inline void cpu_set_percpu(void* p){ cpu_wrmsr(0xC0000101,(u64)p); cpu_wrmsr(0xC0000102,0); }
+static inline __attribute__((noreturn)) void cpu_run_on(u64 top,void(*fn)(void)){ __asm__ volatile("mov %0,%%rsp; xor %%ebp,%%ebp; call *%1; 1: cli; hlt; jmp 1b"::"r"(top),"r"(fn):"memory"); __builtin_unreachable(); }
 static inline u64 cpu_cr2(void){ u64 v; __asm__ volatile("mov %%cr2,%0":"=r"(v)); return v; }
-static inline void cpu_copy(void* d,const void* s,unsigned long n){ __asm__ volatile("rep movsb":"+D"(d),"+S"(s),"+c"(n)::"memory"); }
+static inline void cpu_copy(void* d,const void* s,unsigned long n){ __asm__ volatile("cld; rep movsb":"+D"(d),"+S"(s),"+c"(n)::"memory","cc"); }
+static inline void cpu_fill(void* d,int c,unsigned long n){ __asm__ volatile("cld; rep stosb":"+D"(d),"+c"(n):"a"(c):"memory","cc"); }

@@ -14,7 +14,8 @@ void nvm32(u32 off,u32 mask,u32 v){ nvw32(off,(nvr32(off)&~mask)|v); }
 int nv_poll(u32 off,u32 mask,u32 val,u32 ms){ u64 t0=hr_ns(); for(;;){ if((nvr32(off)&mask)==val)return 1; if(hr_ns()-t0>(u64)ms*1000000ULL)return 0; cpu_pause(); } }
 
 static void nl_put(char c){ if(g_nl_n<(int)sizeof(g_nl_line)-1)g_nl_line[g_nl_n++]=c; }
-void nvl_s(const char* s){ while(*s)nl_put(*s++); }
+void (*g_nvl_hook)(const char*)=0;
+void nvl_s(const char* s){ if(s[0]=='['&&!g_nl_n&&g_nvl_hook)g_nvl_hook(s); while(*s)nl_put(*s++); }
 void nvl_x(u64 v){ char b[24],*p=b; p=scopy(p,"0x"); if(v>>32)p=hx(p,(u32)(v>>32),8),p=hx(p,(u32)v,8); else p=hx(p,(u32)v,8); *p=0; nvl_s(b); }
 void nvl_d(u64 v){ char t[24]; int n=0; do{ t[n++]=(char)('0'+v%10); v/=10; }while(v); while(n)nl_put(t[--n]); }
 void nvl_nl(void){ g_nl_line[g_nl_n]=0; if(g_nl_n)klog(g_nl_line); for(int i=0;i<g_nl_n&&g_nv_log_n<(int)sizeof(g_nv_log)-2;i++)g_nv_log[g_nv_log_n++]=g_nl_line[i]; if(g_nv_log_n<(int)sizeof(g_nv_log)-1)g_nv_log[g_nv_log_n++]='\n'; g_nv_log[g_nv_log_n]=0; g_nl_n=0; }
@@ -128,11 +129,12 @@ int nv_run_fwsec(u8* bl,u32 bl_len,u32 cmd){
     nvm32(F+0x624,0x80u,0x80u); nvw32(F+0x10C,0);
     nvf_imem(F,limit-code_size,bl+bdo+code_off,code_size,start_tag,0);
     nvm32(F+0x610,7u,5u);
-    u8 d[84]; for(int i=0;i<84;i++)d[i]=0; u64 pa=(u64)fw.buf;
+    u8 d[84]; for(int i=0;i<84;i++)d[i]=0; extern u64 kva_to_pa(u64); u64 pa=kva_to_pa((u64)fw.buf); if(!pa)pa=(u64)fw.buf;
+    for(u32 o=0x1000;o<fw.total;o+=0x1000){ u64 q=kva_to_pa((u64)fw.buf+o); if(q&&q!=pa+o)return nv_fail(4,"the FWSEC copy is not physically contiguous"); }
     *(u32*)(d+0x20)=4; *(u64*)(d+0x24)=pa; *(u32*)(d+0x2C)=fw.imem_base; *(u32*)(d+0x30)=fw.imem_size-fw.imem_sec_size; *(u32*)(d+0x34)=fw.imem_sec_base; *(u32*)(d+0x38)=fw.imem_sec_size;
     *(u64*)(d+0x40)=pa+fw.dmem_off; *(u32*)(d+0x48)=fw.dmem_size;
     nvf_dmem(F,0,d,84);
-    for(u64 a=pa&~63ULL;a<pa+fw.total;a+=64)cpu_clflush(a); cpu_mb();
+    for(u64 a=(u64)fw.buf&~63ULL;a<(u64)fw.buf+fw.total;a+=64)cpu_clflush(a); cpu_mb();
     u32 m0=0,m1=0; int ok=nvf_boot(F,start_tag<<8,0,0,&m0,&m1,2000);
     u32 err=nvr32(0x001438)>>16, lo=nvr32(0x1FA824), hi=nvr32(0x1FA828);
     nvl_kv("FWSEC mbox0",m0); nvl_kv("FRTS error (0x1438>>16)",err); nvl_kv("WPR2 lo",lo); nvl_kv("WPR2 hi",hi);

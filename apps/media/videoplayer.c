@@ -33,7 +33,7 @@ static void tfmt(char* o, i64 ms) {
 }
 
 int video_is_media_name(const char* n) {
-    static const char* ex[] = { "mp4", "m4v", "mov", "mkv", "webm", "mp3", "m4a", "aac", "ogg", "oga", "ogv", "opus", "wav", 0 };
+    static const char* ex[] = { "mp4", "m4v", "mov", "mkv", "webm", "mp3", "m4a", "aac", "ogg", "oga", "ogv", "opus", "wav", "nvn", 0 };
     for (int i = 0; ex[i]; i++) if (fext_eq(n, ex[i])) return 1;
     return 0;
 }

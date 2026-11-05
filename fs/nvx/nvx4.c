@@ -319,15 +319,44 @@ int fs_reloadable(int k){
     if(g_n4)return (u64)n4_nblocks(k)*N4_BS>=(u64)FS[k].len&&!g_n4indd[k];
     return 0;
 }
+int g_fs_batch;
 int nvx3_sync(int k){
     if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan)return -1;
     if(dt_is_tmp(FS[k].dir))return k;
     if(g_rootfs)return nk_root_sync_file(k);
     if(!g_n4)return -1;
+    if(g_fs_batch)return k;
     if(n4_sync_file(k))return -1;
     if(n4_commit())return -1;
     return k;
 }
-void nvx3_flush_meta(void){ g_fs_wb_pending=0; if(!disk_ok)return; if(g_rootfs){ nk_root_flush(); return; } if(g_n4)n4_commit(); }
+static int g_sk=-1; static u32 g_shi,g_spos;
+int fs_sync_step(int k,int maxblk){
+    if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan){ g_sk=-1; return -1; }
+    if(dt_is_tmp(FS[k].dir)){ g_sk=-1; return 1; }
+    if(g_rootfs||!g_n4||FS[k].lazy){ g_sk=-1; return nvx3_sync(k)<0?-1:1; }
+    if(maxblk<1)maxblk=1;
+    if(g_sk!=k){
+        long len=FS[k].len; u32 nb=(u32)((len+(long)N4_BS-1)/(long)N4_BS); u32 cur=n4_nblocks(k);
+        if(FS[k].clean&&cur==nb&&!g_n4indd[k]) return 1;
+        if(!FS[k].data&&len)return -1;
+        if(n4_resize(k,nb))return -1;
+        u32 lo=nb, hi=0;
+        if(!FS[k].clean){ long dl=FS[k].dlo, dh=FS[k].dhi; if(dl<0)dl=0; if(dh>len)dh=len; if(dh>dl){ lo=(u32)(dl/(long)N4_BS); hi=(u32)((dh+(long)N4_BS-1)/(long)N4_BS); } }
+        if(cur<nb){ if(cur<lo)lo=cur; hi=nb; }
+        if(hi>nb)hi=nb;
+        if(hi<lo)hi=lo;
+        FS[k].clean=1; FS[k].dlo=FS[k].dhi=0;
+        g_sk=k; g_shi=hi; g_spos=lo;
+    }
+    if(g_spos<g_shi){ u32 n=g_shi-g_spos; if(n>(u32)maxblk)n=(u32)maxblk;
+        if(n4_write_range(k,g_spos,g_spos+n)){ g_sk=-1; FS[k].clean=0; FS[k].dlo=0; FS[k].dhi=FS[k].len; return -1; }
+        g_spos+=n; if(g_spos<g_shi)return 0; }
+    g_sk=-1;
+    if(n4_sync_file(k))return -1;
+    if(n4_commit())return -1;
+    return 1;
+}
+void nvx3_flush_meta(void){ if(g_fs_batch&&g_n4&&!g_rootfs)return; g_fs_wb_pending=0; if(!disk_ok)return; if(g_rootfs){ nk_root_flush(); return; } if(g_n4)n4_commit(); }
 void nvx3_sync_all(void){ g_fs_wb_pending=0; if(!disk_ok)return; if(g_rootfs){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&!FS[k].clean)nk_root_sync_file(k); nk_root_flush(); return; } if(g_n4)n4_commit(); }
 int fs_sync(int k){ if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan)return -1; return nvx3_sync(k); }

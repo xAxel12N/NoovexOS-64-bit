@@ -29,6 +29,7 @@ struct jproc {
     u64 it_next, it_int;
     int tg, tgid, gexit, tkill;
     u64 ctid, robust, fx_addr, fx_dead; int fx_wait, fx_woken, fx_tg; u32 fx_bits;
+    u64 ss_sp, ss_size, flt_addr; int ss_flags, flt_sig, flt_code, flt_trap; u32 flt_err; int sicode[32];
     char cmd[48];
     char exe[128];
     u8 fx[512] __attribute__((aligned(16)));

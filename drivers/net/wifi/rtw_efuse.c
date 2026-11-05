@@ -1,6 +1,7 @@
 #include "include/nvx/base.h"
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/drivers/net/wifi/rtw_efuse.h"
+#include "include/nvx/arch/x86_64/time/hrtimer.h"
 
 
 u8 rtw_phymap[RTW_EFUSE_PHY_SZ];
@@ -123,7 +124,7 @@ u32 rtw_rdsz(u32 m,u32 o,u8 sz){
     if(sz==2)return rtw_r16(m,(u16)o);
     return rtw_r32(m,(u16)o);
 }
-void rtw_delay_us(u32 us){ if(us>200000u)us=200000u; for(u32 i=0;i<us;i++){ for(volatile int d=0;d<8;d++) io_wait(); } }
+void rtw_delay_us(u32 us){ if(us>200000u)us=200000u; hr_delay_us(us); }
 #define RTW_RFA_SIPI 0xC90u
 void rtw_rf_write_a(u32 m,u32 addr,u32 data){
     u32 daa=(((addr&0xFF)<<20)|(data&0x000FFFFFu))&0x0FFFFFFFu;

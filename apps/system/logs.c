@@ -5,12 +5,13 @@
 #include "include/nvx/net/http/http.h"
 #include "include/nvx/graphics/theme/theme.h"
 #include "include/nvx/graphics/ui/wm.h"
+#include "include/nvx/apps/office/calculator.h"
+#include "include/nvx/apps/office/calculator.h"
 #include "include/nvx/shell/terminal.h"
 #include "include/nvx/fs/nvx/nvxfs.h"
 #include "include/nvx/core/buildsig.h"
 #include "include/nvx/shell/commands.h"
 #include "include/nvx/apps/office/editor.h"
-#include "include/nvx/apps/internet/chatgpt.h"
 #include "include/nvx/apps/internet/browser.h"
 #include "include/nvx/apps/system/settings.h"
 #include "include/nvx/apps/system/files_classic.h"
@@ -92,20 +93,16 @@ void draw_app(int i){
     else if(i==W_CALENDAR)calendar_draw(i); else if(i==W_SNAKE)snake_draw(i); else if(i==W_FLAPPY)flappy_draw(i);
     else if(i==W_NEOFETCH)neofetch_draw(i); else if(i==W_PAINT)paint_draw(i);
     else if(i==W_DOOM)doom_draw(i);
-    else if(i==W_SETTINGS)settings_draw(i); else if(i==W_CHATGPT)chatgpt_draw(i); else if(i==W_PPTX)pptx_draw(i); else if(i==W_LOGS)logs_draw(i); else if(i==W_TFIND)tfind_draw(i); else if(i==W_VIDEO)video_draw(i); else if(i==W_CAMERA){ extern void camera_draw(int); camera_draw(i); } else if(i==W_GPU3D){ extern void gpu3d_draw(int); gpu3d_draw(i); } else if(i==W_BENCH){ extern void bench_draw(int); bench_draw(i); } else if(i==W_RECORDER){ extern void recorder_draw(int); recorder_draw(i); } else if(i==W_WRITER){ extern void writer_draw(int); writer_draw(i); } else if(i==W_QUAKE){ extern void quake_draw(int); quake_draw(i); } else if(i==W_XDISP){ extern void xdisp_draw(int); xdisp_draw(i); } else about_draw(i);
+    else if(i==W_SETTINGS)settings_draw(i); else if(i==W_PPTX)pptx_draw(i); else if(i==W_LOGS)logs_draw(i); else if(i==W_CHATGPT){ extern void regedit_draw(int); regedit_draw(i); } else if(i==W_TFIND)tfind_draw(i); else if(i==W_VIDEO)video_draw(i); else if(i==W_CAMERA){ extern void camera_draw(int); camera_draw(i); } else if(i==W_GPU3D){ extern void gpu3d_draw(int); gpu3d_draw(i); } else if(i==W_BENCH){ extern void bench_draw(int); bench_draw(i); } else if(i==W_RECORDER){ extern void recorder_draw(int); recorder_draw(i); } else if(i==W_WRITER){ extern void writer_draw(int); writer_draw(i); } else if(i==W_QUAKE){ extern void quake_draw(int); quake_draw(i); } else if(i==W_XDISP){ extern void xdisp_draw(int); xdisp_draw(i); } else about_draw(i);
 }
 void app_click(int i,int px,int py){
     if(i==W_WELCOME){ if(in_rect(px,py,gb_x,gb_y,gb_w,gb_h)) open_win(W_TERM); }
     else if(i==W_FILES) files_click(px,py);
-    else if(i==W_EDITOR){ if(in_rect(px,py,eb_save_x,eb_save_y,eb_bw,eb_bh)) editor_save();
-                          else if(in_rect(px,py,eb_run_x,eb_run_y,eb_bw,eb_bh)) editor_run();
-                          else if(ed_show_con && in_rect(px,py,eb_conx_x-4,eb_conx_y-2,18,16)) ed_show_con=0;
-                          else if(in_rect(px,py,eb_new_x,eb_new_y,eb_bw,eb_bh)){ editor_reset(); ed_file=-1; ed_show_con=0; } }
+    else if(i==W_EDITOR){ extern int editor_click(int,int); editor_click(px,py); }
     else if(i==W_CALC) calc_click(px,py);
     else if(i==W_SYSMON) sysmon_click(px,py);
     else if(i==W_DOOM){ if(g_doom_state==2) g_doom_mcap=1; }        /* click in DOOM -> capture mouse */
     else if(i==W_BROWSER) browser_click(px,py);
-    else if(i==W_CHATGPT) chatgpt_click(px,py);
     else if(i==W_PPTX) pptx_click(px,py);
     else if(i==W_VIDEO) video_click(px,py);
     else if(i==W_CAMERA){ extern void camera_click(int,int); camera_click(px,py); }
@@ -123,5 +120,6 @@ void app_click(int i,int px,int py){
         paint_at(px,py); }
     else if(i==W_SNAKE){ if(snake_state==2) snake_reset(); }
     else if(i==W_SETTINGS) settings_click(px,py);
+    else if(i==W_CHATGPT){ extern void regedit_click(int,int); regedit_click(px,py); }
 }
 

@@ -3,6 +3,8 @@
 box* g_root;
 float g_doch, g_docw;
 float g_vw, g_vh;
+int g_part_lay, g_part_lay_ok, g_part_lay_fail;
+unsigned long long g_lay_full_us, g_lay_part_us; int g_lay_full_n;
 int g_lay_depth;
 static box* abs_head;
 static box* abs_tail;
@@ -20,6 +22,22 @@ static void addchild(box* p, box* c) {
     if (p->last) p->last->next = c; else p->first = c;
     p->last = c;
 }
+int sel_listbox_rows(node* n) {
+    if (!n || n->tag != T_SELECT) return 0;
+    const char* sz = attr_get(n, "size"); int r = sz ? atoi(sz) : 0;
+    if (r > 1) return r;
+    if (attr_get(n, "multiple")) return 4;
+    return 0;
+}
+int sel_items(node* n, node** out, int cap) {
+    int k = 0;
+    for (node* o = n->first; o && k < cap; o = o->next) {
+        if (o->tag == T_OPTION) out[k++] = o;
+        else if (o->tag == T_OPTGROUP) { out[k++] = o; for (node* q = o->first; q && k < cap; q = q->next) if (q->tag == T_OPTION) out[k++] = q; }
+    }
+    return k;
+}
+float sel_item_h(style* s) { float l = lineh_of(s); if (!(l > 0)) l = s->fsize * 1.25f; return l > 1 ? l : 16; }
 float lineh_of(style* st) {
     if (st->lh > 0) return st->lh;
     if (st->lhmul > 0) return st->lhmul * st->fsize;
@@ -103,6 +121,7 @@ static int is_slot(node* c) { return c->type == NT_ELEM && c->name && c->name[0]
 static void build_list(node* src, box* b, int depth);
 static void build_one(node* c, box* b, int depth) {
     if (c->type == NT_TEXT) {
+        if (c->parent && c->parent->tag == T_DETAILS && !attr_get(c->parent, "open")) return;
         if (c->tlen > 0) addchild(b, text_box(c, 0, 0, b->st));
         return;
     }
@@ -268,6 +287,7 @@ static box* build_elem(node* e, box* parent) {
     box* b = mkbox(k, e, st);
     e->box = b;
     b->sy = e->scrolly;
+    b->sx = e->scrollx;
     if (k == BX_REPLACED || k == BX_BR) return b;
     build_children(e, b);
     if (k == BX_INLINE && inline_has_block(b)) { b->kind = BX_BLOCK; k = BX_BLOCK; }
@@ -377,11 +397,26 @@ float spec_content_h(box* b, float cbh) {
     if (s->boxsizing) v -= b->p[0] + b->p[2] + b->b[0] + b->b[2];
     return v < 0 ? 0 : v;
 }
+void intrinsic_content(box* b, float* mn, float* mx) {
+    style* s = b->st;
+    L sw = s->width; int si = b->intr; float smn = b->minc, smx = b->maxc;
+    s->width.k = LK_AUTO; s->width.px = 0; s->width.pct = 0; b->intr = 0;
+    intrinsic(b, mn, mx);
+    s->width = sw; b->intr = si; b->minc = smn; b->maxc = smx;
+}
 float clamp_w(box* b, float w, float cbw) {
     style* s = b->st;
     float pb = b->p[1] + b->p[3] + b->b[1] + b->b[3];
     if (s->maxw.k == LK_VAL) { float m = lres(s->maxw, cbw); if (!s->boxsizing) m += pb; if (w > m) w = m; }
     if (s->minw.k == LK_VAL) { float m = lres(s->minw, cbw); if (!s->boxsizing) m += pb; if (w < m) w = m; }
+    if (s->maxw.k == LK_MINC || s->maxw.k == LK_MAXC || s->maxw.k == LK_FITC || s->minw.k == LK_MINC || s->minw.k == LK_MAXC || s->minw.k == LK_FITC) {
+        float mn, mx;
+        intrinsic_content(b, &mn, &mx);
+        float avail = cbw - b->m[1] - b->m[3];
+        float fit = mx < avail ? mx : (mn > avail ? mn : avail);
+        if (s->maxw.k == LK_MINC || s->maxw.k == LK_MAXC || s->maxw.k == LK_FITC) { float m = s->maxw.k == LK_MINC ? mn : s->maxw.k == LK_MAXC ? mx : fit; if (w > m) w = m; }
+        if (s->minw.k == LK_MINC || s->minw.k == LK_MAXC || s->minw.k == LK_FITC) { float m = s->minw.k == LK_MINC ? mn : s->minw.k == LK_MAXC ? mx : fit; if (w < m) w = m; }
+    }
     if (w < pb) w = pb;
     return w;
 }
@@ -435,7 +470,7 @@ float replaced_size(box* b, float cbw, float cbh, float* outh, float forcew) {
         else if (ty && ieq(ty, "file")) { iw = 240; ih = lineh_of(s); }
         else if (ty && ieq(ty, "range")) { iw = 129; ih = 16; }
         else if (ty && ieq(ty, "color")) { iw = 50; ih = 27; }
-        else { const char* sz = attr_get(n, "size"); int cols = sz ? atoi(sz) : 20; if (cols <= 0) cols = 20; iw = cols * s->fsize * 0.630f; ih = lineh_of(s) > 0 ? lineh_of(s) : 15; }
+        else { const char* sz = attr_get(n, "size"); int cols = sz ? atoi(sz) : 20; if (cols <= 0) cols = 20; iw = cols * s->fsize * 0.58f + s->fsize * 1.5f; ih = lineh_of(s) > 0 ? lineh_of(s) : s->fsize * 1.15f; }
     } else if (t == T_SELECT) {
         float mw = 20;
         for (node* o = n->first; o; o = o->next) {
@@ -443,12 +478,14 @@ float replaced_size(box* b, float cbw, float cbh, float* outh, float forcew) {
             for (int q = 0; q < 1; q++) {
                 node* x = list[q];
                 if (x->tag == T_OPTION) { sbuf bb = { 0, 0, 0 }; text_content(x, &bb); float w = text_width(s->face, s->fsize, bb.s ? bb.s : "", bb.n, 0); if (w > mw) mw = w; }
-                else if (x->tag == T_OPTGROUP) for (node* y = x->first; y; y = y->next) if (y->tag == T_OPTION) { sbuf bb = { 0, 0, 0 }; text_content(y, &bb); float w = text_width(s->face, s->fsize, bb.s ? bb.s : "", bb.n, 0); if (w > mw) mw = w; }
+                else if (x->tag == T_OPTGROUP) { const char* lb = attr_get(x, "label"); if (lb && sel_listbox_rows(n) > 0) { float w = text_width(s->face, s->fsize, lb, (int)strlen(lb), 0); if (w > mw) mw = w; } for (node* y = x->first; y; y = y->next) if (y->tag == T_OPTION) { sbuf bb = { 0, 0, 0 }; text_content(y, &bb); float w = text_width(s->face, s->fsize, bb.s ? bb.s : "", bb.n, 0) + (sel_listbox_rows(n) > 0 ? 11 : 0); if (w > mw) mw = w; } }
             }
         }
         iw = mw;
         ih = lineh_of(s) > 0 ? lineh_of(s) : 15;
-    } else if (t == T_TEXTAREA) { const char* cs = attr_get(n, "cols"); const char* rs = attr_get(n, "rows"); int cols = cs ? atoi(cs) : 20, rows = rs ? atoi(rs) : 2; if (cols <= 0) cols = 20; if (rows <= 0) rows = 2; float lh = lineh_of(s) > 0 ? lineh_of(s) : s->fsize * 1.2f; iw = cols * s->fsize * 0.655f; ih = rows * lh; }
+        int lr = sel_listbox_rows(n);
+        if (lr > 0) { iw = mw + 24; ih = lr * sel_item_h(s); }
+    } else if (t == T_TEXTAREA) { const char* cs = attr_get(n, "cols"); const char* rs = attr_get(n, "rows"); int cols = cs ? atoi(cs) : 20, rows = rs ? atoi(rs) : 2; if (cols <= 0) cols = 20; if (rows <= 0) rows = 2; float lh = lineh_of(s) > 0 ? lineh_of(s) : s->fsize * 1.2f; iw = cols * s->fsize * 0.6f + 15; ih = rows * lh; }
     else if (t == T_PROGRESS || t == T_METER) { iw = 160; ih = 16; }
     else if (t == T_SVG) {
         const char* vb = attr_get(n, "viewBox");
@@ -459,6 +496,7 @@ float replaced_size(box* b, float cbw, float cbh, float* outh, float forcew) {
         const char* ah = attr_get(n, "height");
         if (aw && atof(aw) > 0 && !strchr(aw, '%')) { float nw = (float)atof(aw); if (!ah) ih = ih * nw / iw; iw = nw; }
         if (ah && atof(ah) > 0 && !strchr(ah, '%')) { float nh = (float)atof(ah); if (!aw) iw = iw * nh / ih; ih = nh; }
+        if (vb && !aw && !ah && cbw > 0 && s->width.k != LK_VAL) { float avail = cbw - pbw - b->m[1] - b->m[3]; if (avail > 0) { ih = ih * avail / iw; iw = avail; } }
     } else if (t == T_VIDEO) {
         int vw = 0, vh = 0;
         if (wm_dims(n, &vw, &vh)) { iw = (float)vw; ih = (float)vh; }
@@ -469,6 +507,7 @@ float replaced_size(box* b, float cbw, float cbh, float* outh, float forcew) {
     int wauto = s->width.k != LK_VAL || (s->width.pct != 0 && cbw < 0);
     int hauto = s->height.k != LK_VAL || (s->height.pct != 0 && cbh < 0);
     float ratio = (iw > 0 && ih > 0) ? ih / iw : 0;
+    if ((t == T_INPUT && !(ty && ieq(ty, "image"))) || t == T_TEXTAREA || t == T_SELECT || t == T_PROGRESS || t == T_METER) ratio = 0;
     if (s->aspect > 0) ratio = 1.0f / s->aspect;
     if (forcew >= 0) { w = forcew - pbw; wauto = 0; }
     else w = wauto ? iw : lres(s->width, cbw) - (s->boxsizing ? pbw : 0);
@@ -523,6 +562,7 @@ static int is_bfc_root(box* b) {
     if ((s->ovx != OV_VISIBLE && s->ovx != OV_CLIP) || (s->ovy != OV_VISIBLE && s->ovy != OV_CLIP)) return 1;
     if (b->parent && (b->parent->kind == BX_FLEX || b->parent->kind == BX_GRID)) return 1;
     if (b->n && b->n->tag == T_BUTTON) return 1;
+    if (s->ctype || s->flowroot) return 1;
     return 0;
 }
 
@@ -707,6 +747,7 @@ static void add_text_pieces(plist* L, box* t, style* st) {
             }
         }
         int wn = i - st0;
+        if (wn == 0) { int kk = u8dec(s + i, n - i, &cp); i += kk > 0 ? kk : 1; continue; }
         if (wn > 0) {
             piece p = { PI_WORD, s + st0, wn, text_width(st->face, st->fsize, s + st0, wn, st->lspace), 0, st, t, tn, brkc, 0 };
             if (st->wbreak && p.w > 0) p.brk = 2;
@@ -725,6 +766,7 @@ static void flatten(plist* L, box* c, style* cst) {
             padd(L, &p);
             continue;
         }
+        if (x->n && x->n->tag == T_WBR) { if (L->n > 0) { int j = L->n - 1; while (j >= 0 && (L->p[j].kind == PI_OPEN || L->p[j].kind == PI_CLOSE)) j--; if (j >= 0 && (L->p[j].kind == PI_WORD || L->p[j].kind == PI_ATOM)) L->p[j].brk |= 1; } continue; }
         if (x->kind == BX_INLINE) {
             piece o = { PI_OPEN, 0, 0, 0, 0, x->st, x, x->n, 0, 0 };
             padd(L, &o);
@@ -762,10 +804,11 @@ static float valign_shift(style* st, style* parent) {
 
 typedef struct { box* ib; float x0; int open; } openrec;
 
+static float g_icbh = -1;
 static float measure_atom(box* a, float cbw, float* h) {
     box_edges(a, cbw);
     if (a->kind == BX_REPLACED) {
-        float w = replaced_size(a, cbw, -1, h, -1);
+        float w = replaced_size(a, cbw, g_icbh, h, -1);
         a->w = w;
         a->h = *h;
         a->firstbase = -1;
@@ -773,7 +816,7 @@ static float measure_atom(box* a, float cbw, float* h) {
         return w;
     }
     float w = block_width(a, cbw, 1);
-    lay(a, 0, 0, cbw, -1, 0, w, -1);
+    lay(a, 0, 0, cbw, g_icbh, 0, w, -1);
     *h = a->h;
     return w;
 }
@@ -783,7 +826,7 @@ static void list_marker_text(box* li, char* out, int cap) {
     out[0] = 0;
     int idx = 1;
     node* n = li->n;
-    if (s->lstype >= LS_DECIMAL && n) {
+    if (s->lstype >= LS_DECIMAL && s->lstype <= LS_UROMAN && n) {
         node* par = n->parent;
         int start = 1, rev = 0;
         if (par && par->tag == T_OL) { const char* st = attr_get(par, "start"); if (st) start = atoi(st); rev = attr_get(par, "reversed") != 0; }
@@ -1041,7 +1084,7 @@ static float layout_inline(box* c, float cx, float cy, float cw, bfc* f, int fir
         }
         if (lineno == 0 && marker[0] == 0 && first_marker && c->st->lstype != LS_NONE) {
             frag m = { FK_MARKER, cx - 14 - (c->st->lspos ? 0 : 0), base, 6, 6, base, 0, c->st->lstype, c->st, c->n, c };
-            if (c->st->lspos) { m.x = off; }
+            if (c->st->lspos) { m.x = off; off += c->st->fsize * (c->st->lstype >= LS_DCLOSED ? 1.0f : 0.9f); }
             frag_add(c, &m);
         } else if (lineno == 0 && marker[0]) {
             float mw = text_width(cst->face, cst->fsize, marker, (int)strlen(marker), 0);
@@ -1289,6 +1332,8 @@ void shift_box(box* b, float dx, float dy) {
 }
 
 void lay(box* b, float x, float y, float cbw, float cbh, bfc* f, float forcew, float forceh) {
+    nwe_check_stop();
+    b->lcbw = cbw; b->lcbh = cbh;
     if (++g_lay_depth > 220) { g_lay_depth--; b->x = x; b->y = y; b->w = 0; b->h = 0; return; }
     style* s = b->st;
     box_edges(b, cbw);
@@ -1304,6 +1349,14 @@ void lay(box* b, float x, float y, float cbw, float cbh, bfc* f, float forcew, f
         int shrink = s->flt != FL_NONE || s->position == P_ABSOLUTE || s->position == P_FIXED || s->display == D_IBLOCK || s->display == D_IFLEX || s->display == D_IGRID || s->display == D_ITABLE || b->kind == BX_TABLE || (b->n && b->n->tag == T_BUTTON);
         W = block_width(b, cbw, shrink);
         if (!shrink) x += b->m[3] - m3pre;
+        if (s->aspect > 0 && s->width.k == LK_AUTO && !shrink) {
+            float h0 = spec_content_h(b, cbh);
+            if (h0 >= 0) {
+                float pv = b->p[0] + b->p[2] + b->b[0] + b->b[2], ph = b->p[1] + b->p[3] + b->b[1] + b->b[3];
+                float nw = s->boxsizing ? (h0 + pv) * s->aspect : h0 * s->aspect + ph;
+                if (nw < W) { x -= b->m[3] - m3pre; W = nw; }
+            }
+        }
     }
     b->x = x;
     b->y = y;
@@ -1336,7 +1389,7 @@ void lay(box* b, float x, float y, float cbw, float cbh, bfc* f, float forcew, f
         bfc local = { 0 };
         bfc* ff = b->bfcroot || !f ? &local : f;
         if (b->inl) {
-            contenth = layout_inline(b, cx, cy, cw, ff, s->display == D_LISTITEM);
+            { float sv = g_icbh; g_icbh = defh; contenth = layout_inline(b, cx, cy, cw, ff, s->display == D_LISTITEM); g_icbh = sv; }
         } else {
             float trailing, leading;
             contenth = layout_blocks(b, cx, cy, cw, defh, ff, &trailing, &leading);
@@ -1396,8 +1449,18 @@ void lay(box* b, float x, float y, float cbw, float cbh, bfc* f, float forcew, f
             b->clampy = ys[s->lineclamp - 1];
         }
     }
+    if (b->n && b->n->tag == T_FIELDSET && b->kind == BX_BLOCK) {
+        box* L = b->first; while (L && !in_flow(L)) L = L->next;
+        if (L && L->n && L->n->tag == T_LEGEND) { float sh = L->y - L->m[0] - y; if (sh > 0) shift_box(L, 0, -sh); }
+    }
     b->contenth = contenth;
     float H = defh >= 0 ? defh : clamp_h(b, contenth, cbh);
+    if (b->n && b->n->tag == T_BUTTON && b->kind == BX_BLOCK && H > contenth + 0.5f) {
+        float dy = (H - contenth) * 0.5f;
+        for (int i = 0; i < b->nfr; i++) { b->fr[i].y += dy; b->fr[i].base += dy; }
+        for (box* c = b->first; c; c = c->next) shift_child(c, 0, dy);
+        if (b->firstbase >= 0) b->firstbase += dy;
+    }
     if (forceh >= 0) H = forceh - b->p[0] - b->p[2] - b->b[0] - b->b[2];
     if (H < 0) H = 0;
     b->h = H + b->p[0] + b->p[2] + b->b[0] + b->b[2];
@@ -1448,7 +1511,7 @@ static void layout_abs(box* b) {
     if (mra) b->m[1] = 0;
     if (b->kind == BX_REPLACED) { float h; W = replaced_size(b, cw, ch, &h, -1); }
     else if (s->width.k == LK_VAL) { W = lres(s->width, cw) + (s->boxsizing ? 0 : pbw); W = clamp_w(b, W, cw); }
-    else if (hl && hr) { W = cw - left - right - b->m[1] - b->m[3]; W = clamp_w(b, W, cw); }
+    else if (hl && hr && s->width.k != LK_FITC && s->width.k != LK_MAXC && s->width.k != LK_MINC) { W = cw - left - right - b->m[1] - b->m[3]; W = clamp_w(b, W, cw); }
     else { W = shrink_fit(b, cw - (hl ? left : 0) - (hr ? right : 0) - b->m[1] - b->m[3]); W = clamp_w(b, W, cw); }
     if (hl && hr && (mla || mra)) {
         float rem = cw - left - right - W;
@@ -1461,11 +1524,12 @@ static void layout_abs(box* b) {
     else if (hr) x = cx + cw - right - b->m[1] - W;
     else x = b->staticx + b->m[3];
     float fh = -1;
-    if (ht && hb && s->height.k != LK_VAL) { fh = ch - top - bottom - b->m[0] - b->m[2]; if (fh < 0) fh = 0; }
+    int hfit = s->height.k == LK_FITC || s->height.k == LK_MAXC || s->height.k == LK_MINC;
+    if (ht && hb && s->height.k != LK_VAL && !hfit) { fh = ch - top - bottom - b->m[0] - b->m[2]; if (fh < 0) fh = 0; }
     lay(b, x, 0, cw, ch, 0, W, fh);
     float y;
     int mta = s->margin[0].k == LK_AUTO, mba = s->margin[2].k == LK_AUTO;
-    if (ht && hb && (mta || mba) && s->height.k == LK_VAL) {
+    if (ht && hb && (mta || mba) && (s->height.k == LK_VAL || hfit)) {
         float rem = ch - top - bottom - b->h;
         b->m[0] = mta && mba ? rem / 2 : mta ? rem - b->m[2] : b->m[0];
     }
@@ -1497,12 +1561,20 @@ static void clear_boxes(node* n) {
     for (node* c = n->first; c; c = c->next) if (c->type == NT_ELEM) clear_boxes(c);
 }
 
+void layout_all_in(float vw, float vh);
 void layout_all(float vw, float vh) {
+    unsigned long long t0 = nwk_us();
+    layout_all_in(vw, vh);
+    g_nwe_perf.layout_us += nwk_us() - t0;
+    g_lay_full_us += nwk_us() - t0; g_lay_full_n++;
+}
+void layout_all_in(float vw, float vh) {
     g_vw = vw;
     g_vh = vh;
     int sv = g_pool;
     pool_reset(2);
     g_pool = 2;
+    g_part_lay = 0;
     abs_head = abs_tail = 0;
     g_lay_depth = 0;
     node* html = doc_elem();
@@ -1527,8 +1599,95 @@ void layout_all(float vw, float vh) {
     g_pool = sv;
 }
 
+static int lay_boundary(node* n) {
+    style* s = n->st; box* b = n->box;
+    if (!s || !b || b->n != n || b->pseudo || !b->parent || n == doc_elem() || n == doc_body()) return 0;
+    if (b->kind != BX_BLOCK && b->kind != BX_FLEX && b->kind != BX_GRID) return 0;
+    if (s->display != D_BLOCK && s->display != D_FLEX && s->display != D_GRID && s->display != D_LISTITEM) return 0;
+    if (s->flt != FL_NONE || s->position == P_STICKY) return 0;
+    if (s->ovx == OV_VISIBLE || s->ovy == OV_VISIBLE) return 0;
+    if (s->height.k != LK_VAL || s->height.pct != 0) return 0;
+    int abs = s->position == P_ABSOLUTE || s->position == P_FIXED;
+    int wfix = s->width.k == LK_VAL && s->width.pct == 0;
+    box* pb = b->parent;
+    int pflex = pb->kind == BX_FLEX || pb->kind == BX_GRID;
+    if (abs || pflex) { if (!wfix) return 0; }
+    else if (!wfix && !(s->width.k == LK_AUTO && pb->kind == BX_BLOCK)) return 0;
+    if (b->lcbw <= 0 && !wfix) return 0;
+    return 1;
+}
+static int box_depth(box* b) { int d = 0; for (box* p = b->parent; p; p = p->parent) d++; return d; }
+static int relayout_one(node* e) {
+    box* ob = e->box; box* par = ob->parent;
+    box save = *ob;
+    abs_head = abs_tail = 0;
+    g_lay_depth = box_depth(ob);
+    if (g_lay_depth > 200) return -1;
+    clear_boxes(e);
+    box* nb = build_elem(e, par);
+    if (!nb) return -1;
+    nb->parent = par;
+    int linked = 0;
+    for (box** pp = &par->first; *pp; pp = &(*pp)->next) if (*pp == ob) { nb->next = ob->next; *pp = nb; linked = 1; break; }
+    if (!linked) return -1;
+    if (par->last == ob) par->last = nb;
+    lay(nb, save.x, save.y, save.lcbw, save.lcbh, 0, save.w, save.h);
+    for (int pass = 0; pass < 3; pass++) { box* a = abs_head; abs_head = abs_tail = 0; if (!a) break; while (a) { box* nx = a->nextabs; layout_abs(a); a = nx; } }
+    if (fabsf(nb->w - save.w) > 0.01f || fabsf(nb->h - save.h) > 0.01f || fabsf(nb->x - save.x) > 0.01f || fabsf(nb->y - save.y) > 0.01f) return -1;
+    nb->ox = save.ox; nb->oy = save.oy; nb->btx = save.btx; nb->bty = save.bty; nb->staticx = save.staticx; nb->staticy = save.staticy; nb->cb = save.cb; nb->mte = save.mte; nb->mbe = save.mbe;
+    for (int i = 0; i < 4; i++) nb->m[i] = save.m[i];
+    return 0;
+}
+int layout_partial(node** roots, const unsigned char* isdom, int nr) {
+    if (!g_root || nr <= 0 || g_part_lay >= 64) return -1;
+    node* bs[32]; int nb = 0;
+    for (int i = 0; i < nr; i++) {
+        node* n = roots[i]; if (!n) continue;
+        node* p = isdom[i] ? n : n->parent;
+        while (p && !(p->type == NT_ELEM && lay_boundary(p))) p = p->parent ? p->parent : (p->type == NT_FRAG ? p->host : 0);
+        if (!p) return -1;
+        int skip = 0;
+        for (int j = 0; j < nb; j++) { if (bs[j] == p || node_contains(bs[j], p)) { skip = 1; break; } if (node_contains(p, bs[j])) { bs[j] = bs[--nb]; j--; } }
+        if (skip) continue;
+        if (nb >= 32) return -1;
+        bs[nb++] = p;
+    }
+    if (!nb) return -1;
+    unsigned long long t0 = nwk_us();
+    int sv = g_pool;
+    g_pool = 2;
+    for (int i = 0; i < nb; i++) if (relayout_one(bs[i]) < 0) { g_pool = sv; g_part_lay_fail++; return -1; }
+    float mx = g_vw, my = 0;
+    doc_extent(g_root, &mx, &my, 0);
+    g_docw = mx;
+    g_doch = my > g_vh ? my : g_vh;
+    g_pool = sv;
+    g_part_lay++; g_part_lay_ok++;
+    g_nwe_perf.layout_us += nwk_us() - t0;
+    g_lay_part_us += nwk_us() - t0;
+    return 0;
+}
 box* box_of(node* n) { return n ? n->box : 0; }
-void box_rect(node* n, float* x, float* y, float* w, float* h) {
+float box_scroll_w(box* b) {
+    if (!b) return 0;
+    float left = b->x + b->b[3], inner = b->w - b->b[1] - b->b[3], r = left + inner;
+    for (int i = 0; i < b->nfr; i++) { float e = b->fr[i].x + b->fr[i].w; if (e > r) r = e; }
+    box* c = b->first; int guard = 0;
+    while (c && guard++ < 50000) {
+        int skip = !c->st || c->st->position == P_FIXED;
+        if (!skip) {
+            if (c->kind != BX_INLINE && c->kind != BX_TEXT) { float e = c->x + c->w + c->m[1]; if (e > r) r = e; }
+            for (int i = 0; i < c->nfr; i++) { float fe = c->fr[i].x + c->fr[i].w; if (fe > r) r = fe; }
+        }
+        if (!skip && c->st->ovx == OV_VISIBLE && c->first) { c = c->first; continue; }
+        while (c && c != b && !c->next) c = c->parent;
+        if (!c || c == b) break;
+        c = c->next;
+    }
+    return r + b->p[1] - left;
+}
+void box_rect(node* n, float* x, float* y, float* w, float* h) { box_rect_s(n, x, y, w, h, 1); }
+void box_rect_s(node* n, float* x, float* y, float* w, float* h, int scrolled) {
     *x = *y = *w = *h = 0;
     box* b = n->box;
     if (!b) {
@@ -1536,12 +1695,39 @@ void box_rect(node* n, float* x, float* y, float* w, float* h) {
         else return;
     }
     float ox = 0, oy = 0;
-    for (box* p = b; p; p = p->parent) { ox += p->ox; oy += p->oy; }
+    for (box* p = b; p; p = p->parent) { ox += p->ox; oy += p->oy; if (p != b && scrolled) { ox -= p->sx; oy -= p->sy; } }
     *x = b->x + ox;
     *y = b->y + oy;
     *w = b->w;
     *h = b->h;
     if (b->st && b->st->position == P_FIXED) *y += G.scroll;
+}
+void box_rect_tf(node* n, float* x, float* y, float* w, float* h) {
+    int scrolled = 1;
+    box_rect_s(n, x, y, w, h, 1);
+    box* b = n->box;
+    if (!b && n->type == NT_TEXT && n->parent) b = n->parent->box;
+    if (!b) return;
+    int fixed = b->st && b->st->position == P_FIXED;
+    if (fixed) *y -= G.scroll;
+    int lin = 0;
+    for (box* p = b; p; p = p->parent) if (p->st && p->st->hastransform && tf_has_linear(p->st)) { lin = 1; break; }
+    if (lin) {
+        float px[4] = { *x, *x + *w, *x + *w, *x }, py[4] = { *y, *y, *y + *h, *y + *h };
+        for (box* p = b; p; p = p->parent) {
+            if (!p->st || !p->st->hastransform || !tf_has_linear(p->st)) continue;
+            float qx = 0, qy = 0;
+            for (box* q = p; q; q = q->parent) { qx += q->ox; qy += q->oy; if (q != p && scrolled) { qx -= q->sx; qy -= q->sy; } }
+            float X0 = p->x + qx - p->btx, Y0 = p->y + qy - p->bty;
+            float m[6]; tf_matrix(p->st, p->w, p->h, m);
+            float ox0 = lres(p->st->tox, p->w), oy0 = lres(p->st->toy, p->h);
+            for (int k = 0; k < 4; k++) { float lx = px[k] - X0 - p->btx - ox0, ly = py[k] - Y0 - p->bty - oy0; px[k] = X0 + ox0 + m[0] * lx + m[2] * ly + m[4]; py[k] = Y0 + oy0 + m[1] * lx + m[3] * ly + m[5]; }
+        }
+        float x0 = px[0], x1 = px[0], y0 = py[0], y1 = py[0];
+        for (int k = 1; k < 4; k++) { if (px[k] < x0) x0 = px[k]; if (px[k] > x1) x1 = px[k]; if (py[k] < y0) y0 = py[k]; if (py[k] > y1) y1 = py[k]; }
+        *x = x0; *y = y0; *w = x1 - x0; *h = y1 - y0;
+    }
+    if (fixed) *y += G.scroll;
 }
 
 static box* hit_rec(box* b, float x, float y, float dx, float dy, frag** fo, int depth) {
@@ -1552,31 +1738,29 @@ static box* hit_rec(box* b, float x, float y, float dx, float dy, frag** fo, int
     float bx = b->x + dx, by = b->y + dy;
     int clip = (b->st->ovx != OV_VISIBLE || b->st->ovy != OV_VISIBLE) && b->parent;
     if (clip && (x < bx || x >= bx + b->w || y < by || y >= by + b->h)) return 0;
-    float sy = b->sy;
+    float sy = b->sy, sxo = b->sx;
     box* best = 0;
     box* kids[512];
+    int kz[512];
     int nk = 0;
-    for (box* c = b->first; c && nk < 512; c = c->next) kids[nk++] = c;
-    for (int pass = 1; pass >= 0; pass--) {
-        for (int i = nk - 1; i >= 0; i--) {
-            box* c = kids[i];
-            if (!c->st) continue;
-            int pos = c->st->position != P_STATIC || c->st->flt != FL_NONE;
-            if ((pass == 1) != pos) continue;
-            if (c->kind == BX_TEXT || c->kind == BX_BR) continue;
-            if (c->kind == BX_INLINE) {
-                box* r = hit_rec(c, x, y, dx, dy - sy, fo, depth + 1);
-                if (r) return r;
-                continue;
-            }
-            box* r = hit_rec(c, x, y, dx, dy - sy, fo, depth + 1);
-            if (r) return r;
-        }
+    for (box* c = b->first; c && nk < 512; c = c->next) { kids[nk] = c; kz[nk] = c->st && !c->st->zauto && (c->st->position != P_STATIC) ? c->st->zindex : 0; nk++; }
+    box* ord[512];
+    int no = 0;
+    for (int i = nk - 1; i >= 0; i--) { box* c = kids[i]; if (!c->st) continue; if (!(c->st->position != P_STATIC || c->st->flt != FL_NONE) || kz[i] < 0) continue; int j = no; while (j > 0) { box* q = ord[j - 1]; int qz = 0; for (int t = 0; t < nk; t++) if (kids[t] == q) { qz = kz[t]; break; } if (qz >= kz[i]) break; ord[j] = ord[j - 1]; j--; } ord[j] = c; no++; }
+    for (int i = nk - 1; i >= 0; i--) { box* c = kids[i]; if (!c->st) continue; if (c->st->position != P_STATIC || c->st->flt != FL_NONE) continue; ord[no++] = c; }
+    for (int i = nk - 1; i >= 0; i--) { box* c = kids[i]; if (!c->st) continue; if (!(c->st->position != P_STATIC || c->st->flt != FL_NONE) || kz[i] >= 0) continue; int j = no; while (j > 0) { box* q = ord[j - 1]; if (!(q->st->position != P_STATIC || q->st->flt != FL_NONE)) break; int qz = 0; for (int t = 0; t < nk; t++) if (kids[t] == q) { qz = kz[t]; break; } if (qz >= 0 || qz >= kz[i]) break; ord[j] = ord[j - 1]; j--; } ord[j] = c; no++; }
+    for (int i = 0; i < no; i++) {
+        box* c = ord[i];
+        if (c->kind == BX_TEXT || c->kind == BX_BR) continue;
+        box* r = hit_rec(c, x, y, dx - sxo, dy - sy, fo, depth + 1);
+        if (r) return r;
     }
     for (int i = b->nfr - 1; i >= 0; i--) {
         frag* f = &b->fr[i];
         if (f->kind != FK_TEXT && f->kind != FK_IBG) continue;
-        float fx = f->x + dx, fy = f->y + dy - sy;
+        const style* fs = f->st ? f->st : b->st;
+        if (fs->pevents || fs->visibility) continue;
+        float fx = f->x + dx - sxo, fy = f->y + dy - sy;
         if (x >= fx && x < fx + f->w && y >= fy && y < fy + f->h) {
             if (fo) *fo = f;
             best = f->b ? f->b : b;
@@ -1585,6 +1769,7 @@ static box* hit_rec(box* b, float x, float y, float dx, float dy, frag** fo, int
         }
     }
     if (b->kind == BX_INLINE) return 0;
+    if (b->st->pevents || b->st->visibility) return 0;
     if (x >= bx && x < bx + b->w && y >= by && y < by + b->h) return b;
     return 0;
 }
@@ -1594,7 +1779,7 @@ static int caret_rec(box* b, node* tn, int off, float dx, float dy, float* ox, f
     dx += b->ox;
     dy += b->oy;
     if (b->st->position == P_FIXED) dy += G.scroll;
-    float sy = b->sy;
+    float sy = b->sy, sxo = b->sx;
     for (int i = 0; i < b->nfr; i++) {
         frag* f = &b->fr[i];
         if (f->kind != FK_TEXT || !f->b || f->b->n != tn || !tn->text) continue;
@@ -1606,12 +1791,12 @@ static int caret_rec(box* b, node* tn, int off, float dx, float dy, float* ox, f
         if (nxt) continue;
         int k = off - o0;
         float w = k >= f->n ? f->w + (k > f->n ? font_adv(f->st->face, f->st->fsize, ' ') : 0) : text_width(f->st->face, f->st->fsize, f->s, k, f->st->lspace);
-        *ox = f->x + dx + w;
+        *ox = f->x + dx - sxo + w;
         *oy = f->y + dy - sy;
         *oh = f->h;
         return 1;
     }
-    for (box* c = b->first; c; c = c->next) if (caret_rec(c, tn, off, dx, dy - sy, ox, oy, oh, depth + 1)) return 1;
+    for (box* c = b->first; c; c = c->next) if (caret_rec(c, tn, off, dx - sxo, dy - sy, ox, oy, oh, depth + 1)) return 1;
     return 0;
 }
 int caret_pos(node* tn, int off, float* x, float* y, float* h) {

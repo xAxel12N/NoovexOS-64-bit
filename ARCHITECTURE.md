@@ -1,6 +1,6 @@
 # NoovexOS 64 Architecture and Developer Reference
 
-Version 9.83. x86-64, BIOS and UEFI, written from scratch.
+Version 10.60. x86-64, BIOS and UEFI, written from scratch.
 
 This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating system with its own boot loaders, kernel, drivers, file system, network stack, desktop and Linux-compatible user space. It was written from the source code, with file paths and symbol names so you can find the implementation. Where the code does something surprising or has a known gap, the text says so.
 
@@ -9,7 +9,7 @@ This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating
 | Area | What is there | Part |
 |---|---|---|
 | Boot | BIOS loader (myboot) and UEFI loader, hybrid ISO/USB image, SHA-256 build signature that stops the boot if the kernel was modified | [2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
-| Kernel | 146 separately compiled C and C++ units with interface headers under `include/nvx/`, a 77 MB flat image (100 MB limit) with compressed programs, the web engine, glibc, GNU tools and CPython 3.13, identity-mapped kernel, demand paging and copy-on-write for programs | [1](#part-1-overview-source-layout-and-build-system), [3](#part-3-memory) |
+| Kernel | 153 separately compiled C and C++ units with interface headers under `include/nvx/`, a 77 MB flat image (100 MB limit) with compressed programs, the web engine, glibc, GNU tools and CPython 3.13, identity-mapped kernel, demand paging and copy-on-write for programs | [1](#part-1-overview-source-layout-and-build-system), [3](#part-3-memory) |
 | CPU | Up to 16 cores with per-CPU state, a ticket big kernel lock, IPIs for rescheduling, TLB shootdown and halt; cores start automatically | [4](#part-4-cpu-interrupts-timers-and-multi-core) |
 | Programs | 256 processes and threads, futexes, signals, timers, job control, pipes; native `int 0x80` ABI and a Linux `syscall` ABI that runs static and dynamic musl programs (SQLite, gzip, xz, zstd, the kilo editor, the `fetch` HTTPS client) | [5](#part-5-processes-scheduling-signals-and-the-native-system-call-abi), [6](#part-6-linux-compatibility-libc-and-porting-applications) |
 | Files | NVX4 (extents, two checksummed metadata copies, safe against power cuts), FAT, NTFS via ntfs-3g, Unix permissions | [7](#part-7-file-systems) |
@@ -22,10 +22,1050 @@ This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating
 
 ## How to read this document
 
-- New to the code: read "What changed in v9.83", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
+- New to the code: read "What changed in v10.60", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
 - Porting a program: go to Part 6; the step-by-step guide is in section 6.9.
 - Chasing a bug: start with the troubleshooting table in section 12.9 and the serial log in section 12.5.
 - Paths are relative to the root of the repository (since v9.83 the source tree is flat: `arch/`, `boot/`, `core/`, `drivers/`, `fs/`, ... at the top).
+
+## What changed in v10.60
+
+| # | Before (v10.59) | Now (v10.60) | Where |
+|---|---|---|---|
+| 1 | Twelve source files were 700 to 2,400 lines long (`linux.c`, `commands.c`, `webglue.c`, `browser.c`, `xhci.c`, `desktop.c`, `nvgsp.c`, `file_explorer.c`, `jobs.c`, `settings.c`, `installer.c`, `apt.c`). | Each is split into 2 to 7 pieces of at most a few hundred lines in a `NAME_parts/` folder, named after their first function. The compiled code is byte-identical. `tools/splitc.py` splits further files and shows a file with its pieces put back. | section 3.5 |
+| 2 | A review of the splitter found that it could cut inside a block comment opened on a `#define` line, named some pieces after a prototype, and would split a piece again. | The scanner now follows comments on preprocessor lines, piece names come from the first function definition, pieces are refused, and putting a file back together follows nested pieces. None of the 12 split files were affected. | section 3.5 |
+
+## What changed in v10.59
+
+A bug hunt: the NVIDIA 2D path read line by line, five reviews of the rest of the system, and longer fuzz runs. Every row is a confirmed bug that is now fixed.
+
+| # | Before (v10.58) | Now (v10.59) | Where |
+|---|---|---|---|
+| 1 | NVIDIA: after a failed screen read-back Gears kept drawing through the 2D engine into VRAM that was not the screen; stale tiles stayed; GPU mappings leaked or outlived freed memory; the 2D push buffer had no size check; step 17 left its test surface mapped. | Fixed (section 10.10.8, which also has the new plan for NVIDIA 2D). | `drivers/video/nvidia/nvgsp.c`, `nvdraw.c` |
+| 2 | A web server could send a chunk size with 8 hex digits; it wrapped negative and the chunk decoder looped for ever or copied outside the buffer. | Chunk sizes above 64 MB end the body. | `apps/internet/webglue.c` |
+| 3 | The TLS connection read the TCP payload length from the IP header without limiting it to the received frame (up to 18 KB read past a 1600-byte stack buffer). | Limited to the frame. | `net/http/http.c` |
+| 4 | Plain HTTP requests sent and accepted `Secure` cookies. | Plain HTTP uses an `http://` address for the cookie jar. | `net/http/http.c` |
+| 5 | A FIN was accepted out of order (downloads cut short), and `sock_recv` acknowledged bytes it threw away. | FIN only at the expected sequence; only copied bytes are acknowledged. | `net/stack/tcpip.c`, `sockets.c` |
+| 6 | AHCI disk commands that timed out reported success, so old buffer data was returned as read. | A timeout is an error. | `drivers/storage/gdisk.c` |
+| 7 | A second USB headset with bigger packets made the controller write past the audio buffers. | Buffers grow when needed. | `drivers/usb/xhci.c` |
+| 8 | The HD Audio info text could overflow its 160-byte buffer on desktop codecs. | 640 bytes. | `drivers/sound/hda.c` |
+| 9 | Unplugging a USB stick never freed its controller slot; after about 32 plugs no USB device worked until a restart. A broken FAT32 stick could make a write spin for billions of steps. | Slot freed on unplug; FAT size checked. | `drivers/usb/xhci.c` |
+| 10 | A corrupt FAT disk could make the kernel read and write outside its FAT table (cluster numbers from the disk were not checked). | Every FAT access checks the cluster; the root cluster is checked at mount. | `fs/fat/vfat.c` |
+| 11 | A normal user could move a hard link into a folder they may not write to. | Needs write permission on both folders. | `fs/vfs/unixfs.c` |
+| 12 | Native programs: `F_DUPFD` with a negative start wrote outside the file table, exec with long arguments wrote past a 128-byte buffer, `brk`/`sbrk` had no limit. | Bounded. | `core/proc/jobs.c`, `sys/native/syscall.c` |
+| 13 | The Editor wrote past its line table on files with 200 or more lines. | Stops at the last line. | `apps/office/editor.c` |
+| 14 | Clicks reached windows on other workspaces. Ctrl+C at a Wi-Fi password prompt left password mode on. A half-typed Terminal line survived sign-out and went to the next user. | Fixed. | `graphics/ui/input.c`, `shell/commands.c`, `shell/terminal.c` |
+| 15 | The system-call fuzzer hung on seeds 14 and 15 (an `epoll_pwait` with a 56-hour timeout on a real epoll file, which Linux would also wait for). | The fuzzer gives epoll waits timeout 0; seeds 14 and 15 pass (94,000 calls each). | `tools/tests/linux/lxfuzz.c` |
+
+Not fixed in this release (found, written down in the handoff): Linux `getdents` (old format) reads record lengths back from user memory; typed-ahead keys are dropped when a command ends; Terminal lines are cut at 254 characters; mouse-wheel scrolling in the Editor snaps back; RST and checksums are not checked on received TCP segments; no TCP resend in `tcps_wr`; memfd write seals can be undone with `mprotect`; parts of the system-call layer (`lxsock.c`, ioctl, epoll, execve) and the file systems were not reviewed to the end.
+
+## What changed in v10.58
+
+| # | Before (v10.57) | Now (v10.58) | Where |
+|---|---|---|---|
+| 1 | Python had no pip: `python3 -m pip` failed and only the standard library was there. | pip 26.2.1 (`pip`, `pip3`), venv, and built-in libraries: requests, httpx, urllib3, websockets, Flask, Bottle (plus their helpers) and numpy 2.5.3 with pandas 3.0.5. `pip install` works as on Linux: as the built-in folder is read-only, packages go to `~/.local` (commands to `~/.local/bin`, which is now on the command path), and a newer version of a built-in package shadows it until `pip uninstall`. | `ports/python-*`, `third_party/pylibs/` (section 6.17a) |
+| 2 | A new folder could not be created inside a folder that exists only in the Linux files and is more than 3 levels deep (`ENOENT`); `access(W_OK)` said such folders were writable. | The missing folders are created in the writable tree first; `access(W_OK)` answers `EROFS` for read-only folders. | `fs/vfs/vfs.c`, `sys/linux/linux.c` |
+| 3 | A symbolic link whose target is in the Linux files (a venv's `python -> /usr/bin/python3.13`) could not be followed by `stat`, `open` or `exec`, so `python3 -m venv` failed. | The link chain is resolved first, then the Linux files are asked. | `fs/vfs/unixfs.c`, `core/proc/jobs.c` |
+| 4 | Every program in the Linux files was added by more lines in `build.sh` (524 lines, four scripts written as here-documents). | Ports and distro profiles: one folder per port (`ports/NAME/PORT`), profiles in `distro/` say which ports a variant contains (installed or as apt packages), `tools/nvxport.py` lists, checks, creates and stages them, and writes `/etc/os-release` from the profile. `build.sh` is down to 368 lines; `NVX_PROFILE=distro/noovexos-lite.profile sh build.sh` builds a Lite variant. | `tools/nvxport.py`, `ports/`, `distro/` (section 6.29) |
+
+Tested in the emulator (UEFI, 4 GB): everything in rows 1 to 3 (section 6.17a lists the tests). Not tested: pypi.org itself (the build machine cannot reach it; a local HTTPS package index was used), installing packages that need a compiler.
+
+## What changed in v10.57
+
+| # | Before (v10.56) | Now (v10.57) | Where |
+|---|---|---|---|
+| 1 | Do not disturb only hid the red dot on the bell. | Focus modes. A Focus tile in Quick Settings (a Focus button in the modern style) opens a list: Do not disturb, Sleep, Work, Gaming and your own focuses, plus "Create focus" and "Focus settings". Each focus can hide pop-ups (with a list of apps that may still show them), mute sounds, set night light, brightness and battery saver, switch the theme, lock after 1 minute and hide games from the Start menu. It can turn on by schedule (time and days), when an app starts (choose DOOM, Quake or other apps under Turn on automatically; none by default), at sign-in or at 20% battery, and turns off again when the schedule ends or the app closes. Its icon shows on the taskbar and its name on the lock screen. Settings > System > Focus, the `focus` command, files in `/etc/noovex/focus` and `/System/Focus`, registry `User\Focus\Current`. | `core/focus.c` (section 11.20) |
+| 2 | Seeing Wi-Fi networks could take minutes: the driver's microsecond wait was about 8 times too long, and Wi-Fi had to be started with five Terminal commands. | The wait uses the precise timer; Wi-Fi starts when you press Scan or switch it on (and by itself at start when a saved network exists); the list fills in about 4 seconds while it scans. Only the Realtek RTL8821CE (PCI 10EC:C821, B821, C82A, C82B) is driven; other Wi-Fi cards are left alone. | `drivers/net/wifi/rtw_efuse.c`, `net/wifi/wifi_mgr.c` |
+| 3 | A Wi-Fi link died at the router's group-key change, after a disconnect or when the router went away, and never came back. | Group-key updates are answered; disconnects and lost beacons are noticed; it reconnects and gets a new address; a lost handshake message is answered again. | `net/wifi/wifi_netdev.c`, `drivers/net/wifi/rtw_sec.c` |
+| 4 | Networks were not remembered. | Saved networks (`/etc/noovex/wifi/networks`, root only) with auto-connect at start and sign-in, priority, Auto/Manual, Forget and hidden networks. | `net/wifi/wifi_mgr.c` |
+| 5 | Wi-Fi sent at 1 Mbit/s, 2.4 GHz only, with no transmit power set. | The firmware picks the rate (802.11n MCS 0-7 when the network has it, falls back to the safe rate if no address comes); 5 GHz channels 36-165 at 20 MHz; transmit power from the chip's calibration data; 20 MHz baseband, antenna path and TX swing as in Linux rtw88. | `drivers/net/wifi/rtw8821ce.c`, `rtw_sec.c` |
+| 6 | - | Wi-Fi off and airplane mode stop the radio; `wifi powersave on` lets the chip sleep when idle (experimental). | `net/wifi/wifi_mgr.c` |
+| 7 | Wi-Fi screens showed names and dots. | Signal bars, lock, band, security type and "saved" in Quick Settings and Settings; Wi-Fi on/off, Hidden..., options and saved networks in Settings; Wi-Fi details in Network details; `wifi` command (on, off, scan, list, saved, connect, eap, hidden, forget, disconnect, auto, 5g, powersave, rate); `/System/Hardware/wifi.nvh`. | `graphics/ui/desktop.c`, `apps/system/settings.c`, `shell/commands.c` |
+| 8 | WPA2-Personal only. | WPA3-Personal (SAE) with protected management frames, PSK-SHA256, open networks, and a "sign in to the network" check after connecting. Old TKIP-only networks are refused with a clear message. | `net/wifi/wpa3.c`, `rtw_sec.c` |
+| 9 | - | School/work Wi-Fi (eduroam): PEAP with user name and password (MSCHAPv2). The server certificate is remembered on the first connection and a changed certificate is refused. | `net/wifi/eap.c` |
+| 10 | - | Stability and security fixes found by a code search and 20 review passes: network packets that could crash the kernel (TCP length, DNS answers), a USB headset that could hang the system, keyboards with media keys overwriting a hub or camera, the Wi-Fi send ring stalling after 256 frames, registry keys lost above 48, account files cut at 4 KB, Trash index overflow, folder-tree loops, `cat`/`edit` reading other users' files, passwords written to the logs, and more. | many (see the handoff) |
+
+Tested in the emulator (UEFI, 4 GB): `focus list` and `focus sleep` turned on night light, mute and the 1-minute lock, the lock screen showed "Sleep is on", Quick Settings showed the Sleep tile and the focus list, Settings > Focus created a "Reading" focus, Work hid the Games group, Gaming turned on when DOOM started and off when it closed (tested before the app trigger was made opt-in), Edit, duplicate names and the Settings search box worked with a focus text field open; `wifi`, `wifi scan` (no Wi-Fi card in the emulator) and `/System/Hardware/wifi.nvh` worked. The radio parts of Wi-Fi cannot run in the emulator; their security maths is checked by a new host test (`check.py`, group `wifi`): WPA3 SAE against IEEE 802.11 Annex J.10, AES-CMAC (RFC 4493), MSCHAPv2 (RFC 2759), MD4 and DES. Connecting to real networks (WPA2, WPA3, eduroam, 5 GHz) still needs a test on the laptop.
+
+## What changed in v10.56
+
+| # | Before (v10.55) | Now (v10.56) | Where |
+|---|---|---|---|
+| 1 | `/System` had Kernel, Drivers, Services, Fonts, Config and Logs with `.drv`, `.svc`, `.reg`, `.font` and `.log` files. | `/System` has the full NoovexOS layout with its own file types: `Kernel/noovex.nvk` (the kernel: version, build date, SHA-256, entry) and `kernel.nvi`; `Drivers/*.nvd`; `Modules/net.nvm`, `virtio.nvm`, `sound.nvm` (the separately built modules and which of their drivers are loaded); `Libraries/*.nvl` (one per shared library in the Linux files); `Programs/*.nvx` (three NoovexOS example programs); `Apps/*.nva` (one per built-in app); `Services/*.nvs`; `Config/SYSTEM.nvr` and `user-NAME.nvr`; `Logs/System.nvg`, `Security.nvg` (also includes `/var/log/auth.log`), `Application.nvg` (every line with date, time, level and source); `Crash/<date>.nvq` (the last crash report) and `last.nvf` (the last 60 seconds); `Boot/boot.nvb` (firmware, loader, every boot step); `Hardware/*.nvh` (cpu, gpu, memory, power, storage, network, sound, usb, display, input, pci, camera, microphone); `Fonts/*.nvo`; `Media/*.nvn` (eight system sounds); `Themes/*.nvw` (six themes); `Restore/*.nvz` (restore points). | `core/sysfiles.c` (section 11.19) |
+| 2 | Files showed one generic icon per kind of file. | Files and the desktop draw a logo for each file type (about 120 extensions): zip and other archives get a zipper, pictures a mountain and sun, video a play sign, sound a note, Word/Excel/PowerPoint/PDF their own colours and letters, code files their language (C, RS, PY, JS ...), and every NoovexOS type its own sign (chip for `.nvk`, plug for `.nvd`, puzzle piece for `.nvm`, books for `.nvl`, N for `.nvx` ...). The preview pane names the type ("ZIP archive", "NoovexOS driver"). | `apps/system/file_explorer.c` (`FXI[]`, `fx_xicon`) |
+| 3 | - | Double-click actions: `.nva` opens the app, `.nvw` applies the theme (wallpaper and accent, administrators), `.nvr` opens Registry Editor, `.nvn` plays the sound, `.nvx` opens and runs the program. | `core/sysfiles.c` (`sysfiles_open`), `apps/media/videoplayer.c` |
+| 4 | - | Restore points: once a day (and before going back) NoovexOS saves all registry hives to `/var/lib/noovex/restore/DATE.nvz` (kept on the disk, last 10). `restore` lists them, `sudo restore DATE` goes back, `sudo restore create` makes one now. | `core/sysfiles.c` (`sysfiles_restore`), `shell/commands.c` |
+| 5 | Cameras: only YUY2, NV12 and MJPEG; only the first video stream; bulk-streaming cameras were refused; if a size needed more USB bandwidth than the camera offered, the stream started broken. | More cameras work: UYVY, I420, YV12 and grey/infrared (Y800, GREY, Y8) pictures; cameras with several streams (a laptop's colour + infrared camera) pick the colour one, and Camera has a "Switch camera" button; bulk-streaming cameras are supported; sizes that do not fit the USB bandwidth are skipped first and up to 16 sizes are tried. `/System/Hardware/camera.nvh` shows the camera details. | `drivers/usb/xhci.c` (`uvc_*`), `apps/media/camera.c` |
+| 6 | Microphones: USB microphones only with 16-bit, 1-2 channels and USB Audio 1.0; the microphone built into a webcam was never used; the laptop's internal microphone was used even with a headset plugged in. | 24-bit and 32-bit USB microphones and up to 8 channels (array microphones, the first two channels are used); USB Audio 2.0 devices (sample rate set through the clock); a webcam's microphone is set up together with the camera ("Camera microphone ready"); on the built-in sound card a plugged-in headset microphone is used instead of the internal one. `/System/Hardware/microphone.nvh` shows the microphones. | `drivers/usb/xhci.c` (`aud_*`), `drivers/sound/hda.c` (`pick_in`) |
+
+Tested in the emulator (UEFI, 4 GB): `ls` of every `/System` folder showed the layout above; `System.nvg`, `Application.nvg`, `last.nvf`, `boot.nvb`, `net.nvm`, `taskmgr.nva`, `noovex.nvk`, `forest.nvw`, `cpu.nvh` and the Media sizes were correct; `restore` listed today's restore point. In Files, `/System/Themes/forest.nvw` (double-click) changed the wallpaper to Yosemite and the accent to green, `regedit.nva` opened Registry Editor, `startup.nvn` played in the media player (pcm_s16le, 0.8 s), and the Drivers and Themes folders showed the new logos. The emulator has no USB camera or USB microphone, so the camera and microphone code was tested with a new host test built from `xhci.c` (21 checks, part of `tools/check.py`): a colour + infrared camera with two streams, the five new picture formats, a bulk camera, 16 KB bulk transfers, a 24-bit stereo microphone and a USB Audio 2.0 microphone. They still need a test with real hardware.
+
+## What changed in v10.55
+
+| # | Before (v10.54) | Now (v10.55) | Where |
+|---|---|---|---|
+| 1 | There was no place to see what the system itself is running. | A `/System` folder, like Windows' System32. The kernel builds it at every start: `Kernel/kernel.info` (version, build date, SHA-256, processor, cores, memory, UEFI or BIOS, screen, moved firmware pages, uptime), `Drivers/` (one `.drv` file per driver in the kernel, 28 in all, each "Loaded", "Not loaded (device found)" or "Not loaded" with the reason; `drivers.txt` lists them all and `devices.txt` lists every device like Task Manager > Devices), `Services/` (one `.svc` file per background service with status, runs and CPU time), `Fonts/` (one `.font` file per built-in font), `Config/` (the registry files `SYSTEM.reg` and `user-NAME.reg`, as links to `/etc/noovex/registry`) and `Logs/` (`kernel.log`, every kernel log line since start, updated every 2 seconds; `network.log`). | `core/sysfiles.c` (section 11.18) |
+| 2 | - | `/System` belongs to root (folders 0755, files 0644): other accounts can read it but not change, delete or add anything. It is never written to the disk; the kernel writes it again at the next start. The `sysfiles` command refreshes it at once. Drivers, services and `kernel.info` are refreshed every 30 seconds. | `core/sysfiles.c`, `fs/vfs/dirtree.c` (`dt_is_tmp`), `shell/commands.c` |
+| 3 | `mkdir` from a standard account could make folders anywhere, for example in `/etc`. The Files app let any account rename or delete folders, rename files and paste into folders it does not own. | `mkdir` (Linux and NoovexOS programs and the shell) checks that the account may write to the parent folder; the Files app checks the same before New folder, New file, Rename, Delete (folders) and Paste, and says "Permission denied". A shell redirect (`> file`) that cannot write now says so instead of saying nothing. | `sys/linux/linux.c` (`lx_mkdir`), `sys/native/syscall.c` (mkdir), `fs/vfs/vfs.c`, `apps/system/file_explorer.c`, `shell/commands.c` |
+| 4 | The Files folder tree listed `/Programs` last, below the bottom of the panel. | `/Programs` and `/System` are listed first. | `apps/system/file_explorer.c` |
+
+Tested in the emulator (UEFI, 4 GB): `ls -l /System` showed six root-owned folders and README.txt; `kernel.info` showed v10.55, UEFI, 2 cores, 4087 MB and one moved firmware page; `drivers.txt` showed 7 of 28 drivers loaded (after the network started, `e1000.drv` said "Loaded - network adapter in use"); `net.svc`, the font files, `SYSTEM.reg` (link) and `kernel.log` (110 lines, with the latest commands) were correct; `network.log` showed the DHCP messages. As a standard account (`bob`), writing, deleting, `touch`, `mv` and `mkdir` in `/System` and `mkdir /etc/x` were all refused, while `mkdir -p /home/bob/a/b` still worked.
+
+## What changed in v10.54
+
+| # | Before (v10.53) | Now (v10.54) | Where |
+|---|---|---|---|
+| 1 | Settings were spread over several files and could only be changed in Settings. | A registry in `/etc/noovex/registry` (`system.reg` for the computer, `user-NAME.reg` per account). Accent colour, theme, clock seconds, keyboard layout and repeat, guest account, lock time, lid and power button, and the USB sign-in switch are registry values: changing them in the registry changes the setting at once. Any other keys and values can be added. Shell: `reg list/get/set/add/delete/export/import`. | `core/registry.c` (section 11.17) |
+| 2 | - | Registry Editor, a hidden app (not in the Start menu): open it with `regedit` or Win+Shift+R. It has a key tree, values with Name, Value and About, New key, New value, Edit (double click or Enter), Delete, Export, Import and search. Read-only values are grey; System keys need an administrator. | `apps/system/regedit.c` |
+| 3 | - | Program Files: `/Programs` has a folder per app with an `app.info` file (name, version, publisher, kind, package, size, icon, command, description). It covers the built-in apps, the Linux programs included with NoovexOS (LibreOffice) and programs installed with `apt`. `programs` lists them (`programs -a` includes hidden apps). Settings > Apps lists the apps with Open, and Uninstall for `apt` programs. | `core/progfiles.c`, `apps/system/settings.c`, `apps/x11/xapps.c` |
+| 4 | Task Manager's "Background" section showed six fixed names and the number 6. | "Background services" shows the real services with CPU use, status and a Stop or Start button. "Hidden apps" shows every program running without a window (pid, CPU, state), with Hide or Show hidden; End task ends a selected hidden app. Ctrl+Shift+Esc opens Task Manager. | `apps/system/taskmgr.c`, `apps/system/services.c`, `graphics/ui/input.c` |
+
+Tested in the emulator (UEFI, 4 GB): `reg list System` showed every bound value; `reg set System/Display Accent 2` changed the accent colour, 9 was refused as out of range, `System/Info Version` was refused as read only. A `User/MyApp` key exported to a file, deleted, and imported again came back. In the Registry Editor (opened with Win+Shift+R), Accent was edited with a double click and the desktop accent changed. Task Manager (opened with Ctrl+Shift+Esc) listed the 7 services and `init` as a hidden app; Stop on Clock sync stopped it. `/Programs` had 21 folders. Settings > Apps showed the list with icons and Open buttons and scrolls with the mouse wheel. A test package (`demo-app`, files listed in `/var/lib/nvpkg/demo-app.list`, because the emulator cannot reach the Debian servers) appeared as "Installed with apt - 1 KB - package demo-app" with an Uninstall button; Uninstall removed it and its `/Programs` folder.
+
+## What changed in v10.53
+
+| # | Before (v10.52) | Now (v10.53) | Where |
+|---|---|---|---|
+| 1 | Finishing first-time setup went straight to the desktop, so the new sign-in screen was never seen right after setup. | Setup ends on the sign-in screen with the new account selected; the password (and Face ID, when set up) can be tried at once. This also works when setup is run without installing ("Skip" on the disk page); the accounts it creates are checked like on an installed system. | `core/init/setup.c` (`su_finish`) |
+| 2 | Starting from a USB stick went straight to the Terminal. | Starting from a USB stick shows the sign-in screen first ("Press Return to unlock"), then the Terminal as before. Settings > Accounts > Sign-in options has "Sign-in screen when starting from the USB stick"; the choice is saved as `LIVELOCK.TXT` on the stick. A start from a CD or a disk image without a USB stick is unchanged. | `core/init/setup.c` (`live_lock_start`), `core/crash.c` (`live_lock_on`, `live_lock_set`), `core/init/main.c`, `apps/system/settings.c`, `core/auth/acctui.c` |
+
+Tested in the emulator: UEFI start from the ISO attached as a USB stick showed the sign-in screen, Return went to the Terminal, a command ran; Settings showed the new row ticked, clicking it turned it off, and the next start from the same stick went straight to the Terminal. Setup run with "Skip" (no installation) ended on the sign-in screen for the new account; a wrong password gave "Wrong password - try again", the right one opened the desktop.
+
+Found while testing, not fixed: in QEMU with UEFI and two IDE disks, `disks` lists the empty 8 GB disk, but the installer's disk page says "No disk found" and `disks` reports "no PCI mass-storage controller". This was not investigated yet.
+
+## What changed in v10.52
+
+| # | Before (v10.51) | Now (v10.52) | Where |
+|---|---|---|---|
+| 1 | Setting up Face ID asked the person to turn their head slowly while 10 face prints were collected. | Just look at the camera: 5 face prints from consecutive pictures, all checked to be the same person (within 0.4 of the first). The scan says "Look at the camera" or "Hold still". The face engine looks for faces in a half-size picture first, about three times faster; setting up takes a few seconds on a laptop. | `tools/faceid/nvx-faceid.cpp`, `include/nvx/core/auth/faceid.h`, `core/init/setup.c` (section 11.16) |
+| 2 | The `smpwork` command froze NoovexOS for about a minute: it waited for the other cores while holding the kernel lock those cores needed. | It lets go of the lock while waiting, gives up after 15 s, and skips jobs it could not queue. | `shell/commands.c` |
+| 3 | The UEFI loader wrote the kernel over firmware memory inside the kernel image (in QEMU's UEFI firmware 32 KB of ACPI NVS at `0x800000`), and the installer then refused to run. | Kernel code pages that overlap firmware memory are moved like the other kernel memory. The loader saves the firmware's ACPI and runtime data before overwriting it, and the kernel puts it back once the pages are moved. Moved pages no longer count as conflicts, so the installer runs. The ACPI interpreter can no longer write into the kernel through those addresses. | `boot/uefi/uefiboot.c`, `arch/x86_64/interrupts/early_fault.c`, `core/init/installer.c`, `drivers/acpi/acpi_dev.c`, both linker scripts (section 3.18) |
+| 4 | `dd`, `tar` and `gzip` were missing from the Linux files. | Added, with `sha1sum`. | `build.sh` |
+
+How the stability problems were found: a stress run in the emulator (4 cores, 4 GB: Python, QuickJS, pipes, 8 parallel shells, 32 MB files, `nvx-mem test`, repeated for 10 rounds) showed no errors, no heap damage (`memcheck`: 0 overruns, 0 double frees, 0 re-entries) and no memory growth. All built-in self-tests were then run: `kcheck`, `memtest`, `fdtest` and `forktest` passed, `smpwork` froze (item 2), `timertest` and `preempt` passed. The firmware-memory warning on every UEFI start in QEMU led to item 3.
+
+Tested in the emulator: UEFI (CD) with 4 GB: the 2 MB code page at `0x800000` moved above 4 GiB, 992 KB of firmware data put back (QEMU's monitor shows the firmware's bytes at `0x800000` again instead of kernel code), `memmap` shows every kernel area "ok", desktop reached. The test loader with 3 GB (reserved memory faked at `0x10000000`, a test pattern saved): 26 MB moved, the pattern was back at `0x10000000`. BIOS (hard disk) boot. Face ID: set up from one test picture (5 prints), a different picture of the same person was recognized, a picture without a face was refused.
+
+## What changed in v10.51
+
+| # | Before (v10.50) | Now (v10.51) | Where |
+|---|---|---|---|
+| 1 | On the owner's Lenovo laptop (UEFI) the kernel stopped right after "crash: function names are built in". The loader had warned that firmware-reserved memory at `0x10000000` overlaps a kernel area. | Cause found and fixed: the boot stack guard wrote a virtual address into the page tables as if it were physical. That only goes wrong when kernel memory has been moved away from the firmware's block, which is exactly the Lenovo case. The guard now converts the address first. | `core/crash.c` (`stk_guard_boot`, section 3.16) |
+| 2 | Kernel memory was only moved away from ranges that are not RAM, and only to RAM above 4 GiB. | Kernel memory is also moved away from memory the firmware has reserved, to RAM above 4 GiB or, with less RAM, to the highest free place below 4 GiB that is not the Linux files. The loader's warning now says "the kernel moves that part". | `arch/x86_64/interrupts/early_fault.c`, `boot/uefi/uefiboot.c` |
+| 3 | A stop early in the boot showed only the last message before it. | One short line after each early step: where kernel memory was moved, slab, frame pool, crash handler and stack guard, and where the Linux files were found. | `core/init/main.c`, `fs/vfs/sysroot.c` |
+| 4 | The BIOS loader always put the Linux files at 512 MiB. | It reads the firmware memory map first and uses the highest free place below 4 GiB when 512 MiB is not free; the kernel finds the files by their magic number. | `boot/src/stage2.c`, `fs/vfs/sysroot.c` |
+| 5 | Face ID used any face, also very small ones or one of several faces in view. | Only one face at least 96 pixels wide counts; otherwise the scan shows "Move a little closer" or "Only one face in view, please". The picture buffer (1.2 MB) is freed after each check, and the answer stream resynchronizes if it gets out of step. | `tools/faceid/nvx-faceid.cpp`, `core/auth/faceid.c`, `core/init/setup.c` (section 11.16) |
+| 6 | `/proc/meminfo` always said three quarters of RAM were free. | Real numbers from the kernel heap; a new line `KernelHeap`. | `mem/heap_api.c`, `fs/vfs/unixfs.c`, `fs/vfs/vfs.c` (section 3.17) |
+| 7 | One Rust program (`rustinfo`). | `nvx-mem`, a Rust memory tool: memory in use, a multi-threaded memory test with seven patterns, and a speed test. | `rust/nvxmem`, `tools/build_rust_apps.sh` (section 3.17) |
+
+Tested in the emulator, with test loaders that pretend the firmware reserves `0x10000000-0x11800000`: UEFI with 6 GB (kernel memory moved above 4 GiB) and 3 GB (moved to `0xBC600000`) both reached the desktop, and bash, Python and QuickJS ran; before the fix the same test stopped exactly like the Lenovo. The BIOS loader forced to move the Linux files put them at `0xB4C00000` and the kernel found them. Normal UEFI (CD) and BIOS (hard disk) boots worked. Face ID: set up from 12 pictures, then a picture of the same person was recognized, a picture with two faces gave "Only one face in view, please" and a small face gave "Move a little closer", neither was accepted. `nvx-mem test 256` found no errors; `/proc/meminfo` showed 747 MB in use of 4 GB. `check.py --build --sanitize`: the system-call fuzzer harness crashed on the boot information read added in v10.50 (it runs the kernel as a normal Linux program, where address `0x502C` is not mapped); the harness now sets the Linux-files address itself, and all 113 checks pass. Not done: the fix could not be tried on the Lenovo itself.
+
+## What changed in v10.50
+
+| # | Before (v10.49) | Now (v10.50) | Where |
+|---|---|---|---|
+| 1 | The UEFI boot loader always copied the Linux files (187 MB) to the fixed place 512-768 MiB after leaving the firmware. On a real computer whose firmware keeps part of that range, this restarted the computer right after the boot menu (owner's report; QEMU with KVM started normally). | The UEFI loader keeps the Linux files where the firmware gave it free memory (below 4 GiB, outside the kernel areas) and passes the address to the kernel in the boot information (offset 48 of the block at 0x5000, used when the block carries the UEFI mark). Nothing is copied to 512 MiB any more on UEFI. | `boot/uefi/uefiboot.c`, `fs/vfs/sysroot.c` (`sysroot_slot_base`) |
+| 2 | The kernel heap started after the 512 MiB slot. | When the Linux files lie high in memory, the heap starts at 384 MiB as before and ends below them; when they lie at 512 MiB (BIOS), the heap starts after them. The Linux files are only used when the heap does not overlap them. | `mem/heap.c`, `fs/vfs/sysroot.c`, `core/init/installer.c` |
+
+Tested in the emulator: the release ISO started with UEFI (ISO as a CD) and with BIOS (ISO as a hard disk). Not done: the BIOS boot loader still uses 512 MiB (it does not read the memory map for this yet); the fix could not be tried on the owner's computer.
+
+## What changed in v10.49
+
+| # | Before (v10.48) | Now (v10.49) | Where |
+|---|---|---|---|
+| 1 | The sign-in screen used the 8x14 bitmap font on the wallpaper, with three power icons in the middle. | A new sign-in and lock screen in the owner's chosen design: light hills background, a large clock and date, a round picture with the initial, the name, a white password box with an arrow button, "or", a **Sign in with Face ID** button, other accounts at the bottom left, network, battery and a power menu at the bottom right. Text uses Inter, pre-rendered at seven sizes. | `core/init/setup.c`, `graphics/ui/uifont.c`, `assets/uifont.c`, `tools/mkuifont.py` (section 11.16) |
+| 2 | No Face ID. | Face ID with the laptop or USB camera: the face is found (dlib HOG detector), five points are placed, the face is straightened and turned into 128 numbers by dlib's ResNet; a distance below 0.5 to one of the saved face prints counts as a match, two frames in a row are needed. | `tools/faceid/nvx-faceid.cpp` (`/usr/bin/nvx-faceid`), `core/auth/faceid.c`, `/dev/nvxface` (section 11.16) |
+| 3 | - | Setting up: an optional Face ID step in first-time setup after the account page, and Settings > Accounts > Sign-in options: Set up (asks for the password first), Scan again, Remove. About 10 face prints from different angles are saved in `/etc/noovex/faceid/<user>.face` (only root can read it); pictures are never saved. | `core/init/setup.c`, `core/auth/acctui.c`, `apps/system/settings.c` |
+| 4 | - | Safety rules: after 5 failed Face ID tries only the password works (until the next password sign-in); the camera and the face engine stop as soon as the check ends; `sudo` and account changes still ask for the password; every Face ID sign-in and failure is written to the account log. | `core/init/setup.c`, `core/auth/faceid.c` |
+
+Tested in the emulator (-cpu max, 4 GB, the ISO as a hard disk; QEMU has no webcam, so test pictures were fed with `faceid feed`): set up from 12 pictures of one face (10 face prints saved in about 2.5 minutes); `faceid verify` accepted a different picture of the same face (distance 0.052) and refused another person (distance 0.770, "Face not recognized"); a picture with no usable face gave "No face seen". On the lock screen (Win+L or `lock`, then Sign in with Face ID): the camera circle, "Looking for you...", the green "Welcome back" screen and the desktop again; with the other person the screen came back with "Face not recognized - try again or type your password". Settings > Accounts showed the Face ID row with Scan again and Remove; Scan again showed the dialog and the setup ring (Esc cancelled). On the build machine the engine found faces and measured 0.05 to 0.18 between versions of the same picture and 0.74 to 1.03 between different people. In the emulator one picture takes about 15 to 30 seconds (no hardware speed-up); on a laptop it is a fraction of a second.
+
+Not done: Face ID with a real camera (the emulator has none); the first-time setup step (needs a fresh installation) was not tried; a liveness check (blink or head turn) is not part of this release, so a good photo of the person can unlock. check.py: see the handoff.
+
+## What changed in v10.48
+
+| # | Before (v10.47) | Now (v10.48) | Where |
+|---|---|---|---|
+| 1 | LibreOffice Writer and Calc stopped with "the built-in programs file /sysroot/APPS.BIN is not on the boot disk" when the ISO was attached to a virtual machine as a CD (owner's photo): the kernel has no CD drive driver, so it could not read the separate file. | LibreOffice is part of the normal Linux files, which the boot loader reads with the firmware at startup, from a CD, a USB stick or an installed disk. There is no `APPS.BIN` any more, and an update from Settings now updates LibreOffice too. | `build.sh`, `boot/mkhybrid.py`, `core/update.c`, `core/init/installer.c`, `fs/vfs/vfs.c` (section 6.28) |
+| 2 | The boot loaders put the Linux files in a fixed 50 MiB area at `0x06600000`. | The area is at `0x20000000` and holds up to 256 MiB (about 165 MB used, about 90 MB free). Both boot loaders changed; the kernel heap starts after the Linux files. | `boot/src/stage2.c`, `boot/uefi/uefiboot.c`, `include/nvx/fs/vfs/sysroot.h`, `fs/vfs/sysroot.c`, `mem/heap.c` (sections 2, 3, 6.28) |
+
+Tested in the emulator (-cpu max, 3 GB): the ISO attached as a CD with UEFI firmware loaded the 155 MB Linux files ("Linux files: 155215 KB") and LibreOffice Writer opened from the Terminal with `nvx-libreoffice --writer`; the ISO attached as a hard disk with BIOS firmware (the USB stick case) also opened Writer. The heap starts after the Linux files and the kernel reported 3065 MB RAM as before.
+
+Not done: starting the ISO as a CD with BIOS firmware stops in the boot sector with "myboot: disk error"; v10.47 does the same, so this is older and unchanged (virtual machines that use UEFI, and USB sticks, work). Installing from the new ISO and an update from Settings were not tried in the emulator. check.py was not run for this version. With less than about 1 GB of RAM the Linux files do not fit and NoovexOS starts without them.
+
+## What changed in v10.47
+
+| # | Before (v10.46) | Now (v10.47) | Where |
+|---|---|---|---|
+| 1 | LibreOffice had to be installed with apt (about 450 MB of downloads) and then stopped with exit code 134 (owner's photos). | LibreOffice Writer and Calc come with NoovexOS: `/sysroot/APPS.BIN` (112 MB) on the boot disk is read the first time one of them is opened, and the installer copies it to the installed system. Both are in the start menu (Office). | `tools/stage_libreoffice.sh`, `build.sh`, `boot/mkhybrid.py`, `core/update.c`, `core/init/installer.c`, `fs/vfs/vfs.c`, `fs/vfs/sysroot.c` (section 6.27) |
+| 2 | The same file had different inode numbers when its path contained `..`, so glibc loaded LibreOffice's 85 MB main library twice and LibreOffice stopped with "null process service factory" and exit code 134. | Inode numbers come from the normalized path, for `stat` and `fstat` alike. | `fs/vfs/sysroot.c`, `fs/vfs/unixfs.c`, `sys/linux/linux.c` (section 6.27) |
+| 3 | The start menu had five fixed groups; installed Linux programs all went into the first one, at most 15. | Both start menus have submenus: Office, Internet, Media & Graphics, Development, Games, System, Accessories and Drivers & Hardware. Linux programs go into the submenu named by their `Categories=` line, up to 40 per submenu. | `graphics/ui/desktop.c`, `apps/x11/xapps.c` (section 11.15) |
+| 4 | Debian's Chromium still stopped with "Running as root without --no-sandbox is not supported" when started from the Terminal (owner's photo): its script starts `/usr/lib/chromium/chromium`, which `nvx-xrun` never saw. | The kernel adds `--no-sandbox` when a program named `chrome`, `chromium`, `chromium-browser`, `chromium-bin`, `brave`, `msedge`, `vivaldi-bin` or `opera` is started without it (not for Chromium's own helper processes). `nvx-xrun` also looks in `/usr/lib/<name>` and `/opt/<name>` and retries once with `--no-sandbox` when the message appears. | `sys/linux/linux.c`, `build.sh` (section 6.27) |
+| 5 | When LibreOffice stopped there was no clue why. | `libnvx-throwlog.so` prints every LibreOffice exception with its message, and the last 40 lines of a failing program's output go to the kernel log. | `usr/glibc/nvx-throwlog.c`, `build.sh` (section 6.27) |
+| 6 | Unpacking a package with more than about 600 MB of contents (VSCodium) failed: the buffer doubled to 1.2 GB in one piece. | Above 128 MB the buffer grows by a quarter. `libstdc++` and `libatomic` are in the Linux files (VSCodium needs them). | `lib/compress/unpack.c`, `build.sh` |
+
+Tested in the emulator (-cpu max, 4 GB, the ISO started as a hard disk): LibreOffice Writer opened from the Terminal with `nvx-libreoffice --writer`, text was typed and saved as `/root/hello.odt` through LibreOffice's own Save dialog; LibreOffice Calc opened from Start > Office > LibreOffice Calc and calculated `=A1*A2` (360); the classic start menu showed the new categories and the Office submenu. A test package laid out like Debian's Chromium (a start script that runs `/opt/chromium-test/chrome` as root without `--no-sandbox`) no longer stops with the sandbox message when started from the Terminal; it gets to opening its window (in the text-only Terminal it then reports that there is no X display). On the build machine, the packed LibreOffice converted a text file to `.odt` with the build machine's own LibreOffice folders hidden, and again inside a copy of the NoovexOS Linux files (`chroot`). check.py: see the handoff.
+
+Not done: the modern start menu (style 0) has the submenus too but cannot be selected in Settings, so it was not tried. VSCodium, Vesktop and Chromium's multi-process drawing are unchanged. Debian's own Chromium and LibreOffice packages still cannot be downloaded on the build machine, so the Chromium change was tried with a test script that starts Chromium the way Debian's does (`/opt/chromium-test/chrome` without `--no-sandbox`, from the Terminal). Copying `APPS.BIN` during installation was not tried in the emulator. The built-in LibreOffice is Ubuntu 24.04's LibreOffice 24.2; an update from Settings does not replace `APPS.BIN`.
+
+## What changed in v10.46
+
+| # | Before (v10.45) | Now (v10.46) | Where |
+|---|---|---|---|
+| 1 | apt and dpkg unpacked packages but never ran their setup scripts (`postinst`) or triggers. VSCodium installed without `/usr/bin/codium`, Vesktop without `/usr/bin/vesktop`, and Debian's LibreOffice never got the setup steps its packages run after unpacking (likely behind the owner's exit 134 photo). | After installing, apt runs every new package's `postinst configure` and the `postinst triggered` of installed packages whose trigger folders received files, as a normal program in the terminal (`/var/lib/dpkg/nvx-postinst.sh`). A failing script is reported and does not undo the install. `update-alternatives` is now in the Linux files. | `fs/pkg/apt.c`, `build.sh` (section 6.26) |
+| 2 | Debian's Chromium stopped with "Running as root without --no-sandbox is not supported" (owner's photo): `nvx-xrun` did not recognize its start script. VSCodium was not recognized either. | `nvx-xrun` also finds Chromium-based programs whose start script names the program's folder or lives two folders below it. VS Code-style programs started as root get `--user-data-dir=/root/.config/<name>`, which they require. `findmnt` and `/proc/self/mountinfo` exist (Debian's script asked for them). | `build.sh`, `sys/linux/linux.c`, `fs/vfs/unixfs.c` |
+| 3 | apt did not know that the Linux files already contain renamed libraries (Debian 13 and Ubuntu 24.04 renamed many to `...t64` and keep the old name as "Provides"), so programs pulled in a second copy. | `provided.txt` also lists the provided names with their versions. | `tools/provided.py`, `build.sh` |
+| 4 | Chromium's multi-process mode: page processes quit after 30 to 60 seconds. | Cause found: Chromium's child processes give up when their first message exchange with the browser takes longer than its time limit, which the emulator's speed exceeds. With a longer limit (`--ipc-connection-timeout`, added by `nvx-xrun` when `/etc/noovex/chromium-multiprocess` exists) the page processes and the network service stay up and the page loads, but in the emulator only the page's background color was drawn, not its text and images, so the default stays `--single-process`. | `build.sh` (section 6.26) |
+| 5 | Programs with a big V8 engine (Electron, Node) could not reserve their 256 GB of address space, because big programs were loaded in the middle of the 512 GB user area. | Big programs are loaded at the top of the user area (0x47000000000), leaving 448 GB in one piece. | `core/proc/elf.c` |
+| 6 | `clone3` was not there (LibreOffice and Chromium reported it). | `clone3` works (glibc 2.34 and newer use it first for every thread). | `sys/linux/linux.c` |
+
+Tested in the emulator (-cpu max, HD Audio): VSCodium 1.143 (a 152 MB `.deb` from GitHub) installed with `apt install ./codium_1.143.17232_amd64.deb` together with 14 libraries from a local repository; its setup script created `/usr/bin/codium`; `nvx-xrun` recognized it and added `--no-sandbox` and `--user-data-dir`. Chromium in multi-process mode loaded `st/p/v42.html` with `--ipc-connection-timeout`. check.py: see the handoff.
+
+Not done: VSCodium does not open its window yet: on the first start the Electron main process stops on an internal check (a deliberate `ud2` trap 93 MB into the program), and the message is not visible yet. Vesktop (the Discord client from GitHub; Discord's own `.deb` is blocked on the build machine) was downloaded but not tried. Spotify cannot be downloaded on the build machine. The owner's LibreOffice exit 134 was not reproduced here (Debian's LibreOffice cannot be downloaded); the most likely cause, the missing setup scripts, is fixed: run `sudo apt reinstall libreoffice-core libreoffice-common` once so they run.
+
+## What changed in v10.45
+
+| # | Before (v10.44) | Now (v10.45) | Where |
+|---|---|---|---|
+| 1 | `/proc/cpuinfo` said "vendor_id: NoovexOS" with five flags, so Debian's Chromium start script stopped with "The hardware on this system lacks support for the sse3 instruction set" (owner's photo). There were two different copies of the file. | One `cpuinfo_linux` builds the file from the processor's own `cpuid` data in the Linux format: one block per online core with vendor, model name, family, model, stepping, MHz, cache size, core and sibling counts and the full Linux flag names (`pni`, `ssse3`, `sse4_1`, `avx2`, `aes` and so on). Checked against the build machine's Linux output. | `arch/x86_64/cpu/cpuinfo.c`, `fs/vfs/unixfs.c`, `fs/vfs/vfs.c` (section 6.25) |
+| 2 | Linux programs had no pseudo-terminals, so terminals inside programs (VS Code, `script`, `ssh`-style tools) could not start. | `/dev/ptmx` and `/dev/pts/N` with a Linux-style line discipline: echo, line editing, Enter to newline, CR LF output, window size with `SIGWINCH`, controlling terminal, Ctrl+C / Ctrl+\ / Ctrl+Z signals and `EIO` when the other side closes. | `sys/linux/linux.c`, `core/proc/jobs.c` (section 6.25) |
+| 3 | Linux programs could not play sound (only the old OSS `/dev/dsp`). | The ALSA kernel interface (`/dev/snd/controlC0`, `pcmC0D0p`, `pcmC0D0c`) with Linux's parameter rules, playback through the NoovexOS sound driver at the real rate and recording from the microphone; `/etc/asound.conf` converts any rate and format. Chromium now finds ALSA. | `sys/linux/linux.c`, `core/sound.c`, `build.sh`, `usr/glibc/nvx-sndtest.c` (section 6.25) |
+| 4 | `apt` could only install from a repository; a downloaded `.deb` (Discord, for example) needed `dpkg -i` without its dependencies. | `apt install ./file.deb` installs the file and the packages it needs from the sources. `dpkg -i` also updates the library cache. | `fs/pkg/apt.c` (section 6.25) |
+| 5 | Unpacking a zstd-compressed package crashed the whole system on processors with BMI2 (every Intel since 2013, every AMD since 2015); the emulator's default processor does not have BMI2, so it was not seen before. | The zstd decoder in the kernel no longer uses its BMI2 variant. | `lib/compress/zstdk.c` |
+| 6 | Programs that show notifications through D-Bus got no answer. | `nvx-notify` (the `org.freedesktop.Notifications` service, started by D-Bus) shows them as NoovexOS notifications. | `usr/x11/nvx-notify.py`, `fs/vfs/vfs.c`, `build.sh` (section 6.25) |
+| 7 | epoll kept a registration when a file was closed and a new file got the same slot and descriptor number (found by the new ABI check). `/proc/self/stat`, `/proc/<pid>/stat`, `statm`, `status`, `cmdline`, `comm`, `/proc/stat` and `/sys/devices/system/cpu/possible`, `present`, `online` and `kernel_max` were missing for Linux programs; `access` on `/proc/<pid>/oom_score_adj` failed. | Every open file has a generation number that epoll checks; the files exist with Linux content. | `sys/linux/linux.c`, `core/proc/jobs.c`, `include/nvx/fs/vfs/ramfs.h` |
+| 8 | | `/etc/noovex/chromium-multiprocess` makes `nvx-xrun` start Chromium-based programs without `--single-process` (for testing). `lxtrace ps` shows each thread's current system call and, for Unix sockets, both queues, and dumps the last system calls of every thread when a process exits. | `build.sh`, `sys/linux/linux.c` (section 12.13) |
+
+Tested: `nvx-abitest` 25 of 25 in the emulator and on the build machine's Linux (new: `/proc/cpuinfo`, four pseudo-terminal checks, epoll with a reused descriptor, the new `/proc` files); `grep -q sse3 /proc/cpuinfo` succeeds on a processor with SSSE3 (`-cpu max`); `nvx-sndtest` in the emulator with an HD Audio card: 2 s of sound at 44100 Hz took 1.98 s through `default`, and recording returned samples; the ALSA code was also run on the build machine against the real libasound (the same requests a program makes) before it went into the kernel; `apt install ./nvxlocal_2.0_all.deb` fetched its dependency from the local repository and the program ran; `nvx-notify` answered `Notify`, `GetServerInformation` and `CloseNotification` on the build machine's D-Bus; Chromium in `--single-process` mode showed `st/p/v42.html`.
+
+Not done: Chromium's multi-process mode (the page processes now start, but their Mojo connection is closed by the browser after 30 to 60 s; section 6.25 has the trace); a tray area for status icons; PulseAudio (programs fall back to ALSA, and only one can play at a time); Discord, VS Code and Spotify themselves were not tried, because they cannot be downloaded on the build machine.
+
+## What changed in v10.44
+
+| # | Before (v10.43) | Now (v10.44) | Where |
+|---|---|---|---|
+| 1 | Programs installed with apt from Debian 13 could fail with "version ... not found (required by libcurl.so.4)" (owner's report with LibreOffice): apt never wrote a file that the Linux files already had (the write went to the read-only copy and was lost), and it did not check version limits, so Debian programs got the older libraries of the Linux files. | apt writes every file of a package, version limits in `Depends` are checked against what is installed and against the versions of the Linux files (`/usr/share/noovex/provided.txt`), too old libraries are replaced by Debian's, and `/etc/ld.so.cache` makes glibc's loader prefer the libraries apt installed. When a package needs a newer glibc, Debian's `libc6` is installed and its loader is used for all glibc programs. Every `apt install` also repairs missing or too old dependencies of installed packages. | `fs/pkg/apt.c`, `fs/vfs/vfs.c`, `core/proc/jobs.c`, `sys/linux/linux.c`, `build.sh` (section 6.16) |
+| 2 | Installing a big package on an installed system froze it for a very long time (owner's photo: `mkdirp` -> `n4_commit` for every file). | The file system is saved once per package; LibreOffice (3269 files) unpacks in 20 s in the emulator and the desktop does not show "not responding". | `fs/pkg/apt.c`, `fs/nvx/nvx4.c`, `tools/tests/fs/fsh.c` (section 6.16) |
+| 3 | Programs that write to a file that exists in the Linux files lost the write. | The file is copied to the NoovexOS file system first and written there. | `fs/vfs/vfs.c`, `sys/linux/linux.c` |
+| 4 | Chromium opened an empty window: its helper processes are started with `execve("/proc/self/exe")`, which did not exist. | Chromium shows web pages: `/proc/self/exe` works in `execve`, epoll forgets closed descriptors (a new file with the same number got the old registration) and frees its table on close, Unix sockets carry up to 64 descriptors per message (8 before, the rest were lost) and never drop them when the queue is full. A page over the network (images, JavaScript, Web Workers) and typing in the address bar work. Chromium-based programs are started with `--single-process`: in the normal multi-process mode the window and the address bar work but pages stay at "Loading". | `sys/linux/linux.c`, `core/proc/jobs.c`, `build.sh` (section 6.24) |
+| 5 | | `echo lxtrace exec`, `lxtrace errors`, `lxtrace ps` and `lxps` to `/dev/kmsg` log program starts, failed system calls, or the list of Linux processes with the last system call of each thread. | `sys/linux/linux.c`, `fs/vfs/vfs.c`, `core/init/main.c` (section 12.13) |
+
+Tested: check.py (113 of 113, with the new file-system check for the batched unpack); in the emulator: apt with test packages that need a newer library and a newer glibc (both installed, the program ran, Python, git and the GTK demo still worked), LibreOffice installed onto an NVX4 disk and started from it, Chromium showing a `data:` page and a page over the network with AVIF images and a worker, started through the normal launcher.
+
+Not done: Chromium in its normal multi-process mode (pages stay at "Loading"); Electron programs were not tested (they cannot be downloaded on the build machine); real Debian 13 packages could not be reached from the build machine, so the replacement of glibc was tested with a stand-in package.
+
+## What changed in v10.43
+
+| # | Before (v10.42) | Now (v10.43) | Where |
+|---|---|---|---|
+| 1 | LibreOffice could not run. | LibreOffice 24.2 (Writer and Calc) runs through X: typing, bold text, formulas, the Save As dialog and saving an `.odt` file work. `stat` now works on `/proc` files (LibreOffice checks `/proc/version` before it starts), the X locale files are in the Linux files, and the window manager gives big windows the whole screen and tells programs where their window really is. | `sys/linux/linux.c`, `fs/vfs/vfs.c`, `usr/x11/nvxwm.c`, `build.sh` (section 6.24) |
+| 2 | Desktop programs had no D-Bus session bus and no place to keep passwords, so apps like VS Code or Claude Desktop could not stay signed in. | `nvx-session-bus` starts `dbus-daemon` for the X session, and `nvx-keyring` (a Secret Service in Python) is started by D-Bus when a program asks for it; it keeps secrets in `~/.local/share/nvx-keyring/login.json` (mode 0600). libsecret stores, finds, replaces and deletes passwords through it. | `usr/x11/nvx-keyring.py`, `build.sh`, `sys/linux/linux.c` (section 6.24) |
+| 3 | Programs over 28 MB failed with "Exec format error"; Chromium is 250 MB. | Large position-independent programs are loaded at 0x44000000000 with room for 64 GiB. | `core/proc/elf.c` |
+| 4 | Chromium stopped at its first checks. | Chromium starts, runs its helper processes and opens its window; the page inside the window still stays empty (section 6.24 lists what is left). The fixes on the way: `/proc` folders (`/proc`, `/proc/self`, `/proc/<pid>`, `/proc/self/fd`, `/proc/self/task`) can be opened and listed, `/dev/shm` shared memory, 1024 memfds instead of 64, 8192 address-space reservations instead of 512 (the old table filled up and lost memory), `SO_PASSCRED`/`SCM_CREDENTIALS`, `send`/`recv` on Unix sockets, Unix socket files on disk, `rt_sigtimedwait`, `rt_tgsigqueueinfo`, `int3` gives `SIGTRAP`. The libraries Chromium and Electron programs need (NSS, GBM, ALSA, CUPS, X11-xcb and others) are in the Linux files. | `sys/linux/linux.c`, `core/proc/jobs.c`, `arch/x86_64/interrupts/interrupts.c`, `build.sh` |
+| 5 | apt only read `/etc/apt/sources.list`. | apt also reads `/etc/apt/sources.list.d/*.list`; `/etc/apt/sources.list.d`, `/etc/apt/keyrings` and `/usr/share/keyrings` exist, and `apt install claude-desktop` without the repository says how to add it. | `fs/pkg/apt.c` |
+| 6 | A crash of a Linux program left little trace. | Every fault of a Linux program is written to the kernel log with the signal, address, the library and offset and its last system calls; `echo lxtrace on > /dev/kmsg` logs every system call with path names until `lxtrace off`. | `core/proc/jobs.c`, `sys/linux/linux.c`, `fs/vfs/vfs.c` (section 12.13) |
+
+Tested: check.py (112 of 113; the failure was the system-call fuzzer killing itself through the newly added signal calls, which it now leaves out, after which the Linux group passed 8 of 8); in the emulator (4 GiB): a 174 MB LibreOffice package installed with apt from a local repository, Writer (typing, bold, Save As to `/root/noovex-test.odt`) and Calc (`=A1*A2+1` gives 361); the keyring through libsecret (store, look up, replace, delete); a 143 MB Chromium package installed and started with its window.
+
+Not done: pages inside Chromium (helper processes still end with code 127), and so Electron programs (Claude Desktop, VS Code, Discord); a real Debian LibreOffice install from the internet was not tried here (the build machine cannot reach Debian); the Save As dialog of LibreOffice showed an empty folder list.
+
+## What changed in v10.42
+
+| # | Before (v10.41) | Now (v10.42) | Where |
+|---|---|---|---|
+| 1 | A `Worker` ran on the page's own thread, so a busy worker froze the page. | Workers run on the second CPU core in their own script engine and memory, with messages of any cloneable value, timers, `fetch`, `importScripts`, `TextEncoder`/`TextDecoder`, errors and console lines like Chrome; `terminate()` stops even an endless loop. Workers that need something the second-core engine does not have (WebAssembly, IndexedDB, URL, crypto and a few more) still run on the page thread. | `web/wk.c`, `web/wk_prelude.js`, `apps/internet/webwork.c`, `arch/x86_64/smp/smp_sched.c`, `web/js.c`, `web/prelude.js` (sections 4.17, 13.64) |
+| 2 | AVIF and JPEG XL images were broken images. | Both are decoded: AVIF with dav1d (8, 10 and 12 bit, alpha, grids, rotation and mirroring, all colour matrices) and JPEG XL with J40 (three bugs fixed in it, one of which made every small lossy image fail). | `web/imgx.c`, `third_party/dav1d`, `third_party/j40` (section 13.65) |
+| 3 | The address bar had no suggestions; bookmarks were only in a menu. | Suggestions from open tabs, bookmarks and history while typing, with arrow keys, and a "Search for" line; a bookmarks bar. | `apps/internet/browser.c` (section 13.66) |
+| 4 | Sites got notifications and pop-ups without asking, and geolocation was simply missing. | Site permissions like Chrome: a question bar (Allow, Block), a site menu behind the lock icon, `about:permissions`, saved per account; `navigator.permissions.query`, `Notification.requestPermission` and geolocation use them. | `apps/internet/browser.c`, `web/js.c`, `web/prelude.js` (section 13.66) |
+| 5 | Every change to the page laid out the whole page. | Changes inside a fixed-size box with clipped overflow lay out only that box (0.47 ms instead of 24.8 ms on a 3000-paragraph page). | `web/layout.c`, `web/engine.c`, `web/js.c` (section 13.67) |
+| 6 | `inotify`, `signalfd`, the old `getdents`, `waitid`, `timer_create` and the vector and multi-message calls were missing; `flock` and `fcntl` locks did nothing. | All of them work, and locks really lock (shared, exclusive, byte ranges, waiting); `nvx-abitest` checks 13 of them and gives the same result as Linux. | `sys/linux/linux.c`, `core/proc/jobs.c`, `usr/glibc/nvx-abitest.c` (sections 6.4, 6.22) |
+| 7 | Only Tk programs had a toolkit. | GTK 3 programs run on the NoovexOS X server: the GTK 3.24 runtime is in the Linux files, and `gtkdemo` opens a GTK window (entry, switch, drop-down list, slider, text view, buttons). | `build.sh`, `usr/x11/gtkdemo.c`, `shell/commands.c` (section 6.23) |
+
+Tested: check.py (112 of 113; the one failure, a directory rename check of musltest in the 4-core emulator group, passed in the first full run and in two reruns of that group); the ASan/UBSan sweep of 555 pages (clean); the host pages (es 146, dom 153, b3 37, cl 17, API 67 with the 2 known differences, CSS 6 of 47 and HTML 3 of 53 differences from Chromium as before); the worker pages under ASan; 1400 damaged AVIF and JPEG XL files under ASan; image quality against libavif and libjxl; in the emulator with two cores: `nvx-abitest` 13 of 13, `gtkdemo` (typing a name, the button, dragging the slider), a page with four AVIF and JPEG XL images and two workers on CPU 1 (computing, `fetch` and `importScripts` inside a worker), the address bar suggestions and the permission bar and site menu.
+
+Not done: JPEG XL with the Squeeze transform (lossy alpha, lossy modular), animated AVIF and JPEG XL; the edge-preserving JPEG XL filter; module workers, shared workers and WebAssembly in second-core workers; inotify events for changes made by the native NoovexOS apps; real-time signals 32-64; an SVG image loader and an icon theme for GTK.
+
+## What changed in v10.41
+
+| # | Before (v10.40) | Now (v10.41) | Where |
+|---|---|---|---|
+| 1 | The Linux files (36 MB) were inside the kernel, which used 98.65 of the 100 MiB the boot loaders can read, so nothing more fit. | They are a separate file `/sysroot/<CRC>.BIN` that the boot loaders (BIOS and UEFI) load next to the kernel; the kernel checks size and CRC. Installed systems and USB sticks that still have an old loader read it from the boot partition; if it is missing, `update repair` (also started once by itself) downloads it. The installer and the updater write it. The kernel is now about 72 MB. | `boot/src/stage2.c`, `boot/uefi/uefiboot.c`, `fs/vfs/sysroot.c`, `core/update.c`, `core/init/installer.c`, `build.sh`, `boot/mkhybrid.py` (section 2.13b) |
+| 2 | Two frames could run at a time ("Waiting for a free frame place"). | Four frames run at a time. | `build.sh`, `apps/internet/webglue.c`, `web/prelude.js` |
+| 3 | `window.open` with features returned a closed dummy window, so "Sign in with Google" pop-ups could not work. | Real pop-up windows over the tab, opened only after a click or key press (like Chrome), with `opener`, `postMessage` both ways, `closed`, `close()`, `window.close()` in the pop-up, form posts, and pop-ups opened from inside a frame. | `apps/internet/webglue.c`, `apps/internet/browser.c`, `web/js.c`, `web/prelude.js` (section 13.63) |
+| 4 | Typing in a frame went to the page behind it; the wheel did not scroll frames. | A click gives the frame (or the pop-up) the keyboard; the wheel scrolls the frame under the mouse. | `apps/internet/webglue.c`, `apps/internet/browser.c` |
+| 5 | No `round()`/`mod()`/`abs()`/`sin()`/`pow()` and the other CSS math functions, `:has(> x)`, `:nth-child(2 of .x)`, cascade layer order, `@property`, `filter`; `display: flow-root` collapsed margins; `CSS.supports` said yes to everything. | All of these work (section 13.63). A comparison page of 47 CSS checks against Chromium went from 20 differences to 6 (left: colour-mix/oklch printed as rgb, relative colours, anchor positioning, the box-shadow text order and the elliptical radius text). | `web/cssstyle.c`, `web/cssparse.c`, `web/paint.c`, `web/layout.c`, `web/prelude.js` |
+| 6 | `getBoundingClientRect` ignored rotate and scale; date inputs gave the year as `valueAsNumber`; `meter`, `progress`, `output` and `ol` lacked properties. | Fixed; an HTML page of 53 checks against Chromium differs only in the page encoding and a broken image size. | `web/layout.c`, `web/prelude.js` |
+| 7 | A page that ran out of script memory could not catch the error and kept the memory. | The error can be caught, the memory is cleaned up at the next tick and `about:errors` says so; garbage collection starts before the limit and when 70 % is used. | `third_party/quickjs/quickjs.c`, `web/js.c` |
+
+Tested: check.py (112 of 112); the ASan/UBSan sweep of 555 pages (clean); the host pages (es 146, dom 153, b3 37, cl 17, API 67); new pages p41/css.html, html.html, flt.html (filters next to Chromium), tf.html, heavy.html and oom.html; in the emulator the live ISO with Python from the separate file, a full install (the installer wrote the file, the installed system loaded it through its boot loader, and after putting the v10.40 boot loader back on the disk the kernel loaded it from the boot partition; Python ran both times) and the pop-up pages (blocked without click, open, messages both ways, typing in the pop-up, form post, close by X and by `window.close()`, pop-up from a frame) and four frames with typing.
+
+Not done: the pop-up cannot be moved or resized and has no address bar; frames inside a pop-up do not load; COOP headers do not cut the opener yet; Cloudflare checks are not faked (claude.ai still needs a photo of what it shows); Gmail's "Fi of null" needs the next `about:errors` photo; the UEFI boot was checked with the loader test, not on real UEFI firmware.
+
+## What changed in v10.40
+
+| # | Before (v10.39) | Now (v10.40) | Where |
+|---|---|---|---|
+| 1 | Setup asked for a display name only; the account was always called `user`, root had no password and `/home` was everyone's home. | Three new setup pages in the same blue dialog style as the installer (owner's photo): Computer Name, Root Password Setup (password typed twice) and Create Your Account (full name, user name suggested from the full name, password typed twice). Passwords need at least 4 characters; mismatches and bad names are shown in red on the page. The first account is an administrator with its own home `/home/<name>` (Desktop, Documents, Downloads, Pictures, Music, Videos); files that were in `/home` move into it. Setup signs straight in. | `core/init/setup.c`, `core/auth/accounts.c`, `core/auth/acctui.c` (section 7.12) |
+| 2 | The sign-in screen collected a password and never compared it; any key let anyone in. | The password is checked against `/etc/shadow` (SHA-512 crypt, `$6$`, the Linux format). A wrong password shows a message; after 5 wrong tries there is a 30 s wait. The screen shows the full name, a Caps Lock warning, and the list of accounts when more than one person uses the computer. Root never signs in to the desktop. Every sign-in, failure, lock and `sudo` is written to `/var/log/auth.log`, and sessions to `/var/log/wtmp` (`last`). | `core/init/setup.c`, `core/auth/accounts.c` (section 11.14) |
+| 3 | Locking only switched to the sign-in screen, which any key closed. | The screen locks after 15 minutes without input (5, 15, 30 min or never in Settings), when the lid closes, with Win+L, from the launcher and with `lock`; only the password of the signed-in account unlocks it, and the open windows stay. Switch user lists the other accounts; signing in as someone else closes the first account's apps and processes, and clears the Terminal, the Files folder and the browser tabs. | `core/auth/acctui.c`, `apps/system/powerui.c`, `graphics/ui/hotkeys.c` |
+| 4 | Settings > Accounts showed a name and a type. | Settings > Accounts: change your password and name; add accounts (administrator or standard), set their password, make them administrator or standard, remove them with or without their files (the last administrator cannot be removed); guest account on or off (off by default; no password, its files are removed at sign out); lock time; Lock, Switch user and Sign out. The dialogs use the same blue dialog style. | `apps/system/settings.c`, `core/auth/acctui.c` |
+| 5 | `su` switched to root without a password; `id` printed one group; `passwd` stored a 32-bit hash; `sudo` remembered the password for 5 minutes; there were no `useradd`, `userdel`, `usermod`, `groups` or `last`. | `su [user]` asks for that account's password; `passwd [-l|-u|-d] [user]`; `adduser [--admin]` and `useradd [-a] [-c "Full Name"]`; `userdel [-r]`; `usermod -aG/-rG GROUP`, `-c`, `-L`, `-U`; `groups`, `id` with all groups (also the Linux `getgroups` call), `who`, `last`, `hostname NAME`, `lock`, `logout`; `sudo` remembers the password for 15 minutes (`timestamp_timeout` in `/etc/sudoers`), forgets it when the user changes, and `sudo -l`. | `shell/commands.c`, `usr/src/nvxbox.c`, `sys/linux/linux.c` |
+| 6 | An administrator could write in every folder, and folder permissions were never checked on the way to a file, so any account could read any other account's files. | Folders follow the owner, group and other bits: writing needs write permission on the folder, opening a file needs search permission on every folder on the way, listing needs read permission (also for Linux programs, `cd`, the Files app and `stat`). Home folders are 0750, `/root` 0700, `/tmp` and `/var/tmp` 1777. | `fs/vfs/unixfs.c`, `fs/vfs/vfs.c`, `fs/vfs/dirtree.c`, `apps/system/file_explorer.c` |
+| 7 | The folder tree had `/home`, `/bin`, `/etc`, `/tmp` and a few others; no standard files in `/etc`. | Added `/usr/{sbin,lib,share,local}`, `/var/{cache,lib,spool,tmp}`, `/run`, `/srv`, `/media`, `/opt`, `/boot`, `/etc/skel`, and `/etc/os-release`, `/etc/hosts`, `/etc/shells`, `/etc/sudoers`, `/etc/login.defs`, `/etc/issue`; groups `admin`, `sudo`, `users` and a personal group per account. | `core/auth/accounts.c` |
+| 8 | Browser cookies, site storage, history and bookmarks were shared by everyone. | Each account has its own cookies and site storage (the first account keeps the old files, so an upgraded computer stays signed in to Google); switching users starts the browser empty. | `net/http/cookies.c`, `apps/internet/browser.c` |
+
+Tested: check.py with the new accounts group (29 checks on the real kernel code: setup, SHA-512 against the reference, wrong passwords, create, delete, last administrator, lock and unlock, permissions, restart, migration of v10.39 accounts including the old password format); SHA-512 crypt against openssl for 50 password and salt pairs up to 256 characters; in the emulator a full install, the three setup pages (with a mismatch and the suggested user name), sign-in with wrong and right passwords, the 30 s wait, Caps Lock, `id`, `groups`, `sudo`, `su root`, `last`, the auth log, Settings > Accounts (add account), Switch user to a second account and to Guest, access refused to another account's home and to `/root`, lock and unlock, Guest files removed at sign out, and the accounts after a restart.
+
+Upgrading from v10.39: the first account keeps its name, home (`/home`), files and browser sign-ins; if it had a password it still works and is upgraded to SHA-512 at the next sign-in; if it had none, sign-in is Enter until one is set in Settings > Accounts. Root stays locked (use `sudo`).
+
+Not done: switching users does not keep the first account's apps running in the background (the desktop apps exist once, so they are closed); the web cache is still shared; files only check the primary group (not extra groups); Win+L could not be tested in the emulator (the same lock works from the launcher and with `lock`).
+
+## What changed in v10.39
+
+| # | Before (v10.38) | Now (v10.39) | Where |
+|---|---|---|---|
+| 1 | Google's apps menu showed "Waiting for a free frame place" (owner's photo) although it had already failed: only network errors and refusals were remembered, so a frame that ran out of time or whose page engine stopped lost its reason once its place went to another frame, and `about:errors` had no line about it. | Every failure keeps its reason ("Took longer than 60 s to load", "The embedded page stopped (page engine error)", the network reasons, the refusals), the box shows it, and `about:errors` gets an "Embedded page failed: <address>: <reason>" line. | `apps/internet/webglue.c`, `web/js.c`, `web/prelude.js` |
+| 2 | A failed frame was never opened again, so a menu frame that failed while it was still hidden stayed grey after the menu was opened. | A frame that failed while hidden is opened again when it becomes visible, at most twice; a frame that failed while visible is not retried (no loop). | `web/prelude.js` |
+| 3 | A frame had 20 s to finish loading. | 60 s, since Google's menu frame is large. | `web/prelude.js` |
+
+Tested: check.py; the sweep; the host pages; in the VM a hidden frame with a nonexistent host that becomes visible after 4 s (reason in the box, the new `about:errors` line, a retry).
+
+Not done: more than two frames at the same time (each needs its own page engine memory); the real cause of the menu frame failure, which the next photo of the box will name.
+
+## What changed in v10.38
+
+| # | Before (v10.37) | Now (v10.38) | Where |
+|---|---|---|---|
+| 1 | When a page reported its own error to its server (Gmail: "cannot read property 'Fi' of null at ...m=a:3275:210", owner's photo), `about:errors` showed only the message, so the failing code was unknown. | The next line shows "Code at <script>:<line>:<column>:" with the script text around that place and `>>` at the column, from the reported stack or from the script, line and column fields, the same as for uncaught errors. | `web/prelude.js`, `web/js.c` |
+| 2 | A frame that could not be shown was a grey box with "Embedded page" (owner's photo of Google's apps menu), with no reason. | The box says why, with the frame's address below: "Loading...", "Refused by the site (X-Frame-Options)", "Refused by the site (Content-Security-Policy frame-ancestors)", "Could not load: name lookup failed" (or could not connect, secure connection failed, no answer) or "Waiting for a free frame place". | `web/paint.c`, `apps/internet/webglue.c` |
+| 3 | A frame that failed to load was opened again and again (a new request and a new `about:errors` line every 40 ms) and kept one of the two frame places, so a visible frame behind it waited forever. | A failed frame is not opened again (until its address changes), its reason stays on the box, and a visible frame takes its place. | `web/prelude.js`, `apps/internet/webglue.c` |
+| 4 | Missing: `CSSAnimation`, `CSSTransition`, `DeviceMotionEvent`, `DeviceOrientationEvent`, `Gamepad`, `GamepadEvent`, `MediaEncryptedEvent`, `TaskPriorityChangeEvent`, `Report`, `FontFaceSet`, `Plugin`, `PluginArray`, `MimeType`, `MimeTypeArray`, `ViewTransition`, `ImageBitmapRenderingContext`; `document.startViewTransition()` returned a plain object. | All exist. `navigator.plugins` and `navigator.mimeTypes` are an empty `PluginArray` and `MimeTypeArray` (no plugins are claimed); `startViewTransition` returns a `ViewTransition` with `ready`, `finished`, `updateCallbackDone`, `types` and `skipTransition`, and accepts the options form; `canvas.getContext('bitmaprenderer')` draws an `ImageBitmap` with `transferFromImageBitmap`. A probe of 498 window names now misses 22, all of them features Chrome only has with special hardware or permissions (WebRTC, payments, file pickers, MediaRecorder and the like). | `web/prelude.js` |
+| 5 | Every 40 ms the frame scan searched the whole page for frames with `querySelectorAll('iframe')` and walked each frame's parents with `getComputedStyle`; the media scan searched the whole page every 700 ms. On large pages such as Gmail this cost time on every tick. | Both scans keep their list of elements until the page's elements change (the engine's change counter), and the visibility answer is kept for 300 ms per frame. Changing a frame's `src` still takes effect at once. `document.fonts` is now a `FontFaceSet`. | `web/prelude.js` |
+
+Tested: check.py; the host pages (146, 153, 37, 17, script order, bub=6 fin=11, API 67, shaders 45 of 45); canvas text (`fillText`, `measureText`, the way Google Docs draws its pages); in the VM a page with a frame refused by X-Frame-Options, a frame whose host does not exist and a normal frame (reasons shown, the normal frame shown, no repeated requests) and a script that reports its own error (the code line is shown).
+
+Not done: the cause of Gmail's "'Fi' of null", of the grey box in Google's menu, and of the empty Google Docs page with grey toolbar icons (owner's photo); the next photos of `about:errors` and of the box will show them. Google Docs shows "this browser version is no longer supported" because the browser names itself Chrome 124; Google has no approval process for new browsers and decides only from that version number, and NoovexOS does not claim a newer Chrome version than it implements, so the banner stays (it can be closed).
+
+## What changed in v10.37
+
+| # | Before (v10.36) | Now (v10.37) | Where |
+|---|---|---|---|
+| 1 | After signing in, Google's apps menu and account menu opened as a grey box "Embedded page" (owner's photo): the page already had two hidden helper frames, and only two frames can run at once, so the visible menu frame never got one. | A frame that is visible on the screen gets a place first and takes it from a hidden or zero-size frame when both places are in use; hidden frames waiting for messages no longer push out a visible one. | `web/prelude.js` |
+| 2 | Gmail stopped at its logo with "Page engine stopped: out of memory" (owner's photo). The page memory allocator never joined freed blocks and only reused a freed large block for a request at most half its size, so pages that grow big buffers (Gmail's scripts) ran out of memory while most of it was free. | Freed large blocks are joined with their neighbours and split to fit; small blocks can be cut from a freed large block; the top free block goes back to the free space; a block at the top grows in place. A host test with 2 million random allocations, frees and reallocations (sizes up to 2 MB, about 80 MB in use at a time) runs in the 1 GB page memory without corruption. | `web/krt.c` |
+
+Tested: check.py; in the VM a page with two hidden frames that keep sending messages, then a visible frame added after 3 s (its content shows), the two-frame page and the frame ports page; the host allocator test.
+
+Not done: Gmail itself is untested here (it cannot be reached from the build machine).
+
+## What changed in v10.36
+
+| # | Before (v10.35) | Now (v10.36) | Where |
+|---|---|---|---|
+| 1 | A `MessagePort` sent to another frame with `postMessage(data, origin, [port])` was dropped on the way, so the other side saw `e.ports` empty. Google's account bar crashed with "cannot set property 'onmessage' of undefined" (owner's `about:errors` photo). | Ports are passed between frames: the receiver gets a real `MessagePort` linked to the one the sender kept, messages flow both ways, and ports can be passed on through ports. Same-page frames (`about:blank`) also get the ports. | `web/prelude.js` (section 13.59) |
+| 2 | When several secure requests ran at once, some failed with "Secure connection failed", "No answer" or "Could not connect" (owner's photos: Google's main script and its report requests). Two causes: a new connection was handed back as free before it was used, so a second request could take over the same connection in the middle of its handshake, and the TLS handshake kept its ServerHello in a static variable shared by all requests. | Each connection stays reserved for its request; the handshake state is per request. A stress page with 30 and with 80 secure GET, POST, XHR, 100 KB and slow requests at the same moment: all succeed (before: 11 of 30 failed). | `apps/internet/webglue.c`, `lib/crypto/nvxtls.c` |
+| 3 | A name lookup gave up after 300 received network packets, so it failed while many downloads were running (owner's photos: "Name lookup failed" on Microsoft's pages). | Name lookups wait by time (1.5 s per server, the question sent again after 0.5 s and 1 s) and try all servers twice. | `net/stack/tcpip.c` |
+| 4 | Reports sent while leaving a page (`navigator.sendBeacon`, `fetch` with `keepalive`) were cancelled by the navigation, or never started because the request waited for the next timer. | They start at once and finish after the page is gone, like Chrome. | `web/prelude.js`, `web/js.c`, `apps/internet/webglue.c` |
+| 5 | No way to turn the new v10.35 parts off without a new build. | Terminal: `browser` shows the switches, `browser netbg off` sends page requests the old way, `browser csp off` only logs what the Content Security Policy and frame checks would block ("[CSP off, allowed]"), `browser samesite off` sends cookies as before v10.35. The choice is kept after a restart. | `shell/commands.c`, `core/init/setup.c`, `web/engine.c`, `net/http/cookies.c` |
+| 6 | Microsoft's 404 errors were unexplained. | Checked: the browser requests the exact same addresses (the same paths and queries reached a test server byte for byte), so the 404s come from Microsoft's servers. The two failed host names are Microsoft's old CDN names. | - |
+| 7 | `canvas.getContext('webgl2')` returned `null`. | WebGL 2: GLSL ES 3.00 shaders (`#version 300 es`, `in`/`out`, `layout(location)`, fragment outputs, uniform blocks with std140 layout, `texture`, `textureLod`, `texelFetch`, `textureSize`, `round`, `trunc`, `uint` types), vertex array objects, instanced drawing with divisors, uniform buffers, sampler objects, `texStorage2D`, sized and integer formats, half floats, multisample renderbuffers, `blitFramebuffer`, `clearBuffer*`, queries, syncs, `getBufferSubData`, `copyBufferSubData`. | `web/prelude.js`, `web/webgl.c` (section 13.59) |
+| 8 | A page could use at most 768 MB and a download at most 48 MB. | Up to 1 GB per page when the machine has the memory, downloads up to 256 MB. | `web/krt.c`, `apps/internet/webglue.c` |
+
+Tested: check.py; the host pages (146, 153, 37, 17, script order, bub=6 fin=11, API 67); the shader test page (45 of 45) and a WebGL 2 page (uniform block, two instances, VAO, `texelFetch`, `textureSize`, sampler, multisample renderbuffer resolved with `blitFramebuffer`) on the host and with AddressSanitizer; in the VM: ports between frames (both directions and a port passed through a port), the 30 and 80 request stress pages against a local HTTPS server, 6 beacons and 6 keep-alive requests arriving after the page navigated away, the Microsoft address test, the `browser` switches.
+
+Not done: WebAssembly is not faster (it already runs in a fast interpreter, about three times faster than our JavaScript; the next step would be compiling it to machine code, which this project does not do); WebGL 2 draws only to the first color attachment, has no 3D or array textures, no transform feedback and no integer bit operations in shaders; a real Unity game is untested here (no access to Y8 from the build machine).
+
+## What changed in v10.35
+
+| # | Before (v10.34) | Now (v10.35) | Where |
+|---|---|---|---|
+| 1 | Every `fetch` and `XMLHttpRequest` ran to the end before the page could do anything else; a long request held up the page, the next request waited for it, and a streamed answer arrived in one piece at the end. | Requests from page scripts run in the background on their own small stacks (up to 16 at once, 96 queued, 6 per site like Chrome, bodies up to 48 MB). `fetch` resolves as soon as the headers arrive and `response.body` streams the data as it comes; `XMLHttpRequest` reports `readyState` 3 with partial text, `progress`, `timeout` and `abort`; gzip answers are unpacked while they stream; the connection pool has 32 places. | `apps/internet/webglue.c`, `lib/crypto/nvxtls.c`, `web/js.c`, `web/prelude.js` (section 13.58) |
+| 2 | Nothing ran in the background apart from the desktop; the clock kept whatever the hardware clock said (a wrong year stayed wrong); a file download stopped the browser until it was done. | A small service manager (`services` in the Terminal, Settings > System > Services) runs the network, downloads, power, web cache, cookies, clock and Wi-Fi services; the optional ones can be stopped and stay stopped after a restart. The clock service sets the time from `pool.ntp.org`, `time.google.com` or `time.cloudflare.com` (or a server you choose) at start and every 6 hours and writes it to the hardware clock. Downloads run in the background with progress in the browser and on the taskbar, and use the file name the server gives. | `apps/system/services.c`, `apps/system/settings.c`, `shell/terminal.c`, `apps/internet/browser.c`, `graphics/ui/desktop.c`, `drivers/rtc/cmos.c` |
+| 3 | `getElementById`, `querySelector('#id')` and `getElementsByTagName` searched the whole document every time, and `getElementsByTagName` stopped after 2048 elements. | An id index, a fast path for `#id` and `#id .class` selectors, and a cached tag search without the limit; the DOM benchmark page went from 6604 ms to 227 ms. `about:perf` shows the page's script memory and the background requests. | `web/dom.c`, `web/cssparse.c`, `web/js.c` |
+| 4 | The `sandbox` attribute on frames was ignored; cookies had no `SameSite`; an HTTPS page could load HTTP scripts; `Content-Security-Policy`, `frame-ancestors` and `X-Frame-Options` were not enforced; a stack overflow could run into other memory. | Sandboxed frames get a unique origin and lose scripts, forms, pop-ups, dialogs, storage and cookies unless their `allow-` flags give them back; `SameSite` (Lax by default, as in Chrome, with the 2-minute POST allowance); mixed content is blocked (scripts, styles, `fetch`, frames) or upgraded (images); CSP with nonces, hashes, `strict-dynamic`, `unsafe-inline` and report-only, plus `frame-ancestors` and `X-Frame-Options`; guard pages around the page engine stack, the request stacks and the page memory. | `web/engine.c`, `web/prelude.js`, `net/http/cookies.c`, `apps/internet/webglue.c`, `mem/pmm_vmm.c` |
+| 5 | Missing or stubbed: `navigator.locks`, `CompressionStream`, `Notification`, `navigator.setAppBadge`, `navigator.userActivation`; Ctrl- and Shift-click in multiple-choice list boxes; horizontal scroll snapping; `href` of SVG links. | All work: notifications appear as desktop toasts (permission only right after a click or key, like Chrome), the app badge appears on the taskbar button, `CompressionStream` really compresses; list boxes take Ctrl and Shift; snapping works sideways; SVG `href` is an `SVGAnimatedString`. | `web/prelude.js`, `web/js.c`, `web/engine.c`, `graphics/ui/desktop.c` |
+| 6 | No 3D: `canvas.getContext('webgl')` returned `null`, and CSS `rotateX`, `rotateY`, `perspective`, `matrix3d` and `backface-visibility` were ignored or flattened. | WebGL 1.0 in software: a GLSL ES 1.00 compiler (preprocessor, structs, arrays, functions, loops, all built-in functions) that turns shaders into compact bytecode, and a rasterizer with clipping, perspective-correct values, depth test, blending, culling, scissor, textures with wrap and filter modes, render-to-texture, points and lines, plus the extensions `OES_element_index_uint`, `OES_vertex_array_object` and `ANGLE_instanced_arrays`. CSS 3D transforms use full 4x4 matrices with true perspective drawing, `perspective`, `perspective-origin`, `transform-style: preserve-3d` and `backface-visibility`, so card flips work; `getComputedStyle` gives `matrix3d(...)` as Chrome does. | `web/webgl.c` (new), `web/prelude.js`, `web/cssstyle.c`, `web/paint.c`, `web/anim.c` (section 13.58) |
+| 7 | A page that stopped responding only showed "Esc stops" in a corner. | After 8 s a "Page unresponsive" box offers Wait and Stop page, like Chrome; the crash page names the reason. | `apps/internet/browser.c` |
+| 8 | A `<script>` inserted with `innerHTML`, `outerHTML` or `insertAdjacentHTML` ran again; a page whose inline script did `document.body.innerHTML += ...` re-ran itself forever (found while testing a busy page: it never finished). | Scripts inserted by these three are inert, as in every browser; `createContextualFragment`, `document.write` and `createElement('script')` still run theirs. | `web/js.c` |
+
+Tested: check.py (all groups pass; the QEMU group, which needs the machine to itself, run alone); the host pages (146, 153, 37, 17, script order, animation events bub=6 fin=11, the API page with 67 lines); a GLSL test page with 45 shader programs (loops, functions with `out` and `inout`, structs, arrays, matrices, built-ins, macros) and a program-sharing test (two programs with one vertex shader keep their own uniforms; 300 programs created and deleted); a lit, textured, rotating cube with render-to-texture; a CSS card flip, `rotateX` and `rotateY` under perspective and `matrix3d`; memory checks of all of these with AddressSanitizer; in the VM: background `fetch` and `XMLHttpRequest` with streaming, gzip, abort and a 90 s server wait, the 6-per-site limit, sandboxed frames, the clock fix (2025 to 2026), a 6 MB background download, the WebGL triangle and cube pages and the animated cube.
+
+Not done: WebGL 2 (`getContext('webgl2')` returns `null`, so newer three.js versions that need it do not start; older ones that use WebGL 1 can); WebGL runs on the processor, about 60 frames per second for a small lit cube on the build machine but only 2 to 3 in the emulator; Wi-Fi does not reconnect by itself (the driver gives no signal when the link drops); two frames with exactly the same address still share one slot.
+
+## What changed in v10.34
+
+| # | Before (v10.33) | Now (v10.34) | Where |
+|---|---|---|---|
+| 1 | After the phone approval in Google's 2-step sign-in the page stopped halfway along the loading bar (owner's report). The cookie jar kept at most 511 bytes of a cookie value and silently cut the rest, sent at most 6 KB of cookies per request and held 400 cookies for all sites together, so a long sign-in cookie could be stored broken or dropped. Chrome and Firefox keep 4096 bytes per cookie. | Cookies up to 4096 bytes (name plus value; longer ones are refused whole, like Chrome, instead of being cut), up to 16 KB of cookies per request and per `document.cookie`, room for 3000 cookies with at most 180 per site, the oldest cookie of that site removed first. The values live in their own memory blocks; `cookies.txt` keeps the same format. | `net/http/cookies.c`, `apps/internet/webglue.c`, `apps/internet/websock.c`, `web/js.c` (section 13.57) |
+| 2 | Every request was given up after 20 s without data. Pages that wait for an event on the server (such as the phone approval) keep a request open for longer, so the page never heard the answer; a script that waited on the network also used up its 60 s script limit. | Requests from page scripts (`fetch`, `XMLHttpRequest`) wait up to 300 s like Firefox, page loads up to 120 s, other requests 20 s as before. While a request waits, a TCP keep-alive probe is sent every 45 s like Chrome, so routers do not forget the connection. Network waits no longer count against the 60 s script limit. The desktop keeps running during the wait and Esc stops the page. | `apps/internet/webglue.c`, `sys/linux/lxsock.c`, `web/js.c` |
+| 3 | The browser followed at most 7 redirects; Google's sign-in passes through several sites (CheckCookie, `accounts.youtube.com/accounts/SetSID`, Gmail). | Up to 40 redirects (Chrome and Firefox stop at 20). | `apps/internet/webglue.c` |
+| 4 | `navigator.userAgent` said `Noovex/9.08` while the HTTP header said `Noovex/10.33`. | Both report the same version. | `web/prelude.js` |
+
+Tested: check.py with a new group that runs the real cookie jar on the host (12 checks: a 3000-byte cookie kept whole, over 4096 refused, 40 cookies of 300 bytes all sent, 180 per site with the oldest removed, 3000 in total, save and reload, HttpOnly); in the VM a test page reached through 12 redirects that each set a 1000-byte cookie (all 12 arrive intact, a 12 KB header), a `fetch` through 15 more redirects (all 15 cookies intact, a 15 KB header) and an `XMLHttpRequest` that the server holds for 90 s ("held 90 s after 90 s"); during the wait the start menu opens and Esc stops the page.
+
+Not done: the real Google sign-in is still untested here (it cannot be reached from the build machine); the Chrome version in the user agent stays 124.
+
+## What changed in v10.33
+
+| # | Before (v10.32) | Now (v10.33) | Where |
+|---|---|---|---|
+| 1 | After signing in, Gmail showed only the box "This page is busy." (owner's report): while a page loaded, the whole desktop stopped and only the pointer and that box were drawn, because the desktop kept running during page ticks and queued clicks but not during page loads. Navigations started by the page itself (redirects, `location` changes, form posts, the step from the sign-in to Gmail) always loaded that way. | The desktop keeps running during every page load: windows, menus, the Terminal and the other apps react, and the browser shows the last picture of the page with a small "Loading the page... N s (Esc stops)" note after 3 s. Long layout passes also give the desktop its turn. Closing the browser window while a page is loading stops the page. | `apps/internet/browser.c`, `graphics/ui/desktop.c`, `graphics/ui/input.c`, `graphics/ui/wm.c`, `web/layout.c` (section 13.56) |
+
+Tested: check.py; the host test pages (146, 153, 37, 17, script order, animation events, NamedNodeMap, XPath, element properties); in the VM a page that runs a script for 12 s, opened through a page that forwards to it by script: during the 12 s the start menu and its submenus open, a command can be typed in the Terminal, there is no busy box, and the page finishes normally afterwards ("done after 12.0 s").
+
+Not done: Gmail itself is still untested here (it cannot be reached from the build machine); programs started in the Terminal run their commands only after the page has finished loading; the time limit of 300 s per page job (not counting network waits and the time given to the desktop) is unchanged.
+
+## What changed in v10.32
+
+| # | Before (v10.31) | Now (v10.32) | Where |
+|---|---|---|---|
+| 1 | On an installed system the browser saved its web cache (up to 28 MB) to the disk in one go from the browser tick; with slow disk writes the main loop stopped for 5 s and the freeze report appeared (owner's report: `ata_writen` <- `n4_sync_file` <- `nvx3_sync` <- `fs_save_bin` <- `wc_save` <- `browser_tick`). | The cache is stored in memory with `fs_store_nosync` and written by `fs_sync_step` in steps of 32 blocks (128 KB), at most about 12 ms per frame; the metadata is committed at the end. The file starts with its length and a 64-bit checksum, so a cache cut off by a power loss is ignored at the next start. At power off and restart the rest is written at once. | `apps/internet/webglue.c`, `fs/nvx/nvx4.c`, `sys/native/syscall.c` (section 7.11) |
+| 2 | `transitionend`, `animationend`, `animationstart` and `animationiteration` never reached listeners for the old names `webkitTransitionEnd` and the others. Google's sign-in waits for `webkitTransitionEnd` on the step container (owner's photo of `about:pending`), so the password page stayed busy and blocked. | Trusted animation and transition events are delivered under the old name to every node that has no listener for the new name, as the DOM standard and Chrome do; the browser's own tracking listeners do not count. | `web/prelude.js` (section 13.55) |
+| 3 | `element.attributes` was a plain array without `getNamedItem`, `item`, named access or `Attr` objects (YouTube: "d.getNamedItem is not a function"). | `attributes` is a live `NamedNodeMap` (the same object every time) of `Attr` objects with `name`, `value` (writable), `ownerElement`, `getNamedItem`, `getNamedItemNS`, `item`, `setNamedItem`, `removeNamedItem`, iteration and named access; `getAttributeNode`, `setAttributeNode`, `removeAttributeNode` and `document.createAttribute` use the same objects. SVG names keep their case (`viewBox`); internal attributes are hidden. | `web/prelude.js` |
+| 4 | About 50 element properties (`async`, `value`, `length`, `open`, `src`, `href`, `name`, `type`, `form`, `content`, `label`, `text`, `width` and more) existed on every element, so a `div` had `length` and `async` (likely cause of YouTube's "this.async is not a function"). | Each property is only on the element types that have it in Chrome (for example `async` only on `script`, `length` on `select` and `form`, `open` on `details` and `dialog`). | `web/prelude.js` |
+| 5 | `document.evaluate` was a stub that never found anything; `designMode` always read "off" and ignored writes; `isContentEditable` was always false; `col`, `colgroup`, `datalist`, `param`, `track`, `slot`, `marquee`, `font`, `frameset` and `frame` had no element type; `scroll-snap-type` and `scroll-snap-align` were ignored and `scrollend` never fired; `navigator.getBattery()` always said 100% charging. | A real XPath 1.0 engine (all axes, predicates, the core function library, all result types, `XPathEvaluator`, `XPathExpression`); `designMode` makes a document editable (also blank frames); `isContentEditable` follows `contenteditable` and design mode; the ten elements have their interfaces and properties; scroll snapping on wheel scrolling for boxes and the page (mandatory: one item per step, proximity: snaps when close) and `scrollend`; `navigator.getBattery()` reports the real battery. | `web/prelude.js`, `web/js.c`, `web/engine.c`, `web/cssstyle.c`, `web/css.h` |
+| 6 | The lid was not read; the power button shut down at once on the first press; the control-method power and sleep buttons of many laptops were ignored; nothing warned about a low battery. | Lid close turns the screen off (or sleeps, or does nothing, chosen in Settings) and opening it brings the screen back; the power button opens a power menu (Shut down, Restart, Sleep, Cancel) and a second press shuts down (also selectable in Settings); toasts at 15% and 7%, and at 3% a clean shutdown after a 60 s warning unless the charger is connected. | `drivers/acpi/acpi_dev.c`, `apps/system/powerui.c`, `apps/system/settings.c` (section 10.7.5) |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17), the script-order page, the animation-event page (bub=6 fin=11), the API page (67 lines) and the locale page (25 of 25) in the host test program; new pages for the old event names, `NamedNodeMap` (25 checks), the element property layout (45 checks), XPath (40 checks), design mode with clicks and typing, scroll snapping and `getBattery`; the file-system harness with three new checks for the stepwise save (6 MB in 128 KB steps, a second save, a power cut in the middle); the test apps (chat, GitHub, YouTube, Docs, charts, 12000-element inbox) load without script errors; in the VM: the power menu from QEMU's power button, the video pages and the frame pages.
+
+Not done: the real Google, YouTube, TikTok and Gmail pages are still untested here (they cannot be reached from the build machine); the lid and the battery warnings could not be tried in the VM (QEMU has neither); SVG `a` elements have no `href` object; Ctrl-click in `multiple` list boxes.
+
+## What changed in v10.31
+
+| # | Before (v10.30) | Now (v10.31) | Where |
+|---|---|---|---|
+| 1 | On the Google password page `about:pending` showed nothing pending (0 requests, 0 promises, 0 observers) while the blue bar kept moving and no click or key reached the page; there was no way to see what blocked the input. | `about:pending` has three new sections: "Events the page listens for that never came" (every event type a page registered with `addEventListener` that was never fired, with the target and how long it has waited; user and rare events such as `click` or `pagehide` are grouped on one line), "What is under the mouse" (the element at four points of the page with position, z-index and opacity, `inert`, `aria-busy`, `aria-disabled` and `pointer-events: none` on its ancestors, large overlays, and the focused element), and "Loading indicators" (every `role=progressbar`, `progress` and element with "progress" in its class, with display, visibility, opacity, size, classes and when the classes last changed). | `web/prelude.js` (section 13.54) |
+| 2 | `readystatechange` to "interactive" fired after deferred scripts, and "complete" together with `load`; `pageshow` was never fired. | The order is the one Chrome uses: "interactive" right after parsing, then deferred scripts, `DOMContentLoaded`, "complete", `load`, then `pageshow` with `persisted` false. | `web/engine.c`, `web/js.c`, `web/prelude.js` |
+| 3 | `window.postMessage(data, '*')` gave the target origin instead of the sender's origin; a message for another origin was still delivered; a target such as `https://site/path` never matched between frames; a `MessageChannel` port kept only one listener and lost messages sent before `start()`; `e.ports` was always empty; `BroadcastChannel` delivered nothing. | `e.origin` is always the sender's origin; messages for another origin are dropped and an invalid target throws `SyntaxError`; targets are compared by origin; `MessagePort` is a real event target that queues messages until `start()` (or setting `onmessage`) and passes ports; `BroadcastChannel` delivers to the other channels with the same name in the page. | `web/prelude.js` |
+| 4 | `document.fonts.load()` always gave an empty list; `loading`, `loadingdone` and `loadingerror` never fired. | `document.fonts.load()` loads and returns the faces in the set that match the family list, and fires the three events (also through `onloadingdone` and the others). | `web/prelude.js` |
+| 5 | `<select size>` and `<select multiple>` were drawn like a drop-down; a modal dialog had no backdrop; a broken image without room showed nothing; nested `<q>` used the same quotes. | List boxes show their rows, `optgroup` labels and the selection (blue while focused) and are chosen by click; a modal dialog dims the page behind it and is only as tall as its content; a broken image of at least 16x16 shows its alt text in a grey frame; nested quotes alternate. | `web/layout.c`, `web/paint.c`, `web/cssstyle.c`, `web/engine.c` |
+| 6 | Missing: `Element.getHTML`, `ShadowRoot.getHTML`, `webkitMatchesSelector`, `scrollIntoViewIfNeeded`, `requestPointerLock`, `document.createExpression`, `exitPictureInPicture`, `HTMLSelectElement.showPicker`, `navigator.requestMediaKeySystemAccess`, `window.find`, `Request.formData`, the CSS typed values (`CSSUnitValue`, `CSS.px` and the other unit functions), `Intl.DateTimeFormat.formatRangeToParts`, `Intl.DurationFormat`; after `MediaSource.endOfStream()` the duration stayed unknown. | All exist; pointer lock, picture in picture and media keys reject with `NotSupportedError` as Chrome does without the feature; `endOfStream()` sets the duration to the end of the buffered data. | `web/prelude.js` |
+| 7 | Google's apps catch their own script errors and send them to their server (`/_/<app>/jserror`), so such an error never reached `about:errors`; `navigator.sendBeacon` returned true without sending anything. | A request, beacon or image ping to a `jserror` or CSP report address is also written to `about:errors` as "Page reported its own error to <address>: <message> at <script>:<line>" with up to 600 characters of the stack, read from the address and the body; `sendBeacon` sends a real POST (with cookies, kept alive) and checks its arguments like Chrome. | `web/prelude.js`, `web/js.c` |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17), the script-order page, the animation-event page (bub=6 fin=11), the API page (67 lines) and the locale page (25 of 25) in the host test program; new pages for animations, fonts, scheduling and messaging (MessageChannel, ports, BroadcastChannel, target origins); in the VM: an H.264 MP4 (all 240 frames, `ended`), the same video through MSE (duration 8.0 after `endOfStream`), a VP9 WebM, list boxes chosen by click, a modal dialog with backdrop, the new `about:pending` sections on a page with an overlay and a progress bar, and two frames talking to the parent.
+
+Not done: the real Google and YouTube pages are still untested here (they cannot be reached from the build machine); photos of the new `about:pending` sections and of `about:errors` (any "Page reported its own error" lines) on the stuck Google password page will show what blocks it; Ctrl-click to add rows in a `multiple` list box.
+
+## What changed in v10.30
+
+| # | Before (v10.29) | Now (v10.30) | Where |
+|---|---|---|---|
+| 1 | `about:pending` showed requests, frames, timers and animations, but the Google password page was idle there and still showed its busy bar, so the cause had to be a promise from a browser function that never settles, which was not shown. | `about:pending` also lists every promise handed out by a browser function until it settles (credentials and passkey checks, permissions, storage, clipboard, user-agent data, media devices, service worker and `ready`, locks, fonts and `document.fonts.ready`, `FontFace`, `img.decode()`, media `play()`, storage access, full screen, caches, `indexedDB.databases()`, `crypto.subtle`, `createImageBitmap`, notifications, `customElements.whenDefined` with the element name, `scheduler`, `Animation.finished`), intersection and resize observers that never called back, and idle callbacks that never ran. | `web/prelude.js` (section 13.53) |
+| 2 | An error such as "TypeError: not a function" in `about:errors` did not say which call failed. | Each JavaScript error with a script address and line is followed by a line "Code at <script>:<line>:<column>:" with up to 160 characters of the script around that place and `>>` at the column, for errors in scripts, timers and event handlers. | `web/js.c`, `web/engine.c` (section 13.53) |
+| 3 | A POST, PUT, PATCH or DELETE without a body was sent without `Content-Length`; servers such as YouTube answer "411 Length Required" (owner's photo: `POST youtubei/v1/player`). | These requests always carry `Content-Length` (0 without a body), and failed ones show the body size in `about:errors`. Bodies without a type (bytes, untyped blobs) are no longer labelled as forms, and `FormData` is sent as `multipart/form-data` (files with their name and type), as in Chromium. Tested with a local echo server that answers 411 without the header: 11 body types with `fetch`, a `Request` with PUT, two `XMLHttpRequest` cases and DELETE all arrive with the right length. | `apps/internet/webglue.c` |
+| 4 | Missing or incomplete: `matchMedia` change events (listeners were never called), `navigator.mediaCapabilities`, `IdleDeadline`, the `LockManager` (`navigator.locks` ran every callback at once, without waiting), and the classes `MediaSession`, `StorageManager`, `ScreenOrientation`, `PerformanceTiming`, `PerformanceNavigation`, `VideoPlaybackQuality` and `MediaList`. | 10 APIs: `MediaQueryList` and `MediaQueryListEvent` with `change` events when the window size changes; `MediaCapabilities` (`decodingInfo` answers from `canPlayType` and `MediaSource.isTypeSupported`, `encodingInfo` says not supported); `IdleDeadline` with `timeRemaining()` and `didTimeout`; `LockManager` and `Lock` with exclusive and shared locks, a queue, `ifAvailable`, `steal`, `signal` and `query()`; `MediaSession` with action handlers and position state; `StorageManager`; `ScreenOrientation` with `change` events; `PerformanceTiming` and `PerformanceNavigation`; `VideoPlaybackQuality`; `MediaList` for style sheets. | `web/prelude.js` |
+| 5 | A table caption was drawn inside the table border; ruby text sat inline after its base; `<wbr>` gave no line-break opportunity; `<details>` with the same `name` could be open together; `<progress>` without a value showed an empty bar. | Captions sit above the table border box; `<rt>` is drawn small and centered above its base (`<rp>` hidden); `<wbr>` lets a long word break there; opening a `<details>` closes the others with the same `name` (by click, script or markup); a `<progress>` without a value shows a moving bar. | `web/layout2.c`, `web/paint.c`, `web/cssstyle.c`, `web/layout.c`, `web/dom.c`, `web/engine.c` |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17), the script-order, animation-event, API, locale, property and import-map pages in the host test program; a promise and observer page, a source-snippet page (an error in a script and one in an event handler), a page for the 10 APIs (lock order, media capabilities, idle deadline and the classes), and an element page; 696 pages under AddressSanitizer and UBSan; in QEMU the POST echo page, the error page and `about:pending`.
+
+Not done: the real Google and YouTube pages are still untested here; the snippet uses byte columns (for lines with non-ASCII characters it can be a few characters off) and is only available for scripts loaded with `src` (not inline scripts); `caption-side: bottom` is not supported; a `<ruby>` with several base and `<rt>` pairs is drawn as one column.
+
+## What changed in v10.29
+
+| # | Before (v10.28) | Now (v10.29) | Where |
+|---|---|---|---|
+| 1 | When a page waited forever without an error (the Google password page after v10.28: no entries in `about:errors`, the blue bar still moving), nothing showed what it was waiting for. | New page `about:pending`: what the last page was still waiting for, taken once a second while it was open: requests still running and for how long, scripts that never got `load` or `error`, every frame with its address, whether it runs, is loading or failed, whether it is hidden and how many messages wait for it, message counters, timers of 1 s or longer and all intervals, transitions without `transitionend`, running animations and images still loading, plus `readyState` and when `DOMContentLoaded` and `load` fired. | `web/prelude.js`, `web/js.c`, `apps/internet/webglue.c`, `apps/internet/browser.c` (section 13.52) |
+| 2 | Only the first frame of a page ran scripts, forever; its `load` event fired before it had loaded, and every message from it claimed to come from that first frame. A page that talked to its second frame (Google's helper frames are often hidden and not first) never got an answer. | Two frame engines: two frames of a page run their scripts at the same time (a third copy of the engine is linked in; the built-in Doom WAD is now stored compressed, 4.2 to 1.4 MB, to make room). Messages for a frame that is not running are kept (up to 64); a frame with messages waiting gets a free engine, or the engine of a frame that has been quiet for 1.5 s (or failed). The `load` event of a running frame fires once it has really loaded (or failed, or after 20 s), and replies carry that frame's `contentWindow` as `source`. Tested in QEMU: two frames both shown and answering, and three frames where all three answer `ping` with the right `source`. | `web/prelude.js`, `web/js.c`, `apps/internet/webglue.c`, `build.sh`, `apps/games/doom.c` (section 13.52) |
+| 3 | At most 512 transition snapshots per style pass and 64 animation events were kept; the engine drained 64 events per tick and threw the rest away. On large pages some transitions never started and `transitionend`, `animationend` and similar events were lost, so code waiting for them waited forever. | 4096 snapshots (allocated once from the kernel heap), 512 queued events, and events that do not fit in one tick are kept for the next one. | `web/anim.c`, `web/engine.c` |
+| 4 | A text field, `select` or `textarea` placed directly in a grid cell kept its default width (a likely cause of the narrow Google password field). | Form fields (not check boxes, radio buttons, image or hidden inputs) stretch in grid cells like in Chromium, in both grid code paths. | `web/layout2.c` |
+| 5 | Every page used UTC; `Intl` reported the time zone "UTC". | The browser uses the time zone chosen in setup (Los Angeles, New York, London, Stockholm, Moscow, Mumbai or Tokyo), with summer time for the US and EU zones, and `Intl` reports its IANA name (for example "Europe/Stockholm"). | `apps/internet/webglue.c`, `core/init/setup.c`, `web/js.c`, `web/prelude.js` |
+| 6 | Import maps (`<script type="importmap">`) were ignored, so modules imported by bare names failed. | The `imports` of import maps are read before the first module is resolved (exact names and prefixes ending in `/`); `HTMLScriptElement.supports('importmap')` is true. | `web/js.c`, `web/prelude.js` |
+| 7 | The legend of a fieldset was drawn inside the box; `InputEvent.prototype.getTargetRanges` did not exist. | The legend sits on the top border with a gap in the border, as wide as its text, like Chromium; `getTargetRanges` exists on every input event. | `web/layout.c`, `web/paint.c`, `web/cssstyle.c`, `web/prelude.js` |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17), the script-order page, the animation-event page (bub=6 fin=11), the API, sandbox, property and locale pages in the host test program; a pending-list page (a request, a 30 s timer, an interval, a 60 s transition and two frames); an import-map page; a grid and flex text-field page; 696 pages under AddressSanitizer and UBSan; in QEMU the two-frame page and `about:pending`.
+
+Not done: the real Google sign-in is still untested here; `transitionend` for properties the engine cannot animate (for example `box-shadow`, `filter`, `clip-path`) is still not fired; at most two frames run scripts at once (switching a third frame in reloads it); `SharedWorker`, `EditContext` and WebGL are still missing; table captions are still drawn inside the table border.
+
+## What changed in v10.28
+
+| # | Before (v10.27) | Now (v10.28) | Where |
+|---|---|---|---|
+| 1 | The Google sign-in script stopped with "cannot read property 'supports' of undefined" (owner's `about:errors` photo): `iframe.sandbox` did not exist, so the password step never finished. | Iframes have `sandbox` (a token list whose `supports()` knows the 14 real sandbox flags), `allow`, `allowFullscreen`, `credentialless`, `srcdoc`, `name`, `width`, `height`, `loading`, `referrerPolicy` and `featurePolicy`. `relList.supports()` answers from Chrome's lists for `link`, `a`, `area` and `form`; other token lists throw a `TypeError` like Chrome. `HTMLScriptElement.supports()` says yes to `classic` and `module`. | `web/prelude.js` (section 13.51) |
+| 2 | Long addresses were cut: relative addresses at 1799 characters, the query part at 1023, early downloads at 1024, page navigation at 2040, and some copies in the browser had no limit at all (an overflow risk). Google's script addresses are often longer, which gave the 404 and 400 errors on google.com. | Addresses up to 8 KB in the resolver and 4 KB everywhere else (engine, style sheets, network layer, cache, frames, address bar, tabs, history), and the browser's copy function is bounded. A 3015-character script address arrives intact in QEMU. | `web/util.c`, `web/engine.c`, `web/js.c`, `web/cssparse.c`, `web/nwe.h`, `apps/internet/webglue.c`, `apps/internet/browser.c`, `include/nvx/apps/nwe_api.h`, `include/nvx/apps/internet/browser.h` |
+| 3 | About 45 element properties were missing. | Added: `link.as`, `fetchPriority` (script, link, img), `blocking`, `imageSrcset`, `imageSizes`, `img.decoding`, `useMap`, `isMap`, `a.ping`, `inputMode`, `enterKeyHint`, `autocapitalize`, `input.list`, `valueAsDate`, `minLength`, `formAction`, `formMethod`, `formNoValidate`, `formTarget`, `button.command`, `commandForElement`, `form.encoding`, `acceptCharset`, `textarea.wrap`, `textLength`, `select.size`, and more; `Request` keeps `keepalive`, `redirect`, `referrer`, `referrerPolicy`, `integrity`, `priority`. Empty `about:blank` frames now see every global of the page (`CSS`, all element types, `Intl` and the rest). | `web/prelude.js` |
+| 4 | Every locale was formatted like US English. | Numbers, currency, percent, dates and times follow the locale for English (US, GB, AU, CA, IN), Swedish, German, French, Spanish, Italian, Portuguese, Dutch, Danish, Norwegian, Finnish, Polish, Russian, Japanese, Chinese and Korean, with month and day names for Swedish, German, French and Spanish. 25 cases equal Chromium, for example "1 234,5", "1 234,50 kr", "2026-10-26 13:05:09" and "mandag 26 oktober 2026" (with the Swedish a-ring). | `web/prelude.js` |
+| 5 | Text in a fixed-height `<button>` sat at the top (Google's "Nasta" button); a closed `<details>` still showed text that was not inside an element, and its marker was a dot over the text; `<dialog open>` filled the width; every `<meter>` was green; the error page showed a stray "Page s" line. | Button content is centered vertically; closed `<details>` hide all content, and `summary` shows a right or down triangle before the text; dialogs are as wide as their content and centered; meters are green, yellow or red from `low`, `high` and `optimum`; the page line in `about:errors` shows the full resolved address, and entries keep up to 1200 characters. | `web/layout.c`, `web/paint.c`, `web/cssstyle.c`, `apps/internet/browser.c`, `apps/internet/webglue.c` |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17) and the script-order page in the host test program; a property probe of 12 element types (nothing missing), a sandbox and token-list page, the locale page (25 of 25 equal Chromium), an element page with about 60 element types; in QEMU a local page that repeats Google's checks and loads a script with a 3015-character address (all pass, status "Done").
+
+Not done: the real Google sign-in is still untested here (no access from the test machine); WebGL, `SharedWorker`, `EditContext`, `InputEvent.getTargetRanges` and import maps are still missing; the time zone is still UTC; the legend of a fieldset and a table caption are not yet drawn like Chromium; no interpreter speed-up this time (the remaining cost is in the core loop, which stays unchanged).
+
+## What changed in v10.27
+
+| # | Before (v10.26) | Now (v10.27) | Where |
+|---|---|---|---|
+| 1 | When a page stopped working there was no way to see why: script errors went only to `about:console`, failed downloads were not listed anywhere. | New page `about:errors`: every uncaught JavaScript error (message, script address, line and column), every unhandled promise rejection, every `console.error` message and every request that failed (name lookup, connect, secure connection, cut-off download, no answer, HTTP 400 and above) with the time and the method and address. A line "Page ..." marks each new page; the last 64 entries are kept. | `apps/internet/browser.c`, `apps/internet/webglue.c`, `web/js.c`, `web/prelude.js` (section 13.50) |
+| 2 | The status bar showed "Loading <address>" for the last download and then "Done", even when scripts had failed. | It shows "Running script <name>" while a script runs, "Script failed: <name> - see about:errors" or "Could not load <name> - see about:errors" when one fails, and "Done, N errors - see about:errors" at the end when the page had errors. | `web/engine.c`, `apps/internet/browser.c` (section 13.50) |
+| 3 | A download that the server cut off in the middle was used as if it were complete (a half script ran or failed with a syntax error). | A download that ends before its length is retried once, then reported as failed; the page gets the `error` event of the script instead of running half of it. | `apps/internet/webglue.c` (section 13.50) |
+| 4 | `new WeakRef(obj).deref()` could return `undefined` right after the object was made when nothing else held it. | The target is kept until the current task ends, as the standard says, so `deref()` returns it in the same task. | `web/prelude.js` |
+| 5 | Compiling a script looked up every outer variable used by a function with a linear search. | Functions with 24 or more outer variables use a hash index (a 3.5 MB bundle: 3% fewer instructions to compile; 3000 scripts from npm packages give byte-identical bytecode). | `third_party/quickjs/quickjs.c` (section 13.50) |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17), the API page and the script-order page in the host test program; a local test page that copies the way the Google sign-in page loads its code (scripts added by JavaScript with `async`, `nonce` and `onload`/`onerror`, a module chunk that calls a global, plus a 404 script, a cut-off script and a script that throws) in QEMU: the chunk runs, the 404 and cut-off scripts fire `error`, the throwing script fires `load`, as in Chromium, and all three problems are listed in `about:errors`.
+
+Not done: the real Google sign-in page is still untested here (no access to it from the test machine); `about:errors` shows what goes wrong there but does not fix it.
+
+## What changed in v10.26
+
+| # | Before (v10.25) | Now (v10.26) | Where |
+|---|---|---|---|
+| 1 | Scripts added by JavaScript (`document.createElement('script')` plus `appendChild`) while the page was still being read never ran, and inline scripts added that way did not run at once; the load events fired before scripts added during the load. Most large sites load their code this way. | Inline scripts added by JavaScript run immediately (before `appendChild` returns), scripts with `src` added during the load run after the HTML is read and before `defer` scripts, `DOMContentLoaded` and `load`, in the same order as Chromium (checked with a test page). | `web/engine.c` (section 13.49) |
+| 2 | Scripts added by JavaScript, images, and style sheets added later were downloaded one after another. | They are downloaded in parallel (up to 6 at a time, 4 per server) and taken from the parallel results: 6 scripts with 0.4 s server delay load in 0.9 s, 8 images with 0.3 s delay in 1.2 to 1.5 s instead of 2.9 s, top of the page first (QEMU, local server). | `web/engine.c`, `web/cssparse.c`, `apps/internet/webglue.c` (section 13.49) |
+| 3 | The 400 KB built-in page script (the browser's own JavaScript layer) was compiled again for every page and every frame. | It is compiled once and the bytecode is reused from the code cache: the second load of a small page went from 48 to 9 ms in the host test program. | `web/js.c` (section 13.49) |
+| 4 | Several JavaScript built-ins were slow. | Measured in instructions against v10.24 (each test includes the same setup work): regular-expression `replace` 3.8x, `JSON.stringify` 2.2x (plain objects are written straight from their properties), spread of arrays and `arguments` 1.8x, `Map`/`Set` 1.6x, `map`/`filter` 1.5x, `JSON.parse` 1.3x (plain strings and integers read directly), parsing scripts with numbers 1.3x. Compiling a script no longer reads a whole bundle twice when it starts with `(` that cannot begin arrow-function parameters (an esbuild bundle of 3.4 MB: 18% fewer instructions for the page; 3000 scripts from npm packages: 5% faster, identical bytecode to v10.24). All results equal Node on 7 test files. | `third_party/quickjs/quickjs.c` (section 13.49) |
+| 5 | A page that kept the engine busy showed nothing until it finished; `Intl.DateTimeFormat` wrote numeric dates as "1 1, 1970"; `Intl.Collator` and `localeCompare` sorted by code point ("C" before "a"). | After 3 s a classic box over the browser says the page is busy, shows the seconds and that Esc stops it. Dates print "1/1/1970"; sorting ignores case and accents first like Chromium (also with `numeric` and `sensitivity`). | `graphics/ui/desktop.c`, `apps/internet/webglue.c`, `web/prelude.js` |
+| 6 | Per-CPU kernel and job stacks and the processor start stacks were 16 KB; once in about 5 boots CPU 1 stopped with "a kernel stack overflowed" during start. | 32 KB each (the overflow was not reproduced here, so this is a safety margin, not a confirmed fix). | `include/nvx/arch/x86_64/cpu/percpu.h`, `arch/x86_64/smp/smp.c` |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17), the animation-event page and the API page (73 checks, the same as Chromium apart from `navigator.language`, which this Chromium reports as en-US@posix); the script-order page against Chromium; 696 pages and 555 generated pages under AddressSanitizer and UBSan (one integer overflow in the new number code found and fixed; the rest were known wasm time-outs and unreadable files); the dynamic-script, image, busy and streaming pages and three app pages from a local server in QEMU.
+
+Not done: only one frame per page runs scripts (a second frame engine would not fit, the kernel image is 97.6 of 100.7 MB); the first visit to a script-heavy page is still dominated by compiling (no lazy compilation, no JIT); the real Google sign-in page is still untested here.
+
+## What changed in v10.25
+
+| # | Before (v10.24) | Now (v10.25) | Where |
+|---|---|---|---|
+| 1 | Right-clicking a file, a folder or a window title had no Properties entry (only desktop icons had a small Properties box), and icons could not be changed. | Files (right-click a file or folder) and window title bars have Properties. The classic Properties window shows the icon, name, type, full location, size and permissions; for folders it counts all files, subfolders and bytes inside; for apps it shows the state and window size. A grid of 12 icons (folder, document, code, picture, archive, settings, program, web page and four coloured folders) changes the icon at once, Default resets it. Choices are kept in `/etc/nvx-icons` and show in Files, the preview pane, the start menu, the taskbar and title bars. Right-click menus use the classic look. | `graphics/ui/desktop.c`, `graphics/ui/input.c`, `apps/system/file_explorer.c` (section 11.13) |
+| 2 | Settings used the rounded modern look. | Classic Settings: grey window, a white category list, a sunken search field, group boxes, tick boxes, raised buttons and button groups; every page and setting is kept. The Background page still sets any wallpaper and has a Plain grey button for the classic background. | `apps/system/settings.c` (section 11.13) |
+| 3 | The ChatGPT app and the Internet start-menu category existed; the desktop showed six icons. | ChatGPT is removed (app, command and menu entry); Browser is under Utilities; the desktop has no icons. The calculator drawing code that lived in the ChatGPT file moved to `calculator.c`. | `graphics/ui/desktop.c`, `apps/office/calculator.c`, `units.list` |
+| 4 | Clicking a file on a USB stick always opened it in the text editor. | The file is copied into Downloads and opened with the right app (editor, image viewer, browser, video player, presentation viewer). Files up to 256 MB. | `apps/system/file_explorer.c` |
+| 5 | Name lookups threw away every other packet that arrived while they waited (SYN-ACKs and data of open connections, each costing a 250 ms to 1 s retry), never resent a lost query (12 s wait), and kept only 8 names. A download longer than 5 s set off the freeze report. | Other packets are handed to the socket layer during lookups and ARP, queries are resent after 1 and 2 s, 64 names are cached for their TTL (60 s to 1 h), and the main loop is kept alive during downloads. `about:perf` shows the average connect time, SYN resends and the slowest new connection (lookup, connect and handshake); the network log has one line per connection. | `net/stack/tcpip.c`, `sys/linux/lxsock.c`, `apps/internet/webglue.c`, `apps/internet/browser.c` (section 13.48) |
+| 6 | Scripts in `srcdoc` frames never ran. | The first `srcdoc` or `src` frame of a page runs in the frame engine even when it is hidden or tiny; `postMessage` works both ways (tested with a ping/pong page). | `web/prelude.js`, `web/js.c`, `apps/internet/webglue.c`, `build.sh` (section 13.48) |
+| 7 | A page was only shown after the whole HTML had downloaded. | While a large page downloads, the part received so far is shown twice (after 0.3 s and 1.5 s, without scripts and without network access, gzip and chunked pages included), then the full page loads as before. | `apps/internet/webglue.c`, `apps/internet/browser.c`, `web/engine.c`, `lib/image/png.h` (section 13.48) |
+| 8 | `replace` with a regular expression and a function, `Map`/`Set` with string keys and `JSON.stringify` were slow. | A direct path for standard regular expressions in `replace` (6 times faster than before, slightly faster than Node on the test), a mixed hash and load factor 1 for `Map` and `Set` (1.7 times faster), `JSON.stringify` writes strings, numbers and keys straight into the output (28% fewer instructions), and the garbage collector runs when memory doubles instead of growing by half. Results match Node on 43 replace and stringify cases. | `third_party/quickjs/quickjs.c` (section 13.48) |
+
+Tested: check.py; the four feature pages (146, 153, 37, 17) and the animation-event page; a slow chunked and gzip page and a `srcdoc` ping/pong page from a local server in QEMU; Properties, icon changes, the classic menus, Settings and the wallpaper in QEMU.
+
+Not done: opening from a USB stick was not tried with a real stick in this build; only the first frame of a page runs scripts; no JIT and no change to the interpreter core; the real Google sign-in page is still untested here.
+
+## What changed in v10.24
+
+| # | Before (v10.23) | Now (v10.24) | Where |
+|---|---|---|---|
+| 1 | The Performance tab of System Monitor showed thin bar graphs with only a total. | Filled line graphs on white with a dotted grid, like the classic system monitors: CPU usage shows Total (teal) and Kernel (red, busy time not spent in ring-3 programs); Memory usage shows Committed (all heap blocks, grey) and Allocated (used heap, teal) scaled to the committed size, plus the physical memory size. The heap is walked once per second instead of on every redraw. | `apps/system/taskmgr.c`, `mem/heap_api.c` (section 11.13) |
+| 2 | The Terminal prompt was `user@host:/home$` and the title `user@host: /home`; `uname -a` printed `?` as the release because `/sys/kernel/osrelease` is not reachable from programs. | In the classic style the prompt is `host:~ $` (`#` for root) in green with the home folder shown as `~`, the title is `user@host:~`, and `uname -a` reads the release from `/proc/sys/kernel/osrelease`. | `shell/terminal.c`, `shell/commands.c`, `fs/vfs/unixfs.c`, `usr/src/nvxbox.c` (section 11.13) |
+
+Tested: check.py; the Performance tab and the Terminal in QEMU.
+
+Not done: no `js` command in the Terminal yet (an interactive JavaScript prompt like in the picture).
+
+## What changed in v10.23
+
+| # | Before (v10.22) | Now (v10.23) | Where |
+|---|---|---|---|
+| 1 | `fetch` and `XMLHttpRequest` sent none of the extra headers a page set (such as `X-Same-Domain`), no `Origin` and no `Sec-Fetch-*` headers, and a page could not read response headers: `getResponseHeader` and `response.headers` were always empty. Sign-in pages that check these headers waited for a timeout or retried. | Page headers are sent (forbidden names such as `Host` or `Cookie` are dropped), with `Accept: */*`, `Origin` for posts and cross-origin requests and `Sec-Fetch-Site`/`Mode`/`Dest` like Chromium; page loads send `Sec-Fetch-*` and `Upgrade-Insecure-Requests`, and a typed address sends no `Referer`. Response headers are kept for scripts (`getResponseHeader`, `getAllResponseHeaders` sorted and lower case without `set-cookie`, `response.headers`), `statusText`, upload events and the error path with `readyState` 4 behave like Chromium. | `apps/internet/webglue.c`, `apps/internet/browser.c`, `web/js.c`, `web/prelude.js` (section 13.47) |
+| 2 | `animationend` and `transitionend` events carried no `animationName`, `propertyName` or `elapsedTime`; `transitionstart`, `transitionrun`, `transitioncancel` and `animationcancel` were missing, so pages waiting for one of them never continued. | All eight events fire with the right names, times and order (a transition with a delay starts after the delay; `display: none`, removal or a new value cancels it); Web Animations no longer start CSS transitions when they finish. A test page gives the same 26 events as Chromium. | `web/anim.c`, `web/engine.c`, `web/js.c`, `web/prelude.js` (section 13.47) |
+| 3 | An `<iframe>` never fired `load`; `contentWindow` and `contentDocument` of an empty frame were missing. | Every frame fires `load` once per address; an empty or `about:blank` frame has a working `contentDocument` (`open`, `write`, `close`) and `contentWindow` (`postMessage`, `parent`, `top`). `navigator.storage.persisted` and `getDirectory` were added. | `web/prelude.js` (section 13.47) |
+| 4 | The classic desktop had 30-pixel title bars, a gradient wallpaper, large icons and a plain Terminal, Task Manager and browser frame. | A new classic look: 24-pixel title bars with small buttons, a solid grey desktop, small labelled desktop icons (Files, Terminal, Text Editor, Browser, Calculator, Settings), quick launch buttons and CPU and memory graphs on the taskbar, a start menu with categories (Internet added) and Settings, Help and Run. The Terminal has a menu bar, an inset black screen and a scroll bar; System Monitor has tabs, graphs in group boxes and a status bar; the browser has raised buttons, a white address field and a status bar. | `graphics/ui/wm.c`, `graphics/ui/desktop.c`, `graphics/ui/input.c`, `shell/commands.c`, `shell/terminal.c`, `apps/system/taskmgr.c`, `apps/internet/browser.c` (section 11.13) |
+
+Tested: check.py; the three feature pages (146, 153 and 37 checks) and a class test page (17) still pass; the animation-event page and the request-header test server compared with Chromium; the desktop, start menu, Terminal, System Monitor and browser in QEMU.
+
+Not done: scripts inside `srcdoc` and remote frames still do not run; no JIT and no change to the interpreter core; the slow connection setup seen on some sign-in pages was not found.
+
+## What changed in v10.22
+
+| # | Before (v10.21) | Now (v10.22) | Where |
+|---|---|---|---|
+| 1 | The ClientHello's session ID field carried the same random bytes that were used as the X25519 private key, so anyone who could see the connection could work out the key exchange and read the HTTPS traffic (all versions since TLS was added). The HTTPS client spoke only TLS 1.3 with X25519: servers that only speak TLS 1.2, or only accept the P-256 curve, refused the connection; a HelloRetryRequest was not understood; a server KeyUpdate during a long download made the next record fail. | The session ID is now a hash of the public client random, and a check confirms it does not give the key share. TLS 1.2 with ECDHE (X25519 or P-256) and AES-128-GCM or ChaCha20-Poly1305, for ECDSA and RSA certificates: the chain and host name are checked as before, the ServerKeyExchange signature is verified (PKCS#1, PSS or ECDSA), extended master secret is used when the server supports it, and the TLS 1.3 downgrade marker is refused. TLS 1.3 also offers P-256: a HelloRetryRequest is answered with the group the server asks for (and its cookie), the server's point is checked to be on the curve, and KeyUpdates are followed. Tested against OpenSSL with seven version, cipher and key combinations and a changed signature; an undefined shift in X25519 was fixed. | `lib/crypto/nvxtls.c`, `lib/crypto/nvxx509.c`, `lib/crypto/nvxcrypto.c` (section 13.46) |
+| 2 | `querySelector`/`querySelectorAll` parsed the selector on every call; `classList.toggle`/`add`/`remove` split and joined the class string in JavaScript; every `style.x = ...` ran two regular expressions; inline `on...` attributes were looked up on every element of an event's path. | Parsed selectors and results are cached until the DOM changes (200 queries: 95 ms to 3 ms), class list changes run in C (15 000 toggles: 55 ms to 14 ms), style property names are cached (6 000 sets: 30 ms to 14 ms), and event dispatch skips the inline-handler lookup when no element has that attribute. | `web/cssparse.c`, `web/js.c`, `web/dom.c`, `web/prelude.js` (section 13.46) |
+| 3 | There was no list of which JavaScript and DOM features work. | Three test pages (146 language and built-in checks, 153 DOM and Web API checks, 37 behaviour checks) compared with Chromium 141: all pass. New: `URL.parse`, `Atomics.waitAsync`, `setHTMLUnsafe`, `Document.parseHTMLUnsafe`, `moveBefore`, `CSS.highlights` and `Highlight`, `ReportingObserver`, a basic `navigation` object, `aria*` and `role` properties, `hidden = "until-found"`, live `getElementsByClassName`/`getElementsByTagName`, named `form.elements`, real form validation (`required`, `type=email`/`url`, `pattern`, `min`/`max`/`step`, `setCustomValidity`, `invalid` events), `canvas.toDataURL`/`toBlob` as real PNG files, `cssRules`/`insertRule`/`deleteRule` on `<style>` sheets and constructed sheets, and `new Image(w, h)`/`new Option(text, value)` like Chromium. | `web/prelude.js`, `web/js.c` (section 13.46) |
+| 4 | The scroll wheel never reached pages as a `wheel` event, so maps, carousels and editors with their own scrolling did not react; nothing could scroll sideways (`scrollLeft` was always 0, so carousel arrows did nothing); scrolled boxes sent no `scroll` events and `getBoundingClientRect` ignored their scroll position; horizontal scrolling and the back button of 5-button mice were ignored. | Each wheel step is sent to the page as a `wheel` event (`deltaY`, `deltaX`) and only scrolls if the page does not cancel it (listeners marked `passive`, and wheel and touch listeners on `window`, `document` and `body`, cannot cancel, like in Chromium); Shift+wheel and the horizontal wheel or two-finger sideways swipe give `deltaX` and scroll boxes with `overflow-x: auto` or `scroll`; `scrollLeft` (clamped like Chromium) and `scrollWidth` work; boxes send `scroll` events (also after `scrollTop`/`scrollLeft` changes from scripts, one per frame, and `scrollTop` is clamped like Chromium); positions inside scrolled boxes are right (checked against Chromium); PS/2 mice are switched to the 5-button IntelliMouse Explorer mode, and the back button (PS/2 and USB) goes back in the browser. | `web/engine.c`, `web/prelude.js`, `apps/internet/browser.c`, `graphics/ui/input.c`, `drivers/input/ps2/*.c`, `drivers/input/input.c`, `drivers/usb/xhci.c` (section 13.46) |
+| 5 | `Array.prototype.sort` was a quicksort that calls the compare function about n log n times even for data that is already in order. | A natural merge sort (runs found and reversed, short runs extended by binary insertion, then merged): 200 000 objects in reverse order sorted in 17 ms instead of 130 ms; random data about 20% faster; still stable. | `third_party/quickjs/quickjs.c` (section 13.46) |
+| 6 | The `gui` (or `app`) Terminal command froze the system: the ring-3 demo waits for a key inside the kernel and the freeze watchdog fired after 5 s. | Waiting for a key and `sleep` from ring-3 programs pause the watchdog, so the demo shows its window and exits on a key. | `sys/native/syscall.c` (section 13.46) |
+
+Tested: check.py 107 of 107 (11 new TLS checks); the three feature pages on the host against Chromium; wheel events in the host test program and in QEMU; TLS 1.2 and TLS 1.3 with P-256 in QEMU with certificate checks; the `gui` demo in QEMU.
+
+Not done: no JIT and no change to the interpreter core (plain loops and function calls are still 5 to 15 times slower than Chromium); horizontal scrolling of the whole page (only boxes scroll sideways); TLS 1.2 session resumption and RSA key exchange (without ECDHE) are not supported.
+
+## What changed in v10.21
+
+| # | Before (v10.20) | Now (v10.21) | Where |
+|---|---|---|---|
+| 1 | AES-128-GCM, the cipher Google's servers choose, worked byte by byte with a bit-by-bit GHASH: about 6.6 MB/s on the build machine and far less on slower or emulated CPUs. The same AES also decrypts WPA2 Wi-Fi traffic in software. | Table-based AES (one 1 KB table) and a 4-bit table GHASH: 97 MB/s, the same results on 300 random cases and the standard test vector. HTTPS downloads and WPA2 Wi-Fi decryption both use it. | `lib/crypto/nvxtls.c` (section 13.45) |
+| 2 | Receive windows were limited to 64 KB, which caps a download at 64 KB per round trip (about 1.3 MB/s at 50 ms). | TCP window scaling for outgoing connections with a 256 KB receive buffer, the peer's scale applied to its window, faster buffer moves, and 256 receive descriptors on e1000 and RTL8169. A 3.4 MB download in QEMU went from 17.7 to 23.6 MB/s. | `sys/linux/lxsock.c`, `net/stack/tcpip.c`, `drivers/net/ethernet/*.c` (section 13.45) |
+| 3 | `about:perf` only measured the page load; work started later by timers, animation frames, events and scripts was not counted. A server that handles one connection at a time made the parallel fetches wait 20 s and the OS stopped responding. | `about:perf` has an "After the page loaded" part (time since load, engine busy time split into timers and input, the longest single turn, scripts added later, network). Network waits keep the desktop running and can be stopped with Esc; parallel fetches give up after 4 s and skip a server whose connection failed. | `apps/internet/browser.c`, `web/engine.c`, `web/js.c`, `apps/internet/webglue.c` (section 13.45) |
+| 4 | The page engine had a 6 MB stack and JavaScript 3 MB, and garbage collection started at 256 KB. | 16 MB engine stack, 8 MB for JavaScript (deep framework recursion), first garbage collection at 16 MB. | `apps/internet/webglue.c`, `web/js.c` (section 13.45) |
+
+Tested: in QEMU an AES-128-GCM-only HTTPS server (OpenSSL `s_server`), the keep-alive test page, a 3.4 MB download with `curl`, and a page with timers and late scripts in `about:perf`; check.py 96 of 96.
+
+Not done: no JIT and no change to how fast the interpreter runs scripts; the real Google page is still untested here.
+
+## What changed in v10.20
+
+| # | Before (v10.19) | Now (v10.20) | Where |
+|---|---|---|---|
+| 1 | Every request opened a new TCP connection and, for HTTPS, a new TLS handshake, on a single global TCP stream with an 8 KB window; the network card kept only 32 received frames, so bursts were dropped and resent. | Browser requests use the full TCP stack (64 KB windows, several connections at once) with keep-alive: up to 12 connections are kept per session and reused, each with its own TLS session; network cards keep 128 frames. A test page with 26 files over one connection instead of 26. | `apps/internet/webglue.c`, `sys/linux/lxsock.c`, `drivers/net/ethernet/e1000.c`, `drivers/net/ethernet/rtl8169.c` (section 13.44) |
+| 2 | Scripts and style sheets in a page were downloaded one after the other. | Up to 32 scripts, style sheets and preloads found in the HTML are requested in parallel (up to 4 connections per server, 6 at a time) before the page is built. With 150 ms server latency the 26-file test page loads in 2.1 s (HTTP) and 2.4 s (HTTPS); with connection reuse alone it took 6.8 s. | `web/engine.c`, `apps/internet/webglue.c` (section 13.44) |
+| 3 | The script cache and the file cache were lost at every reboot, and expired files were downloaded again in full. | Compiled scripts and cacheable files (up to 28 MB) are kept in `webcache.bin` on an installed system and loaded at the first page; expired files are checked with `If-None-Match`/`If-Modified-Since` and a `304` answer reuses the cached copy. | `apps/internet/webglue.c`, `core/power.c`, `sys/native/syscall.c` (section 13.44) |
+| 4 | A page's scripts were cut off after 6 s each and skipped after 8 s in total, and the whole load stopped after 45 s including download time, so heavy sign-in pages could lose their scripts on slow machines. | 30 s per script (plus 1 s per 100 KB), 90 s of scripts per page, and 120 s of engine time with download time not counted. | `web/js.c`, `web/engine.c` (section 13.44) |
+| 5 | There was no way to see why a page was slow. | `about:perf` shows the last page's time split into network (lookups, connecting, handshakes, waiting, downloading, requests, cache hits, parallel fetches), scripts, compiling, styles, layout, painting and the pointer updates while busy; the status bar shows a one-line summary after each load. | `apps/internet/browser.c`, `web/engine.c` (section 13.44) |
+| 6 | The scroll wheel of PS/2 mice and of the QEMU/VMware pointer was read with the wrong sign, so turning it down scrolled up. | Both now follow the USB convention (positive is up), so the wheel scrolls pages, the editor, the Terminal and Settings the right way. | `drivers/input/ps2/ps2.c`, `drivers/input/vm/vmmouse.c` (section 13.44) |
+| 7 | `element.animate` finished at once without animating; many interfaces were missing. | Real Web Animations (keyframes, timing, easing, fill, direction, `Animation` and `KeyframeEffect` objects, `getAnimations`), Trusted Types, `ElementInternals` for form-associated custom elements, `navigator.credentials` and `PublicKeyCredential` (reports no passkeys), `navigator.mediaDevices` (no devices), a silent Web Audio graph, `speechSynthesis` (no voices), `FontFace` loading, `OffscreenCanvas`, performance marks, measures and observers, `URLPattern`, `cookieStore`, `ClipboardItem`, `document.caretPositionFromPoint`, elements reachable as `window.someId`, and about 100 more names. | `web/prelude.js`, `web/js.c`, `web/engine.c` (section 13.44) |
+
+Tested in QEMU against a local HTTP and HTTPS server with 150 ms added latency, on the host against Chromium for the new interfaces, with 120 DOM mutation seeds and seven app pages.
+
+Not done: a JavaScript JIT (not built); the interpreter itself is unchanged (profile-guided compilation gave no measurable gain); the real Google sign-in, Gmail, Docs, YouTube and ChatGPT could not be loaded from the build machine; the desktop's other windows still do not redraw while a page's scripts run (measured: the pointer updates take well under 1% of the time).
+
+## What changed in v10.19
+
+| # | Before (v10.18) | Now (v10.19) | Where |
+|---|---|---|---|
+| 1 | A click on a field covered by a decoration layer with `pointer-events: none` (the outline and label layers of Google's and Material sign-in fields) landed on the wrapper, so the field could not be clicked; stacked elements were hit in page order instead of `z-index` order; a field with `height: 100%` stayed one line high. | Clicks pass through `pointer-events: none` and hidden elements to what is underneath, positioned elements are hit by `z-index`, and percentage heights of fields and other inline boxes resolve against their container. | `web/layout.c`, `web/engine.c` (section 13.43) |
+| 2 | Text fields, buttons and text areas had fixed sizes that did not follow the font size or the `size`, `cols` and `rows` attributes like Chromium. | Chromium's form control sizes: content-box fields, width from `size` and the font, height from the line height, text areas with a scrollbar gutter. | `web/cssstyle.c`, `web/layout.c` (section 13.43) |
+| 3 | `min-width`/`max-width: fit-content`, `min-content` and `max-content` used the element's own width; line heights were 1 px taller than Chromium's for most fonts; `ch` and `lh` units were estimates. | Keywords use the content size (also for flex items); normal line height uses Chromium's rounding; `ch` is the width of "0" and `lh` the real line height. | `web/layout.c`, `web/layout2.c`, `web/font.c`, `web/cssstyle.c` (section 13.43) |
+| 4 | The middle mouse button was ignored. | It reaches pages (`auxclick`), and a middle click on a link opens it in a new tab. | `drivers/input/input.c`, `graphics/ui/input.c`, `apps/internet/browser.c`, `web/engine.c` (section 13.43) |
+| 5 | Drag-and-drop worked only for `draggable` elements. | Selected text on the page or in a field can be dragged into another field or a drop zone (moved from fields, copied from the page), and files dragged from the Files app onto a page arrive as `DataTransfer.files` or in an `<input type=file>`. | `web/prelude.js`, `web/engine.c`, `web/js.c`, `apps/internet/browser.c`, `graphics/ui/input.c` (section 13.43) |
+| 6 | Held keys repeated only if the keyboard hardware repeated them (and Caps Lock toggled again while held). | NoovexOS repeats held keys itself for PS/2 and USB keyboards (Slow, Normal or Fast in Settings > Language & region), pages see `repeat: true`, and Caps Lock no longer toggles while held. | `drivers/input/ps2/ps2.c`, `drivers/usb/xhci.c`, `net/http/http.c`, `arch/x86_64/interrupts/interrupts.c`, `core/init/setup.c`, `apps/system/settings.c` (section 13.43) |
+| 7 | A bare `addEventListener(...)` call at the top of a page script threw an error. | It registers on `window` like in Chromium. | `web/prelude.js` (section 13.43) |
+
+Tested on the host against Chromium and in QEMU: clicking a field under an overlay, held keys (35 key events in 1.5 s, 34 marked as repeats), a middle click opening a link in a new tab, dragging a selected word into a field, sizing pages; file drops and field-to-field moves on the host.
+
+Not done: the real Google sign-in page could not be loaded from the build machine, so it is untested; the default fonts still differ from Chromium's (serif default, monospace line height).
+
+## What changed in v10.18
+
+| # | Before (v10.17) | Now (v10.18) | Where |
+|---|---|---|---|
+| 1 | Pages only got a click: no press, hold or release, so text could not be selected by dragging, sliders did not move, drag-and-drop did nothing, right-click opened the OS menu and double-click was never seen. | Real `mousedown`/`mousemove`/`mouseup` and pointer events with `button`, `buttons` and `detail`; drag to select text in fields and on the page (with highlight), double-click selects a word, triple-click all; range sliders drag; pointer capture; HTML5 drag-and-drop for `draggable` elements; `contextmenu` and `dblclick` reach the page, and a page that cancels `contextmenu` gets no OS menu. | `graphics/ui/input.c`, `web/engine.c`, `web/paint.c`, `web/prelude.js` (section 13.42) |
+| 2 | Shift+Tab, Shift+arrow selection, Ctrl+C/V/X, word moves and Shift+Space were missing in the browser; the page had no access to the OS clipboard. | Shift+Tab, Shift+arrows/Home/End selection, Ctrl+A/C/X/V with the OS clipboard (also `navigator.clipboard`, `copy`/`cut`/`paste` events and `execCommand`), Ctrl+arrow and Ctrl+Backspace word moves, Space/Shift+Space/Page Up/Page Down scrolling, Enter submits forms, long fields scroll with the caret. | `web/engine.c`, `web/js.c`, `web/prelude.js`, `apps/internet/webglue.c`, `apps/office/editor.c` (section 13.42) |
+| 3 | Only the US keyboard layout existed: on a Swedish or German keyboard Shift+7 gave `&` instead of `/`, and the keypad `/` and Enter did nothing. | Six layouts (US, Swedish, German, French, Spanish, UK) with AltGr, Caps Lock and accented letters such as a-ring, a-umlaut, o-umlaut and sharp s, chosen in setup or in Settings > Language & region; the keypad `/` and Enter work everywhere. | `drivers/input/ps2/ps2.c`, `core/init/setup.c`, `apps/system/settings.c`, `graphics/ui/input.c` (section 13.42) |
+| 4 | Container query units (`cqw`) used the window width, `@container` rules were ignored, `aspect-ratio` ignored a set height, tables gave spare width to fixed columns. | `@container` with size features and named containers, `cq*` units from the real container, `aspect-ratio` from height (also in flex rows and with `auto`), table spare width to auto columns; a sizing test page equals Chromium except font-dependent rows. | `web/cssparse.c`, `web/cssstyle.c`, `web/layout.c`, `web/layout2.c` (section 13.42) |
+| 5 | Many newer JavaScript interfaces were missing. | `CompressionStream`/`DecompressionStream` (gzip, deflate, raw), `scheduler` and `TaskController`, `window.event`, `navigator.share`/`userActivation`/`connection`, `CloseWatcher`, `document.getAnimations` and about 60 more event classes and interface names. | `web/prelude.js`, `web/js.c` (section 13.42) |
+
+Tested on the host against Chromium and under AddressSanitizer, and in QEMU with the mouse and keyboard: word double-click, slider drag, page text drag selection, drag-and-drop, a cancelled right-click, Shift+End with Ctrl+C and Ctrl+V, Shift+Tab and typing `/` from both `/` keys.
+
+Not done: a JavaScript JIT; `min-width: fit-content` and a few font-dependent line heights still differ from Chromium; middle-click is not passed from the OS mouse driver; key repeat comes from the keyboard hardware.
+
+## What changed in v10.17
+
+| # | Before (v10.16) | Now (v10.17) | Where |
+|---|---|---|---|
+| 1 | Clicking GitHub's Code button could freeze NoovexOS; elements inside hidden parts of a page kept stale style pointers; long engine loops never let the desktop run. | Hidden and removed subtrees are cleared; selector matching stops early; `querySelectorAll` no longer skips nodes; `getElementById` is cached; slow engine work stops with "This page stopped" after 45 s or Escape. | `web/dom.c`, `web/cssstyle.c`, `web/cssparse.c`, `web/engine.c` (section 13.41) |
+| 2 | An empty attribute such as `class=""` or `value=""` got the previous attribute's text. | Parsed correctly; 150 random selectors give Chromium's results. | `web/dom.c` (section 13.41) |
+| 3 | `popover` and `showModal` were stubs. | Popover API with light dismiss and toggle events, `popovertarget` buttons, `:popover-open`; modal dialogs with `:modal`, Escape and `requestClose`. | `web/prelude.js`, `web/cssparse.c`, `web/cssstyle.c` (section 13.41) |
+| 4 | Ctrl+A in the address bar sometimes typed "a"; closing a background tab reloaded the current one; long Back addresses and links were cut. | Fixed. | `apps/internet/browser.c`, `include/nvx/apps/nwe_api.h`, `web/nwe.h` (section 13.41) |
+
+Tested on the host against Chromium and under AddressSanitizer: 540 random DOM mutation pages, 150 selectors, a GitHub-style page with the Code menu.
+
+## What changed in v10.16
+
+| # | Before (v10.15) | Now (v10.16) | Where |
+|---|---|---|---|
+| 1 | `WebAssembly` was `undefined`, so every site or library that ships `.wasm` (image and video codecs, SQLite, physics, many sign-in and editor tools) failed. | A real WebAssembly engine (wasm3 interpreter) with the full JavaScript API: `Module`, `Instance`, `Memory`, `Table`, `Global`, `validate`, `compile`, `instantiate`, the streaming variants and the three error types; real programs give the same output as Chromium. | `third_party/wasm3`, `web/wasm.c`, `web/prelude.js`, `build.sh` (section 13.40) |
+| 2 | `navigator.serviceWorker` and `caches` were missing. | Service Workers with registration, install and activate, `fetch` interception for `fetch()`, clients, messages, registrations kept across visits, and the Cache API. | `web/prelude.js`, `web/js.c` (section 13.40) |
+| 3 | A wasm module with an endless loop would have frozen the browser. | Endless wasm code is stopped after 20 s or when Escape is held, and the desktop keeps drawing meanwhile. | `third_party/wasm3/m3_exec.h`, `web/wasm.c` (section 13.40) |
+| 4 | `Date.now()` moved in whole seconds and `performance.now()` in 10 ms steps; Ctrl+A in the address bar typed an `a`. | Millisecond `Date.now()`, 0.1 ms `performance.now()`; Ctrl+A selects the address. | `fs/vfs/dirtree.c`, `web/js.c`, `apps/internet/webglue.c`, `apps/internet/browser.c` (section 13.40) |
+
+Tested against Chromium on the host and in QEMU: a 40-check WebAssembly page, the `c-ray` and `mal` WASI programs (byte-identical output), CoreMark (3,584 on the host interpreter, V8 30,917) and a Service Worker page including a reload that starts controlled.
+
+Not done: a JavaScript JIT (estimate 15-30 sessions) and a WebAssembly JIT; the real Gmail, Google Docs, YouTube and claude.ai remain untested here.
+
+## What changed in v10.15
+
+| # | Before (v10.14) | Now (v10.15) | Where |
+|---|---|---|---|
+| 1 | Custom elements were half done: no upgrade constructor, no `connectedCallback` on insertion, no `disconnectedCallback` or `attributeChangedCallback`. Shadow-root styles from `adoptedStyleSheets` were lost on the first render. YouTube-, GitHub- and Lit-style components rendered unstyled or not at all. | Full custom element lifecycle; adopted stylesheets stored on the shadow root; `isConnected` through shadow trees; mutation events also while inline scripts run at load. | `web/dom.c`, `web/js.c`, `web/prelude.js`, `web/cssparse.c` (section 13.38) |
+| 2 | Any class change, hover or focus restyled and laid out the whole page; class and id changes even rebuilt the rule index. | Only the changed subtree is restyled, in place, and layout is skipped when only colours or other paint properties changed; CSS rules with only attribute selectors are bucketed. About 8x faster per interaction on a 1,500-row inbox. | `web/cssstyle.c`, `web/engine.c`, `web/js.c`, `web/cssparse.c` (section 13.38) |
+| 3 | SVG `text`, `tspan`, `foreignObject` and friends were HTML elements; no `getBBox`; D3 axes and Mermaid diagrams broke; SVG with a `viewBox` was 150 px high. | Real SVG elements and geometry APIs; inherited text attributes, `tspan`, `em` offsets, `<style>` inside SVG, `foreignObject` labels; `viewBox` sizing like Chromium. D3 and Mermaid render like Chromium. | `web/svg.c`, `web/prelude.js`, `web/layout.c` (section 13.38) |
+| 4 | `execCommand` had only plain-text commands; `innerText` ran paragraphs together; table `rows`/`cells` missing; closed `<details>` showed content styled with `display`. | Rich text commands with undo/redo and `queryCommandState`; spec-style `innerText`; table APIs; closed `<details>` always hides its content. | `web/prelude.js`, `web/js.c`, `web/cssstyle.c` (section 13.38) |
+| 6 | Every visit parsed every script again; tab switches and Back downloaded everything again; `indexedDB` and `Worker` were `undefined`; keyboard shortcuts had no Ctrl/Shift/Alt and no `keyup`; SVG arrowheads were missing; emoji showed as "?". | Bytecode cache for scripts (reloads 2-5x faster on the host, the React chat app's engine time in QEMU 1.9 s to 0.58 s), HTTP memory cache, in-memory IndexedDB, same-thread Web Workers, full modifier keys and `keyup`, SVG markers, 1,413 colour emoji. | `web/js.c`, `apps/internet/webglue.c`, `apps/internet/browser.c`, `web/prelude.js`, `web/svg.c`, `web/font.c`, `assets/emoji32.bin` (section 13.39) |
+| 5 | Pages with `<pre>` text and Windows line endings froze the browser; a `<link>` without `href` could crash it; huge font sizes overflowed. | Fixed, found by a sanitizer sweep over 260 real documents, 18 test pages and 557 fuzzed pages. | `web/layout.c`, `web/util.c`, `web/font.c`, `web/cssstyle.c` (section 13.38) |
+
+Tested against Chromium on the host with real libraries (React 19, KaTeX, highlight.js, Markdown, Headless UI, TanStack Virtual, D3, Mermaid) in a claude.ai-style chat app, a GitHub-style repository page, a YouTube-style grid, a Docs-style editor and chart pages; in QEMU the chat app (typing and sending), the YouTube-style grid and the GitHub-style page run in the Browser.
+
+Not done: the real Gmail, Google Docs, YouTube and claude.ai were not reachable for testing and still need a much faster JavaScript engine (JIT, estimate 15-30 sessions) and more APIs (Service Workers, WebAssembly, real threads for Workers, IndexedDB kept across reboots).
+
+## What changed in v10.14
+
+| # | Before (v10.13) | Now (v10.14) | Where |
+|---|---|---|---|
+| 1 | `crypto.subtle` was empty, so pages that hash or sign data (OAuth PKCE sign-in, HMAC, password key derivation) failed. | `digest` (SHA-256, SHA-1), HMAC `importKey`/`sign`/`verify`/`generateKey`, PBKDF2 `deriveBits`, `exportKey`. | `web/prelude.js` (section 13.37) |
+| 2 | `structuredClone` lost `Date`, `Map`, `Set`, typed arrays and cycles. | Real structured clone with cycles and `DataCloneError`. | `web/prelude.js` (section 13.37) |
+
+Tested: hash, HMAC and PBKDF2 results equal Python's; a test page in the browser in QEMU shows SHA-256, HMAC and structuredClone correct.
+
+JavaScript speed: compiler flags (-O3, -march=x86-64-v2) gave no measurable gain over -O2 and fast opcode dispatch is already on; a real speed-up needs an inline cache or a JIT (estimate 15-30 sessions for a JIT).
+
+## What changed in v10.13
+
+| # | Before (v10.12) | Now (v10.13) | Where |
+|---|---|---|---|
+| 1 | The second page load of a session (Reload, a new address, switching tabs) often showed a white page, so with several tabs most websites seemed not to load. | Fixed: the toolbar redraw no longer wipes the load request before it reaches the engine, and the network reader no longer ends a response early when a packet was missed. | `apps/internet/browser.c`, `net/http/http.c` (section 13.36) |
+| 2 | Plain grey toolbar, square tabs, the address cut at the start ("tp://..."). | New look: tab strip with site initials and joined active tab, round back/reload/star buttons, rounded address field showing a lock, the host in dark text and the path in grey, pill buttons, a busy bar. | `apps/internet/browser.c` (section 13.36) |
+
+Tested in QEMU: reload twice, then three tabs with different pages switched back and forth; every page showed correctly.
+
+Not done in this release: the Rust toolchain inside NoovexOS and a bigger kernel image. The real toolchain is about 358 MB, which needs a large writable disk filesystem rather than a bigger kernel image (see v10.11 below); estimate 4-8 sessions.
+
+## What changed in v10.12
+
+| # | Before (v10.11) | Now (v10.12) | Where |
+|---|---|---|---|
+| 1 | `<iframe>` showed an "Embedded page" box. | The first iframe of a page shows and runs its real content in a second copy of the web engine linked into the kernel: its own document, JavaScript, timers, clicks, cookies and navigation. Hidden iframes (`display: none`, 0x0) load and run too. | `build.sh` (`web2_all.o`), `apps/internet/webglue.c`, `apps/internet/browser.c`, `web/paint.c`, `web/js.c`, `web/prelude.js` (section 13.35) |
+| 2 | `iframe.contentWindow` was `null`, and `window.parent` inside a frame was the frame itself. | `contentWindow` and `parent`/`top` are window proxies; `postMessage` crosses between page and frame with the correct `origin` and `source`, and target origins are checked. | `web/prelude.js`, `apps/internet/webglue.c` |
+
+Tested in QEMU: a page with an iframe from the test server - the frame's content drawn inside the page, the frame's "ready" message received by the page (`isTop: false`, right origin, `event.source === iframe.contentWindow`), the page's reply shown inside the frame, a click on a button inside the frame changing that button and sending a token message to the page; and a page that creates a hidden (`display: none`) iframe whose script sends a token to the page.
+
+This is what challenge pages such as Cloudflare's need in order to run (their check runs in an iframe and reports to the page with `postMessage`). Whether Cloudflare then accepts the browser is decided by Cloudflare's own tests and could not be tried from the build machine, which has no route to it.
+
+Limits: one live iframe per page, no keyboard input or wheel scrolling inside it, `contentDocument` is `null`, and `postMessage` data must survive JSON.
+
+## What changed in v10.11
+
+| # | Before (v10.10) | Now (v10.11) | Where |
+|---|---|---|---|
+| 1 | `WebSocket` was a stub that failed at once. | Real WebSockets (RFC 6455), `ws://` and `wss://`: masked client frames, text, binary, ping/pong, fragmentation, close codes, up to 8 MiB a message, the handshake with `Sec-WebSocket-Accept`, cookies and `Origin`. The protocol runs in the kernel; the JavaScript side polls on a timer. | `apps/internet/websock.c` (new), `web/js.c`, `web/prelude.js` (section 13.33) |
+| 2 | TLS could do one request per connection (`tls_get`). | A TLS session API (`tls_connect_sess`, `tls_sess_write`, `tls_sess_read`) keeps a connection open for many messages, which is what `wss://` needs; `tls_get` is now a wrapper over it, so HTTPS is unchanged. | `lib/crypto/nvxtls.c` (section 9.9.2) |
+| 3 | `window.open(url, name, features)` navigated the current page away and returned null. | It returns a detached window with a working `postMessage`/`location`/`close` that reports `closed`, so popup-based "Sign in with Google" style flows fall back to a full-page redirect (which the browser can follow, keeping cookies). `postMessage` structure-clones its data and carries the origin. | `web/prelude.js` (section 13.34) |
+
+Tested in QEMU: a WebSocket echo page (`ws.html`) against a local server reached as `10.0.2.2:8090` - open, text echo, binary echo, ping/pong and a clean close.
+
+Not done, with the reason:
+- `rustc`/`cargo` running inside NoovexOS: attempted and blocked. The smallest useful `rustc` (the compiler plus `librustc_driver.so` and `libLLVM.so`) is about 358 MB. NoovexOS embeds its sysroot, xz-compressed, inside the kernel image, which must stay under about 101 MiB; adding the pack made the link fail with "kernel image is too large". The only external medium the kernel mounts, a FAT stick at `/mnt/usb`, holds at most 32 files (`ufs[32]`) and is read-only with every file loaded into RAM, so the toolchain cannot live there either. Running the real toolchain needs a new large, writable, lazily-loaded disk filesystem first (estimate 4-8 sessions), after which whether `rustc` itself runs under the Linux ABI is a second open question.
+- Getting past Cloudflare's check for claude.ai: the check runs inside an `<iframe>` served from `challenges.cloudflare.com`, and the browser does not render `<iframe>` content yet (section 13.15). That is the real blocker, roughly 3-6 sessions, and it cannot be tested from the build machine, which has no route to Cloudflare or claude.ai.
+
+## What changed in v10.10
+
+| # | Before (v10.09) | Now (v10.10) | Where |
+|---|---|---|---|
+| 1 | `<canvas>` drew nothing: `getContext('2d')` returned an object whose methods did nothing. | A real Canvas 2D context: paths, arcs, curves, fill and stroke with joins, caps and dashes, rectangles, `clearRect`, linear and radial gradients, transforms, `save`/`restore`, text, `measureText`, `drawImage`, `getImageData`/`putImageData`, `Path2D` (also from SVG path strings), `ImageData`, rectangular `clip`. Anti-aliased by the same method as the font rasterizer. Pages that animate with `requestAnimationFrame` work. | `web/canvas.c` (new), `web/js.c`, `web/prelude.js`, `web/paint.c` (section 13.31) |
+| 2 | No Rust anywhere. | Rust is part of the build. The Taffy layout library (Rust, MIT) is compiled `no_std` into the web engine and does CSS Grid layout; the C grid code stays as a fallback. A build check rejects Rust objects that use the red zone or need unknown symbols. | `rust/nvxlayout`, `third_party/taffy`, `rust/shims/smallvec`, `tools/build_rust.sh`, `tools/rust_check.py`, `web/layout2.c` (Part 1 section 4.9, section 13.32) |
+| 3 | A grid with `min-height` and an `fr` row left the row at its content height. | Taffy gets the container's `min-height`/`max-height`, so the `fr` row fills the grid. | `web/layout2.c` |
+| 4 | No Rust programs. | `rustinfo`, a normal Rust `std` program (threads, channels, files, time), is in `/usr/bin`; Rust programs built for `x86_64-unknown-linux-gnu` with `crt-static` run unchanged. | `rust/rustinfo`, `tools/build_rust_apps.sh` |
+| 5 | | Canvas natives check every number from the page (NaN, infinity, huge sizes, bad gradient data) before using it; a 400-call random test and the canvas pages ran clean under AddressSanitizer and UBSan on the host. | `web/canvas.c`, `web/js.c` |
+
+Tested in QEMU: `rustinfo` (4 threads, 17984 primes below 200000, file write and read back), the canvas test page, a `requestAnimationFrame` canvas animation, and a grid page (200px / 1fr / 2fr columns, `auto-fill`, spans, alignment) in the Browser.
+
+Found and not fixed: in the Browser, the second page load in a session (Reload, a new address, or an `about:` page) shows a white page. It happens in v10.09 too. The second load gets the same 96-byte body and content type, the engine returns 0 from the paint with the right document height, and the pixel it leaves in the scene buffer is white. The host harness (two loads with paints and ticks in between, with the kernel's own allocator and arena reset, at -O2) renders the second load correctly, and resetting MXCSR and the x87 control word before each engine call did not change it, so the cause is something that differs between the kernel and the host build; it is listed as the first thing to fix next.
+
+## What changed in v10.09
+
+| # | Before (v10.08) | Now (v10.09) | Where |
+|---|---|---|---|
+| 1 | The Text Editor used the old flat look: a plain title bar, square text buttons and the bitmap terminal font. | A header bar like Settings and Task Manager: rounded New, Save and Run buttons with icons, the file name in bold with "Modified", the folder or "Not saved yet" under it, round window buttons. Line-number gutter, current-line band, anti-aliased monospace text, blinking accent caret, overlay scroll bar, and a status bar with "Ln X, Col Y", language, line count and UTF-8. Clicking in the text moves the cursor. | `apps/office/editor.c`, `shell/commands.c` (`mono_glyph`), `graphics/ui/input.c`, `apps/system/logs.c` |
+| 2 | Run printed "(no output)" for `console.log(...)`; only `print` and `document.write` gave output. | In the Editor, `console.log`, `info`, `warn` and `error` print their arguments. Run is shown only for `.js` and `.nvx` files and the Python IDE (a `.py` file is no longer run as JavaScript). The output panel has a heading and a round close button, and opening another file closes it. | `lib/js/js.c` (`js_console`), `apps/office/editor.c` |
+
+Tested in QEMU: `edit demo.js` with `console.log('Hello from', 'NoovexOS', 6*7)`, typed a second line (subtitle changed to "Modified"), Run showed "Hello from NoovexOS 42" and "sum 5", the close button hid the panel, Save showed "Saved" and the subtitle went back to the folder, New gave "Untitled" / "Not saved yet" without a Run button, and the round close button closed the window.
+
+## What changed in v10.08
+
+| # | Before (v10.07) | Now (v10.08) | Where |
+|---|---|---|---|
+| 1 | A failed HTTPS connection was reported as "No route to gateway" (the code -2 from `https_fetch_to` means the TCP connection failed, not ARP), and a failed DNS lookup as "Connection failed". The owner's HP machine stopped an update with "The download failed: No route to gateway". | `ap_get` says "could not connect to HOST" and "could not find HOST" for HTTPS, "No route to the network gateway" only for plain HTTP, and writes `fetch: URL - reason` to the kernel log. | `fs/pkg/apt.c` |
+| 2 | One download attempt. | `upd_install` tries the ISO download up to three times when the reason is a network error, about 3 s apart, with "The download failed, trying again (2 of 3)" on the update screen and in the log; for "No route ..." it asks DHCP for an address again first. | `core/update.c` |
+
+Tested in QEMU: booted from a USB stick, `update url` pointing at a local manifest offering 10.09 with an ISO address on an HTTPS port where nothing listens: three attempts at ticks 6015, 6317 and 6619, then "Update not installed - The download failed: could not connect to 10.0.2.2", and the computer kept the current version.
+
+## What changed in v10.07
+
+| # | Before (v10.06) | Now (v10.07) | Where |
+|---|---|---|---|
+| 1 | No C compiler inside NoovexOS. | TCC (Tiny C Compiler, `mob` branch of 16 October 2026) as `tcc` and `cc`. It makes position-independent musl programs, so its output runs on NoovexOS; `tcc -run file.c` compiles and runs in memory. musl's headers and libraries are in `/usr/lib/musl`, TCC's own headers and runtime in `/usr/lib/tcc`, and the Linux, zlib, ncurses, curl and mbedTLS headers in `/usr/include`. | `third_party/tinycc`, `tools/build_tcc.sh` |
+| 2 | The command-line programs were small ports (kilo, fetch, sqlite3, ...). | vim 9.2.1225 (`vim`, `vi`, `view`, `vimdiff`, `xxd`, with its runtime files), less 712, curl 8.23.0 (HTTP, HTTPS through mbedTLS 3.6.7, FTP; shared `libcurl.so.4`), git 2.56.0 (local commands, and clone, fetch and push over HTTP and HTTPS through `git-remote-http`) and Dropbear 2026.94 (`ssh`, `scp`, the `dropbear` server, `dropbearkey`). All are built from source for musl by `tools/build_ports2.sh`, with ncurses 6.6 (terminal descriptions built in) and zlib. Python 3.13 and SQLite were already there. | `third_party/{vim,less,curl,git,dropbear,ncurses,mbedtls}`, `tools/build_ports2.sh`, `tools/mcc-port` |
+| 3 | No web browser apart from the built-in one and Firefox through X. | NetSurf (master of 23 October 2026), full screen, started with `netsurf [URL]` from the text console or a Terminal window: HTML and CSS 2.1 layout (with parts of CSS 3), PNG, JPEG, GIF, BMP and SVG images, HTTPS, forms, history, the DejaVu fonts through FreeType. JavaScript is not included (its build needs flex, which this build machine does not have). New libnsfb surface `noovex` (`/dev/fb0`, `/dev/input/mice`, the tty), and the framebuffer frontend now draws paths (it said "path unimplemented", so SVG images stayed empty). | `third_party/netsurf`, `tools/build_netsurf.sh`, `third_party/netsurf/libnsfb/src/surface/noovex.c` |
+| 4 | Dynamic musl programs could only load libraries by absolute path: musl's search path was `/lib` plus the build machine's directory. | Shared musl built with `libdir=/usr/lib`, and `/etc/ld-musl-x86_64.path` lists `/lib`, `/usr/local/lib`, `/usr/lib`. | `build.sh`, `tools/build_ports2.sh` |
+| 5 | Paths with a trailing slash (`mkdir("dir/")`, `stat("dir/")`) failed in the Linux layer, so `git init` stopped at `.git/info/`. | `lx_path` removes trailing slashes; on a regular file the call fails with `ENOTDIR` as on Linux. | `sys/linux/linux.c` |
+| 6 | `ioctl` compared the full 64-bit request, so musl programs (which pass it as a sign-extended `int`) never matched requests with the top bit set, for example `SNDCTL_DSP_SPEED`. | The request is cut to 32 bits like on Linux. New request `0x80084E50` on `/dev/input/mice` returns the pointer position. | `sys/linux/linux.c` |
+| 7 | `mkdir name` in nvxbox said "File exists" when the name was a program (`mkdir vim`, `mkdir /etc/dropbear`), because `stat` on a bare name found the program in PATH. | The program fallback of `ux_stat2` only answers for `/bin`, `/sbin`, `/usr/bin` and `/usr/sbin`. | `fs/vfs/unixfs.c` |
+| 8 | The first network use after start often failed ("Host is unreachable"): the first ARP request was waited for 20 ms only, and a failed DHCP was never tried again. | ARP sends up to four requests (about 1 s in total); if DHCP failed, `nic_up` tries again up to three times, at least 3 s apart. | `net/stack/tcpip.c` |
+| 9 | In the text console, programs that read `/dev/input/mice` got no mouse, and the console cursor was drawn over programs using `/dev/fb0`. | `live_input` keeps the pointer position up to date and passes movements and buttons on; `live_present` draws nothing while `/dev/fb0` is open. | `shell/commands.c` |
+| 10 | - | `EDITOR=vim`, `PAGER=less`, `LESS=-R` in the default environment; `/etc/gitconfig` (pager `less -FRX`, editor `vim`, branch `main`, root store), `/etc/shells`, `/etc/dropbear`; the Mozilla root store also as `/etc/ssl/certs/ca-certificates.crt`. Dropbear uses `/bin/sh` for accounts whose shell is the built-in `/bin/nsh`. | `sys/native/syscall.c`, `tools/build_ports2.sh`, `third_party/dropbear/src/common-session.c` |
+
+Tested in QEMU (e1000, local HTTP and HTTPS servers): `tcc hello.c -o hello && ./hello`, `tcc -run`; vim editing and saving a file (`:wq`); `git clone` over HTTP and HTTPS (`http.sslCAInfo`), `git log`, `git add`, `git commit`; `curl` over HTTP, HTTPS with `--cacert`, and an unknown CA refused; `dropbearkey`, the `dropbear` server with key login and `ssh ... uname -a`, `scp` to it; `less --version`; NetSurf from the text console and from a Terminal window: a test page with CSS, fonts, a form, a table, PNG, JPEG and SVG images, mouse hover and click on a link, typing an address, Back, closing with the window button. Not tested: `git push`, NetSurf's Ctrl+C/Ctrl+V, GIF and BMP images, real hardware, name lookups (the sandbox has no outside DNS; the kernel forwards `127.0.0.1:53` as before), interactive `ssh` logins into NoovexOS (no pseudo-terminals yet), vim with a real keyboard layout. vim needs about 7 s to start under QEMU without KVM.
+
+## What changed in v10.06
+
+| # | Before (v10.05) | Now (v10.06) | Where |
+|---|---|---|---|
+| 1 | The update screen was dark blue with a turning ring of dots, a progress bar and the current step under it. | A plain blue screen (`#2b5fc9`) with five dots in a row, "Working on updates NN%" and "Don't turn off your computer" in the anti-aliased Liberation Sans of the word processor, and "Your computer will restart once when it's done" at the bottom. On a failure the reason replaces the second line. | `core/update.c` |
+| 2 | USB headsets and microphones did not work. | USB Audio Class 1 driver: wireless headsets with a USB dongle, USB headsets, USB speakers and USB microphones. 16-bit PCM, mono or stereo, the device rate closest to 48 kHz (sample-rate control sent when there is a choice), isochronous OUT and IN streams on their own event ring (interrupter 2), software volume, simple rate and channel conversion to the system's 48 kHz stereo. When one is plugged in, sound and recording switch to it ("Headset connected: ..."); when it is unplugged they go back to the built-in sound card. Dongles with volume buttons keep their HID part. | `drivers/usb/xhci.c`, `core/sound.c` |
+| 3 | `mmap` and `mprotect` ignored the protection flags; every user page was readable, writable and executable. | Real protection: `PROT_NONE` pages fault on any access, read-only pages fault on write, and code cannot run from pages without `PROT_EXEC` (NX is switched on with `EFER.NXE` on every CPU when the CPU supports it). Lazy pages, reserved ranges, copy-on-write and `fork` keep the protection; the kernel's own copies to and from user memory respect it (EFAULT). | `mem/pmm_vmm.c`, `sys/linux/linux.c`, `core/proc/jobs.c`, `arch/x86_64/user/ring3.c`, `arch/x86_64/smp/smp_sched.c` |
+| 4 | `sigaltstack` always reported "disabled"; signal handlers got no fault address and no register context. | `sigaltstack` works (per thread, cleared for new threads and on `exec`, `SS_AUTODISARM`), `SA_ONSTACK`, `SA_NODEFER` and `SA_RESETHAND` are honoured, and Linux programs get the Linux signal frame: `siginfo` with `si_code` and `si_addr` (page faults, NX, `#GP`, divide error, `int3`, `tgkill`) and a full `ucontext` (all registers, fault error code and trap number, the FPU state). `rt_sigreturn` restores what the handler left there. | `core/proc/jobs.c`, `sys/linux/linux.c` |
+| 5 | `statx` and `membarrier` returned "not implemented". | `statx` (built on `newfstatat`, `AT_EMPTY_PATH`) and `membarrier` (query, global and private expedited barriers). | `sys/linux/linux.c` |
+| 6 | - | mlibc, a second C library, ported to NoovexOS as its own target (`sysdeps/noovex`, which starts from mlibc's Linux layer because NoovexOS speaks the Linux system-call interface). It is in the image at `/usr/mlibc` with the `mlibc-gcc` wrapper; source in `third_party/mlibc`, built by `tools/build_mlibc.sh` with clang and lld (a copy of meson is in `tools/meson`). | `third_party/mlibc`, `tools/build_mlibc.sh`, `build.sh` |
+| 7 | - | `tools/stage_gcc.sh` puts GCC into the image only when the build machine's GCC is position independent; Ubuntu's is not, so no `gcc` is included yet. | `tools/stage_gcc.sh` |
+
+Tested: the new kernel test program `kfeat` (16 checks: guard pages, read-only pages, `mprotect`, NX, `sigaltstack`, `statx`, `membarrier`) passes in the host harness, which now maps guest pages with their real protection, and inside NoovexOS in QEMU; mlibc's own test suite runs inside NoovexOS: 176 of 242 tests pass (212 on Linux; two of the differences are only QEMU's CPU without AVX2). QEMU `usb-audio`: found at start ("usb audio: QEMU USB Audio, speakers 48000 Hz 2 ch"), `audio tone 440` arrives as a 441 Hz tone in QEMU's recording, unplugging switches back. The update screen during a real update from 10.06 to 10.07 on a USB stick, which then started 10.07. Full `tools/check.py` 96 of 96. Not tested: real headsets and dongles, USB microphones (QEMU's USB audio device has no input), Bluetooth headsets (not supported).
+
+## What changed in v10.05
+
+| # | Before (v10.04) | Now (v10.05) | Where |
+|---|---|---|---|
+| 1 | There was no way to take a screenshot. | Print Screen opens a screenshot tool: the screen dims, a dark pill at the bottom offers Area (drag a rectangle, with a size label and corner handles), Screen and Window (the window under the pointer is outlined), a round capture button and a close button. Enter or Space captures, Esc or right-click closes, `a`/`s`/`w` switch the mode. Shift+Print Screen saves the whole screen and Alt+Print Screen the window under the pointer straight away. | `apps/system/screenshot.c`, `graphics/ui/hotkeys.c`, `graphics/ui/input.c`, `graphics/ui/desktop.c` |
+| 2 | - | Each screenshot is saved as a PNG in `/home/Pictures` (`Screenshot-YYYY-MM-DD-HHMMSS.png`, written to disk at once) and copied to an image clipboard; a toast says "Screenshot saved to Pictures and copied". Ctrl+V in Paint pastes it. The PNG encoder is new and has no dependencies (Sub/Up row filters, deflate with LZ77 hash chains and fixed Huffman codes, CRC-32, Adler-32); a full 1280 x 800 desktop is about 0.2-0.7 MB. | `apps/system/screenshot.c`, `apps/accessories/small_apps.c` |
+| 3 | Print Screen did nothing on PS/2 and USB keyboards. | PS/2 (E0 37, and 54 for SysRq) and USB (usage 0x46) send Print Screen to the hotkey queue with the Shift and Alt variants. | `drivers/input/ps2/ps2.c`, `drivers/usb/xhci.c` |
+| 4 | - | Shell: `screenshot` / `scrot` (`screen`, `window`, `area`, `last`). | `shell/commands.c` |
+| 5 | NVMe read and wrote one native block (512 B or 4 KiB) per command. | Reads and writes of several blocks go out as one command of up to 64 KiB (16 pages, or less if the controller's MDTS is smaller) with a PRP list; anything unaligned or a failed big command falls back to the old path. | `drivers/storage/nvme.c` |
+| 6 | The installer wrote and verified the boot partition one sector per call. | 128 sectors (64 KiB) per call for writing and verifying; the log ends with `install: done in N ms, ...` and the NVMe command counts. The new `disktest` command reads 32 MB and prints the speed and NVMe command counts. | `core/init/installer.c`, `shell/commands.c` |
+
+Tested in QEMU: Print Screen with an area drag (401 x 301), Shift+Print Screen (1280 x 800), Alt+Print Screen and Window mode (1000 x 680), files listed in `/home/Pictures`, Ctrl+V in Paint; the PNG encoder on the host with the address and undefined-behaviour sanitizers against a decoder (pixel-exact for five desktop screenshots, sizes from 2 x 2 to 1280 x 800, random noise and an all-black image). Install to an emulated NVMe disk: v10.04 took 136 s, v10.05 13 s (167251 boot sectors in 3056 commands, 3013 of them multi-block); the installed disk starts, `disktest` reads 32 MB in 512 commands (all multi-block), and a screenshot saved on it is still there after a restart. A new `check.py usb` test covers the USB Print Screen keys; full `tools/check.py` 96 of 96. The tool also works with GPU drawing emulated (`gpu draw emu`). Not tested: real NVMe drives and real keyboards.
+
+## What changed in v10.04
+
+| # | Before (v10.03) | Now (v10.04) | Where |
+|---|---|---|---|
+| 1 | The touchpad's resources were read without asking the firmware which copy is in use. On the ASUS TUF Gaming F17 every copy showed "I2C addr 0x00 on NULL". | `_STA` and `_INI` are run first: copies that are off are tried last, the touch panel template `XXXX0000` is skipped, and the address that `_INI` fills in is used. A missing or `NULL` controller path falls back to the device's parent bus, and ELAN devices try 0x15 first. | `drivers/input/touchpad/touchpad.c`, `tp_acpi.c` |
+| 2 | An I2C controller was only found through the pre-scanner, and every Intel PCI function of class 0x0C80 was taken out of reset, including non-I2C ones. | Controllers are also found through the interpreter (`_PS0`/`_PR0`, `_ADR`, memory from `_CRS`); functions are powered to D0 before their address is read; the LPSS type is checked first, so UART and SPI functions (and device 0x1F, the SPI flash controller) are never written. | `drivers/input/touchpad/touchpad.c`, `tp_acpi.c` |
+| 3 | When the firmware named a wrong controller, the touchpad was only found with `tpinfo scan`. | When the firmware lists a touchpad but it does not answer, the boot probe tries every known controller and the usual addresses by itself. | `drivers/input/touchpad/touchpad.c` |
+| 4 | `tpinfo` showed the raw firmware data. | `tpinfo` shows per touchpad entry `_STA`, `_INI`, the address and controller that were used, and one line per Intel I2C PCI function (ID, BAR, power state, type, what `COMP_TYPE` read, why it was not used). | `drivers/input/touchpad/touchpad.c` |
+
+Tested: the touchpad simulator (59 checks, 3 new: an ASUS-style table with a `NULL` bus and address 0 inside a `XXXX0000` template, and a table with a wrong controller path); QEMU with an SSDT that copies the ASUS layout (`TPD0` under `I2C1` and `I2C2`, `_STA` from a variable, `_INI` writing address 0x15 into the template): `tpinfo` picks the copy that is on, shows "I2C addr 0x15 on \_SB_.PC00.I2C2" and reports the missing PCI function; full `tools/check.py` 96 of 96. Not tested: real touchpads on Intel I2C controllers (QEMU has none).
+
+## What changed in v10.03
+
+| # | Before (v10.02) | Now (v10.03) | Where |
+|---|---|---|---|
+| 1 | Task Manager had a Windows-style window frame and a left rail with Processes, Performance, Devices and Services. | Task Manager looks like GNOME System Monitor and matches Settings: its own header bar with a view switcher in the middle (Processes, Resources, Devices, Services), "End task" on the left (red when an app is selected) and round window buttons; the rest of the header still moves the window. | `apps/system/taskmgr.c`, `graphics/ui/input.c` |
+| 2 | Processes was a list of rows on a gray background. | One boxed list with column titles, an Apps group and a Background group with counts, the selected row in the accent colour, and a summary line (processes, CPU, memory). | `apps/system/taskmgr.c` |
+| 3 | Performance showed tiles and a graph with the fixed-width font. | Resources: a list of CPU, Memory, GPU, Disk and Network with a colour dot, value and small graph, and a card with a 60-second graph and right-aligned details. | `apps/system/taskmgr.c` |
+| 4 | Devices and Services were separate rounded rows. | Devices is one boxed list of expander rows with chevrons and a scroll bar; Services shows each service with its description and a Running or Stopped pill. | `apps/system/taskmgr.c` |
+
+Tested in QEMU at 1280 x 800: every tab, selecting an app and ending it with "End task", the view switcher in the title zone, dragging by the header, maximize; full `tools/check.py`.
+
+## What changed in v10.02
+
+| # | Before (v10.01) | Now (v10.02) | Where |
+|---|---|---|---|
+| 1 | NoovexOS running from a USB stick could not update itself ("This copy of NoovexOS runs from the USB stick or the ISO..."). | The updater also updates the USB stick it runs from: same download and checks, the current kernel is kept as `kernel64.old`, every file is read back, the BIOS and UEFI loaders on the stick count the starts and go back to the previous version after two failed starts, Go back and Use it again work. Settings says "(USB stick)" and "kept on the USB stick". | `core/update.c`, `apps/system/settings.c` |
+| 2 | The FAT32 partition in the ISO had 8 MB free, too little for a second kernel. | The ISO's FATs are sized for 512 MB (`NVX_GROW_SECTORS`, about 8 MB more ISO). On the first update the stick's partition grows into the unused part of the stick (`up_grow`): the free FAT entries are checked, then the ISO9660 volume size, the MBR entry and the boot sectors are written and read back. Nothing is moved. A stick made from an older ISO is told to be written with 10.02 once. | `boot/mkhybrid.py`, `core/update.c` |
+| 3 | USB storage could only read whole sectors one small request at a time and gave up on a command after 0.4 s, which left later commands out of step when a stick (or QEMU) needed longer. | `usb_msd_rdn`/`usb_msd_wrn` (up to 64 sectors per command, one retry), `usb_msd_sync` (SYNCHRONIZE CACHE); data and status phases wait up to about 10 s. | `drivers/usb/xhci.c` |
+| 4 | On large laptops the touchpad was not found: the ACPI pre-scanner stopped after 160 devices and 768 scopes, so on an ASUS TUF Gaming F17 (11th-gen Intel) `tpinfo` showed "160 devices, 0 I2C touchpads" and no I2C controller. | Limits 1024 devices and 8192 scopes; `tpinfo` says when a limit was reached; the child-device check stops early, so the bigger scan stays fast. | `drivers/acpi/aml_scan.c`, `include/nvx/drivers/acpi/aml_scan.h`, `drivers/input/touchpad/touchpad.c` |
+| 5 | A failed write during an update only said which step failed. | The log names the file, the step (write, read back, compare), the `vfat` reason and the sector. | `core/update.c`, `fs/fat/vfat.c` |
+
+Tested in QEMU with a 1 GB USB stick image made from the ISO: BIOS update 10.02 to 10.03 (partition grown from 90 MB to 516 MB, restart, confirmed after one minute, `fatck` clean), Go back to 10.02, a kernel that crashes at start (two crashes, then 10.02 started by itself), a power cut right after the new kernel started to be written (10.02 started, "The last update was interrupted"), the same update with the OVMF UEFI firmware, and a stick made with the old FAT layout (the update stops with the "write 10.02 once" message and the stick is unchanged); full `tools/check.py` 96 of 96. An SSDT with 420 extra devices and a touchpad after them: 10.01 shows "160 devices, 0 I2C touchpads", 10.02 finds the touchpad. Not tested: real USB sticks and the ASUS laptop itself.
+
+## What changed in v10.01
+
+| # | Before (v10.00) | Now (v10.01) | Where |
+|---|---|---|---|
+| 1 | Settings used the classic window frame, a tinted sidebar with coloured icons and an accent pill for the selected page. | Settings looks like GNOME Settings (libadwaita): its own header bar (bold "Settings" title over the sidebar, page title centred over the content, a back chevron, three round window buttons), a flat gray sidebar with monochrome symbolic icons, a gray pill for the selected category and the user row at the bottom. | `apps/system/settings.c` |
+| 2 | Pages were made of separate cards with shadows. | Boxed lists: a bold group title above a white card with a thin border and full-width separators; category pages are one list with icon, title, subtitle and a chevron per row; content is at most 720 px wide and centred. | `apps/system/settings.c` |
+| 3 | - | Search: a search entry in the sidebar. Typing while Settings has focus searches every page by title and description ("wifi" finds Wi-Fi); Enter opens the first result, Esc clears; "No results found" when nothing matches. | `apps/system/settings.c`, `graphics/ui/input.c` |
+| 4 | Switches, buttons and segmented controls had shadows and mixed sizes; some labels used the fixed-width font. | Adwaita-style switches (accent when on, gray when off), flat 34-px buttons with bold labels (accent, red text or gray), segmented controls with a white selected segment; every label uses the proportional font. Power shows a status page when there is no battery. | `apps/system/settings.c` |
+| 5 | Every click in the title bar zone moved the window. | `settings_title_click` handles the back button, the search entry and the user row there first; the rest of the header still moves the window. | `graphics/ui/input.c`, `apps/system/settings.c` |
+
+Tested in QEMU: every Settings page at 1280 x 800, normal and maximized; search for "wifi", "background", "colo", "terminal", "storage", "time", "power" and a word with no result; back button, window buttons and dragging by the header; full `tools/check.py` 96 of 96.
+
+## What changed in v10.00
+
+| # | Before (v9.99) | Now (v10.00) | Where |
+|---|---|---|---|
+| 1 | A new version had to be written to a USB stick and installed again by hand. | Updates from inside NoovexOS: Settings > Update & recovery > NoovexOS Update and the shell command `update` ask `https://noovexos.site/api/public/update`, download the ISO with progress, check its size and SHA-256, take the kernel out of the ISO's FAT32 partition and check its build checksum before anything on the disk changes. | `core/update.c`, `include/nvx/core/update.h` |
+| 2 | - | Safe install: the current kernel is kept as `/boot/kernel64.old`, every written file is read back and compared, the free space is checked first, and `/boot/update.txt` records each step (`PREP`, `SWAP`, `TRY0`-`TRY2`, `FAIL`, `OLD`, `OK`), so a power cut at any point leaves a kernel that starts. `/boot.cfg` gets the entry "NoovexOS 64 (previous version)". | `core/update.c` |
+| 3 | The boot loaders always started the same kernel. | Both boot loaders count the starts of a new version. If it does not reach one minute of running twice in a row, the previous version starts by itself. The BIOS stage2 writes the state with INT 13h AH=43h (`disk_write`, `fat_file_lba`); the UEFI loader uses the file protocol and offers P for the previous version. Either loader falls back to the other kernel file when one cannot be read. | `boot/src/stage2.c`, `bios.S`, `disk.c`, `fat.c`, `boot/uefi/uefiboot.c` |
+| 4 | - | After one minute the new version confirms itself and then refreshes the UEFI loader files and the BIOS stage2 on the disk if they differ from its own copies, so boot loader fixes reach installed systems. An interrupted update is reported at the next start, and clusters left by it are freed (`vf_reclaim`). "Go back" and "Use it again" switch between the two versions. | `core/update.c`, `fs/fat/vfat.c` |
+| 5 | - | A full-screen update screen like Windows: turning dots, "Working on updates NN%", "Don't turn off your computer", a bar and the current step; also "Going back to the previous version" and "Restarting". The freeze detector pauses during updates and the installer (`g_frz_hold`). | `core/update.c`, `core/crash.c`, `core/init/installer.c` |
+| 6 | Settings had no update page; several categories shared icons (Sound used the terminal icon, Update the battery icon). | New NoovexOS Update page (status card with icon and button, "What's new", Safety card with the previous version, automatic fallback and checksum rows). The System and Update & recovery pages open with a status card; new icons for sound, accounts, apps, time, privacy, update, graphics and recovery; a dot in the sidebar when an update is available; `settings update`, `settings recovery` and `settings about` open those pages. | `apps/system/settings.c` |
+| 7 | Installing to a disk stopped with "The kernel size stamp is invalid": the kernel had grown past the 64 MB snapshot limit, the 128 MB boot partition could not hold two 77 MB kernels, and the 4 MB data snapshot could not hold the 43 MB `.data`. | Limit 96 MB; a 512 MB boot partition with one kernel copy (no root `KERNEL64.BIN`); the embedded WAD, Quake paks, wallpaper data and NVIDIA firmware moved to a new `.blob` section that is copied from memory; the boot page tables and early IDT are put back to their file contents in the snapshot. | `core/init/installer.c`, `arch/x86_64/kernel64.ld`, `kernel64_mb.ld`, `build.sh`, `boot64.S`, `early_fault.c` |
+| 8 | HTTPS downloads stopped after 512 TLS records (about 8 MB). | The record limit grows with the buffer; `g_net_rx` reports the bytes received for progress bars; `net_get_url` gives the redirect-following fetcher to other parts of the kernel. | `lib/crypto/nvxtls.c`, `net/stack/tcpip.c`, `fs/pkg/apt.c` |
+| 9 | `vfat` read and wrote one cluster per disk command. | Runs of up to 128 clusters; new `vf_size`, `vf_inplace`, `vf_reclaim`, `vf_swap_out`/`vf_swap_in`. | `fs/fat/vfat.c` |
+| 10 | The first DHCP request after start often got no answer, so the first network use failed. | The update check asks for an address again (twice) before giving up. | `core/update.c` |
+
+The website gives the update information from its download catalog: `GET /api/public/update` returns the version, ISO address, size, SHA-256 and release notes as plain JSON.
+
+Tested in QEMU (BIOS and UEFI, NVMe and SATA, local update server): install to an empty disk; update 10.00 to 10.01 with restart and confirmation after one minute; Go back and Use it again; an update to a kernel that crashes at start, which ran twice and then started the previous version by itself with the notice; a power cut while the new kernel was written, after which the previous version started and the state became `OLD`; the UEFI loader refreshed after confirmation; P in the UEFI loader started the previous version; the boot partition checked with `tools/tests/fatck.py` after each step.
+
+## What changed in v9.99
+
+| # | Before (v9.98) | Now (v9.99) | Where |
+|---|---|---|---|
+| 1 | A kernel crash showed a red screen with the registers and a bare instruction address. Nothing was saved, so a crash on real hardware had to be photographed and the address looked up by hand. | Crash report: the function name with offset (`nvd_poll+0x4c`), the call chain (frame pointers, repeated frames folded), the reason (page fault with read/write/execute and the address, double fault, stack overflow, stack protector), the driver being started, the registers and the last 20 log lines. It is saved as `CRASH.TXT` on the USB stick and `crash-report.txt` in Files; on the next start a notice says so and the desktop opens it in the Editor. R restarts. The crash screen runs on its own 64 KB stack and draws straight into the framebuffer, so it also works after a stack overflow or a GPU failure. | `core/crash.c`, `core/panic.c`, `build.sh` |
+| 2 | Function names were not in the kernel. | `build.sh` writes a table of 8,700 text symbols (address and name) into `g_ksyms` (384 KB reserved in `.data`) after linking, before the signature is stamped. | `build.sh`, `core/crash.c` |
+| 3 | When the main loop stopped for 6 s, a one-line note with the instruction address appeared. | Freeze report: after 5 s the timer interrupt shows a box with the same report (function, call chain, stage, log); after 30 s it is saved; if the system recovers, the box is removed, the report is saved and a message says how long it was frozen. Long NVIDIA start steps and busy pumps count as progress. | `core/crash.c`, `arch/x86_64/interrupts/interrupts.c`, `graphics/ui/desktop.c` |
+| 4 | Only the NVIDIA start had a "did not finish last time" flag. | Every start-up driver (VM mouse, ACPI, laptop extras, Intel graphics, AMD GPIO, touchpad, battery, CPU temperature, multi-core start) writes its name to `DRVSTART.TXT` on the USB stick and `driver-start.txt` in Files before it starts. If the next start finds a name there, that driver is skipped once and a notice names it. The boot USB stick is mounted at start for this. | `core/crash.c`, `core/init/main.c` |
+| 5 | A kernel stack overflow silently overwrote memory below the stack. | A guard page under the 2 MB boot stack (the 2 MB page is split into 4 KB pages, the lowest one unmapped); the double-fault handler runs on its own stack from the start (`us_init` at boot), so an overflow stops with "a kernel stack overflowed". The 16 KB stacks (per-CPU kernel, job, NMI and double-fault stacks, process stacks, AP start stacks) have a marker at the bottom that the timer interrupt checks. | `core/crash.c`, `arch/x86_64/cpu/percpu.c`, `arch/x86_64/smp/smp.c`, `core/init/main.c` |
+| 6 | No stack protector in the kernel. | `-fstack-protector-strong -mstack-protector-guard=global -fno-omit-frame-pointer` for kernel units and built-in modules; `__stack_chk_fail` stops with a crash report naming the function. | `build.sh`, `core/crash.c` |
+| 7 | The heap ignored double frees and frees of bad pointers silently and could not see overruns; block headers were 24 bytes (user memory 8-byte aligned). | Each block remembers the requested size and the caller; 8 guard bytes follow the requested size and are checked on free. Overruns, double frees (the second one is ignored) and bad frees are logged with function names; `realloc` of a bad pointer returns 0; `calloc` checks for size overflow. Headers are 32 bytes, so user memory is 16-byte aligned. `memcheck` walks the heap; `memcheck poison on` fills freed memory to find use-after-free bugs. | `mem/heap.c`, `mem/heap_api.c`, `include/nvx/mem/heap.h`, `shell/commands.c` |
+| 8 | The AMD touchpad path trusted the ACPI GPIO pin without checking it, so a wrong pin left the touchpad silent. | AMD GPIO driver (AMDI0030/AMDI0031/AMD0030, Linux pinctrl-amd register layout): the pin must exist and be an input, then its level is compared with real touchpad reports (24 with and 24 without data); only a pin that matches every time is used, otherwise the touchpad stays polled. `amdgpio` decodes a pin (direction, level, pulls, interrupt type and status, debounce). | `drivers/gpio/amd_gpio.c`, `drivers/input/touchpad/touchpad.c`, `i2c_hid.c` |
+| 9 | No CPU temperature or speed control. | Intel digital thermal sensor (core and package, TjMax from MSR 0x1A2 on Core models) and AMD Zen Tctl (SMN 0x59800); HWP is turned on with the full performance range and a balanced energy setting where the CPU has it; average speed from APERF/MPERF. Shown in the task manager and by `cputemp`; a warning when the CPU is within 5 C of its limit. Not used inside virtual machines. | `arch/x86_64/cpu/cputemp.c`, `apps/system/taskmgr.c` |
+| 10 | Writing a file on a USB stick made from the ISO failed: the free-cluster search stopped after 65,536 clusters, and the kernel fills the clusters before that. This also stopped `NVGSPLOG.TXT` from being saved on the stick. | The search covers every cluster of the partition, starts at the FSInfo next-free hint and remembers where it stopped; `mkhybrid.py` now writes the free count and next-free hint. | `drivers/usb/xhci.c`, `boot/mkhybrid.py` |
+| 11 | The kernel's sign-in and cloud files used the address mynexus.site. | They use noovexos.site. | `include/nvx/net/http/http.h` |
+| 13 | A CPU register (MSR) the CPU does not have caused a general protection fault and a crash. | `cpu_rdmsr_safe`/`cpu_wrmsr_safe`: while such an access runs, a fault on the `rdmsr`/`wrmsr` instruction is caught, the instruction is skipped and the call returns an error; the temperature and HWP code uses them, and `memcheck` counts refused accesses. | `arch/x86_64/cpu/cpu.h`, `arch/x86_64/interrupts/interrupts.c`, `arch/x86_64/cpu/cputemp.c` |
+| 14 | A failed allocation returned 0 without a trace. | The first 32 out-of-memory failures are logged with the size and the calling function; the count is in `memcheck` and in crash reports. | `mem/heap.c` |
+| 12 | `memcpy`/`memset` and the main-loop halt used inline assembly outside `arch/`, and the unity build failed on a duplicate name (`g_mq`). | They use `cpu_copy`, `cpu_fill` and `cpu_idle` from `cpu.h`; the input queue is `g_inq`. | `lib/base/mem.c`, `core/init/main.c`, `drivers/input/input.c` |
+
+Tested: QEMU with a USB stick made from the ISO: `crash test panic`, `crash test stack` (guard page), `crash test smash` (stack protector), `crash test heap`, `crash test freeze` (5 s box, saved at 30 s, recovered message), report found and shown after a restart, a driver marked as not finished is skipped once; desktop window drag with the performance overlay; full `tools/check.py` 92 of 92.
+
+## What changed in v9.98
+
+| # | Before (v9.97) | Now (v9.98) | Where |
+|---|---|---|---|
+| 1 | On the owner's GTX 1650, after pressing G in Gears, newly opened apps were not drawn; they could only be reached through the taskbar, where a left click then minimised the (invisible) focused window. Cause: `gq_surf_free` only marked a GPU drawing surface unused; the memory behind it (about 8 MB per window layer at 1920x1080) was never freed, so every GPU drawing start and stop (G in Gears, Ctrl+Alt+N, a watchdog fallback) leaked all layers and work buffers. When an allocation failed, `lay_fail` stayed set and no new window got a layer again. | A free hook (`g_gq_free_hook`, `nd_free`) gives the memory back and removes the GPU mapping (`nvgsp_ce_unmap`, new `nvm_unmap`) when a surface is freed. If a window layer still cannot be allocated while the GPU draws, the CPU takes over drawing at once, so new windows always show. | `gq.c`, `nvdraw.c`, `nvgsp.c`, `nvmem.c`, `gfx.c` |
+| 2 | Mapping a surface for the GPU walked all four page-table levels for every 4 KB page (about 10,000 uncached card-memory reads for one 8 MB window layer). | The walk is done once per 2 MB and physically contiguous runs are mapped in one go, so opening a window under GPU drawing is much faster. | `nvmem.c`, `nvgsp.c` |
+| 3 | - | Simulator: a freed surface releases its memory and its GPU page-table entries are cleared. 62 checks. | `tools/tests/nvidia/nvsim.c` |
+
+Tested: NVIDIA simulator 62 checks; USB, touchpad, display, boot emulation and QEMU checks (24 of 24); QEMU with emulated GPU drawing: two apps opened from the start menu are drawn.
+
+## What changed in v9.97
+
+| # | Before (v9.96) | Now (v9.97) | Where |
+|---|---|---|---|
+| 1 | Since v9.94 the desktop lagged on the owner's PC: the pointer moved, but dragged windows, clicks and typed text showed up only every 500 ms. Cause: a line added in v9.94 (clearing the mouse button queue when not on the desktop) sat in the middle of the main loop's `else if` chain, so on the desktop `login_input()` ran right after `process_input()` and threw its result away; redraws then only came from the login screen's 500 ms blink timer. It also stole mouse events and left the login, setup, boot menu, recovery, installer and disk manager screens without input. | The line is after the chain; each screen gets its own input again and desktop input redraws at once. | `core/init/main.c` |
+| 2 | During long operations `busy_pump` shifted queued clicks twice, so they could land off target. | One shift, done with interrupts off together with reading the motion. | `desktop.c`, `drivers/input/input.c` |
+| 3 | An input interrupt arriving just before the main loop halted waited for the next timer tick (up to 10 ms). | The loop checks mouse, button queue, keyboard and gestures with interrupts off and halts with `sti; hlt` only when nothing is waiting. | `core/init/main.c`, `net/http/http.c` (`kpending`) |
+| 4 | The kernel `memcpy` and `memset` copied one byte at a time; the CPU desktop copies two full screens per frame with them. | `rep movsb` / `rep stosb` (fast string instructions on the i5-10400). In QEMU a desktop frame went from 47 ms to 20 ms. | `lib/base/mem.c` |
+| 5 | On a desktop PC without a battery the laptop battery chip (EC) was asked every second; each read could wait up to about 0.3 s. | At most three tries, about 2 ms per wait. | `desktop.c` |
+| 6 | The drifting wallpaper light forced a full redraw ten times a second, also while the mouse was moving. | The light pauses while the mouse or keyboard was used in the last 1.5 s. | `gfx.c` |
+| 7 | Once after GPU drawing started, an automatic frame check compared a GPU frame with a CPU frame with interrupts off (up to about 0.8 s, input lost). | Only on request (Settings > Advanced graphics > Run check). | `desktop.c` |
+| 8 | A GPU timeout could bring up to three automatic re-checks, each stalling the desktop; a channel still waiting for timed-out work was re-checked anyway; error reports from other channels were written to the serial log every time. | One re-check per boot, only after 2 s without input, refused while a channel still waits; GSP error reports are logged only the first 16 times. | `nvgsp.c` |
+| 9 | GPU drawing fell back to the CPU only after three frames over 150 ms. | Also when the average over 30 frames is above 40 ms. | `nvdraw.c` |
+| 10 | No way to see frame times without typing. | Ctrl+Alt+P shows frames per second, frame time and worst frame of the last second, how long input waited, who draws (CPU, GPU, NVIDIA), who copies to the screen (CPU or copy engine), whether the screen memory is write-combining, GPU wait, present time and GPU syncs. | `desktop.c`, `core/init/main.c` |
+
+Tested: NVIDIA simulator 61 checks; USB, touchpad, display, boot emulation, libc and QEMU checks (28 of 28); QEMU: window drag shows at once, overlay on with Ctrl+Alt+P.
+
+## What changed in v9.96
+
+| # | Before (v9.95) | Now (v9.96) | Where |
+|---|---|---|---|
+| 1 | On the owner's GTX 1650 the desktop became so slow that mouse, window dragging and keyboard hardly responded. Cause: since v9.93 the compositor's GPU-only images (scratch, blur caches, snapshot) were in the card's memory. When a GPU drawing batch cannot be sent (for example a channel still waiting after a timeout, which v9.95 now refuses to overwrite), the draw queue finishes the frame on the CPU, and the CPU then reads and writes those images over PCIe without caching, which takes seconds per frame. | Card memory is off by default: all desktop images are in normal RAM again, as in v9.92. `nvgsp cardmem on` turns it on for testing. | `nvdraw.c` |
+| 2 | A failed GPU batch left the desktop on the slow CPU fallback inside GPU drawing; only the first five frames were checked for speed. | Watchdog between frames, for as long as the GPU draws: if the GPU draw queue has failed, or three frames in a row take more than 150 ms, GPU drawing stops at once, the CPU draws the desktop, and the reason is in the log. | `nvdraw.c` (`nvd_poll`) |
+| 3 | - | Simulator: card memory off by default; both watchdog cases. 61 checks. | `tools/tests/nvidia/nvsim.c` |
+
+Tested: NVIDIA simulator 61 checks; USB, touchpad, display, boot emulation and QEMU checks; QEMU with emulated GPU drawing: window drag and start menu click.
+
+## What changed in v9.95
+
+| # | Before (v9.94) | Now (v9.95) | Where |
+|---|---|---|---|
+| 1 | The driver did not know which monitors are connected. | First piece of stage 6, read only, like nouveau's `r535_disp_oneinit`: display instance memory (64 KB VRAM, WRITE_INST_MEM 0x20800A49 once per GSP start on the internal subdevice), NV04_DISPLAY_COMMON (0x73) under its own client, then GET_NUM_HEADS, GET_ALL_HEAD_MASK, GET_SUPPORTED, GET_CONNECT_STATE, OR_GET_INFO (output type: HDMI, DVI, DisplayPort, VGA), DFP_GET_INFO and GET_EDID_V2 (monitor maker, name and up to four native modes, EDID checksum checked). Runs as step 19 after `nvgsp all` (a failure does not stop the start-up) and with `nvgsp monitors`; shown in the log and Settings > Display > Screen and monitors (with Read again), next to the mode the card shows now. Nothing on the screen is changed. | `nvgsp.c` (`nvgsp_monitors`), `settings.c` |
+| 2 | Stage 6 (mode setting, tear-free page flips, second monitor). | Not in this release. In Linux it is thousands of lines (display core and window channels, mode timing, DisplayPort/HDMI link set-up through GSP); estimate 3-5 more sessions plus test runs on the card. | - |
+| 3 | A GSP-RM reply that came after the 5 s timeout stayed in the queue and was taken as the answer to the next request with the same function, so every later allocation or control got the wrong result. | Like nouveau, a request without an answer is fatal: no more requests are sent until the card is restarted, NVIDIA drawing goes off with the reason. | `nvgsp.c` (`rpc_lost`) |
+| 4 | After a copy-engine, 2D or compute timeout the same push buffer was rewritten while the GPU might still read it. | A channel takes no new work until the semaphore of the batch that timed out has arrived. | `nvgsp.c` (`ch_ready`, `ch_hung`) |
+| 5 | After a channel error (RC) on our channel, `nvgsp on` reused that channel. | Like nouveau (`r535_fifo_rc_chid` kills the channel), it refuses and says to run `nvgsp unload` and `nvgsp all`, which make new channels. | `nvgsp.c` |
+| 6 | A damaged status-queue element blocked the queue forever; a full status queue could block sending; sequence numbers advanced even when a send failed. | Damaged elements are skipped, waiting for room drains GSP events, sequence numbers advance only after a send. | `nvgsp.c` |
+| 7 | Unload left GSP-RM's BAR2 root entry pointing at our page tables; UNRESTRICTED_PRIV_ACCESS_MAP was writable; a half-made display client was not freed; every start allocated a new 24 MB copy of the GSP image and 0.5 MB of buffers. | Like nouveau: BAR2 entry cleared before unload (`r535_bar_bar2_fini`), the buffer read only like PRIV_ACCESS_MAP; the client is freed; the buffers are reused and cleared. | `nvgsp.c` |
+| 8 | File Manager (classic style) had a Places list. | SerenityOS-style folder tree with +/- boxes and dotted lines, a Devices part with This PC and the drives, icon view by default. | `file_explorer.c` |
+| 9 | - | Simulator: monitor reading (HDMI monitor with a real EDID, empty DP and DVI outputs, instance memory written once), a request without an answer, a busy channel after a timeout, a channel after RC. 59 checks. | `tools/tests/nvidia/nvsim.c` |
+
+Tested: NVIDIA simulator 59 checks, USB, touchpad, display, boot emulation and QEMU checks; QEMU File Manager tree, This PC and icon view.
+
+## What changed in v9.94
+
+| # | Before (v9.93) | Now (v9.94) | Where |
+|---|---|---|---|
+| 1 | The desktop compared the mouse button state once per frame. A quick click inside one slow frame was patched in v9.93 by counting presses, but a whole drag (press, move, release) inside one frame still did nothing, a click was handled at the position where the pointer ended up, and the order of several clicks was lost. | Like Linux evdev, every button change goes into an ordered queue (`in_btn_raw`, 64 entries) with the motion counter at that moment and the time. The desktop replays the queue in order each frame: first the motion up to the change with the old buttons, then the change, so a press lands where it happened and a fast drag still moves the window. Stale entries are dropped when the desktop is not the active screen. | `drivers/input/input.c`, `graphics/ui/input.c`, `core/init/main.c` |
+| 2 | Double-click in Files measured the time when each click was processed, so with slow frames a fast double-click did not open the file. | Double-click uses the time of the click itself (`g_click_t`). | `file_explorer.c` |
+| 3 | In QEMU and VMware the absolute pointer also raises the PS/2 interrupt with a fake packet whose buttons are 0; the PS/2 driver took it as a release, so dragging never worked in those VMs (clicks did). | Like Linux's vmmouse driver, PS/2 packets only wake the absolute-pointer driver in that mode; position and buttons come from the backdoor. VirtualBox is unchanged. | `drivers/input/ps2/ps2.c` |
+| 4 | Closing or minimising a window left no window focused. | Focus goes to the next window on the workspace, like SerenityOS. | `graphics/ui/wm.c` |
+| 5 | Classic style looked like Windows 98 (blue title bars, grey #c0c0c0). | SerenityOS-style colours and details (values from SerenityOS's Default theme): window face #d4d0c8, active title gradient #6e2209 to #f4ca9e, inactive #808080 to #c0c0c0, title text with shadow, app icon in the title bar, title stripes between the title and the buttons, darker 3D edges; start menu with a #dbd8d1 stripe and #d2c0b6 selection; taskbar buttons without the dither pattern. Artwork and icons are NoovexOS's own. | `wm.c`, `desktop.c` |
+| 6 | Files looked like a modern app inside a classic desktop. | In classic style Files is called File Manager and is drawn SerenityOS-style: square corners, grey toolbar, sunken location box, sidebar, file view and status bar, tan folder icons, beveled toolbar buttons and #d2c0b6 selection. | `file_explorer.c`, `framebuffer.c` (`g_round_off`) |
+| 7 | Only Intel and NVIDIA were named; other graphics cards showed as a bare PCI ID. | `gpu_list` / `gpu_name` detect AMD and NVIDIA cards by PCI ID (GeForce 600 to RTX 50, Radeon GCN to RX 9000 and Ryzen APUs) and say which have a driver: NVIDIA Turing is accelerated, other NVIDIA and all AMD cards are detected and use the firmware framebuffer. Shown in the task manager (device list and GPU page), Settings > Advanced graphics and the new `gpus` command. | `drivers/video/gpuid.c`, `taskmgr.c`, `settings.c`, `commands.c` |
+| 8 | Any channel error report from GSP-RM turned all NVIDIA drawing off; a timeout or bad read-back turned a path off until Ctrl+Alt+N. | Like nouveau (`r535_fifo_rc_chid`), a channel error only counts when it names one of our channels. A compute or 2D timeout, or a bad screen read-back, schedules an automatic re-check 10 s later (the same checks as `nvgsp on`), at most 3 times per boot; `nvgsp status` shows the count. | `nvgsp.c` |
+| 9 | - | Simulator: a channel error on a foreign channel is ignored; an automatic re-check brings the path back and stops after 3. 55 checks. | `tools/tests/nvidia/nvsim.c` |
+
+Tested: QEMU with emulated GPU drawing: drag a window by the title, open Files from the start menu, double-click a file (opens in the Editor), close a window with a 30 ms click. USB, touchpad, NVIDIA simulator, boot emulation and QEMU checks. The full sanitizer run was not repeated for this release.
+
+## What changed in v9.93
+
+| # | Before (v9.92) | Now (v9.93) | Where |
+|---|---|---|---|
+| 1 | With GPU drawing on, clicks inside app windows were often lost, while dragging windows, typing and moving the pointer worked. The mouse drivers stored only whether a button is down now, and the desktop compared that once per frame; a quick press and release that both fell inside one slower frame were never seen (a held drag always was). The USB mouse driver also did not report a release without movement. | The mouse drivers (PS/2, USB boot protocol, USB HID reports, generic `in_buttons`) count every press in `mouse_lpress` / `mouse_rpress` through one function, `in_btn_raw`, and report every button change. The desktop turns a press that was released before it looked into a full click: pressed this frame, released the next. Reproduced in QEMU with emulated GPU drawing (click on Settings > Display did nothing after 25 s) and fixed (the page opens). | `drivers/input/input.c`, `ps2.c`, `xhci.c`, `graphics/ui/input.c` |
+| 2 | Ctrl+Alt+N only turned NVIDIA drawing off; turning it on again needed a restart. | Ctrl+Alt+N toggles. `nvgsp on` and `nvgsp off` do the same from the terminal. Turning on checks that the card still answers, then runs the copy-engine read-back again (first 30 frames), the 2D engine test and the compute self-test; only paths that pass come back, and GPU drawing restarts from the main loop. | `nvgsp.c`, `core/init/main.c` |
+| 3 | The reason NVIDIA drawing went off was only in the log. | `nvgsp status`, the task manager and Settings show why and how many seconds ago it went off, plus how often it was turned off and on. | `nvgsp.c`, `taskmgr.c`, `settings.c` |
+| 4 | Once a second BOOT0 was read and timed; a read slower than 2 ms counted as "card gone". | Value only, like the PCI core's "device gone" test: only 0xFFFFFFFF or a wrong BOOT0, read twice in a row 1 ms apart, means the card is gone (in the running check and between start-up steps). Nouveau itself has no periodic poll; it relies on interrupts and RPC timeouts. | `nvgsp.c` |
+| 5 | The task manager's GPU page said "no driver" on machines without Intel graphics. | With an NVIDIA card it shows the driver, GSP state, copy engine, 2D engine, compute shaders, whether the GPU draws the desktop, batches and launches, timeouts and bad read-backs, graphics memory and the off reason. The device list shows the GSP-RM state. | `taskmgr.c`, `nvgsp.c` (`nvgsp_info`) |
+| 6 | Settings > Graphics only knew about Intel. | Graphics names the NVIDIA GPU when it draws, and has a new NVIDIA graphics page: start now, NVIDIA drawing on/off with the reason, start by itself after boot, screen through the copy engine, GPU draws the desktop, and "Where the desktop images live" with the note that the desktop images sit in normal RAM and the GPU reads them over PCIe. Display > Resolution opens a new Screen and monitors page: current mode, the heads the NVIDIA display engine is scanning out (read only), and the stage 6 note (no NVIDIA mode setting, no tear-free page flips, no second monitor yet). | `settings.c`, `nvmon.c` (`nvm_screens`) |
+| 7 | All drawing buffers were in normal RAM. | Buffers only the GPU touches (the compositor's scratch images, blur caches and snapshot) are put in the card's memory: allocated in VRAM, mapped for the GPU and through BAR1, cleared by the copy engine. Window layers, the scene and the wallpaper, which the CPU also writes, stay in RAM. `nvgsp cardmem off` keeps everything in RAM. | `nvgsp.c`, `nvdraw.c`, `gfx.c`, `nvmem.c` |
+| 8 | - | Simulator: Ctrl+Alt+N / `nvgsp on` brings every path back; the off reason shows in `nvgsp status`; a card that reads 0xFFFFFFFF is turned off and `nvgsp on` refuses; a card-memory buffer is mapped to the same VRAM pages by BAR1 and the GPU, and the shader's fill lands there. USB mouse test: a press and release between two frames is counted and the release alone is reported. Display test: the Settings screen list gives -1 for a card that reads 0xFFFFFFFF. | `tools/tests/nvidia/nvsim.c`, `usb_template.txt`, `gpu_t.c`, `tp_template.txt` |
+
+Not like nouveau yet: on a channel error (RC_TRIGGERED) nouveau kills only that channel (`r535_fifo_rc_chid`); NoovexOS turns every NVIDIA path off, because it does not recreate channels yet. The screen mode is still the one set at boot (stage 6).
+
+Tested: NVIDIA simulator 53 checks; full `tools/check.py --build --sanitize`; QEMU BIOS and UEFI boot; QEMU click test with emulated GPU drawing.
+
+## What changed in v9.92
+
+| # | Before (v9.91) | Now (v9.92) | Where |
+|---|---|---|---|
+| 1 | Restart and power off left GSP-RM running on the NVIDIA card. On a warm restart that does not cut the card's power, WPR2 stays set and the next FWSEC-FRTS fails. | Like nouveau's `tu102_gsp_fini` (drivers/gpu/drm/nouveau/nvkm/subdev/gsp/tu102.c and rm/r535/gsp.c in Linux 7.3), restart and power off first turn every NVIDIA path off, send UNLOADING_GUEST_DRIVER, wait for the GSP to stop, reset the GSP falcon, run FWSEC-SB and booter_unload, and check that WPR2 is cleared (`nvgsp_shutdown`, called from `power_prepare`). | `nvgsp.c`, `core/power.c` |
+| 2 | A start with WPR2 still set (after a crash or a reset that did not unload the card) failed in step 4. | Before FWSEC-FRTS, a set WPR2 is cleared the way nouveau's fini does it (GSP reset, FWSEC-SB, booter_unload with mailboxes 0xFF), then the start goes on; only if WPR2 is still set does step 4 fail, with "turn the computer fully off and on again". | `nvgsp.c` |
+| 3 | - | Simulator: a second cold start in its own process begins with WPR2 set and must clear it and finish all 18 steps (without the change it fails in step 4); the unload check now goes through `nvgsp_shutdown`; FRTS with WPR2 already set reports an error like the hardware. | `tools/tests/nvidia/nvsim.c` |
+
+Tested: NVIDIA simulator 50 checks; full `tools/check.py --build --sanitize`; QEMU BIOS and UEFI boot.
+
+## What changed in v9.91
+
+| # | Before (v9.90) | Now (v9.91) | Where |
+|---|---|---|---|
+| 1 | On the owner's GTX 1650 all 18 steps ran: copy engine, screen through the copy engine, 2D engine (13 of 15 test pixels), and compute shaders (362 launches, every pixel equal to the CPU, 10 ms). The log still said "FAILED at step 0" and v9.90 turned every NVIDIA path off. Cause: since v9.89 the result of the run was overwritten with the return value of the "card still answering" check, which is 0 when all is well. | That check no longer touches the result; a run where every step passes ends with "all steps passed", and the desktop switches to GPU drawing with frames through the copy engine. | `nvgsp.c` |
+| 2 | The 2x scaled copy in step 17 put screen pixel 1 on source pixel 1 and screen pixel 63 on source pixel 32 (expected 0 and 31). With ORIGIN_CENTER sampling the 2D engine rounds the source position to the nearest pixel, half a source pixel off from what the driver assumed. | Scaled copies use SET_PIXELS_FROM_MEMORY_SAMPLE_MODE ORIGIN_CORNER and start the source at x + du/2, y + dv/2, so each screen pixel takes the source pixel under its centre; 1:1 copies are unchanged. | `nvgsp.c` |
+| 3 | The simulator's 2D model sampled at pixel centres, so it could not show the card's error, and it tested each step separately, so it could not show the wrong result. | The 2D model rounds like the card in ORIGIN_CENTER mode (and floors in ORIGIN_CORNER mode), clamped to the source; with the v9.90 code it reports exactly the two wrong pixels of the owner's log. A new check runs the whole `nvgsp all` from a cold start in a separate process, with the BAR windows emulated, and requires "all steps passed" with screen, 2D and compute on; with the v9.90 code it fails with "FAILED at step 0" like the card did. | `tools/tests/nvidia/nvsim.c` |
+
+Tested: NVIDIA simulator 49 checks; full `tools/check.py --build --sanitize`; QEMU BIOS and UEFI boot.
+
+## What changed in v9.90
+
+| # | Before (v9.89) | Now (v9.90) | Where |
+|---|---|---|---|
+| 1 | On the owner's GTX 1650, steps 14-16 passed for the first time (desktop and Gears frames through the copy engine, Gears 41 fps). Then a run ended "not started" while the copy-engine screen path stayed on, and only the pointer still moved. | Any run that ends with a failure turns every NVIDIA path off (`nvgsp_all_off`): desktop frames through the copy engine, the 2D engine, compute drawing and Gears' copy-engine path (`nvgsp_ce_ready` returns 0), and the CPU draws everything again. Gears shows "NVIDIA off: <reason>". | `nvgsp.c`, `gpu3d.cpp` |
+| 2 | Pressing G ran `nvgsp all` again from inside the Gears window's drawing, in the middle of a desktop frame, even when the card was already running. | G only asks for a start; the main loop runs it between frames (`nvd_run_request`, `nvd_poll`). `nvgsp all` on a running card (state "copy engine verified") starts nothing again and prints the status; `nvgsp unload` and then `nvgsp all` start it fresh. Like nouveau, the card is set up once. | `nvdraw.c`, `nvgsp.c`, `gpu3d.cpp` |
+| 3 | After the start-up nothing read GSP-RM's message queue, so channel errors and page faults went unnoticed and the queue could fill up. | Like nouveau's message-queue interrupt handler, the main loop drains up to 16 GSP-RM messages per pass (`nvgsp_tick`): sequencer requests are run, error logs are logged, and a channel error (RC_TRIGGERED) or a GPU page fault turns every NVIDIA path off and saves the log. Once a second BOOT0 is read and timed; a wrong value or a slow read also turns everything off. | `nvgsp.c` |
+| 4 | - | Ctrl+Alt+N turns every NVIDIA path off at once, from anywhere. | `core/init/main.c` |
+| 5 | Desktop frames sent by the copy engine were read back on the first 3 frames and every 64th, two pixels per rectangle. | The first 30 frames and every 32nd are read back, three pixels per rectangle (corners and centre) for up to 16 rectangles. | `nvgsp.c` |
+
+Tested: NVIDIA simulator 48 checks (new: `nvgsp all` on a running card, a channel error from GSP-RM turning every path off); full `tools/check.py --build --sanitize`; QEMU BIOS and UEFI boot.
+
+## What changed in v9.89
+
+| # | Before (v9.88) | Now (v9.89) | Where |
+|---|---|---|---|
+| 1 | The NVIDIA card was only started by pressing G in Gears or running `nvgsp all`; the desktop was drawn by the CPU until then. | NVIDIA 2D acceleration is on by default: about 3 s after the desktop appears, a Turing card (GTX 16 / RTX 20, PCI IDs 1E00-1FFF and 2180-21FF) is started by itself, and when step 18 passes the desktop is drawn by the GPU. `nvgsp auto off` turns this off (kept in `nvgsp-auto.cfg`), `nvgsp auto on` back on. Intel GPU drawing was already on by default. | `nvdraw.c`, `core/init/main.c`, `shell/commands.c` |
+| 2 | On the owner's GTX 1650 the desktop froze after G, and because the log was only written at the end there was no record of where. | The log is saved (Files and the USB stick) at the start of every step, with the headline `STOPPED during step N: <step>` until the run ends, and each step's time is logged. A freeze now leaves the step it happened in. | `nvgsp.c`, `nvflcn.c` |
+| 3 | A start-up that froze would freeze again on every boot once it starts by itself. | A flag (`nvgsp-start.flag` in Files and `NVSTART.TXT` on the USB stick) is set before the automatic start and cleared after it. If it is still set at the next boot, the automatic start is skipped once and the log says why; G or `nvgsp all` still try by hand. | `nvdraw.c` |
+| 4 | The run had no overall limit and did not notice a card that stopped answering. | Before every step BOOT0 is read and timed; a wrong value or a read slower than 2 ms ends the run ("the card stopped answering"). The whole run stops after 90 s. While it runs, a panel at the top of the desktop shows the step number and name. | `nvgsp.c`, `desktop.c` |
+| 5 | When step 18 passed, the desktop switched to GPU drawing inside the G key press. | The switch happens on the next main-loop pass. The first frames are watched: any frame after the first that takes more than 150 ms turns GPU drawing off and the CPU draws again. Test images of a failed self-test are not freed, so a late GPU write cannot land in reused memory. | `nvdraw.c` |
+| 6 | - | Steps 14-18 were compared again with nouveau in Linux 7.3 (`nvkm/subdev/gsp/rm/r535`: channel allocation flags and memory descriptors, USERD, doorbell, bind and schedule, PROMOTE_CTX entries, context buffer sizes and alignment, external VA space with SET_PAGE_DIRECTORY, golden VA space with COPY_SERVER_RESERVED_PDES, INTx disabled on the card). No difference was found. | [section 10.10.6](#10106-nvidia-gsp-rm-for-turing-nvflcnc-nvmemc-nvgspc) |
+
+Tested: NVIDIA simulator 47 checks (new: log saved at each step with the STOPPED headline, a card that stops answering ends the run, switch to GPU drawing from the main loop and turned off by a slow frame, no automatic start after an unfinished start-up); full `tools/check.py --build --sanitize`; QEMU BIOS and UEFI boot.
+
+## What changed in v9.88
+
+| # | Before (v9.87) | Now (v9.88) | Where |
+|---|---|---|---|
+| 1 | A saved `nvgsp-log.txt` did not say which version wrote it. A log from the GTX 1650 that failed in step 14 with NV_STATUS 0x1F turned out to come from v9.85 code (no "copy engine for our channel" line, which v9.86 and later print), so it could not show whether the v9.86 step 14 fix works. | The second line of the saved log is `driver: NoovexOS 64 v9.88`. | `nvgsp.c` |
+| 2 | When PROMOTE_CTX failed, the log only gave the status. | Every promote entry is logged before the call: buffer id, GPU virtual address, physical address, size, whether it is initialised and whether it is mapped, as nouveau prints in its debug output. A new failure can be compared field by field with nouveau. | `nvgsp.c` |
+
+Tested: NVIDIA simulator 44 checks; full `tools/check.py --build --sanitize`; QEMU BIOS and UEFI boot.
+
+## What changed in v9.87
+
+| # | Before (v9.86) | Now (v9.87) | Where |
+|---|---|---|---|
+| 1 | On NVIDIA the desktop was drawn by the CPU; only Gears frames and the final copy to the screen used the card. | Stage 5 of NVIDIA 2D: the whole desktop (wallpaper, windows, text, rounded corners, soft shadows, glass blur, gradients, the night tint) is drawn by compute shaders on TURING_COMPUTE_A. Every drawing operation of the GPU draw queue (`gq.c`, the same queue the Intel path uses) becomes one compute launch. | [section 10.10.7](#10107-2d-acceleration-on-nvidia-stages) |
+| 2 | No shader for NVIDIA. | `drivers/video/nvidia/shaders/gqk.c` is one kernel with all 12 operations, written to match the CPU reference in `gq.c` bit for bit. clang makes PTX for sm_75 (`gqk.ptx`), NVIDIA's ptxas makes Turing machine code (`gqk.cubin`, 7552 bytes, 44 registers, no stack), and `tools/nvcubin.py` turns it into `gqk_cubin.h`. `tools/nvshaders.sh` redoes the ptxas step on a Linux PC. | `drivers/video/nvidia/shaders/`, `tools/` |
+| 3 | - | Step 18 of `nvgsp all`: the cubin is checked and loaded (ELF sections, register count, parameter offset, constant bank 2 jump table), the code goes to VRAM, and each operation gets a QMD v2.2 launch descriptor and its own constant bank 0. Dependent operations get a wait-for-idle, independent ones run back to back. The same self-test as on Intel runs: a first fill, a cache test, a coherency test and 400 random operations compared with the CPU pixel for pixel. When it passes, the desktop switches to GPU drawing by itself. | `nvgsp.c`, `nvdraw.c` |
+| 4 | Settings > GPU drawing and `gpu draw on` only knew the Intel GPU. | Without a ready Intel GPU they start NVIDIA GPU drawing. The task manager shows "NVIDIA GPU (compute shaders)". A batch that does not finish in 500 ms stops GPU drawing with a reason and the CPU takes over. `nvgsp status` and the log headline say whether the desktop is drawn by the GPU. | `igpu.c`, `taskmgr.c`, `nvgsp.c` |
+| 5 | `build.sh` used `type -P`, which only bash has, so `tools/check.py --build` (which runs it with `sh`) failed its build check. | The program lookup for the CPython sysroot searches /usr/bin, /bin and /usr/local/bin itself; `sh build.sh` works. | `build.sh` |
+
+Tested: NVIDIA simulator 44 checks (new: the cubin loader and its refusals, step 18 with a model that reads each QMD and constant bank and runs the shader source on the CPU, wait-for-idle between dependent operations, switching the desktop to the GPU, the 500 ms timeout); full `tools/check.py --sanitize`; QEMU BIOS and UEFI boot. Not yet seen on the GTX 1650: whether the card runs the launches as the simulator does.
+
+## What changed in v9.86
+
+| # | Before (v9.85) | Now (v9.86) | Where |
+|---|---|---|---|
+| 1 | On the GTX 1650 the driver got through steps 1-13 and stopped in step 14: PROMOTE_CTX for our graphics channel returned NV_ERR_INVALID_ARGUMENT, because the shared PRIV_ACCESS_MAP context buffer was sent as "not mapped" without an address. | As in nouveau, the shared buffer is mapped into every channel after the golden one and sent by GPU address; UNRESTRICTED_PRIV_ACCESS_MAP is mapped writable. The simulator refuses an unmapped entry without an address, which reproduces the card's error with the v9.85 code. | [section 10.10.6](#10106-nvidia-gsp-rm-for-turing-nvflcnc-nvmemc-nvgspc) |
+| 2 | The copy channel used the first copy engine, CE0, which belongs to the graphics engine (same runlist 0). | The first copy engine with its own runlist is used (CE2 on runlist 8 on the GTX 1650). The step 15 copy test also reads GSP events while it waits and stops at the first channel error. The CORE_RESUME wait for SEC2 to halt (2 s, never seen on the card) is gone. | `nvgsp.c` |
+| 3 | No 2D engine. | Step 17: a FERMI_TWOD_A object on the graphics channel, push buffers with fills, copies, scaled copies and blends ending in a host semaphore, checked on 15 pixels in VRAM. API `nv2d_fill`, `nv2d_blit`, `nv2d_to_screen`; three timeouts turn it off. The simulator runs the same methods. | [section 10.10.7](#10107-2d-acceleration-on-nvidia-stages) |
+| 4 | Every Gears frame redrew the whole desktop on the CPU. | While the Gears window is fully visible, its frames go to the screen alone (`gpu3d_fast`), through the 2D engine when it works and otherwise by the CPU; a normal frame every 0.5 s keeps the rest current. | [Gears](#gears-appsgraphicsgpu3dcpp-appsgraphicsr3dr3dcpp) |
+
+Tested: NVIDIA simulator 37 checks (new: PROMOTE_CTX entries and CE choice, step 17, frames to the screen 1:1 and 2x); full `tools/check.py --sanitize`; QEMU BIOS and UEFI boot, Gears with window-only frames.
+
+## What changed in v9.85
+
+| # | Before (v9.84) | Now (v9.85) | Where |
+|---|---|---|---|
+| 1 | On the GTX 1650, GSP-RM sent a CPU sequencer list that ended with opcode 8 (CORE_RESUME); the driver did not know it, stopped the list, and the halted GSP never sent GSP_INIT_DONE, so step 7 timed out. | CORE_RESUME is done as in nouveau: GSP falcon reset, LibOS arguments in its mailboxes again, SEC2 started again to run the loaded booter, wait for bit 26 of 0x1180F8, SEC2 mailbox 0 must be 0, bootloader version written, GSP RISC-V core must run. CORE_WAIT_FOR_HALT now fails with a reason after 2 s, and a failed sequencer command is named in the step 7 failure. The simulator sends RESET, START, WAIT_FOR_HALT and RESUME and only sends INIT_DONE after a correct resume. | [section 10.10.6](#10106-nvidia-gsp-rm-for-turing-nvflcnc-nvmemc-nvgspc) |
+| 2 | Addresses handed to the GPU were the kernel addresses, which is only right for identity-mapped memory. | Every address goes through `kva_to_pa`, page by page for page lists; buffers the GPU reads as one block are checked to be physically contiguous. | `nvgsp.c`, `nvflcn.c` |
+| 3 | `blit_all` sent the whole screen every frame. | Stage 3 of NVIDIA 2D: only changed 64x16 tiles are sent, as rectangles, through the copy engine in one push buffer when the NVIDIA card runs, otherwise by the CPU. `fbdamage` shows the counts and switches it. | [section 10.10.1](#10101-boot-framebuffer-driversvideofbframebufferc), [section 10.10.7](#10107-2d-acceleration-on-nvidia-stages) |
+
+Tested: NVIDIA simulator 34 checks (new: the sequencer with CORE_RESUME, rectangle present after 5 edits, 300 random frames of damage rectangles); full `tools/check.py --sanitize`; QEMU BIOS and UEFI boot, Gears drawing continuously and desktop updates with damage tracking.
+
+## What changed in v9.84
+
+| # | Before (v9.83) | Now (v9.84) | Where |
+|---|---|---|---|
+| 1 | Gears ran at 2 frames a second on the owner's NVIDIA desktop although one frame took 10 ms: the main loop only drew a new frame on input, on the Intel compositor's animations or for a fixed list of live apps, and Gears was not in that list. Without the Intel compositor it was redrawn only when something else changed (the caret blink of the Editor, about twice a second). | The main loop asks Gears whether it is running (`gpu3d_live`) and then draws a frame every refresh interval and arms the precise timer for it, like it does for pointer moves. | `core/init/main.c`, [Gears](#gears-appsgraphicsgpu3dcpp-appsgraphicsr3dr3dcpp) |
+| 2 | On a TU117 the log said to copy a TU117 booter into Files. | linux-firmware has no separate TU117 booter: `nvidia/tu117/gsp` is a link to `tu116/gsp`, so the built-in TU116 booter is the right file and the log says so. TU102, TU104 and TU106 are the chips that need another booter, and the log now says that for them. | [section 10.10.6](#10106-nvidia-gsp-rm-for-turing-nvflcnc-nvmemc-nvgspc) |
+| 3 | `nvgsp-log.txt` had the result at the end and lines wider than the Editor window. | The file starts with `nvgsp <command> - RESULT: ...` and the state reached, and every line is wrapped at 72 columns. The same file is also written to the USB stick as `NVGSPLOG.TXT` when one is plugged in, so it can be opened on another computer. Gears shows the step and reason of the last failure instead of "press G". | `nvgsp.c` |
+| 4 | The copy engine was only used by Gears, into system memory. | Stage 2 of NVIDIA 2D acceleration: `nvgsp all` has a step 16 that maps the screen's VRAM into the GPU address space, checks a copy-engine fill and a RAM-to-VRAM copy by reading VRAM back, and then sends every desktop frame to the screen through the copy engine (`blit_all`), with a read-back check of 5 pixels on the first 3 frames and every 64th, and the CPU copy as fallback. `nvgsp present on` and `nvgsp present off` switch it. | [section 10.10.7](#10107-2d-acceleration-on-nvidia-stages) |
+| 5 | - | `nvgsp_ce_fill` (copy engine with the remap unit writing a constant) for solid fills. After `nvgsp unload` and a new `nvgsp all` the copy-engine push buffer and the mappings Gears keeps are made again (`nvgsp_ce_gen`). | `nvgsp.c`, `gpu3d.cpp` |
+
+Tested: NVIDIA simulator 31 checks (5 new: screen mapping and fill, present with a stride, pitch and read-back refusal, present on/off, log wrapping); full `tools/check.py --sanitize`; QEMU BIOS and UEFI boot with Gears drawing continuously.
 
 ## What changed in v9.83
 
@@ -556,7 +1596,7 @@ The launcher (`/usr/bin/nvx-firefox`) now also checks that `firefox-esr` is inst
 |---|---|---|---|
 | 1 | Running Firefox meant typing nine `export` lines, `fc-cache -f`, `startx f` and the launch command by hand. | Clicking the Firefox icon in the start menu (or typing `firefox` / `firefox-esr` in the terminal) does it all: starts X, switches to the full-screen X session, sets the sandbox-off and software-rendering variables, refreshes the font cache and launches `firefox-esr --no-remote --new-instance about:blank`. | [section 6.21](#621-x-programs-as-normal-desktop-apps-v928) |
 
-The settings live in `/usr/bin/nvx-firefox` (built into the system image by `build.sh`). The start menu routes any app whose `Exec=` contains `firefox` to `firefox_launch()` in `apps/x11/xapps.c`, which runs that script through `x_launch` and sets `g_xfull_pending` so the display switches to full-screen X as soon as the server is up. Firefox's output is appended to `/tmp/ff.log`.
+The settings live in `/usr/bin/nvx-firefox` (since v10.58 the file `ports/desktop-scripts/files/usr/bin/nvx-firefox`). The start menu routes any app whose `Exec=` contains `firefox` to `firefox_launch()` in `apps/x11/xapps.c`, which runs that script through `x_launch` and sets `g_xfull_pending` so the display switches to full-screen X as soon as the server is up. Firefox's output is appended to `/tmp/ff.log`.
 
 ## What changed in v9.33
 
@@ -971,6 +2011,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [2.11 Boot menu, recovery, setup and splash](#211-boot-menu-recovery-setup-and-splash)
   - [2.12 Kernel signatures and integrity](#212-kernel-signatures-and-integrity)
   - [2.13 Size limits along the chain](#213-size-limits-along-the-chain)
+  - [2.13b The Linux files outside the kernel (v10.41)](#213b-the-linux-files-outside-the-kernel-v1041)
   - [2.14 Gotchas](#214-gotchas)
 - [Part 3: Memory](#part-3-memory)
   - [3.1 Boot order](#31-boot-order)
@@ -988,6 +2029,9 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [3.13 Summary of limits](#313-summary-of-limits)
   - [3.14 Memory above 4 GiB](#314-memory-above-4-gib)
   - [3.15 The 100 MiB kernel layout](#315-the-100-mib-kernel-layout)
+  - [3.16 Kernel memory and firmware-reserved memory (v10.51)](#316-kernel-memory-and-firmware-reserved-memory-v1051)
+  - [3.17 Memory numbers for programs (v10.51)](#317-memory-numbers-for-programs-v1051)
+  - [3.18 Code pages and firmware data (v10.52)](#318-code-pages-and-firmware-data-v1052)
 - [Part 4: CPU, interrupts, timers and multi-core](#part-4-cpu-interrupts-timers-and-multi-core)
   - [4.1 `arch/x86_64/cpu/cpu.h`, the CPU interface](#41-archx86_64cpucpuh-the-cpu-interface)
   - [4.2 `arch/x86_64/cpu/cpu_init.c`](#42-archx86_64cpucpu_initc)
@@ -1005,6 +2049,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [4.14 AP runtime (`arch/x86_64/smp/smp_sched.c`)](#414-ap-runtime-archx86_64smpsmp_schedc)
   - [4.15 TLB coherence](#415-tlb-coherence)
   - [4.16 The `smp` shell commands (`shell/commands.c`)](#416-the-smp-shell-commands-shellcommandsc)
+  - [4.17 The web worker engine on CPU 1 (v10.42)](#417-the-web-worker-engine-on-cpu-1-v1042)
 - [Part 5: Processes, scheduling, signals and the native system-call ABI](#part-5-processes-scheduling-signals-and-the-native-system-call-abi)
   - [5.1 Per-CPU scheduling state](#51-per-cpu-scheduling-state)
   - [5.2 The process table: `struct jproc`](#52-the-process-table-struct-jproc)
@@ -1030,6 +2075,8 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [6.5 The C libraries](#65-the-c-libraries)
   - [6.6 How programs are embedded and found](#66-how-programs-are-embedded-and-found)
   - [6.7 The ported programs](#67-the-ported-programs)
+  - [6.7a Ports built from source: TCC, vim, less, curl, git, Dropbear (v10.07)](#67a-ports-built-from-source-tcc-vim-less-curl-git-dropbear-v1007)
+  - [6.7b NetSurf (v10.07)](#67b-netsurf-v1007)
   - [6.8 Test programs](#68-test-programs)
   - [6.9 Step-by-step porting guide](#69-step-by-step-porting-guide)
   - [6.10 Dynamic linking](#610-dynamic-linking)
@@ -1037,13 +2084,23 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [6.12 FFmpeg and the `play` command](#612-ffmpeg-and-the-play-command)
   - [6.13 The media service (`/dev/media`)](#613-the-media-service-devmedia)
   - [6.14 The Video Player window (`apps/media/videoplayer.c`)](#614-the-video-player-window-appsmediavideoplayerc)
+  - [6.14a mlibc (`third_party/mlibc`, `/usr/mlibc`)](#614a-mlibc-third_partymlibc-usrmlibc)
   - [6.15 glibc programs](#615-glibc-programs)
   - [6.16 Debian packages: apt and dpkg](#616-debian-packages-apt-and-dpkg)
   - [6.17 Python 3.13](#617-python-313)
+  - [6.17a Python libraries, pip and venv (v10.58)](#617a-python-libraries-pip-and-venv-v1058)
   - [6.18 The Python IDE package (`python3-ide`)](#618-the-python-ide-package-python3-ide)
   - [6.19 X11: the X.Org server (`startx`, `apps/x11/xdisplay.c`)](#619-x11-the-xorg-server-startx-appsx11xdisplayc)
   - [6.20 Tkinter, Tk and IDLE](#620-tkinter-tk-and-idle)
   - [6.21 X programs as normal desktop apps (v9.28)](#621-x-programs-as-normal-desktop-apps-v928)
+  - [6.22 inotify, signalfd, file locks and POSIX timers (v10.42)](#622-inotify-signalfd-file-locks-and-posix-timers-v1042)
+  - [6.23 GTK 3 programs (v10.42)](#623-gtk-3-programs-v1042)
+  - [6.24 LibreOffice, D-Bus, the keyring and Chromium (v10.43)](#624-libreoffice-d-bus-the-keyring-and-chromium-v1043)
+  - [6.25 /proc/cpuinfo, pseudo-terminals, sound, downloaded packages and notifications (v10.45)](#625-proccpuinfo-pseudo-terminals-sound-downloaded-packages-and-notifications-v1045)
+  - [6.26 Setup scripts, triggers and Electron programs (v10.46)](#626-setup-scripts-triggers-and-electron-programs-v1046)
+  - [6.28 LibreOffice inside the Linux files (v10.48)](#628-libreoffice-inside-the-linux-files-v1048)
+  - [6.27 Built-in LibreOffice Writer and Calc (v10.47)](#627-built-in-libreoffice-writer-and-calc-v1047)
+  - [6.29 Ports and distro profiles (v10.58)](#629-ports-and-distro-profiles-v1058)
 - [Part 7: File systems](#part-7-file-systems)
   - [7.1 The in-memory file table (`fs/vfs/ramfs.c`)](#71-the-in-memory-file-table-fsvfsramfsc)
   - [7.2 The directory tree (`fs/vfs/dirtree.c`)](#72-the-directory-tree-fsvfsdirtreec)
@@ -1055,6 +2112,8 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [7.8 NTFS and FAT root file systems (`fs/ntfs/ntfsk.c`)](#78-ntfs-and-fat-root-file-systems-fsntfsntfskc)
   - [7.9 FAT drivers](#79-fat-drivers)
   - [7.10 Packages (`fs/pkg/pkg.c`)](#710-packages-fspkgpkgc)
+  - [7.11 Stepwise sync for large files (`fs/nvx/nvx4.c`) (v10.32)](#711-stepwise-sync-for-large-files-fsnvxnvx4c-v1032)
+  - [7.12 Accounts, passwords and access (`core/auth/accounts.c`) (v10.40)](#712-accounts-passwords-and-access-coreauthaccountsc-v1040)
 - [Part 8: Storage drivers, PCI and the installer](#part-8-storage-drivers-pci-and-the-installer)
   - [8.1 PCI (`drivers/bus/pci.c`)](#81-pci-driversbuspcic)
   - [8.2 ATA PIO (`drivers/storage/ata.c`)](#82-ata-pio-driversstorageatac)
@@ -1067,6 +2126,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [8.9 USB mass storage (`drivers/usb/xhci.c`)](#89-usb-mass-storage-driversusbxhcic)
   - [8.10 Shell commands (`shell/commands.c`)](#810-shell-commands-shellcommandsc)
   - [8.11 Partition scanner (`fs/vfs/parts.c`)](#811-partition-scanner-fsvfspartsc)
+  - [8.12 Updates from inside NoovexOS (`core/update.c`)](#812-updates-from-inside-noovexos-coreupdatec)
 - [Part 9: Networking and Wi-Fi](#part-9-networking-and-wi-fi)
   - [9.1 Where the code lives](#91-where-the-code-lives)
   - [9.2 The driver module API (`kapi.h`, `drivers.h`)](#92-the-driver-module-api-kapih-driversh)
@@ -1076,8 +2136,10 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [9.6 TCP/IP stack (`net/stack/tcpip.c`)](#96-tcpip-stack-netstacktcpipc)
   - [9.7 Sockets (`net/stack/sockets.c`)](#97-sockets-netstacksocketsc)
   - [9.8 HTTP, entropy and HTTPS (`net/http/http.c`)](#98-http-entropy-and-https-nethttphttpc)
+  - [9.8a WebSockets (`apps/internet/websock.c`, v10.11)](#98a-websockets-appsinternetwebsockc-v1011)
   - [9.9 TLS 1.3 client and crypto library](#99-tls-13-client-and-crypto-library)
   - [9.10 Wi-Fi: Realtek RTL8821CE](#910-wi-fi-realtek-rtl8821ce)
+  - [9.10a Wi-Fi manager, WPA3 and school/work Wi-Fi (v10.57)](#910a-wi-fi-manager-wpa3-and-schoolwork-wi-fi-v1057)
   - [9.11 Network shell commands](#911-network-shell-commands)
 - [Part 10: Input, USB, ACPI, sound and graphics drivers](#part-10-input-usb-acpi-sound-and-graphics-drivers)
   - [10.1 Where the drivers start and how they are polled](#101-where-the-drivers-start-and-how-they-are-polled)
@@ -1091,6 +2153,8 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [10.9 Sound (`core/sound.c`, `drivers/sound/*`)](#109-sound-coresoundc-driverssound)
   - [10.10 Video](#1010-video)
   - [10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)](#1011-cpu-information-archx86_64cpucpuinfoc)
+  - [10.11a CPU temperature and speed (`arch/x86_64/cpu/cputemp.c`)](#1011a-cpu-temperature-and-speed-archx86_64cpucputempc)
+  - [10.11b AMD GPIO (`drivers/gpio/amd_gpio.c`)](#1011b-amd-gpio-driversgpioamd_gpioc)
   - [10.12 Summary of bounded waits](#1012-summary-of-bounded-waits)
 - [Part 11: Desktop, applications, shell and scripting](#part-11-desktop-applications-shell-and-scripting)
   - [11.1 UI states and the main loop](#111-ui-states-and-the-main-loop)
@@ -1106,6 +2170,14 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [11.11 Fonts and assets (`assets/`)](#1111-fonts-and-assets-assets)
   - [11.12 Escape sequences, termios and full-screen programs](#1112-escape-sequences-termios-and-full-screen-programs)
   - [Task Manager and Settings (v9.73)](#task-manager-and-settings-v973)
+  - [11.13 Classic look (v10.23)](#1113-classic-look-v1023)
+  - [11.14 Setup accounts, sign-in screen, lock and Settings > Accounts (v10.40)](#1114-setup-accounts-sign-in-screen-lock-and-settings--accounts-v1040)
+  - [11.15 Start menu submenus (v10.47)](#1115-start-menu-submenus-v1047)
+  - [11.16 Sign-in screen and Face ID (v10.49)](#1116-sign-in-screen-and-face-id-v1049)
+  - [11.17 Registry, Program Files and hidden apps in Task Manager (v10.54)](#1117-registry-program-files-and-hidden-apps-in-task-manager-v1054)
+  - [11.18 The System folder (v10.55)](#1118-the-system-folder-v1055)
+  - [11.19 System folder layout, file types and restore points (v10.56)](#1119-system-folder-layout-file-types-and-restore-points-v1056)
+  - [11.20 Focus modes (v10.57)](#1120-focus-modes-v1057)
 - [Part 12: Testing, quality gates, debugging and history](#part-12-testing-quality-gates-debugging-and-history)
   - [12.1 Overview of the test approach](#121-overview-of-the-test-approach)
   - [12.2 `tools/check.py`, the automatic bug checker](#122-toolscheckpy-the-automatic-bug-checker)
@@ -1119,6 +2191,9 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [12.9 Troubleshooting guide](#129-troubleshooting-guide)
   - [12.10 Glossary of internal names](#1210-glossary-of-internal-names)
   - [12.11 Version history](#1211-version-history)
+  - [12.6 Crash reports, freeze reports and start-up notes (`core/crash.c`)](#126-crash-reports-freeze-reports-and-start-up-notes-corecrashc)
+  - [12.12 Testing updates in QEMU](#1212-testing-updates-in-qemu)
+  - [12.13 Tracing Linux programs (v10.43)](#1213-tracing-linux-programs-v1043)
 - [Part 13: The web engine, JavaScript and cookies](#part-13-the-web-engine-javascript-and-cookies)
   - [13.1 Build and link](#131-build-and-link)
   - [13.2 The kernel interface (`nwe_api.h`)](#132-the-kernel-interface-nwe_apih)
@@ -1150,6 +2225,43 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [13.28 New tab page and probe fixes](#1328-new-tab-page-and-probe-fixes)
   - [13.29 Faster loading and form controls](#1329-faster-loading-and-form-controls)
   - [13.30 Load time limits](#1330-load-time-limits)
+  - [13.31 Canvas 2D (v10.10)](#1331-canvas-2d-v1010)
+  - [13.32 Grid layout in Rust (v10.10)](#1332-grid-layout-in-rust-v1010)
+  - [13.33 WebSockets (v10.11)](#1333-websockets-v1011)
+  - [13.34 Popups and postMessage for sign-in (v10.11)](#1334-popups-and-postmessage-for-sign-in-v1011)
+  - [13.35 Iframes (v10.12)](#1335-iframes-v1012)
+  - [13.36 Reloads, tabs and the toolbar (v10.13)](#1336-reloads-tabs-and-the-toolbar-v1013)
+  - [13.37 Web Crypto and structuredClone (v10.14)](#1337-web-crypto-and-structuredclone-v1014)
+  - [13.38 Framework compatibility, incremental restyle and stability (v10.15)](#1338-framework-compatibility-incremental-restyle-and-stability-v1015)
+  - [13.39 Code cache, HTTP cache, IndexedDB, Workers and keys (v10.15)](#1339-code-cache-http-cache-indexeddb-workers-and-keys-v1015)
+  - [13.40 WebAssembly, Service Workers and the Cache API (v10.16)](#1340-webassembly-service-workers-and-the-cache-api-v1016)
+  - [13.41 Freeze and crash fixes, popover and dialog (v10.17)](#1341-freeze-and-crash-fixes-popover-and-dialog-v1017)
+  - [13.42 Mouse, keyboard, clipboard and container queries (v10.18)](#1342-mouse-keyboard-clipboard-and-container-queries-v1018)
+  - [13.43 Hit testing, form control sizes, intrinsic keywords, middle click, text and file drag, key repeat (v10.19)](#1343-hit-testing-form-control-sizes-intrinsic-keywords-middle-click-text-and-file-drag-key-repeat-v1019)
+  - [13.44 Connection reuse, parallel fetching, persistent caches, page timing and more interfaces (v10.20)](#1344-connection-reuse-parallel-fetching-persistent-caches-page-timing-and-more-interfaces-v1020)
+  - [13.45 Faster AES-GCM, TCP window scaling, after-load timing (v10.21)](#1345-faster-aes-gcm-tcp-window-scaling-after-load-timing-v1021)
+  - [13.46 TLS 1.2, P-256 and HelloRetryRequest, faster DOM bindings, feature tests, wheel events (v10.22)](#1346-tls-12-p-256-and-helloretryrequest-faster-dom-bindings-feature-tests-wheel-events-v1022)
+  - [13.47 Request headers, animation events, frame load events (v10.23)](#1347-request-headers-animation-events-frame-load-events-v1023)
+  - [13.48 Name lookups, frames, streaming, faster built-ins (v10.25)](#1348-name-lookups-frames-streaming-faster-built-ins-v1025)
+  - [13.49 Script order, parallel late downloads, prelude bytecode, faster built-ins (v10.26)](#1349-script-order-parallel-late-downloads-prelude-bytecode-faster-built-ins-v1026)
+  - [13.50 Error page, honest status, cut-off downloads (v10.27)](#1350-error-page-honest-status-cut-off-downloads-v1027)
+  - [13.51 Google sign-in checks, long addresses, locales (v10.28)](#1351-google-sign-in-checks-long-addresses-locales-v1028)
+  - [13.52 about:pending, two frame engines (v10.29)](#1352-aboutpending-two-frame-engines-v1029)
+  - [13.53 Promise tracking, code snippets for errors, Content-Length (v10.30)](#1353-promise-tracking-code-snippets-for-errors-content-length-v1030)
+  - [13.54 Unfired events, hit testing, loading indicators, messaging (v10.31)](#1354-unfired-events-hit-testing-loading-indicators-messaging-v1031)
+  - [13.55 Old event names, attributes, element properties, XPath, scroll snap (v10.32)](#1355-old-event-names-attributes-element-properties-xpath-scroll-snap-v1032)
+  - [13.56 The desktop keeps running during page loads (v10.33)](#1356-the-desktop-keeps-running-during-page-loads-v1033)
+  - [13.57 Chrome-size cookies, long waits and more redirects (v10.34)](#1357-chrome-size-cookies-long-waits-and-more-redirects-v1034)
+  - [13.58 Background requests, services, WebGL and CSS 3D (v10.35)](#1358-background-requests-services-webgl-and-css-3d-v1035)
+  - [13.59 Ports between frames, reliable parallel requests, WebGL 2 (v10.36)](#1359-ports-between-frames-reliable-parallel-requests-webgl-2-v1036)
+  - [13.60 Visible frames first, a page allocator that reuses memory (v10.37)](#1360-visible-frames-first-a-page-allocator-that-reuses-memory-v1037)
+  - [13.61 Code for self-reported errors, frame reasons (v10.38)](#1361-code-for-self-reported-errors-frame-reasons-v1038)
+  - [13.62 Every frame failure keeps its reason, retry when shown (v10.39)](#1362-every-frame-failure-keeps-its-reason-retry-when-shown-v1039)
+  - [13.63 Four frames, real pop-up windows, keys in frames, CSS and stability (v10.41)](#1363-four-frames-real-pop-up-windows-keys-in-frames-css-and-stability-v1041)
+  - [13.64 Web Workers on the second CPU core (v10.42)](#1364-web-workers-on-the-second-cpu-core-v1042)
+  - [13.65 AVIF and JPEG XL images (v10.42)](#1365-avif-and-jpeg-xl-images-v1042)
+  - [13.66 Smart address bar, bookmarks bar and site permissions (v10.42)](#1366-smart-address-bar-bookmarks-bar-and-site-permissions-v1042)
+  - [13.67 Partial layout (v10.42)](#1367-partial-layout-v1042)
 
 ## Part 1: Overview, source layout and build system
 
@@ -1198,6 +2310,8 @@ Since v9.83 the source tree is flat, with one top-level folder per part of the s
 | `third_party/` | other projects' code; `third_party/src/` holds the glibc, CPython and Tcl/Tk archives | `source/kernel/third_party/`, `source/third_party_src/` |
 | `tools/` | build helpers (`kbuild.py`, `nvz.py`, `mcc`, `rune`, ...), `check.py`, `emulate.py`, `tests/`, `wifi-tables/` | `source/kernel/tools/`, `source/tools/`, `wifi-tables/` |
 | `docs/` | `architecture-src/`, the parts this document is assembled from | same |
+| `ports/` | one folder per port (software staged into the Linux files): `PORT` recipe plus `files/` or `stage.sh` (section 6.29) | new in v10.58 |
+| `distro/` | distro profiles: which ports a NoovexOS variant contains (`noovexos.profile`, `noovexos-lite.profile`) | new in v10.58 |
 
 Every top-level folder has a short `README.md` saying what is in it. The build runs from the root: `bash build.sh`, output in `build/`.
 
@@ -1228,7 +2342,7 @@ boot/
 
 #### 2.2 Kernel source folders
 
-The kernel is every C, C++ and assembly unit listed in `units.list` (146 units, in link order, see section 3) plus the separately built modules in `build.sh` (`MODS`). The table in section 2 lists the folders; the files in them are described in the Part for each area. Two folders hold code that is not kernel units: `usr/` (programs and C libraries built for user space) and `tools/` (programs that run on the build machine). `kernel64.c` includes every unit in one file and is used only by host test harnesses and the analyzer.
+The kernel is every C, C++ and assembly unit listed in `units.list` (147 units, in link order, see section 3) plus the separately built modules in `build.sh` (`MODS`). The table in section 2 lists the folders; the files in them are described in the Part for each area. Two folders hold code that is not kernel units: `usr/` (programs and C libraries built for user space) and `tools/` (programs that run on the build machine). `kernel64.c` includes every unit in one file and is used only by host test harnesses and the analyzer.
 
 The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `boot/stage2.S` and `boot/cdboot.S` relative to the current directory; those files live in `arch/x86_64/boot/`, so the scripts do not run unchanged. `tools/splice.py` hard-codes `/mnt/user-data/...` paths.
 
@@ -1237,6 +2351,8 @@ The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `b
 | File | Purpose |
 |---|---|
 | `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `build/kernel64.bin` to `boot/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
+| `tools/splitc.py` | Splits a large C file into numbered pieces in `NAME_parts/` (`python3 tools/splitc.py 300 FILE...`), and `python3 tools/splitc.py expand FILE` prints the file with the pieces put back (section 3.5). |
+| `tools/nvxport.py` | Ports and distro profiles: `list`, `info`, `check`, `new`, `stage` (section 6.29). `build.sh` runs `stage` in step `[distro]`. |
 | `tools/emulate.py` | Boot emulation of an ISO: the BIOS path (builds the real `fat.c`/`config.c`/`string.c` as a 32-bit host program), the UEFI path (El Torito EFI entry, PE check, runs `BOOTX64.EFI` against simulated services) and `uefi_entry`. |
 | `tools/tests/` | Host harnesses and templates: `aml/` (ASL/AML samples), `drivers/drvsim.c`, `fs/`, `libc/` (`ltest.c`, `pfuzz.c`, `sfile.c`), `linux/` (`hh.c`, `lxfuzz.c`, host `cpu.h`/`io.h` stand-ins), `*_template.txt` for USB/ACPI/NVMe/HR/TP/MM tests, `fatck.py`, `isocheck.py`, `pecheck.py`, `bios_emu.c`, `entry_t.c`, `mark_t.c`, `gpu_t.c`. |
 
@@ -1288,6 +2404,29 @@ What stays private: anything a unit does not share remains `static` in the `.c` 
 
 The separately compiled `MODS` drivers (section 4.3) still see only `include/kapi.h` and `include/drivers.h`. They call the non-static `kapi_*` functions defined in `sys/native/kapi.c` and export probe functions (`e1000_probe`, `virtio_net_probe`, `hda_probe`, ...) that fill in `struct nvx_nic { name; mac[6]; send; recv; link; }` or `struct nvx_snd { name; rate; start; free_bytes; write; poll; stop; volume; }`, plus `virtio_blk_read`/`_write`/`_flush`. Lua, Doom and NTFS are also compiled on their own, each with its own flags (section 4.6).
 
+#### 3.5 Large files split into pieces (v10.60)
+
+Twelve files were too long to read and change safely (up to 2,376 lines of dense code). Each now keeps its `#include` lines and then includes numbered pieces from a folder next to it, named after the first function in the piece:
+
+| File | Lines before | Pieces | Folder |
+|---|---|---|---|
+| `sys/linux/linux.c` | 2376 | 7 | `sys/linux/linux_parts/` |
+| `shell/commands.c` | 2240 | 6 | `shell/commands_parts/` |
+| `apps/internet/webglue.c` | 1818 | 6 | `apps/internet/webglue_parts/` |
+| `apps/internet/browser.c` | 1301 | 4 | `apps/internet/browser_parts/` |
+| `drivers/usb/xhci.c` | 1231 | 4 | `drivers/usb/xhci_parts/` |
+| `graphics/ui/desktop.c` | 1116 | 4 | `graphics/ui/desktop_parts/` |
+| `drivers/video/nvidia/nvgsp.c` | 1053 | 4 | `drivers/video/nvidia/nvgsp_parts/` |
+| `apps/system/file_explorer.c` | 945 | 3 | `apps/system/file_explorer_parts/` |
+| `core/proc/jobs.c` | 937 | 3 | `core/proc/jobs_parts/` |
+| `apps/system/settings.c` | 783 | 2 | `apps/system/settings_parts/` |
+| `core/init/installer.c` | 766 | 3 | `core/init/installer_parts/` |
+| `fs/pkg/apt.c` | 696 | 2 | `fs/pkg/apt_parts/` |
+
+The pieces are not separate units: the file is still one translation unit, so `static` functions and variables work as before, `units.list` is unchanged, and kbuild rebuilds the file when any piece changes (gcc `-MMD` lists the pieces). The compiled objects of all twelve files were byte-identical before and after the split (apart from the build time string). Cuts are made only where a function ends at the top level, or inside a very long command function before an `else if(` branch, so a piece may begin with `else if(`. The largest piece is 667 lines (`shell/commands_parts/04_cmd_ring3.c`, one long run of command branches). `tools/check.py` reads these files through `kexpand()`, so tests that extract functions from `xhci.c` or `nvgsp.c` see the full text.
+
+Next step (not done): turn pieces into real separate units with their own headers, starting with the ones that share little state (for example the USB camera and audio parts of `xhci.c`).
+
 ### 4. `build.sh`, step by step
 
 `build.sh` is a POSIX `sh` script with `set -e`. It runs from the repository root and writes everything under `B=build`. It first creates `build/`, `build/user/src`, `build/user/libc`, `build/lua/src` and `build/ntfs`.
@@ -1330,6 +2469,7 @@ CFLAGS="-m64 -Os -ffreestanding -fno-pie -fno-stack-protector \
 | `[web]` | `tools/js2c.py` for the prelude, QuickJS (cached in `build/web/`), musl `libm` (`libmk.a`), the `web/*.c` engine files, merged with `ld -r` and reduced to one global symbol, `nwe_entry` (Part 13) | `build/web_all.o` |
 | `[3b]` | `third_party/doom/build_doom.sh` | `build/doom_blob.o` |
 | `[3c]` | ntfs-3g library, glue and `mkntfs` | `build/ntfs/*.o` to `$NTFSOBJ` |
+| `[3d]` ... `[distro]` | glibc, CPython and the other Linux files; then `tools/nvxport.py stage --profile ${NVX_PROFILE:-distro/noovexos.profile}` adds the ports of the profile, `/etc/os-release` and `/usr/share/noovex/ports.txt` (section 6.29) | `build/sysroot-stage/`, `build/sysroot.bin` |
 | `[4/6]` | Final link with `arch/x86_64/kernel64.ld` | `build/kernel64.elf` |
 | `[5/6]` | `objcopy -O binary` | `build/kernel64.bin` |
 | `[6/6]` | Python post-processing: 8 MiB size check, size stamp at offset 24, build signature | `build/kernel64.bin` (patched in place) |
@@ -1537,9 +2677,10 @@ Usage: `mkhybrid.py boot.bin stage2.bin out.iso [VOLID] fatpath=hostfile ...` (s
 | 1..63 | stage2 (ISO "system area", unused by ISO9660) |
 | 2K-sectors 16..23 | ISO9660 PVD (16), El Torito boot record (17), terminator (18), boot catalog (19), path tables (20, 21), root dir (22), `README.TXT` (23) |
 | 2048.. | FAT32 partition (`build_fat32`): 1 sector/cluster, 32 reserved, 2 FATs, OEM `MYBOOT  `, label = VOLID, real subdirectories |
-| after FAT32 | FAT16 EFI image (`build_fat16`), present when both `BOOTX64.EFI` and `boot/kernel64.bin` are in the tree; contains `EFI/BOOT/BOOTX64.EFI` and `KERNEL64.BIN` |
+| after FAT32 | FAT16 EFI image (`build_fat16`), only with `NVX_EFI_FAT16=1` and when both `BOOTX64.EFI` and `boot/kernel64.bin` are in the tree; contains `EFI/BOOT/BOOTX64.EFI` and `KERNEL64.BIN` |
 
-- The FAT32 partition is sized to its contents + 8 MiB, with a minimum of 69632 sectors. The script asserts at least 65525 clusters ("UEFI would read it as FAT16").
+- The FAT32 partition is sized to its contents + 8 MiB plus the room for larger FATs, with a minimum of 69632 sectors. The script asserts at least 65525 clusters ("UEFI would read it as FAT16").
+- The FATs are sized for a partition of `NVX_GROW_SECTORS` sectors (default 1048576, 512 MiB), not for the partition in the image. This adds about 8 MiB to the ISO. On a USB stick the updater can then grow the partition into the unused part of the stick without moving any data (section 8.12).
 - The boot catalog's default entry is `0x88`, media `0x04` (hard-disk emulation of the whole image from RBA 0), system type `0x0C`. A final section header (`0x91`, platform `0xEF`) holds one no-emulation EFI entry that points at the FAT16 image (or, without it, at the FAT32 partition).
 - `build_fat16` asserts the image fits in an El Torito sector count (`<= 0xFFFF`) and that its cluster count is in the FAT16 range.
 
@@ -1555,6 +2696,19 @@ On CD, the result boots through El Torito (BIOS: HDD emulation to MBR to stage2;
 | `tools/mkvdi.py raw.img out.vdi [MB]` | Fixed VirtualBox VDI (signature `0xBEDA107F`, version 1.1, type 2 = fixed, default 16 MB). |
 | `mkuefi.py` | Not in the repository; it exists only as a document in the attached "noovex" project. It reads `BOOTX64.EFI` and writes `noovex7-uefi.img`: a GPT disk (protective MBR, primary + backup headers) with a 16 MiB FAT16 ESP at LBA 2048 holding `/EFI/BOOT/BOOTX64.EFI`, then re-parses the FAT to verify. |
 
+#### 4.9 Rust
+
+Since v10.10 the build uses Rust in two places. Both are optional: without `cargo` the build prints a note and continues.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Layout library | `rust/nvxlayout` (crate), `third_party/taffy` (Taffy 0.15, MIT), `rust/shims/smallvec` | A `no_std` static library linked into the web engine (`build/web_all.o`). It exports `nvx_taffy_grid` (CSS Grid layout through Taffy) and `nvx_rust_version`. `tools/build_rust.sh` builds it with `cargo build --release --offline` and `RUSTFLAGS="-C no-redzone=yes -C relocation-model=static -C code-model=small -C panic=abort"`. |
+| Safety check | `tools/rust_check.py` | Links only the archive members the engine needs (`ld -r -u nvx_taffy_grid`), disassembles them and fails if any instruction uses memory below `%rsp` (the red zone, unsafe in the kernel because interrupts run on the same stack) or if an undefined symbol is not in the allowed list (`memcpy`, `memset`, `memmove`, `memcmp`, `bcmp`, a few `libm` functions and the `nvx_rs_*` callbacks). The precompiled `core`/`alloc` objects from the `x86_64-unknown-linux-gnu` toolchain pass this check today. |
+| Runtime for Rust | `web/layout2.c` | `nvx_rs_alloc`/`nvx_rs_free` (the engine heap, any alignment), `nvx_rs_abort` (a Rust panic becomes `nwe_fail`, so the page stops with an error instead of the kernel), `rust_eh_personality` and `_Unwind_Resume` stubs. `web/rust_stub.c` replaces the library when `cargo` is missing. |
+| Rust programs | `rust/rustinfo`, `tools/build_rust_apps.sh` | Normal `std` Rust programs, built for `x86_64-unknown-linux-gnu` with `-C target-feature=+crt-static` (static PIE, no shared libraries needed) and copied to `/usr/bin`. `rustinfo` prints the Rust version, the kernel, the CPU count, runs four threads and checks file input and output. `nvx-mem` (`rust/nvxmem`, since v10.51) shows memory use, tests memory and measures its speed (section 3.17). |
+
+The crates.io registry is not used: Taffy's only dependency for grid layout, `smallvec`, is replaced by a small local crate with the same API on top of `Vec`.
+
 ### 7. Toolchain requirements
 
 Derived from the commands the scripts run (`tools/README.md` lists Linux with gcc, binutils, Python 3 and GNU coreutils for the checker):
@@ -1567,6 +2721,8 @@ Derived from the commands the scripts run (`tools/README.md` lists Linux with gc
 | `python3` | Signature/size step, `mkhybrid.py`, `mkimage.py`, `check.py`, `emulate.py`. |
 | POSIX `sh` | `build.sh`, `build_doom.sh`, `tools/mcc`; `nproc` is optional (fallback 4). |
 | x86-64 Linux host | `tools/rune` is a dynamically linked x86-64 Linux ELF executable. |
+| `clang`, `lld`, `g++`, `cmake`, `ninja`, `perl`, `pkg-config`, `tic`/`infocmp` | The source ports (v10.07, `tools/build_ports2.sh`, `tools/build_netsurf.sh`, `tools/mcc-port`): clang compiles and links them against the ports sysroot, CMake builds libjpeg-turbo, libpng, FreeType and expat, `g++` builds the host gperf, `perl` runs NetSurf's code generators, `tic` builds the ncurses fallback entries. Generated `configure` scripts are already in `third_party`. mlibc also needs clang 18+, lld and ninja (v10.06). |
+| `cargo`, `rustc` (stable, 1.80 or newer) | Optional (v10.10): the Taffy grid layout in the web engine and the Rust programs (section 4.9). |
 | optional | `clang-tidy` (`check.py` analyze group), `qemu-system-i386` / `qemu-system-x86_64` + OVMF (Makefile `run` targets). |
 
 Full build sequence (what `check.py --build` does):
@@ -1713,6 +2869,10 @@ The menu draws a box titled `myboot 0.5` with one row per entry. Before it accep
 
 The terminal (`term.c`) supports `help`, `ls`, `cat`, `mem` (prints the E820 map from `0x0FF0`/`0x1000`), `clear`, `reboot`, `ver`, `exit` and `boot`. The countdown decrements on each RTC second change and boots the selection when it reaches 0.
 
+#### Update states and fallback (`upd_pick` in `stage2.c`)
+
+After the menu, if the chosen entry is `/boot/kernel64.bin` (or `/KERNEL64.BIN`), stage2 reads the first sector of `/boot/update.txt` (found with `fat_file_lba`, the first cluster of the file) and acts on its first four bytes: `TRY0` and `TRY1` are counted up to `TRY1`/`TRY2` and the new kernel starts; `TRY2` becomes `FAIL` and `/boot/kernel64.old` starts; `FAIL`, `SWAP` and `OLD ` start `/boot/kernel64.old`. The sector is written back in place with `disk_write` (BIOS INT 13h AH=43h through the same real-mode thunk as reads; `bios_disk_read` now takes the function from `bd_op`) and read back to check it. If the write fails, the previous version starts. If the chosen kernel cannot be read, stage2 tries the others: for the new kernel `\KERNEL64.BIN` and then `kernel64.old` (a half-written `kernel64.old` from an interrupted `PREP` is the last choice), for the previous kernel `kernel64.bin` and then `\KERNEL64.BIN`; the path that was really loaded replaces the entry's `kernel` field, so the boot log shows it. See 8.12 for the full state table.
+
 #### Kernel format dispatch and validation
 
 | First bytes | Branch | Validation | Handoff |
@@ -1779,7 +2939,7 @@ Because they enter with `EAX=0`, `boot64.S` skips its Multiboot branch and does 
 
 1. Disables the watchdog (`SetWatchdogTimer(0,...)`), clears the screen and prints `NoovexOS UEFI loader 2.0`.
 2. Finds a file system: the Simple File System of the loaded image's device, or else the first one from `LocateProtocol`.
-3. Opens `\KERNEL64.BIN` (installed disks), falling back to `\boot\kernel64.bin` (ISO/USB).
+3. Reads `\boot\update.txt` (opened read-write) and applies the same update states as stage2 (8.12), writing the next state with `EFI_FILE_PROTOCOL.Write` and reading it back. If `\boot\kernel64.old` exists it shows "press P to start the previous version" for 0.6 s. It then opens the kernel: with no state file `\KERNEL64.BIN`, `\boot\kernel64.bin`, `\boot\kernel64.old`; with a state that starts the new version `\boot\kernel64.bin` first; for the previous version `\boot\kernel64.old` first. Paths are returned as literals, not through a table of pointers, because the loader is not relocated and a static pointer table would hold link-time addresses.
 4. Gets the file size from `EFI_FILE_INFO` (offset 8). It must not exceed `KERNEL_MAX = 0x1000000-0x100000` = 0xF00000 (15,728,640 bytes; 8 MiB in v9.08 to v9.10, 0x5C0000 before). The file is read in 1 MiB chunks into `AllocatePages(AnyPages, LoaderData)`.
 5. Locates the signature block. It searches the loaded bytes for `NVX64SIG` and reads `uefi_entry` at +80 and `bss_end` at +120. `bss_end` is clamped to `0x0B000000` if it is outside `[0x1300000, 0x0B000000]`. If `uefi_entry` is 0 or outside `[0x100000, 0x100000+size)`, the loader fails with "this file is not a NoovexOS 64 kernel (no UEFI entry point)". This is the only kernel validation on the UEFI path; the hashes are not checked here.
 6. GOP: takes the console's GOP or else `LocateProtocol`, then scores every mode as `w*h*4 + (BGR?2:0) + (current?1:0)`. Only modes that are BGR (format 1, or bitmask with R=`FF0000`, G=`FF00`, B=`FF`) or RGB (format 0) and at most 1920x1080 count. It switches to the best mode. A Blt-only mode (format 3) is fatal.
@@ -2126,6 +3286,23 @@ def signature_ok(k):
 | `boot.cfg` | 8191 bytes, 16 entries | `stage2.c`, `config.h` |
 
 Every limit is now 15 MiB, and the 10.2 MB v9.11 kernel fits with about 4.8 MB to spare. v9.11 raised it from 8 MiB by moving the boot stack, the fixed DMA buffers and `.bss` up by 7 MiB, and replaced the fixed TLS scratch buffers at `0x908000`-`0x930000` with static ones. Before v9.08 the UEFI loader allowed only 0x5C0000 bytes and the boot stack started at `0x700000`, directly above the image; a bigger kernel was silently overwritten by the stack, which the integrity check then reported as "kernel code was modified" (section 13.12).
+
+### 2.13b The Linux files outside the kernel (v10.41)
+
+Until v10.40 the Linux files (glibc, CPython, gcc, the ports, 36 MB) were linked into the kernel, which made the kernel 98.65 of the 100 MiB the boot loaders read. They are now a separate file next to the kernel:
+
+| Item | Value | Where |
+|---|---|---|
+| File name | `/sysroot/XXXXXXXX.BIN`, XXXXXXXX = CRC-32 of the file in upper case hex | `build.sh` step 6, `mkhybrid.py` |
+| Kernel header | offset 16: CRC-32, offset 20: size (Multiboot `header_addr`/`load_addr`, unused because flag bit 16 is clear) | `build.sh` step 6, `fs/vfs/sysroot.c` `sysroot_want_crc`/`sysroot_want_size` |
+| Load address | `0x20000000`, at most `0x10000000` bytes (256 MiB, since v10.48; was `0x06600000` and 50 MiB) | `boot/src/stage2.c`, `boot/uefi/uefiboot.c`, `include/nvx/fs/vfs/sysroot.h` `SR_SLOT` |
+| Kernel image now | about 72 MB (with five page engine copies) | `build.sh` |
+
+Both loaders read the kernel first, take the name from its header and read the file to `0x20000000` (the UEFI loader reads it into a buffer outside the kernel areas and copies it there after ExitBootServices, like the kernel). `sysroot_init` accepts the memory only when its size and CRC-32 match the kernel header, so an older file left in memory after a warm restart, or a file from another build, is never used. Because the CRC is in the name, the files of the current, the new and the previous kernel can sit side by side on the boot partition.
+
+When the loader did not bring the file (the first start after an update with an old loader, before `up_heal` refreshes it), the kernel reads it itself from the boot partition of the installed disk or the USB stick (`up_sr_load_disk` in `core/update.c`, called from `up_boot`). If it is missing there too, `update status` says so and `update repair` (also started once by itself on the desktop) downloads the ISO again, takes the file out of it, checks the CRC, saves it and loads it without a restart.
+
+The installer writes the file to the new boot partition after the boot partition check (`upd_put_sysroot_part`); the updater writes the new file before it touches the kernel, removes files no kernel on the partition needs (`up_sr_prune` keeps the current, `KERNEL64.BIN`, `kernel64.bin` and `kernel64.old` ones) and makes room by dropping an old `kernel64.old` first when the partition is full.
 
 ### 2.14 Gotchas
 
@@ -2680,7 +3857,9 @@ Since v9.22 the low memory map is:
 | 192 - 224 MiB | frame pool (unchanged) |
 | 224 - 256 MiB | module area for the Doom WAD (unchanged) |
 | 256 - 384 MiB | kernel BSS (`. = 0x10000000`, at most `0x18000000`) |
-| 384 MiB - | heap (`heap_init` starts at `0x18000000`) |
+| 384 - 512 MiB | myboot stage2 scratch for the kernel file while booting; unused afterwards when the Linux files are loaded |
+| 512 - 768 MiB | Linux files (`SR_SLOT` 0x20000000, at most `SR_SLOTMAX` 256 MiB, since v10.48) |
+| end of the Linux files - | heap: `heap_init` starts at `sysroot_slot_end()` (the end of the Linux files rounded up to 2 MiB) when that leaves 128 MiB of RAM and the firmware marks the slot usable, otherwise at `0x18000000` as before |
 
 Loaders:
 
@@ -2690,7 +3869,40 @@ Loaders:
 | UEFI loader | `KERNEL_MAX` 100 MiB; the loader's own buffer is allocated outside the kernel areas (`alloc_safe`); the reserved-area table and the BSS bounds follow the new layout |
 | CD image (`mkhybrid.py`) | the El Torito UEFI FAT16 image doubles its sectors per cluster until it has fewer than 65,000 clusters; when it is larger than 65,535 sectors the catalog entry's sector count is 0, which UEFI firmware reads as "to the end of the disc" |
 
-The frame pool now needs 500 MiB of RAM, because the heap it grows from starts at 384 MiB.
+The frame pool now needs 500 MiB of RAM, because the heap it grows from starts at 384 MiB. Since v10.48 the Linux files (about 187 MB in v10.49, with LibreOffice and the face models) need about 1 GB of RAM: with less, the boot loader writes past the end of RAM, the CRC check in `sysroot_init` fails, the heap starts at `0x18000000` and NoovexOS runs without the Linux files.
+
+### 3.16 Kernel memory and firmware-reserved memory (v10.51)
+
+On the owner's Lenovo laptop (UEFI) the firmware keeps a block at `0x10000000`, inside the kernel BSS. The UEFI loader printed a warning and the kernel stopped right after "crash: function names are built in".
+
+Cause: `stk_guard_boot` (`core/crash.c`) splits the 2 MiB page that holds the boot stack into 4 KiB pages so that a guard page can be left unmapped. It wrote the virtual address of its page table (`g_cx_bsg_pt`, in the BSS) into the page directory as if it were the physical address. While BSS virtual and physical addresses are the same this works; once `early_remap` has moved BSS pages to other RAM, the entry points at the firmware's block and the next stack access fails. The fix converts the address with `kva_to_pa` and skips the guard if that fails.
+
+`early_remap` (`arch/x86_64/interrupts/early_fault.c`) moves every 2 MiB kernel page that overlaps memory the firmware has not given as usable (type other than 7 or 4) to free RAM. Target choice:
+
+1. The largest usable run above 4 GiB, when it is big enough.
+2. Otherwise the highest 2 MiB-aligned usable range between 768 MiB and 4 GiB that is not the Linux files (UEFI: the address at `0x5030`; BIOS: a scan for the `NVS2` magic).
+
+`kmain` prints the result right after "kmain entered": "N MB of kernel memory (a-b) is used by the firmware or is not RAM - moved to X", or a warning when no free RAM was found. Further early steps print one line each ("slab ok", "frame pool set up", "crash handler and stack guard ok"), so a photo of a stopped screen shows the last finished step. `sysroot_init` prints "linux files: found at X" or "linux files: not found in memory, looked at X".
+
+The BIOS loader (`boot/src/stage2.c`) now reads the E820 map at `0x1000` (count at `0xFF0`) before loading the Linux files. If no usable range covers `0x20000000` plus the file size, it loads them at the highest 2 MiB-aligned usable place below 4 GiB. The kernel finds them there by the `NVS2` magic (`sysroot_slot_base`), and the heap ends below them.
+
+Test hooks: building `uefiboot.c` or `stage2.c` with `-DNVX_TEST_RSV` makes the UEFI loader report `0x10000000-0x11800000` as reserved and makes stage2 move the Linux files, so both paths can be tried in QEMU.
+
+### 3.17 Memory numbers for programs (v10.51)
+
+`/proc/meminfo` used to report three quarters of RAM as free, always. It now uses `mem_summary` (`mem/heap_api.c`): used memory is the kernel heap in use (cached every 2 s by `crash_tick`), everything below the heap base, and the Linux files when they lie above the heap. `MemFree` and `MemAvailable` are RAM minus that; `KernelHeap` gives the heap in use. Swap and cache lines are 0.
+
+`/usr/bin/nvx-mem` (`rust/nvxmem`) is a Rust program on top of this: `nvx-mem` shows memory in use with a bar, `nvx-mem test [MB]` fills memory from several threads with seven patterns and checks it (exit code 1 on errors or when the memory cannot be had), `nvx-mem bench` measures copy and read speed and the time for 100,000 small allocations.
+
+### 3.18 Code pages and firmware data (v10.52)
+
+In QEMU's UEFI firmware (OVMF), 32 KB of ACPI NVS memory sits at `0x800000`, inside the kernel image. The loader copied the kernel over it, and the installer refused to run ("The firmware uses memory that NoovexOS also uses").
+
+`early_remap` now also moves 2 MiB pages of kernel code (`0x200000` up to `__text_end`, a new linker symbol) that overlap firmware memory. Code is never written to by devices, so the move is safe; pages that hold page tables are skipped.
+
+The UEFI loader saves the firmware's bytes before it overwrites them. Before ExitBootServices it allocates a buffer below 4 GiB (at most 8 MB) for every ACPI NVS, ACPI table and runtime code or data range that overlaps the kernel image, boot stack, module area or BSS. After ExitBootServices, and before copying the kernel, it fills the buffer. The buffer's address is at `0x5038` (offset 56 of the boot information), with the magic `NVXS`. After moving the pages, `early_remap` writes these bytes back to the original physical pages, which the kernel no longer uses. The boot log says "firmware data put back (N KB)", and `memmap` shows the same.
+
+Moved pages no longer count as conflicts: `mm_area_conflicts`, the start-up warning and `memmap` skip them (`early_remap_moved`), so the installer runs. The ACPI interpreter refuses memory reads and writes to moved pages, because those addresses now lead to the kernel's copy.
 
 ## Part 4: CPU, interrupts, timers and multi-core
 
@@ -3264,6 +4476,10 @@ Coherence relies on these properties in the current design:
 | `smpwork` / `parallel`, `smpsched` | Prime-counting job queue demo and per-core counters (4.12). |
 
 Other places that report the core count: `/proc/cpuinfo` (`fs/vfs/vfs.c`, one entry per online `g_cpu[]`), `/sys/devices/system/cpu/online` (`fs/vfs/unixfs.c`), and Linux `sched_getaffinity` (syscall 204 in `sys/linux/linux.c`). All of them report `g_cores_online` only while `g_smp_on` is set, and 1 otherwise. The user program `usr/musl/smptest.c` (named in the `smp` help line) forks workers, records which CPUs they ran on, and checks results as a stress test.
+
+### 4.17 The web worker engine on CPU 1 (v10.42)
+
+`ap_loop` calls `wk_ap_turn()` (`apps/internet/webwork.c`) after each scheduling round. On CPU 1 only, and only while the browser has workers there, it runs one turn of the worker engine in kernel mode without the big kernel lock, on its own 4 MiB stack, with its own memory arena; it shares nothing with CPU 0 except two lock-free message rings. A turn handles messages for up to 25 ms and then returns, so Linux programs on CPU 1 still get their time slices; a page message wakes CPU 1 with `smp_kick(1)`, and a worker timer is checked at the next tick. An exception inside the worker engine on CPU 1 goes to `wk_fault_redirect`, which is checked before `web_fault_redirect` and only matches while CPU 1 is inside a worker turn. Section 13.64 has the details.
 
 ## Part 5: Processes, scheduling, signals and the native system-call ABI
 
@@ -4091,6 +5307,8 @@ static int lx_ok(u64 p,u64 n){ return jc_umapped(p,n); }
 3. Absolute paths are copied as-is. Otherwise the base node is the current directory `g_dcwd`, or, if `dirfd != AT_FDCWD (-100)`, the directory node of that fd, which must be a directory vfile (`dev == LX_DIRDEV == 11`, else `-ENOTDIR`; closed fd to `-EBADF`).
 4. `dt_path(node,...)` gives the base path; the relative part is appended.
 
+`lx_path` wraps this (`lx_path0`) and removes trailing slashes, so `mkdir("a/")` and `stat("a/")` work; if a trailing slash was removed and the path is an existing non-directory, the call fails with `-ENOTDIR` (v10.07).
+
 `lx_noent(p)` refines a failed lookup: it walks the prefixes and returns `-ENOTDIR` if a prefix is a regular file (e.g. `open("file.txt/x")`), else `-ENOENT`. `musltest` checks both.
 
 ### 6.2 File-related details
@@ -4149,8 +5367,9 @@ Only `LX_DIRDEV` fds (`-ENOTDIR` otherwise). Each record is a `linux_dirent64`: 
 | `0xC0045006` / `0xC0045003` | SNDCTL_DSP_CHANNELS / STEREO | dsp | 2 / 1 |
 | `0x8010500C` | SNDCTL_DSP_GETOSPACE | dsp | `{free/4096, 32, 4096, free}` from `g_snd.free_bytes()` |
 | `0xC004500A` | SNDCTL_DSP_SETFRAGMENT | dsp | no-op |
+| `0x80084E50` | NoovexOS: pointer position | `/dev/input/mice` (dev 10) | two `int`s: the desktop pointer `mx`, `my` (v10.07, used by the NetSurf surface) |
 
-Any other request on the tty or dsp is `-EINVAL`; on any other device it is `-ENOTTY` (this is what makes `isatty()` false for files).
+Any other request on the tty or dsp is `-EINVAL`; on any other device it is `-ENOTTY` (this is what makes `isatty()` false for files). The request is cut to 32 bits first (`req=(u32)req`), like Linux, because musl passes it as a sign-extended `int`; before v10.07 requests with bit 31 set never matched from musl programs.
 
 #### `fcntl` (`lx_fcntl`)
 
@@ -4173,7 +5392,11 @@ Address space. The user window and the regions `linux.c` and `elf.c` assume:
 | `0x40004000000`, `0x80000000000` | `mmap` area (`g_mmap_next`, `lx_find_gap`); shared libraries loaded by the dynamic linker and thread stacks go here |
 | `0x7F000000000` | the dynamic linker of a dynamic program (`ELF_INTERP_BASE`) |
 
-`lx_mmap` rejects `len==0`, unaligned offsets and lengths over 1 GiB. Anonymous mappings (`MAP_ANONYMOUS 0x20`) are lazy (`vm_map_lazy`), so an 8 MiB mapping only consumes the pages that are touched. File mappings must be on a regular file (`-ENODEV` otherwise, e.g. `/dev/fb0`) and are private copies filled at map time; writes never reach the file. `prot` is ignored (all pages user-RW). `MAP_FIXED` (0x10) unmaps the target first and refuses the stack region. Without it, `lx_find_gap` reuses freed holes before extending `g_mmap_next`. `mprotect`, `msync`, `madvise`, `mlock*` return 0; `mremap` returns `-ENOMEM` (musl's `realloc` then copies); `mincore` is ENOSYS. All user pages come from one frame pool shared by every process: 32 MiB at `PF_BASE` plus a range taken from the heap that grows with RAM, up to 2 GiB more (section 3.7); `pframe_free_count()` gates `mmap`/`brk`.
+Memory protection (v10.06). `vm_prot_bits(prot)` turns `PROT_*` into software PTE bits: `PTE_PRO` (bit 52, no write), `PTE_PNO` (bit 53, no access) and the hardware NX bit 63 (only when `g_nx_on`; `cpu_nx_init` sets `EFER.NXE` on each CPU that has it). `vm_pflags` applies them (RW cleared for `PTE_PRO`, the user bit cleared for `PTE_PNO`) and `vm_live` keeps them when a lazy page gets its frame or a copy-on-write page is copied. Lazy pages store the bits in the empty PTE (`vm_map_lazy_p`), reserved ranges in `g_res[].pb`. `lx_mprotect` changes present pages, lazy pages and untouched parts of reservations (splitting them), then shoots down the TLBs. A write to a `PTE_PRO` page is refused by `vm_fault_user` even if it is copy-on-write; `jc_umap_chk` refuses kernel copies into read-only or no-access pages (EFAULT) and no longer copies a page on a read check when the page is read-only. An instruction fetch from an NX page (page-fault error bit 4) becomes SIGSEGV. `fork` marks read-only private pages copy-on-write too, so a later `mprotect` back to writable cannot change the parent's page. Every place that takes a frame out of a PTE masks with `PTE_ADDR`.
+
+Signal frames for Linux programs (v10.06). `jc_push_lx` builds the Linux `rt_sigframe`: return address (the `SA_RESTORER` function), a 304-byte `ucontext` (`uc_stack`, the 32-word `sigcontext` with all registers, `err`, `trapno`, `oldmask`, `cr2` and a pointer to a 512-byte FXSAVE copy, then `uc_sigmask`), and a 128-byte `siginfo` (`si_signo`, `si_code`, `si_addr` for faults; `SI_TKILL` for `tgkill`). `rdi`, `rsi` and `rdx` hold the signal, `&siginfo` and `&ucontext`; the stack is the alternate stack when `SA_ONSTACK` is set and one is installed. `lx_sigreturn` reads every register, the mask and the FPU state back from the `ucontext` and restores the alternate stack from `uc_stack`. Native programs keep the old frame. Fault details come from `vm_user_pf` and `jc_fault` (`flt_addr`, `flt_code`, `flt_err`, `flt_trap` in `struct jproc`).
+
+`lx_mmap` rejects `len==0`, unaligned offsets and lengths over 1 GiB. Anonymous mappings (`MAP_ANONYMOUS 0x20`) are lazy (`vm_map_lazy`), so an 8 MiB mapping only consumes the pages that are touched. File mappings must be on a regular file (`-ENODEV` otherwise, e.g. `/dev/fb0`) and are private copies filled at map time; writes never reach the file. `prot` is applied (see Memory protection above). `MAP_FIXED` (0x10) unmaps the target first and refuses the stack region. Without it, `lx_find_gap` reuses freed holes before extending `g_mmap_next`. `mprotect`, `msync`, `madvise`, `mlock*` return 0; `mremap` returns `-ENOMEM` (musl's `realloc` then copies); `mincore` is ENOSYS. All user pages come from one frame pool shared by every process: 32 MiB at `PF_BASE` plus a range taken from the heap that grows with RAM, up to 2 GiB more (section 3.7); `pframe_free_count()` gates `mmap`/`brk`.
 
 Processes.
 
@@ -4192,13 +5415,13 @@ static long lx_clone(struct sysregs* r,u64 flags,u64 stack,u64 ptid,u64 ctid,u64
 
 With `CLONE_THREAD`, `clone` creates a thread that shares the address space, descriptors and signal handlers (section 5.15). Without it, `clone` forks: `CLONE_VM` and `CLONE_VFORK` are accepted but the child gets a copy-on-write copy from `vm_clone_user`; a child stack, `CLONE_SETTLS`, `CLONE_CHILD_CLEARTID` and `CLONE_PARENT_SETTID` are honoured. `fork` (57) and `vfork` (58) are `clone(0)`. `execve` (`lx_execve`) copies up to `XA_MAX` = 32 argv and 32 envp strings into 2048-byte buffers (`XA_CAP`), rejects names over 63 characters or containing spaces, resolves the program with `jc_find_prog` (6.6) and calls `jc_exec`, which frees the old address space, closes close-on-exec fds, resets caught signal handlers, `fsbase`, `brk` and the mmap cursor. `wait4` supports `WNOHANG|WUNTRACED|WCONTINUED` (`opts&0xB`) and zero-fills `rusage`; with no matching child it is `-ECHILD`. `exit`/`exit_group` store `(code&0xFF)<<8`.
 
-Signals. The kernel keeps signals 1-31 in 32-bit masks where bit *s* is signal *s*; Linux uses bit *s-1*. `lx_k2l` (`k>>1`) and `lx_l2k` (`l<<1`) convert. `rt_sigaction` reads/writes the 32-byte kernel `sigaction` (`handler, flags, restorer, mask`), keeps `SA_RESTORER` (`0x04000000`) restorer addresses, refuses SIGKILL/SIGSTOP, and silently accepts real-time signals 32-64 without effect (`kill` with signal at least 32 also returns 0). `jc_push_handler` builds the frame: a copy of `regs_pt` plus the saved mask, then the restorer address as return address; with `SA_SIGINFO` (flag 4) a 128-byte `siginfo` containing only `si_signo` is passed in `rsi`. `rt_sigreturn` (`lx_sigreturn`) reads that frame from the user `rsp`, forces user segments and sanitises `rflags`, and kills the process with SIGSEGV if the frame or the return `rip` is outside the user window. `rt_sigsuspend` (130) swaps the mask and sleeps; `sigaltstack` reports `SS_DISABLE`. `alarm`, `setitimer` and `getitimer` work for `ITIMER_REAL` (section 5.16). `tgkill` and `tkill` send a signal to one thread; `kill` sends it to the process, and the kernel picks a thread that does not block it (section 5.15). `futex` is described in section 5.15.
+Signals. The kernel keeps signals 1-31 in 32-bit masks where bit *s* is signal *s*; Linux uses bit *s-1*. `lx_k2l` (`k>>1`) and `lx_l2k` (`l<<1`) convert. `rt_sigaction` reads/writes the 32-byte kernel `sigaction` (`handler, flags, restorer, mask`), keeps `SA_RESTORER` (`0x04000000`) restorer addresses, refuses SIGKILL/SIGSTOP, and silently accepts real-time signals 32-64 without effect (`kill` with signal at least 32 also returns 0). `jc_push_handler` builds the frame: a copy of `regs_pt` plus the saved mask, then the restorer address as return address; with `SA_SIGINFO` (flag 4) a 128-byte `siginfo` containing only `si_signo` is passed in `rsi`. `rt_sigreturn` (`lx_sigreturn`) reads that frame from the user `rsp`, forces user segments and sanitises `rflags`, and kills the process with SIGSEGV if the frame or the return `rip` is outside the user window. `rt_sigsuspend` (130) swaps the mask and sleeps; `sigaltstack` installs a per-thread alternate stack (see Signal frames above). `alarm`, `setitimer` and `getitimer` work for `ITIMER_REAL` (section 5.16). `tgkill` and `tkill` send a signal to one thread; `kill` sends it to the process, and the kernel picks a thread that does not block it (section 5.15). `futex` is described in section 5.15.
 
 Identity and system info. `uname` (`lx_uname`) returns `NoovexOS`, the hostname, release `8.97`, version `NoovexOS 64 v8.97`, machine `x86_64`, domain `(none)`. `sched_getaffinity` (204) returns an 8-byte mask with one bit per online core (`g_cores_online` when `g_smp_on`), which is what musl's `sysconf(_SC_NPROCESSORS_ONLN)` counts; `sched_setaffinity` is a no-op. `getcpu` (309) returns `cpu_id()` and node 0. `getrlimit`/`prlimit64` report `RLIMIT_STACK` = 1 MiB and `RLIMIT_NOFILE` = 256, everything else unlimited. `arch_prctl` supports `ARCH_SET_FS` (0x1002, also loads the MSR through `cpu_set_fsbase` and `lsys_fsbase`) and `ARCH_GET_FS` (0x1003), this is musl's TLS. `getrandom`, `/dev/random` and `/dev/urandom` return output of the kernel's ChaCha20 generator `csprng_bytes` (`lib/crypto/nvxcrypto2.c`), seeded from RDSEED or RDRAND when the CPU has them and from TSC timing jitter. Before v8.97 they were an xorshift or LCG sequence, which is not good enough for TLS keys; the seeding code also used RDSEED without checking CPUID, which faulted on CPUs without it.
 
 ### 6.4 Complete Linux system-call table
 
-Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns `-ENOSYS`.
+Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else returns `-ENOSYS`.
 
 | Nr | Name | Notes |
 |---|---|---|
@@ -4212,7 +5435,7 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 7 | poll | `lx_poll`, ms timeout |
 | 8 | lseek | `-ESPIPE` on tty/pipes; dirs accept SEEK_SET only; `/dev/fb0` size is `W*H*4` |
 | 9 | mmap | `lx_mmap` |
-| 10 | mprotect | returns 0, no effect |
+| 10 | mprotect | `lx_mprotect`: real page protection (read-only, no access, no execute), also inside reservations |
 | 11 | munmap | `lx_munmap`, refuses the stack |
 | 12 | brk | `lx_brk`, heap window 32 MiB |
 | 13 | rt_sigaction | `lx_sigaction` |
@@ -4255,11 +5478,11 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 61 | wait4 | `lx_wait4` |
 | 62 | kill | sig 0 probes; uid check via `g_kill_check` |
 | 63 | uname | `lx_uname` |
-| 72 | fcntl | `lx_fcntl` |
-| 73 | flock | 0 for a valid fd, no locking |
+| 72 | fcntl | `lx_fcntl`; F_GETLK/F_SETLK/F_SETLKW and the OFD forms (36-38) go to `lx_fcntl_lock` (real advisory record locks, section 6.22) |
+| 73 | flock | `lx_flock`: shared and exclusive locks per open file, LOCK_NB, blocking waits (section 6.22) |
 | 74 / 75 | fsync / fdatasync | `k_fsync` |
 | 76 / 77 | truncate / ftruncate | `k_truncate` / `k_ftruncate` (needs a writable fd) |
-| 78 | getdents | ENOSYS (use 217) |
+| 78 | getdents | the old record layout, converted in place from `lx_getdents` |
 | 79 | getcwd | `-ERANGE` if too small |
 | 80 / 81 | chdir / fchdir | sets `g_dcwd` |
 | 82 | rename | `lx_rename` (directory-over-empty-directory supported) |
@@ -4289,9 +5512,12 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 116 | setgroups | root only, no effect |
 | 118 / 120 | getresuid / getresgid | all three = current id |
 | 121 / 124 | getpgid / getsid | |
+| 125 / 126 | capget / capset | all capabilities for root, none otherwise; capset accepted for root |
 | 127 | rt_sigpending | pending & blocked |
+| 128 | rt_sigtimedwait | waits for a signal of the set, with time limit (v10.43) |
+| 129 | rt_sigqueueinfo | like kill (v10.43) |
 | 130 | rt_sigsuspend | |
-| 131 | sigaltstack | reports SS_DISABLE |
+| 131 | sigaltstack | per-thread alternate signal stack (`lx_sigaltstack`) |
 | 132 | utime | times argument ignored |
 | 133 | mknod | EPERM |
 | 135 | personality | 0 |
@@ -4312,6 +5538,13 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 191-199 | getxattr ... fremovexattr | ENOTSUP (188-190 setxattr family: ENOSYS) |
 | 200 / 234 | tkill / tgkill | signal one thread (`jc_signal_thread`) |
 | 201 | time | |
+| 222-226 | timer_create, timer_settime, timer_gettime, timer_getoverrun, timer_delete | POSIX timers with SIGEV_SIGNAL, SIGEV_NONE and SIGEV_THREAD_ID (signals 1-31), absolute and interval times, overrun count (section 6.22) |
+| 227 | clock_settime | EPERM |
+| 235 / 261 | utimes / futimesat | seconds of both times |
+| 247 | waitid | P_ALL, P_PID, P_PGID with WEXITED, WSTOPPED, WCONTINUED, WNOHANG; fills `siginfo_t` (WNOWAIT not supported) |
+| 251 / 252 | ioprio_set / ioprio_get | 0 |
+| 253 / 294 | inotify_init / inotify_init1 | section 6.22 |
+| 254 / 255 | inotify_add_watch / inotify_rm_watch | section 6.22 |
 | 202 | futex | `lx_futex`: WAIT, WAKE, REQUEUE, CMP_REQUEUE, WAKE_OP, WAIT_BITSET, WAKE_BITSET (section 5.15) |
 | 203 / 204 | sched_setaffinity / sched_getaffinity | no-op / online-core mask |
 | 217 | getdents64 | `lx_getdents` |
@@ -4330,16 +5563,23 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 270 / 271 | pselect6 / ppoll | signal mask argument ignored |
 | 273 / 274 | set_robust_list / get_robust_list | stored and returned, not walked |
 | 280 | utimensat | UTIME_NOW/UTIME_OMIT handled; NULL path to fd check |
+| 282 / 289 | signalfd / signalfd4 | reads `signalfd_siginfo` records for pending signals in the mask (section 6.22) |
 | 285 | fallocate | ENOTSUP |
 | 288 | accept4 | `lx_accept` with `SOCK_NONBLOCK` and `SOCK_CLOEXEC` |
 | 292 / 293 | dup3 / pipe2 | O_CLOEXEC, O_NONBLOCK |
+| 295 / 296 / 327 / 328 | preadv / pwritev / preadv2 / pwritev2 | `lx_prw` per iovec; offset -1 in the v2 forms uses the file position |
+| 297 | rt_tgsigqueueinfo | like tgkill (v10.43) |
+| 299 / 307 | recvmmsg / sendmmsg | one `lx_msg` per message; after the first message the rest do not wait |
 | 302 | prlimit64 | own pid only, get only |
+| 277 / 306 | sync_file_range / syncfs | 0 for a valid fd |
+| 314 / 315 | sched_setattr / sched_getattr | 0 / a `SCHED_OTHER` record |
 | 309 | getcpu | |
 | 318 | getrandom | kernel ChaCha20 generator, at most 1 MiB |
+| 325 | mlock2 | 0 |
 | 334 | rseq | ENOSYS (musl falls back) |
 | 436 | close_range | `CLOSE_RANGE_CLOEXEC` (4) supported |
 
-Not present (ENOSYS): `epoll_*`, `eventfd`, `timerfd`, `signalfd`, `inotify`, `memfd_create`, `statx`, `getdents`, process-shared futexes across different processes, `ITIMER_VIRTUAL`/`ITIMER_PROF` expiry.
+Not present (ENOSYS): real-time signals (32-64), `SIGEV_THREAD` timers (glibc uses signal 32 for them), `copy_file_range`, `io_uring`, `clone3` (glibc falls back to `clone`), process-shared futexes across different processes, `ITIMER_VIRTUAL`/`ITIMER_PROF` expiry.
 
 ### 6.5 The C libraries
 
@@ -4476,6 +5716,72 @@ Three other third-party components are kernel code, not user programs:
 * Lua 5.5.1 (`third_party/lua`): compiled with `LUAF` (freestanding, SSE enabled) against its own mini libc `nvxlibc.c` (190 lines, output through `lua_emit`), linked as `lua_all.o`; `nvxlua.c` exposes `nvx.window/clear/rect/text/present/waitkey...` and `nvx_lua_run()` backs the shell's `lua <code>` command.
 * Doom (`third_party/doom`, doomgeneric): `build_doom.sh` compiles it with SSE at 640x400, `ld -r` combines it and `objcopy --keep-global-symbol` keeps only the interface (`doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_*`, `webp_decode`). `apps/games/doom.c` loads the WAD from a boot module or `DOOM1.WAD`/`FREEDOOM.WAD`/... on the FAT disk (32 MiB buffer).
 * NTFS (ntfs-3g, `third_party/ntfs`): built with `-Ulinux -U__linux__ ...` against `compat/` headers and `ntfslibc.c`, mkntfs with `-Dmain=mkntfs_main`; used by `fs/ntfs/ntfsk.c`.
+
+### 6.7a Ports built from source: TCC, vim, less, curl, git, Dropbear (v10.07)
+
+`tools/build_ports2.sh [build/ports2]` builds these with their own build systems, each step cached by a stamp file (`build/ports2/.<name>`; delete it to rebuild one), and puts the result in `build/ports2/root`, which `build.sh` copies over the sysroot before `mksysroot.py`.
+
+The compiler is `tools/mcc-port`: clang with `--sysroot=build/ports2/sys`, the musl headers, `-fPIE`, and for linking the shared musl start files, `-pie` and `-Wl,-dynamic-linker,/lib/ld-musl-x86_64.so.1` (`-shared` gives a shared library instead). Linking through clang with a sysroot keeps the build machine's libraries out: `mcc-dyn` (gcc) silently found `/usr/lib/x86_64-linux-gnu/libcairo.so` when vim's configure asked for it. `PKG_CONFIG=false` does the same for configure scripts. Libraries the ports share are built static into `build/ports2/sys`.
+
+| Step | Source | How | Result in the image |
+|---|---|---|---|
+| kernel headers | the build machine's `/usr/include/{linux,asm-generic}` and `x86_64-linux-gnu/asm` | copied | `/usr/include/linux`, `asm`, `asm-generic` (mlibc's links now resolve too) |
+| zlib | `third_party/zlib` 1.3.2 | compiled with `-fPIC`, `ar` | `libz.a`, `zlib.h`, `zlib.pc` |
+| ncurses | `third_party/ncurses` (snapshot, 6.6) | `--without-shared --enable-widec --with-termlib --with-fallbacks=xterm-256color,xterm,vt100,linux,ansi,dumb,screen,tmux-256color`, host `tic`/`infocmp` | static `libncursesw.a`, `libtinfow.a`; no terminfo files needed |
+| mbedTLS | `third_party/mbedtls` 3.6.7 | `make lib` | `libmbedtls/x509/crypto.a` |
+| curl | `third_party/curl` 8.23.0 (`autoreconf` already run) | `--with-mbedtls --with-zlib --enable-shared --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt`, no LDAP, RTSP, DICT, TELNET, TFTP, POP3, IMAP, SMTP, GOPHER, MQTT | `/usr/bin/curl`, `/usr/lib/libcurl.so.4` |
+| vim | `third_party/vim` 9.2.1225 | `--with-features=huge --with-tlib=tinfow`, no GUI, X, NLS, channel, canberra, sodium, gpm; cache variables for cross-configure; `vim_cv_timer_create=no` | `vim` and links `vi view vimdiff ex rview`, `xxd`, `/usr/share/vim/vim92` (without tutor, spell, lang, print, tools, macros, most of `doc`) |
+| less | `third_party/less` 712 (`help.c`, `funcs.h`, `lessmsg.inc`, `configure` generated) | `--with-regex=posix` | `less`, `lessecho` |
+| git | `third_party/git` 2.56.0 | `make` with `NO_OPENSSL NO_EXPAT NO_GETTEXT NO_TCLTK NO_PERL NO_PYTHON NO_REGEX NO_ICONV SKIP_DASHED_BUILT_INS INSTALL_SYMLINKS`, `CURLDIR` | `git` (links `git-receive-pack`, `git-upload-archive`, `git-upload-pack`), `/usr/libexec/git-core` without the Perl and Python commands and the server programs (`git-daemon`, `git-http-backend`, `git-shell`, `scalar`, `git-imap-send`), templates |
+| Dropbear | `third_party/dropbear` 2026.94 | `MULTI=1 PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp"`, no lastlog/utmp/wtmp/PAM/syslog | `dropbearmulti` and links `ssh dbclient scp dropbear dropbearkey dropbearconvert` |
+| TCC | `third_party/tinycc` (`mob`, `NVX-VERSION` has the commit) | `tools/build_tcc.sh`: a host TCC builds `libtcc1.a` and the runtime objects, then `tcc` itself is built with `mcc-dyn`; `--config-musl --config-pie` | `tcc`, `cc`, `/usr/lib/tcc`, `/usr/lib/musl` (headers, start files, a real copy of the shared `libc.so` to link against, static `libm.a` and the other empty musl libraries) |
+
+Configuration files written by the script: `/etc/ssl/certs/ca-certificates.crt` (the Mozilla store from `lib/crypto/roots`), `/etc/ld-musl-x86_64.path`, `/etc/shells`, `/etc/dropbear/README`, `/etc/gitconfig` (`core.pager = less -FRX`, `core.editor = vim`, `init.defaultBranch = main`, `http.sslCAInfo`).
+
+Notes:
+
+* vim's time limits for searches and syntax use `setitimer` because NoovexOS has no `timer_create`; with `timer_create` vim showed "Could not set timeout" on every redraw and seemed to hang. Start-up reads about 1 MB of scripts in 1 KB pieces (musl's stdio buffer); about 7 s under QEMU without KVM.
+* curl and git use the Mozilla root store. A private CA: `curl --cacert file`, `git -c http.sslCAInfo=file`. `/etc/ssl/local-ca.pem` (used by the kernel and `fetch`) is not read by curl.
+* git's pager is `less -FRX`, so short output is printed directly.
+* `ssh` connects with keys (`dropbearkey -t ed25519 -f ~/.ssh/id_dropbear`, `ssh -i ...`) or a password. The server works for commands, `scp` and `ssh -T`; interactive logins need pseudo-terminals, which NoovexOS does not have yet. Accounts whose shell is the built-in `/bin/nsh` get `/bin/sh` (bash) (`fill_passwd` in `common-session.c`). Host keys are created in `/etc/dropbear` with `dropbear -R`.
+* The native shell `nsh` does not split commands at `;`; type them one by one or use `bash`.
+
+Compressed in the image these add about 10 MB; the kernel grew from 78 MB to 89 MB.
+
+### 6.7b NetSurf (v10.07)
+
+`tools/build_netsurf.sh [build/netsurf] [build/ports2/sys]` builds the NetSurf web browser after the ports above (it needs their zlib, curl and mbedTLS). All sources are in `third_party/netsurf` (one directory per project, `NVX-VERSION` has the upstream commit; test data removed).
+
+| Step | Source | How |
+|---|---|---|
+| libjpeg-turbo 3.2.0, libpng 1.6.59, FreeType 2.15.0, expat 2.9.0 | GitHub tags | CMake with `mcc-port` (`CMAKE_SYSTEM_NAME=Linux`, static, PIC, no SIMD for jpeg) |
+| utf8proc 2.12.0 | GitHub tag | one file, `libutf8proc.a` and a `.pc` file |
+| gperf 3.2 | `gnu-mirror-unofficial/gperf` | built for the build machine from the sources directly (`HAVE_DYNAMIC_ARRAY`); libhubbub and libsvgtiny need it |
+| buildsystem, libwapcaplet, libparserutils, libhubbub, libdom, libcss, libnsgif, libnsbmp, libnsutils, libnspsl, libsvgtiny, libnsfb | `github.com/netsurf-browser/*` master | NetSurf's own buildsystem: `make PREFIX=/usr DESTDIR=build/ports2/sys CC=mcc-port BUILD_CC=gcc HOST=x86_64-linux-musl COMPONENT_TYPE=lib-static install` |
+| NetSurf | `netsurf-browser/netsurf` master | `make TARGET=framebuffer` with `Makefile.config`: no Duktape (JavaScript), OpenSSL, iconv, RISC OS sprites, WebP, JPEG XL, nslog; SVG and utf8proc on; frontend `noovex`; FreeType fonts from `/usr/share/fonts/truetype/dejavu`; resources in `/usr/share/netsurf` |
+
+`pkg-config` looks only in the ports sysroot (`PKG_CONFIG_LIBDIR`, `PKG_CONFIG_SYSROOT_DIR`); an empty `libiconv.a` satisfies NetSurf's `-liconv` (musl has iconv in libc). JavaScript needs `nsgenbind`, which needs flex; flex cannot be installed on the build machine used for this release and its own sources need an existing flex. libnslog needs flex too and is left out.
+
+In the image: `/usr/bin/netsurf-fb`, `/usr/bin/netsurf` (link), `/usr/share/netsurf` (CSS, messages, welcome page), the DejaVu fonts (Sans, Sans Bold, Oblique, Bold Oblique, Serif, Serif Bold, Mono, Mono Bold) with their licence in `/usr/share/fonts/truetype/dejavu` (from `third_party/fonts/dejavu`). About 2.6 MB compressed.
+
+#### The `noovex` surface (`libnsfb/src/surface/noovex.c`)
+
+| Part | What it does |
+|---|---|
+| `initialise` | opens `/dev/fb0`, reads the size with `FBIOGET_VSCREENINFO`/`FBIOGET_FSCREENINFO`, allocates a 32-bit XRGB back buffer of the screen size (the size NetSurf asks for is ignored), opens `/dev/input/mice` non-blocking, and puts the tty (fd 0) into raw mode (no `ICANON`, `ECHO`, `ISIG`, `IXON`, `ICRNL`) |
+| `update` / `claim` / `cursor` | software pointer like the SDL surface: cleared on claim, drawn on update; changed rectangles are written to `/dev/fb0` with `lseek` and `write`, one write for full-width rectangles |
+| `input` | `poll` on the tty and the mouse with NetSurf's timeout; mouse packets (3 bytes, PS/2 sign convention) become button events (left 401, right 403, middle 402) and one `MOVE_ABSOLUTE` from ioctl `0x80084E50` (relative moves only if that fails); tty bytes become key events: letters, digits and symbols with `LSHIFT` around shifted characters, Ctrl+letter as `LCTRL`, `ESC [ A/B/C/D/H/F` and `ESC [ n ~` for arrows, Home, End, Insert, Delete, Page Up/Down, F5, Backspace (127), Return, Tab, Escape |
+| `finalise` | restores the termios and closes the devices; the kernel then shows the console or desktop again |
+
+While a program has `/dev/fb0` open the desktop or console is not drawn (`g_fb0_open`), keys go to the program's tty, and the mouse goes to `/dev/input/mice` (from the desktop input loop, and since v10.07 from `live_input` in the text console).
+
+#### Path drawing in the framebuffer frontend
+
+`framebuffer_plot_path` (`frontends/framebuffer/framebuffer.c`) used to log "path unimplemented". It now applies the 2x3 transform, flattens cubic Bezier segments into 16 lines each, and for each sub-path fills with `nsfb_plot_polygon` and strokes with `nsfb_plot_polylines` (closing the line for `PLOTTER_PATH_CLOSE`). Sub-paths are filled one by one, so holes made by a second sub-path (even-odd or non-zero rules across sub-paths) are not cut out.
+
+#### Using it
+
+`netsurf` opens the welcome page, `netsurf URL` a page. Close with the window button at the top right. Ctrl+C, Ctrl+V and Ctrl+X reach NetSurf as copy, paste and cut (not tested); Ctrl+A in the address bar does nothing, so click and use Backspace to replace an address. There are no tabs or windows; the back, forward, history, stop and reload buttons are in the toolbar. The mouse wheel is not passed on (`/dev/input/mice` has no wheel byte); use the scroll bars or Page Up/Down.
 
 ### 6.8 Test programs
 
@@ -4720,8 +6026,8 @@ For a shared library, compile with `-fPIC` against the musl headers and link wit
 #### Limits
 
 - Only PIE (`ET_DYN`) programs can have an interpreter; a non-PIE `ET_EXEC` with `PT_INTERP` is refused.
-- `mprotect` is a no-op, so RELRO does not make pages read-only.
-- Text relocations work (every page is writable) but are not needed by gcc's default PIE code.
+- RELRO pages are made read-only with `mprotect` since v10.06.
+- Until v10.07 the shared musl searched only `/lib` and the build machine's `musl-sh/lib`, so `DT_NEEDED` libraries outside `/lib` were not found. Now it is built with `libdir=/usr/lib` and `/etc/ld-musl-x86_64.path` lists `/lib`, `/usr/local/lib` and `/usr/lib`.
 
 ---
 
@@ -4854,6 +6160,16 @@ Inside `play`, the input is an `AVIOContext`: a local file, `httpio`, or `ks_rea
 
 The kernel main loop calls `video_fast` and then `browser_media_fast` when nothing else changed. It also no longer recomposes the desktop after every scheduler slice in which a program ran: `jc_step` returns bit 0 when a program ran and bit 1 when one marked the screen dirty; the desktop redraws on bit 1, on terminal output, or every 50 ticks. Before v9.12 a decoding process got only the time between full redraws.
 
+### 6.14a mlibc (`third_party/mlibc`, `/usr/mlibc`)
+
+mlibc is a portable C library written for hobby operating systems. NoovexOS has its own mlibc target, `sysdeps/noovex` (host system `noovex` in `ci/noovex-x86_64.cross-file`); it starts as a copy of mlibc's Linux layer, because NoovexOS programs use the Linux system-call interface, and can grow NoovexOS-specific parts from there. The top-level `meson.build` and `tests/meson.build` treat `noovex` like `linux`.
+
+Building: `tools/build_mlibc.sh` (called by `build.sh`) uses the meson copy in `tools/meson`, clang 18 or newer, lld and ninja, Linux kernel headers from `/usr/include` (linked into `build/mlibc-khdr`) and the freestanding compiler headers in `subprojects/freestnd-*`. Two changes make it build with clang 18: `-D__cpp_concepts=202002L` in the cross file (for `std::expected`) and explicit `frg::string<MemoryAllocator>` instead of class template argument deduction through an alias in `locale.cpp`, `netdb.cpp` and `sysdeps/noovex/generic/sysdeps.cpp`; the `tlsdesc` test is only built when the compiler accepts `-mtls-dialect=gnu2`.
+
+In the image: `/usr/mlibc/lib` (`ld.so`, `libc.so`, `libm.so`, `libpthread.so`, ... and static libraries, start files `crt1.o`, `Scrt1.o`, `crti.o`, `crtn.o`), `/usr/mlibc/include` (with links to the kernel headers `linux`, `asm` and `asm-generic`), and `mlibc-gcc` with `mlibc-gcc.specs` (dynamic linker `/usr/mlibc/lib/ld.so`, run path `/usr/mlibc/lib`). `mlibc-gcc` needs a `gcc` inside NoovexOS, which is not in the image yet (section 6.15); programs can be built on the build machine against the same files.
+
+Test results inside NoovexOS (mlibc's own suite, built against `/mlt`): 176 of 242 pass, against 212 of 242 on Linux. The differences are mostly system calls NoovexOS does not have or answers differently (`nanosleep` details, `realpath`, `waitid`, `ppoll`, resource limits, scheduling priorities, System V message queues and semaphores, `pidfd`, `sigqueue`, `xattr`) and two tests that call the AVX2 string functions directly, which QEMU's default CPU does not have.
+
 ### 6.15 glibc programs
 
 #### Building glibc
@@ -4871,9 +6187,9 @@ The kernel main loop calls `video_fast` and then `browser_media_fast` when nothi
 | `/opt/gnu/bin` | bash, coreutils (ls, cat, sort, wc, ...), grep, sed, awk, find, xargs, diff and a glibc test program `gthreads` |
 | `/etc/nsswitch.conf` | `files` for passwd and group, `files dns` for hosts |
 
-`mksysroot.py` packs the tree into one file, format `NVS2`: a 16-byte header (magic, entry count, block count, string table offset), a block table (type, offset, compressed and original size), 24-byte entries (name and link target as string table offsets, mode, block, offset in the block, size), the string table, then the blocks. Files are grouped into blocks of up to 8 MiB; ELF files go into blocks compressed with xz and the x86 branch filter, other files into plain xz blocks. It is linked into the kernel as `sysroot_bin.o`. The old `NVSR` format (one raw-deflate stream per file) is still read.
+`mksysroot.py` packs the tree into one file, format `NVS2`: a 16-byte header (magic, entry count, block count, string table offset), a block table (type, offset, compressed and original size), 24-byte entries (name and link target as string table offsets, mode, block, offset in the block, size), the string table, then the blocks. Files are grouped into blocks of up to 8 MiB; ELF files go into blocks compressed with xz and the x86 branch filter, other files into plain xz blocks. Since v10.41 it is no longer linked into the kernel: it is the file `/sysroot/<CRC>.BIN` on the boot disk, loaded by the boot loader (section 2.13b). The old `NVSR` format (one raw-deflate stream per file) is still read.
 
-The sysroot is a stack of layers. Layer 0 is the one in the kernel; every installed Debian package is one more layer (section 6.16). `sysroot_add_layer` and `sysroot_del_layer` add and remove layers; after each change the index is rebuilt:
+The sysroot is a stack of layers. Layer 0 is the base file (always slot 0, also when it is added later from the boot partition or a download); every installed Debian package is one more layer (section 6.16). `sysroot_add_layer` and `sysroot_del_layer` add and remove layers; after each change the index is rebuilt:
 
 - every path is a node in a hash table (FNV-1a, open addressing); directories are implicit, created from the paths of their files, and keep a list of their children;
 - links in layer 0 are placed first, then all package layers (newest slot first), then the files of layer 0; the first file placed at a path wins, so a package can replace a library from layer 0;
@@ -4926,7 +6242,10 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 #### Resolving
 
 - The index is decompressed into memory and parsed into records (name, version, architecture, dependencies, provides, file name, size, SHA256, description). Only `amd64` and `all` are kept. Names are hashed; for several versions the highest wins, compared with the Debian rules (epoch, upstream, revision, `~` sorts first).
-- A dependency group (`a | b (>= 1)`) is met when any alternative is installed, already planned, provided by a planned package, `Essential: yes` or `Priority: required`, or part of NoovexOS. Otherwise the first alternative found (by name or `Provides`) is planned and resolved in turn. Version limits and architecture qualifiers are read but not enforced. `Recommends` are not installed.
+- A dependency group (`a | b (>= 1)`) is met when any alternative is already planned or provided by a planned package, is installed in a version that meets the limit, is in the Linux files in a version that meets the limit (`/usr/share/noovex/provided.txt`, written by `build.sh` from the build machine's `dpkg` for every library in `/lib64`), or is `Essential: yes`, `Priority: required` or part of NoovexOS. Otherwise the first alternative whose index version meets the limit is planned and resolved in turn (v10.44: before that, version limits were not checked, so a Debian 13 program could get the older library of the Linux files). Architecture qualifiers are read but not enforced. `Recommends` are not installed. Every `apt install` also checks the dependencies of the packages already installed and adds what is missing or too old.
+- Files of a package are written to the NoovexOS file system even when the Linux files have a file at the same path (v10.44: before that, `vfs_open` opened the read-only Linux-files copy and the write was lost). `vfs_lookup_rw` (fs/vfs/vfs.c) makes a file opened for writing or creating a NoovexOS file, copying the old content first unless `O_TRUNC` is given; a NoovexOS file then hides the Linux-files copy of the same path, also for Linux programs (`lx_open`).
+- After installing or removing, apt writes `/etc/ld.so.cache` (format `glibc-ld.so.cache1.1`, entries sorted like `_dl_cache_libcmp`) with every library of an installed package whose name is its `SONAME` and that lies in `/usr/lib/x86_64-linux-gnu`, `/lib/x86_64-linux-gnu`, `/usr/lib`, `/lib`, `/usr/local/lib` or `/usr/lib64` (`ld_cache_build` in fs/pkg/apt.c). glibc's loader reads the cache before its default folders, so libraries installed by apt win over the Linux-files copies in `/lib64`. When Debian's `libc6` is installed, apt also copies its `ld-linux-x86-64.so.2` to `/lib64/ld-linux-x86-64.so.2` as a NoovexOS file; `jc_find_lib` (core/proc/jobs.c) prefers NoovexOS files, so all glibc programs then use Debian's loader and C library together. To go back: `rm /lib64/ld-linux-x86-64.so.2` and `rm /etc/ld.so.cache` in the NoovexOS Terminal.
+- Unpacking does not save the file system after every file: `g_fs_batch` (fs/nvx/nvx4.c) holds back `nvx3_sync` and `nvx3_flush_meta` until the package is unpacked, then one `nvx3_sync_all` writes everything; `mkdirp` saves the folder tree only when it made a folder. Before v10.44 every file saved the whole file system index, so a package with thousands of files (LibreOffice) froze an installed system for a very long time. The kernel log gets `apt: unpacked <name>, <n> files in <ms> ms, saved to disk in <ms> ms`.
 - Packages that NoovexOS provides itself are never installed: `libc6`, `libc-bin`, `libgcc-s1`, `python3`, `python3.13`, `python3-minimal`, `libpython3.13-stdlib` and the other Python core packages, `bash`, `coreutils`, `dpkg`, `apt`, `base-files`, `debconf` and a few more (`g_prot`). `apt install python3` answers that it is already the newest version.
 
 #### Downloading
@@ -4964,6 +6283,32 @@ CPython 3.13 is built from `third_party/src/cpython-3.13.tar.xz` by `tools/build
 | `site-packages/debian-dist-packages.pth` | adds `/usr/lib/python3/dist-packages`, where Debian's `python3-*` packages install, so modules from `apt install python3-...` import |
 
 `PYTHON_BASIC_REPL=1` is set in the default environment: the new 3.13 prompt needs a terminfo database, the basic prompt does not. `python3 FILE.py`, `python3 -c`, scripts starting with `#!/usr/bin/env python3` and the interactive prompt work in the Terminal and in bash.
+
+### 6.17a Python libraries, pip and venv (v10.58)
+
+Three ports (section 6.29) add to `/usr/lib/python3.13/site-packages`:
+
+| Port | Contents |
+|---|---|
+| `python-pip` | pip 26.2.1 from the wheel CPython ships, the commands `pip`, `pip3`, `pip3.13`, and `/etc/pip.conf` (`root-user-action = ignore`, since the Terminal runs as root) |
+| `python-web` | requests, urllib3, idna, certifi, charset-normalizer, httpx, httpcore, h11, anyio, sniffio, websockets (with its C speedups), Flask (with Werkzeug, Jinja2, MarkupSafe, itsdangerous, blinker, click and the `flask` command), Bottle, typing_extensions |
+| `python-data` | numpy 2.5.3 (with OpenBLAS and libgfortran inside `numpy.libs`), pandas 3.0.5, python-dateutil, six |
+
+httpx, httpcore, websockets and Bottle are vendored from their GitHub release tags in `third_party/pylibs/`. The others are manylinux wheels for CPython 3.13; `nvxport.py` takes them from `build/pywheels`, else from the build machine's Python 3.13 (never from Debian's `/usr/lib/python3/` and never editable installs), else `pip download` (its messages go to `build/pywheels/pip.log`). Folders named `tests` are left out, which keeps the libraries at about 88 MB (the Linux files grew from 188 to 210 MB of the 268 MB slot). Every package has a correct `RECORD`, so `pip list`, `pip show` and `pip uninstall` see them.
+
+How installing works. The built-in libraries are part of the read-only Linux files. Three kernel changes make pip behave as on a normal Linux system:
+
+| Change | Where | Effect |
+|---|---|---|
+| `access(dir, W_OK)` returns `EROFS` for a directory that exists only in the Linux files | `lx_access` | pip sees that site-packages is not writable and says "Defaulting to user installation"; packages go to `~/.local/lib/python3.13/site-packages`, commands to `~/.local/bin`. A newer version of a built-in package (`pip install -U requests`) is installed there and shadows the built-in one; `pip uninstall` brings the built-in version back |
+| Creating a file or folder inside a directory that exists only in the Linux files creates the missing parent folders in the writable tree first | `vfs_materialize_parent` (`fs/vfs/vfs.c`), used by `lx_parent_ok`, `lx_mkdir`, `lx_rename` and `vfs_open` with `O_CREAT` | before, folders deeper than 3 levels (`/usr/lib/python3.13/site-packages/x`) could not be created at all (`ENOENT`) |
+| A symbolic link in the writable tree whose target is in the Linux files is followed by `stat`, `open` and `exec` | `ux_lookup_ex` / `ux_resolve_links` (`fs/vfs/unixfs.c`), `ux_stat2`, `vfs_open`, `jc_find_prog` | a venv's `bin/python -> python3.13 -> /usr/bin/python3.13` works; before, `os.path.exists` was false and running it failed, so `python3 -m venv` stopped with `ENOENT` |
+
+The command search of the Terminal also looks in `$HOME/.local/bin`, after the system folders and never for root unless HOME is `/root` (`jc_script`), and login and `su` set `PATH=/usr/local/bin:/opt/gnu/bin:/bin:/usr/bin:$HOME/.local/bin` (`acct_set_path`). A link followed this way must sit in folders the user may enter (`ux_dir_ok` on every hop); new parent folders are only made for absolute paths without `.` or `..` parts and after the rename source was found. `access(W_OK)` answers `EROFS` for root too, so root's pip also installs into `/root/.local`.
+
+Tested in the emulator (UEFI, 4 GB): numpy and pandas (matrix inverse, a 200x200 product, groupby, date ranges, CSV), `ctypes.CDLL("libc.so.6").getpid()`, requests, httpx and urllib3 against a local server, a Flask and a Bottle app, a websockets echo over asyncio; `pip install` over HTTPS from a local package index with a dependency and a console command, `pip uninstall`, `pip install -U six` over the built-in six and back, `python3 -m venv` and pip inside it (the venv stays separate from the system). Importing numpy and pandas takes about 20 s under QEMU without KVM.
+
+Not tested: downloading from pypi.org itself (the test machine cannot reach it), packages that must be compiled during installation (they need `gcc` and the Python headers; `gcc` is in the Linux files, the headers are not yet).
 
 ### 6.18 The Python IDE package (`python3-ide`)
 
@@ -5059,6 +6404,116 @@ IDLE runs in its normal mode, with the user code in a second Python process conn
 #### Opening Python files
 
 A double click on a `.py` file (Files, desktop icons, search results) opens it in IDLE (`idle3 'path'`) instead of the NoovexOS Editor.
+
+### 6.22 inotify, signalfd, file locks and POSIX timers (v10.42)
+
+All four live in `sys/linux/linux.c` next to `eventfd` and `timerfd`. The test program `nvx-abitest` (`usr/glibc/nvx-abitest.c`, in `/opt/gnu/bin`) checks them together with `waitid`, `preadv`/`pwritev`, `sendmmsg`/`recvmmsg`, the old `getdents`, `capget` and `utimes`; it gives the same result on NoovexOS and on Linux (13 of 13), and check.py runs it in the SMP group.
+
+**inotify.** `inotify_init1` makes a descriptor of device 22 (`LX_INOFD`) with up to 64 watches and an 8 KiB event queue; 16 such descriptors can exist. Events come from the Linux system calls themselves: while any inotify descriptor is open, `lx_dispatch_ino` wraps `lx_dispatch` and, after a successful call, reports IN_CREATE (open with O_CREAT of a new file, mkdir, link, symlink), IN_DELETE (unlink, rmdir), IN_MOVED_FROM and IN_MOVED_TO with the same cookie (rename), IN_ATTRIB (chmod, chown, utime), IN_MODIFY (write, truncate, open with O_TRUNC) and IN_CLOSE_WRITE or IN_CLOSE_NOWRITE (close). A watch on the file itself also gets IN_DELETE_SELF or IN_MOVE_SELF, followed by IN_IGNORED. Repeated IN_MODIFY events for the same name are merged, a full queue ends with one IN_Q_OVERFLOW, and `read` returns whole events only (EINVAL if the buffer is too small for the first one). Changes made by the native NoovexOS apps (Files, the Editor) do not produce events yet.
+
+**signalfd.** Device 23 (`LX_SIGFD`); the mask is stored per descriptor and can be changed with `signalfd(fd, ...)`. `read` takes the pending signals of the calling thread and of its process that are in the mask (lowest number first) and returns one 128-byte `signalfd_siginfo` per signal with `ssi_signo`, `ssi_code` and `ssi_uid`; `poll` and `epoll` report the descriptor readable while such a signal is pending. As on Linux, the program blocks the signals with `sigprocmask`, otherwise they are delivered normally first.
+
+**Locks.** `flock` and `fcntl` record locks are real advisory locks in a table of 256 ranges (`g_lxlk`), keyed by the file (its file slot, or a hash of the path for the read-only Linux files). `flock` locks belong to the open file and end when its last descriptor closes (`lx_lock_vfclose`, called from `vf_unref`); POSIX locks belong to the process and end when it closes any descriptor of the file or exits; open-file-description locks (F_OFD_*) belong to the open file. Ranges are split on unlock as on Linux, F_GETLK reports the first conflicting lock and its process, and the waiting forms (LOCK_EX without LOCK_NB, F_SETLKW) sleep until the lock is free or a signal arrives (EINTR). There is no deadlock detection.
+
+**POSIX timers.** `timer_create` keeps up to 64 timers (`g_pt`) for CLOCK_REALTIME, CLOCK_MONOTONIC, the boot-time clocks and the CPU-time clocks (which count as monotonic). The scheduler checks them in `jc_itimer` (`lx_ptimer_tick`), so they have the 10 ms resolution of the scheduler tick. On expiry the signal goes to the process (SIGEV_SIGNAL) or to one thread (SIGEV_THREAD_ID) with `si_code` SI_TIMER; SIGEV_NONE timers only count. Signals 32-64 are refused with EINVAL, so glibc's SIGEV_THREAD form fails cleanly (it uses signal 32).
+
+### 6.23 GTK 3 programs (v10.42)
+
+The Linux files include the GTK 3 runtime of the build machine (GTK 3.24, GDK, Pango, Cairo, HarfBuzz, fontconfig, FreeType, GLib/GIO, ATK, gdk-pixbuf, libepoxy and the X client libraries, about 20 MB more, copied by the `ldd` loop in `build.sh`), `/etc/fonts`, the shared MIME database files gdk-pixbuf uses to recognise PNG (`/usr/share/mime/mime.cache`, `magic`, `globs2` and the small index files, without the XML sources) and the demo program `gtkdemo` (`usr/x11/gtkdemo.c`). It declares the few GTK functions it uses itself, so the build machine only needs the GTK runtime, not its development headers.
+
+Typing `gtkdemo` in the Terminal starts the X server if needed (the name is in `x_needs`, section 6.21) and opens a GTK window with a label, an entry, a switch, a drop-down list, a slider joined to a progress bar, a text view and two buttons; `gtkdemo --selftest` also writes `/tmp/gtkdemo.ok`. The program sets `GDK_BACKEND=x11`, `NO_AT_BRIDGE=1`, `GSETTINGS_BACKEND=memory` and the XDG folders before `gtk_init`, the same settings `nvx-xrun` uses for GTK programs installed with apt.
+
+Limits: there is no SVG image loader (librsvg), so the Adwaita check box and radio button marks are missing (the demo uses a switch); there is no icon theme, so named icons fall back to GTK's own built-in ones; there is no D-Bus session bus, so GTK features that need one (portals, the accessibility bridge) are off.
+
+### 6.24 LibreOffice, D-Bus, the keyring and Chromium (v10.43)
+
+LibreOffice. The test package was built from the build machine's LibreOffice 24.2 (`/usr/lib/libreoffice`, `/etc/libreoffice` and 86 libraries that are not in the Linux files, 174 MB). It uses the plain X plug-in (`SAL_USE_VCLPLUGIN=gen`). Three things stopped it: `oosplash` refuses to start when `stat("/proc/version")` fails, and `stat` only knew real files, so `lx_stat_path` and `lx_access` now ask the procfs (`procfs_size` in `fs/vfs/vfs.c`); without `/usr/share/X11/locale` Xlib cannot open an input method (now copied by `build.sh`); and `nvxwm` shrank windows bigger than the screen to three quarters without telling the program, so LibreOffice drew its contents at the wrong place. `nvxwm` now fits windows to the screen (`fit`) and sends a synthetic `ConfigureNotify` with the real position after every map, move and resize (`send_config`), as ICCCM asks. The first start ends with exit code 81 (LibreOffice restarts itself after making the profile); `paperconf` is missing (code 127), which only means the default paper size.
+
+D-Bus and the keyring. `nvx-xrun` sets `DBUS_SESSION_BUS_ADDRESS` from `/usr/bin/nvx-session-bus`, which starts `dbus-daemon --session` on `/tmp/.nvx-session-bus` once. `/usr/share/dbus-1/services/org.freedesktop.secrets.service` lets D-Bus start `/usr/bin/nvx-keyring` on demand. nvx-keyring speaks the D-Bus wire protocol itself (no python-dbus) and implements the Secret Service: `OpenSession` (plain only, so libsecret falls back from Diffie-Hellman), `SearchItems`, `Unlock`, `GetSecrets`, `ReadAlias`, `CreateItem` (replaces an item with the same attributes), `GetSecret`, `SetSecret`, `Delete`, the properties and the signals. For this the Unix sockets got: a socket file on disk for path names (`stat`, `chmod`, `[ -e ]` work), `sendto`/`recvfrom`, `SO_PASSCRED` with `SCM_CREDENTIALS` and the real peer pid in `SO_PEERCRED`.
+
+Chromium. With a stripped Chromium 141 as the test program (`nvx-xrun` adds `--no-sandbox --disable-gpu --disable-gpu-compositing --password-store=gnome-libsecret` to programs that have a `resources.pak` next to them): the browser process, the zygotes, the crash handler and the page processes start and the window opens with its title. Found and fixed on the way, in this order: the image window for big programs; `/proc/self/fd` as a folder; the number of links of `/proc/self/task` (Chromium checks that a process has one thread before it forks); `libX11-xcb.so.1` (opened with `dlopen`); the reservation table; `stat` of `/proc/self/fd/N`; memfd and `/dev/shm` sharing between processes. Left: helper processes end with code 127, the page stays empty.
+
+v10.44: `execve` of `/proc/self/exe` or `/proc/<pid>/exe` runs that process's program (Chromium starts every helper this way; before, all helpers ended with code 127 in a loop). epoll entries remember the open file (`vi[]`) and are dropped when the descriptor number now points at another file; epoll tables are freed on close (they leaked) and there are 256 tables of 128 entries. Unix sockets: 512 sockets, up to 64 passed descriptors per message and 64 queued messages with descriptors (a sender waits instead of losing them), the descriptor queue is allocated per socket. With these, Chromium renders pages in `--single-process` mode (a `data:` page, then `st/p/v42.html` over the network with AVIF images and a worker). In the normal mode the browser window, tabs and address bar work, the renderers start (`ChildThreadImpl::EnsureConnected`) and stay idle in `epoll_wait`/`futex`, the page stays at "Loading" and the browser later restarts the network service and kills renderers. `--disable-features=MojoIpcz` and `--no-zygote` did not change this. Next step: trace the Mojo messages between the browser and one renderer (`lxtrace on` limited to two pids). `nvx-xrun` therefore adds `--single-process` for Chromium-based programs; Electron programs (Claude Desktop, VS Code, Discord) get the same flag and were not tested, because none of them can be downloaded on the build machine.
+
+### 6.25 /proc/cpuinfo, pseudo-terminals, sound, downloaded packages and notifications (v10.45)
+
+`/proc/cpuinfo`. There were two copies: a fixed text in `proc_gen` (`fs/vfs/unixfs.c`, "vendor_id: NoovexOS", five flags) and a short list in `procfs_build` (`fs/vfs/vfs.c`). Both now call `cpuinfo_linux` in `arch/x86_64/cpu/cpuinfo.c`, which reads the processor with `cpuid` and writes one block per online processor in the Linux format: `vendor_id`, `cpu family`, `model`, `model name`, `stepping`, `microcode`, `cpu MHz` (from the TSC frequency), `cache size` (leaf 4 on Intel, leaf 0x80000006 on AMD), `physical id`, `siblings`, `core id`, `cpu cores`, `apicid`, `cpuid level`, `flags`, `bugs`, `bogomips`, `clflush size`, `address sizes` and `power management`. The flags use the Linux names in the Linux order (leaf 1 EDX and ECX, 0x80000001, leaf 7 sub-leaf 0 and 1, leaf 0xD sub-leaf 1, 0x80000008, leaf 6), so SSE3 is `pni`. Checked against the build machine's Linux: every field matches except `microcode` (NoovexOS prints 0) and five flags that the Linux kernel makes up itself (`rep_good`, `nopl`, `tsc_known_freq`, `cpuid_fault`, `ibrs_enhanced`). `cpuinfo_has("pni")` answers a single flag. The procfs buffer grows to 32 KB on first use. Debian's `chromium` start script runs `grep -q sse3 /proc/cpuinfo`, which matches `ssse3`; every processor since 2006 has it, but the plain QEMU processor (`qemu64`) does not, exactly as on Linux (Debian bug 1018937), so QEMU needs `-cpu max` or `-cpu host` for it.
+
+Pseudo-terminals (`sys/linux/linux.c`, `pty_*`). `/dev/ptmx` opens a new pair (32 pairs, 16 KB in each direction), `/dev/pts/N` the other end, and `/dev/pts` can be listed. Supported: `TIOCGPTN`, `TIOCSPTLCK`, `TIOCGPTLCK`, `TIOCGPTPEER`, `TCGETS`/`TCSETS*` (also the `termios2` forms), `TIOCGWINSZ`/`TIOCSWINSZ` (a new size sends `SIGWINCH`), `TIOCSCTTY`, `TIOCNOTTY`, `TIOCGPGRP`/`TIOCSPGRP`, `TIOCGSID`, `FIONREAD`, `TCFLSH`. The line discipline does what programs expect from Linux: Enter becomes newline (`ICRNL`), newline becomes CR LF on output (`ONLCR`), line editing with erase, kill and word erase, echo (with `^C` style for control keys), `^D` as end of file, and `^C`, `^\` and `^Z` send `SIGINT`, `SIGQUIT` and `SIGTSTP` to the foreground process group. A session leader that opens a terminal without `O_NOCTTY` gets it as its controlling terminal. When every slave is closed the master reads `EIO`, and closing the master sends `SIGHUP`. `stat`, `ttyname` and `isatty` work, so glibc's `openpty`, `forkpty` and node-pty (VS Code's terminal) find what they need.
+
+Sound for Linux programs. The ALSA kernel interface: `/dev/snd/controlC0`, `/dev/snd/pcmC0D0p` and, when the machine has a microphone, `/dev/snd/pcmC0D0c`. The card offers what the NoovexOS sound driver plays: 16-bit stereo at the driver's rate (48000 Hz on HD Audio). `HW_REFINE` and `HW_PARAMS` work like the Linux kernel: the requested ranges are narrowed with the same interval rules (period and buffer size, bytes, time, rate) until nothing changes. Playback goes through a ring buffer in the kernel that `apcm_pump` feeds to the driver (also from `snd_poll`), keeping at most 80 ms in the device so `snd_pcm_delay` stays right; without a sound card the samples are taken at the real rate, so programs still run at the right speed. `SYNC_PTR`, `STATUS`, `DELAY`, `PREPARE`, `START`, `DROP`, `DRAIN`, `PAUSE`, `REWIND`, `FORWARD`, `WRITEI_FRAMES` and `READI_FRAMES` are supported; the status pages cannot be mapped, so libasound uses `SYNC_PTR`. `/etc/asound.conf` makes `default` a `plug` over `mmap_emul` over `hw:0,0`, so programs can ask for any rate, format and channel count and libasound converts. One program at a time can play (a second gets `EBUSY`); there is no PulseAudio, and programs that look for it fall back to ALSA. `nvx-sndtest` plays a tone through libasound and records from the microphone.
+
+Downloaded packages. `apt install ./file.deb` (any argument ending in `.deb`, up to 8) reads the package's `Depends`, installs what is missing from the configured sources and then the file itself. `dpkg -i` now also rebuilds `/etc/ld.so.cache`. The package file is copied before it is unpacked.
+
+Notifications. `/usr/bin/nvx-notify` is the `org.freedesktop.Notifications` service (started by D-Bus on demand, like the keyring, and it reuses the keyring's D-Bus code). `Notify` shows the summary and body (markup removed) as a NoovexOS notification by writing `nvx-notify:<title>` and the body to `/dev/kmsg`; `CloseNotification`, `GetCapabilities` and `GetServerInformation` are answered. A tray area for status icons (`StatusNotifierItem`) is not there yet.
+
+Chromium in multi-process mode (v10.45 findings). With `/etc/noovex/chromium-multiprocess` present, `nvx-xrun` leaves out `--single-process`. The browser, both zygotes, the network service and the page processes now start (the epoll generation fix and the new `/proc` files removed the earlier errors), but after 30 to 60 seconds the network service and the page processes log `ChildThreadImpl::EnsureConnected()` and exit with code 0: the browser's side of their Mojo connection has closed, the browser reports "Network service crashed" and starts a new one, and the page stays at "Loading". The exit dumps (`lxtrace ps`) show the child's I/O thread last receiving a normal 64-byte message and no read error on the child side, so the next step is to dump the browser's I/O thread at the moment it closes the connection (the browser does not exit, so this needs a trigger on `close` of a Unix socket that still has a peer). Until then programs based on Chromium keep `--single-process`, in which pages render (checked again with `st/p/v42.html`).
+
+### 6.26 Setup scripts, triggers and Electron programs (v10.46)
+
+apt and dpkg now run maintainer scripts. `deb_install` saves `postinst` and `triggers` from the control archive to `/var/lib/dpkg/info/<package>.postinst` and `.triggers`. After the command, `post_run` writes `/var/lib/dpkg/nvx-postinst.sh` and starts it with `jc_launch` as a normal program in the terminal: `postinst configure` for every package that was installed, then `postinst triggered <path>` for every installed package whose `.triggers` file has an `interest` line for a folder that one of the new packages wrote into (checked against the file lists in `/var/lib/nvpkg`). Scripts run with `DEBIAN_FRONTEND=noninteractive`; a script that fails is reported and the package stays installed. `preinst`, `prerm` and `postrm` are not run yet. `update-alternatives` is copied into the Linux files with `/etc/alternatives`.
+
+`nvx-xrun` recognizes a Chromium-based program when the program, a folder named in its start script, or one of the two folders above the resolved program contains `resources.pak` or `v8_context_snapshot.bin`. Programs with `resources/app/out/cli.js` (VS Code, VSCodium) started as root get `--user-data-dir=/root/.config/<name>`. With `/etc/noovex/chromium-multiprocess`, `--ipc-connection-timeout=120` replaces `--single-process`: Chromium's children end themselves (`ChildThreadImpl::EnsureConnected`) when the first exchange with the browser takes longer than the default limit, which happens in the emulator.
+
+Programs over 28 MB are loaded at 0x47000000000 (was 0x44000000000) so that the user area below keeps 448 GB in one piece; V8 in Electron and Node reserves about 256 GB for its sandbox. `clone3` (435) maps its argument structure to `clone`; `CLONE_PIDFD`, `set_tid` and cgroup placement return ENOSYS so glibc falls back to `clone`.
+
+### 6.28 LibreOffice inside the Linux files (v10.48)
+
+In v10.47 LibreOffice was a separate image, `/sysroot/APPS.BIN`, read by the kernel when LibreOffice was first opened. The kernel can read files from a USB stick or an installed disk but has no CD drive driver, so with the ISO attached to a virtual machine as a CD the file was never found (owner's photo: "the built-in programs file /sysroot/APPS.BIN is not on the boot disk"). An update from Settings did not replace it either.
+
+Since v10.48 LibreOffice is part of the normal Linux files (`/sysroot/<crc>.BIN`, about 165 MB). Both boot loaders read that file with the firmware (BIOS disk services or UEFI file protocol), which works for a CD, a USB stick and an installed disk alike.
+
+| Part | Change |
+|---|---|
+| Boot loaders | The file goes to `0x20000000` (512 MiB), at most `0x10000000` bytes (256 MiB): above the BIOS loader's kernel scratch area (`0x18000000`, up to 100 MiB) and below everything the kernel allocates. The UEFI loader keeps its own buffers out of this area (`in_kernel_area`) and warns when the firmware uses memory inside it. |
+| Kernel | `SR_SLOT` and `SR_SLOTMAX` in `include/nvx/fs/vfs/sysroot.h`. `heap_init` starts the heap at `sysroot_slot_end()` instead of `0x18000000`; `sysroot_init` uses the memory only when the heap starts above it and the CRC matches. The installer's memory check lists the new area. |
+| Build | `build.sh` copies the output of `tools/stage_libreoffice.sh` into the Linux files before `mksysroot.py`; `build/apps.bin`, the `APPS.BIN` file on the ISO, `nvx_apps_load`, `upd_put_apps_part` and the `nvx-apps:load` message are gone. The size check in step 6 allows 256 MiB. |
+| Start | `nvx-libreoffice` starts `soffice` straight away; when `/opt/libreoffice` is missing it says that the Linux files were not loaded. |
+
+The rest of section 6.27 (relocation, library folder, exception log, inode numbers) is unchanged. Booting reads about 120 MB more, and the Linux files take about 165 MB of RAM all the time.
+
+### 6.27 Built-in LibreOffice Writer and Calc (v10.47)
+
+LibreOffice Writer and Calc come with NoovexOS; no `apt install` is needed. They do not fit in the base Linux files (`/sysroot/<crc>.BIN`), which the boot loader puts in a fixed 50 MiB area (0x06600000 to 0x09800000), so they are a second image, `/sysroot/APPS.BIN`, on the boot partition. It is read only when LibreOffice is opened the first time.
+
+| Step | What happens |
+|---|---|
+| Build | `tools/stage_libreoffice.sh` copies the build machine's LibreOffice (`/usr/lib/libreoffice`, symbolic links followed) to `/opt/libreoffice`, removes links that point nowhere, makes the configuration relative (`BRAND_BASE_DIR=${ORIGIN}/..`, the registry from `share/registry`, no `dconf` layer, no `/etc/libreoffice/sofficerc`) and copies every library that LibreOffice needs and the Linux files lack to `/opt/libreoffice/nvxlib`. `tools/mksysroot.py` packs it into `build/apps.bin`; a hash of the file list keeps the 3 to 4 minute packing step from running again when nothing changed. `boot/mkhybrid.py` adds `build/apps.bin` as `/sysroot/APPS.BIN` (another file with `NVX_APPS`). |
+| Start | `/usr/bin/nvx-libreoffice` (in the base Linux files) writes `nvx-apps:load` to `/dev/kmsg` when `/opt/libreoffice/program/soffice.bin` is not there yet, waits for it, sets `LD_LIBRARY_PATH=/opt/libreoffice/nvxlib` and `SAL_USE_VCLPLUGIN=gen` and starts `soffice`. |
+| Load | `nvx_apps_load` (`core/update.c`) finds the boot partition like an update does (`up_find`: the installed boot partition or the USB stick); when that fails (an ISO started as a hard disk) it reads the system disk's partition table. It reads the file whole and adds it as the layer `apps` with `sysroot_add_layer`. A missing or damaged file is logged once and not retried. |
+| Install | The installer copies the loaded layer to the new boot partition (`upd_put_apps_part`, written and read back like the base files). |
+| Start menu | `nvx-libreoffice-writer.desktop` and `nvx-libreoffice-calc.desktop` with `Categories=Office` put both in the Office submenu; the icons are in `/usr/share/icons/hicolor/48x48/apps`. |
+
+`apps.bin` is about 112 MB (426 MB unpacked); while LibreOffice runs the image and the unpacked 8 MB blocks it uses stay in memory. An update from Settings replaces the kernel and the base files but not `APPS.BIN`. The LibreOffice license is kept in `/opt/libreoffice` (`LICENSE.html`, `NOTICE`, `CREDITS.fodt` and `COPYRIGHT-debian`).
+
+`usr/glibc/nvx-throwlog.c` (`/usr/lib/nvx/libnvx-throwlog.so`) replaces `__cxa_throw`: for every UNO exception (`com::sun::star::...`) it writes the type and the exception's message to standard error, at most 300 lines. `nvx-xrun` loads it for programs named `*libreoffice*`, `*soffice*` or `*openoffice*`, or with `NVX_THROWLOG=1`, and copies the last 40 lines of each failing program's output to the kernel log (`xrun <name>: ...`). This is how the relocation problem above was found: `DeploymentException: null process service factory` after `NoSuchElementException` for the registry.
+
+Inode numbers: files in the Linux files used a hash of the path as given, so `/opt/libreoffice/program/libmergedlo.so` and `/opt/libreoffice/program/../program/libmergedlo.so` had different inode numbers. glibc's loader decides by device and inode whether a library is already loaded, so LibreOffice's `dlopen` of the second spelling loaded its 85 MB main library a second time; the second copy had no UNO service manager and LibreOffice stopped with `DeploymentException: null process service factory` and exit code 134 (the same code as in the owner's photos). `sysroot_ino` hashes the normalized path of the node that `sr_walk` finds (with `..` and symbolic links resolved). After `nvx_apps_load` adds the layer, `sysroot_mkdirs` makes its folders known to `chdir` (LibreOffice's start script changes into `/opt/libreoffice/program`).
+
+Chromium started as root: `lx_execve` adds `--no-sandbox` when the program's file name is `chrome`, `chromium`, `chromium-browser`, `chromium-bin`, `brave`, `msedge`, `vivaldi-bin` or `opera` and the arguments have neither `--no-sandbox` nor `--type=` (Chromium's own helper processes). This works for any start script, also when the program is started from the Terminal and not through `nvx-xrun` (Debian's `/usr/bin/chromium` starts `/usr/lib/chromium/chromium`). `nvx-xrun` also retries once with `--no-sandbox` when a program's output contains "without --no-sandbox is not supported".
+
+Unpacking: `lib/compress/unpack.c` grows its output buffer by a quarter above 128 MB (it doubled before; a 600 MB package asked for 1.2 GB in one piece and failed).
+
+### 6.29 Ports and distro profiles (v10.58)
+
+Software that goes into the Linux files used to be added by more lines in `build.sh`. Since v10.58 each piece is a port, and a distro profile lists the ports of one NoovexOS variant. `ports/README.md` is the guide for writing ports.
+
+| Part | Where | What it is |
+|---|---|---|
+| Port | `ports/NAME/PORT` | `key=value`: `name`, `version`, `summary`, `kind` (`files`, `python` or `script`), `needs`, `packages`, `scripts`, `license`, `source` |
+| Files | `ports/NAME/files/` | copied over the Linux files as they are; any kind may have it |
+| Script | `ports/NAME/stage.sh` | `kind=script`: runs as `stage.sh ROOT BUILD` with `NVX_ROOT`, `NVX_BUILD`, `NVX_TOP`, `NVX_PORT` |
+| Profile | `distro/NAME.profile` | `name`, `id`, `pretty`, `url`, `version` (`auto` = `core/buildsig.c`), `ports` (installed), `repo` (packed as `noovex-port-NAME` .deb files into the built-in apt repository) |
+| Tool | `tools/nvxport.py` | `list`, `info NAME`, `check`, `new NAME --kind ...`, `stage --profile P --root R --build B` |
+
+`stage` sorts the ports by `needs` (a circle is an error), checks every recipe and the profile keys, stops with exit code 1 when a port fails or a Python package is found nowhere (`--keep-going` stages the rest but still ends with 1), stages each port and writes `/etc/os-release` and `/usr/lib/os-release` from the profile, the profile itself to `/usr/share/noovex/profile` and the list of ports to `/usr/share/noovex/ports.txt`. The kernel uses `/usr/lib/os-release` from the Linux files for `/etc/os-release` (`ac_etc_files`) and only writes its own text when there is none. A `repo` port's .deb depends only on other `repo` ports. `check.py` runs `nvxport.py check` in its static group.
+
+| Port | Kind | Contents |
+|---|---|---|
+| `desktop-scripts` | files | `nvx-xrun`, `nvx-firefox`, `nvx-libreoffice`, `nvx-session-bus`, `nvx-keyring`, `nvx-notify` (before v10.58 the first four were here-documents inside `build.sh` and the last two lived in `usr/x11/`) |
+| `python-pip`, `python-web`, `python-data` | python | section 6.17a |
+
+Profiles: `noovexos.profile` (the release: all four ports installed) and `noovexos-lite.profile` (pip installed; web and data libraries as apt packages, 2.8 MB and 17.6 MB). Build another variant with `NVX_PROFILE=distro/noovexos-lite.profile sh build.sh`.
 
 ## Part 7: File systems
 
@@ -5340,7 +6795,7 @@ static int ux_perm_ok(int k,int want){            /* want: 4=r 2=w 1=x */
 | Directory `DT[k]` | `10000 + k` | size 4096; `nlink` = 2 + number of child directories; `o[9] = 1` |
 | `/dev` device | `20000 + dev_id` | mode `0020666`, nlink 1 |
 | `/mnt/usb` file `fi` | `21000 + fi` | mode `0100644`, size from `ufs[fi].size` |
-| Built-in program (`jc_find_prog`) under `/bin`, `/sbin`, `/usr`, or a bare name | `22000` | mode `0100755`, size = image length |
+| Built-in program (`jc_find_prog`) whose directory is `/bin`, `/sbin`, `/usr/bin` or `/usr/sbin` (relative names are made absolute with the current directory first) | `22000` | mode `0100755`, size = image length. Before v10.07 any bare name matched, so `stat("vim")` succeeded in every directory and nvxbox `mkdir vim` said "File exists" |
 
 `k_readdir_at` reports type 4 for directories, 10 for symlinks and 8 for files. `k_readdir_extra` then appends:
 
@@ -5855,6 +7310,28 @@ With `extract`:
 
 Without `extract`, only the file count and total size (`g_pkg_nfiles`, `g_pkg_total`) are computed.
 
+### 7.11 Stepwise sync for large files (`fs/nvx/nvx4.c`) (v10.32)
+
+`fs_store_nosync` (`sys/native/syscall.c`) replaces a file's contents in memory like `fs_save_bin` but does not sync. `fs_sync_step(k, maxblk)` then writes the file to an NVX4 disk in pieces: the first call resizes the extents (`n4_resize`), takes the dirty range, marks the file clean and remembers the slot and position; each call writes at most `maxblk` blocks with `n4_write_range` and returns 0 while there is more; the last call writes the indirect extent block if needed and commits the metadata (`n4_commit`) and returns 1. On a write error the file is marked dirty again and -1 is returned. Other file systems (root file systems, lazy files) fall back to `nvx3_sync` in one call. Only one file can be in progress at a time.
+
+Because the metadata is committed only at the end, a power cut in the middle leaves the old metadata on the disk; the data blocks of a file that keeps its size may already hold new bytes. Callers that need all-or-nothing contents keep a checksum in the file (the web cache does, section 13.55). The file-system harness checks a 6 MB save in 128 KB steps, a second save and a power cut in the middle.
+
+### 7.12 Accounts, passwords and access (`core/auth/accounts.c`) (v10.40)
+
+Files. Accounts live in the Linux files: `/etc/passwd` (name, uid, gid, full name, home, shell), `/etc/group` (`admin` 10 and `sudo` 27 for administrators, `users` 100, a personal group per account with gid = uid, `guest` 999) and `/etc/shadow` (mode 0600, owned by root: name, hash, then `lastchg:0:99999:7:::`). `acct_reload` parses all three into tables of 64 entries (`ac_AP`, `ac_AG`, `ac_AS`); every change edits the tables and `ac_db_save` writes the files back through `ux_write_text` (`fs/vfs/unixfs.c`, creates or replaces a file and syncs it to the disk).
+
+Hashes. `lib/crypto/sha512crypt.c` is SHA-512 crypt as in glibc (`$6$` with a 16-character salt from the ChaCha20 generator, 5000 rounds, `rounds=N` accepted); `sha512_crypt_check` compares in constant time. An empty hash means "no password", `!` or `*` means locked. Shadow lines from v10.39 and older (`name:hex`, a 32-bit FNV hash) become `$nvx$hex` and are replaced by a SHA-512 hash after the first correct password.
+
+Operations. `acct_create` (uid from 1000 up, home 0750 with six folders), `acct_delete` (optionally with the home folder; not root, not the signed-in account, not the last administrator), `acct_set_password`, `acct_set_locked`, `acct_set_admin`, `acct_set_full`, `acct_group_add`/`del`, `acct_setup_primary` (renames the uid-1000 account made at the first start, moves the files from `/home` into the new home, sets the root password and the computer name), `acct_check`, `acct_gids` (used by the Linux `getgroups` call). `g_acct_err` holds the reason when something is refused.
+
+Boot. `acct_boot` (from `ux_core_start`, after the folder layout) creates the standard folders (`fhs_layout`), the `/etc` files (`etc_files`, `/etc/os-release` from the build version), migrates old files (`migrate`), empties `/home/guest` and writes a `boot` line to `/var/log/wtmp`. `/etc/sudoers` sets `g_sudo_min` from `timestamp_timeout`.
+
+Sessions. `acct_login` sets `g_uid`, `g_gid`, `g_user`, `g_fullname`, `g_home`, `g_home_dir` (the folder new files go into, used by `fs_newslot`), the working folder and `HOME`, `USER`, `LOGNAME`, and writes `login` to wtmp and a line to `/var/log/auth.log` (both trimmed to about 12 KB). `acct_profile_name` gives per-account file names for browser data (`cookies.anna.txt`); uid 1000 keeps the old names.
+
+Access. `ux_perm_ok` checks owner, group and other bits; `perm_dir` (create or delete in a folder) no longer lets administrators write everywhere; `ux_dir_ok(d, want)` checks `want` on the folder and search permission on every folder above it, and is called from `vfs_open`, `ux_stat2`, `k_readdir_at`, the Linux `open` of folders and `chdir`, the native `chdir`, `cd` and the Files app. Root (uid 0) passes every check. Only the primary group counts.
+
+Tests. `tools/tests/accounts/ac_glue.c` builds the whole kernel as one host object (like the file-system tests) and runs 29 checks; `tools/check.py --only accounts`.
+
 ## Part 8: Storage drivers, PCI and the installer
 
 This part covers everything between the PCI bus and a finished installation on disk: PCI configuration access, the four block-device back ends (ATA PIO, AHCI, NVMe, VirtIO-blk), the generic `gdisk_*` layer and its buffer cache, the graphical installer and disk manager in `core/init/installer.c`, USB mass storage, and the shell commands that work with disks.
@@ -6007,12 +7484,16 @@ Note: Before v8.95 nothing pointed the port back, so after `disks` the main driv
 
 | Macro | Address | Use |
 |---|---|---|
-| `NVME_ASQ` | `0x00B30000` | Admin submission queue (64-byte entries) |
-| `NVME_ACQ` | `0x00B31000` | Admin completion queue (16-byte entries) |
-| `NVME_IOSQ` | `0x00B32000` | I/O submission queue, qid 1 |
-| `NVME_IOCQ` | `0x00B33000` | I/O completion queue, qid 1 |
-| `NVME_ID` | `0x00B34000` | Identify data |
-| `NVME_BUF` | `0x00B35000` | One-block data buffer, used as PRP1 only |
+| `NVME_ASQ` | `DMW(0x1B0000)` | Admin submission queue (64-byte entries) |
+| `NVME_ACQ` | `DMW(0x1B1000)` | Admin completion queue (16-byte entries) |
+| `NVME_IOSQ` | `DMW(0x1B2000)` | I/O submission queue, qid 1 |
+| `NVME_IOCQ` | `DMW(0x1B3000)` | I/O completion queue, qid 1 |
+| `NVME_ID` | `DMW(0x1B4000)` | Identify data |
+| `NVME_BUF` | `DMW(0x1B5000)` | One-block data buffer, used as PRP1 only |
+| `NVME_PRPL` | `DMW(0x1B6000)` | PRP list for multi-page commands (one 4 KiB page, up to 512 entries) |
+| `NVME_BIG` | `DMW(0x1B8000)` | 64 KiB buffer (`NVME_BIGP` = 16 pages) for multi-block reads and writes |
+
+All addresses are offsets into the 2 MB device window (`include/nvx/mem/dmawin.h`).
 
 #### Initialisation and the `nvme_failstage` codes
 
@@ -6052,9 +7533,12 @@ Doorbells are at `0x1000 + (2*qid + is_cq) * (4 << CAP.DSTRD)` (see `nvme_db`).
 | admin | `0x06` | Identify | CNS 0 (namespace) into `NVME_ID`. If that fails, CNS 2 (`d10=2`, active namespace list), then the first NSID it returns. |
 | admin | `0x05` | Create I/O CQ | `d10=((q-1)<<16)\|1`, `d11=1` (physically contiguous) |
 | admin | `0x01` | Create I/O SQ | `d10=((q-1)<<16)\|1`, `d11=(1<<16)\|1` (CQID 1, PC) |
-| I/O | `0x02` | Read | `e[10]=slba`, `e[12]=0`, so NLB=0: one native block per command |
+| admin | `0x06` | Identify controller | CNS 1, read at the end of `nvme_init()`: byte 77 (MDTS) sets `nvme_maxpg`, the largest transfer in 4 KiB pages (MDTS 0 means no limit), capped at `NVME_BIGP` |
+| I/O | `0x02` | Read | `nvme_cmd`: `e[10]=slba`, `e[12]=0`, one native block into `NVME_BUF`. `nvme_cmdn`: `e[12]=nblk-1`, data in `NVME_BIG` |
 | I/O | `0x01` | Write | same layout |
 | I/O | `0x00` | Flush | `nvme_flush()` |
+
+`nvme_cmdn(op,slba,nblk,bytes)` builds the PRPs for `NVME_BIG`: PRP1 is the first page; for two pages PRP2 is the second page; for more, PRP2 points to `NVME_PRPL`, which lists pages 2 to n. The counters `g_nvme_cmds` and `g_nvme_multi` count these commands; the `disktest` command and the installer log print them.
 
 `nvme_wait()` matches completions by command ID (`nvme_next_cid`, which wraps at `0xFFF0`) and handles the phase tag. When the loop's 20 M iterations run out it sets `nvme_lasterr=1`; when `CSTS.CFS` is set it sets `nvme_lasterr=2`. Either way it also sets `nvme_bad=1`. The next `nvme_cmd` sees `nvme_bad` and calls `nvme_init()` again before retrying, which resets the controller.
 
@@ -6071,8 +7555,8 @@ The rest of the kernel addresses everything in 512-byte LBAs. NVMe bridges the d
 |---|---|
 | `nvme_read1(lba,out)` | Loads native block `lba/ratio` (skipped if it is already cached) and copies out the 512-byte slice at `(lba%ratio)*512`. |
 | `nvme_write1(lba,in)` | When `ratio>1`, it reads the native block first (read-modify-write), patches the slice and writes the block back. |
-| `nvme_read(lba,cnt,out)` | A loop over `nvme_read1`. |
-| `nvme_writen(lba,cnt,in)` | Writes whole native blocks directly when the request is aligned and long enough. Otherwise it falls back to `nvme_write1`. |
+| `nvme_read(lba,cnt,out)` | When the request is aligned to a native block and at least one block long, it reads up to `nvme_maxpg` pages with one `nvme_cmdn` command and copies them out of `NVME_BIG`. The rest (and any failed big command) goes through `nvme_read1`. |
+| `nvme_writen(lba,cnt,in)` | Copies up to `nvme_maxpg` pages of whole native blocks into `NVME_BIG` and writes them with one `nvme_cmdn` command. If that fails, or the request is not aligned, it falls back to one native block at a time and then to `nvme_write1`. |
 
 The generic layer exposes the ratio as `dk_ratio()`:
 
@@ -6184,7 +7668,7 @@ Install mode. "Continue" on the disk page always sets `ip_mode=0` (whole disk). 
 Size constants:
 
 ```c
-#define INST_BOOTP (dk_ratio()>1?557056u:131072u)          /* boot partition: 64 MiB, or 272 MiB on 4K-sector disks */
+#define INST_BOOTP 1048576u                                 /* boot partition: 512 MiB, room for the kernel and the previous version kept by updates */
 #define INST_DATAP (((NVX_REGION_SECS)+2047u)&~2047u)      /* NVX_REGION_SECS = 8+(24+1)*4096 = 102408 -> 104448 sectors */
 ```
 
@@ -6206,16 +7690,22 @@ Its return codes: -1 = format failed; -2 = mount failed; -3 = marker write faile
 
 #### The kernel snapshot
 
-`kmain` calls `inst_snapshot_data()` first, right after `.bss` is zeroed (`core/init/main.c:124`). This happens before anything can modify the loaded image. The function copies the kernel image at `0x100000` into `g_kimg_snap[KSNAP_MAX]` (`KSNAP_MAX` = `0x800000`, 8 MiB, the same as the build limit). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`.
+`kmain` calls `inst_snapshot_data()` right after `.bss` is zeroed. The installer needs the kernel file as it was built, but the loaded image changes while the system runs, so the snapshot keeps only what can change:
 
-Note: Up to v8.94 the buffer was 3 MiB while the kernel had grown past 5 MB, so the snapshot was always empty and every installation stopped with "The kernel image could not be captured at boot." The buffer lives in `.bss`, which starts at `0xC00000`, so the larger size does not touch the fixed low-memory regions.
+- `[0x100000, __immutable_end)`: code, read-only data and the signature block. Never written at run time. Its 4 KiB pages are hashed (FNV) into `g_kpg_sum` for `kcheck`.
+- `[__immutable_end, __blob_end)`: the `.blob` section with the large embedded files (`doom_wad.o`, `lq_pak0.o`, `lq_pak1.o`, `wpf_data.o`, `nvfw_gsp.o`, about 42 MB). `build.sh` renames their `.data` section to `.blobdata` with `objcopy` and both linker scripts place it here. Nothing writes to it, so it is copied straight from memory at install time.
+- `[__blob_end, size stamp)`: `.data`, under 1 MB. This part is copied into `g_kdata_snap[KDATA_MAX]` (4 MiB). Two areas in it were already changed before the snapshot: the boot page tables in `boot64.S` (`boot_pt_first` to `boot_pt_last`, zero in the file) and the early IDT `g_eidt` in `early_fault.c` (`{1,0,...}` in the file). The snapshot writes their file contents back.
 
-`kimg_check()` verifies the snapshot against `g_buildsig` using SHA-256 twice:
+`KSNAP_MAX` is `0x6000000` (96 MiB). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`. `kimg_full()` joins memory and snapshot into one buffer when the installer runs.
+
+Note: Up to v9.99 `KSNAP_MAX` was 64 MiB and all embedded files lived in `.data`. After the kernel passed 64 MB every installation stopped with "The kernel size stamp is invalid", and with a larger limit the 43 MB `.data` would not have fit the 4 MiB snapshot ("The kernel image could not be captured at boot").
+
+`kimg_check()` verifies the image against `g_buildsig` using SHA-256 twice:
 
 - the immutable part up to `__immutable_end`, with the hash field at `sig+32` zeroed, compared with `g_buildsig.sha256`;
 - the whole file, with the field at `sig+88` also zeroed, compared with `g_buildsig.sha256_full`.
 
-The shell command `kcheck` (`kcheck_run`) prints the same comparison and writes it to the kernel log. It also lists the 4 KiB code pages that have changed since boot. On v8.96 in QEMU (BIOS and UEFI) it reports `code MATCHES   whole file MATCHES` for the 5,298,992-byte kernel.
+The shell command `kcheck` (`kcheck_run`) prints the same comparison and writes it to the kernel log. It also lists the 4 KiB code pages that have changed since boot. The installer turns the freeze detector off while it runs (`g_frz_hold`), because hashing 77 MB in QEMU takes longer than the 5 s limit.
 
 #### The boot partition: `inst_build_fs`
 
@@ -6240,13 +7730,14 @@ Contents (all directory timestamps are fixed at `0x6000`/`0x5B3B`):
 
 ```text
 /            volume label entry
-/boot/kernel64.bin       (copy 1 of the snapshot)
+/boot/kernel64.bin       (the kernel image)
 /boot.cfg                (assets/installer/inst_boot.cfg: kernel=/boot/kernel64.bin, cmdline=noovexos, ...)
-/KERNEL64.BIN            (copy 2)
 /EFI/BOOT/BOOTX64.EFI    (boot/uefi/BOOTX64.EFI, embedded by build.sh as inst_efi.bin)
 ```
 
-The installer writes only `used = dstart + (next-2)` sectors, which ends at the last allocated cluster. The FAT, however, describes the whole partition. `ko1` and `ko2` are the byte offsets of the two kernel copies inside the image. `ip_mem_verify` uses them to compare the copies against the snapshot, both after building and after verification. If a copy differs, it rewrites the copy, waits 1 s and compares again, to tell RAM that does not hold data apart from something else overwriting it.
+Up to v9.99 a second copy was written as `/KERNEL64.BIN`. Since v10.00 there is one copy, so the 512 MiB partition has room for the kernel, the previous version kept by updates and future growth. The UEFI loader opens `\boot\kernel64.bin` when `\KERNEL64.BIN` is missing.
+
+The installer writes only `used = dstart + (next-2)` sectors, which ends at the last allocated cluster. The FAT, however, describes the whole partition. `ko1` and `ko2` are the byte offset of the kernel inside the image (both the same since v10.00). `ip_mem_verify` uses them to compare the copies against the snapshot, both after building and after verification. If a copy differs, it rewrites the copy, waits 1 s and compares again, to tell RAM that does not hold data apart from something else overwriting it.
 
 #### `ip_run()` stages
 
@@ -6258,11 +7749,11 @@ The installer writes only `used = dstart + (next-2)` sectors, which ends at the 
 | 1, 40 | Build the boot-partition image and run `ip_mem_verify` on both kernel copies. |
 | 2, 90 | Write the MBR (below). On a GPT disk in whole-disk mode, also zero the last native block, where the backup GPT header lives. |
 | 3, 110 | Write `inst_stage2.bin` to LBA 1.... This step is skipped when `dk_ratio()>1` (`s2s=0`). |
-| 4, 140 to 700 | Write `used` sectors of the image to `bst`, one sector at a time with `gdisk_write`, refreshing the UI every 128 sectors. |
+| 4, 140 to 700 | Write `used` sectors of the image to `bst`, 128 sectors (64 KiB) per `gdisk_writen` call, refreshing the UI after each call. |
 | 5, 700 | FS 1-3: `nk_install` (progress 760-860 via `ip_nk_prog`). |
 | 6, 760 | FS 0: set `g_nvx_base`/`g_nvx_secs`, then call `n4_format(dsz)`. |
-| 7, 870 to 1000 | Verify: read back the MBR, stage2 and every boot-partition sector and compare them. Recheck the kernel copies in RAM. Call `gdisk_flush()`. |
-| done | `ip_prog=1000`, page `IP_DONE`, `ip_load()` |
+| 7, 870 to 1000 | Verify: read back the MBR, stage2 and every boot-partition sector (128 sectors per `gdisk_readn` call into a 64 KiB buffer from `kmalloc`, one sector at a time if that fails) and compare them. Recheck the kernel copies in RAM. Call `gdisk_flush()`. |
+| done | Log `install: done in N ms, N boot sectors, disk ..., nvme cmds N multi N`; `ip_prog=1000`, page `IP_DONE`, `ip_load()` |
 
 #### MBR writing
 
@@ -6372,6 +7863,7 @@ This driver is separate from `fs/fat/fat_ata.c` (`fat_mount`, `fat_listdir`, `fa
 | `fatls` | 338 | lists the root directory of the IDE FAT volume |
 | `fatcat <NAME.EXT>` | 492 | Reads a file from the IDE FAT volume and prints up to 8000 characters. |
 | `bcstat`, `bufcache` | 532 | buffer-cache hits, misses and hit rate |
+| `disktest` | 1706 | Reads the first 32 MB (or the whole disk if smaller) of the active disk with `gdisk_readn` and prints the time, MB/s and, on NVMe, how many commands it took and how many were multi-block. |
 | `usbdisk`, `usbls` | 719 | `msd_autoinit` + `ufat_mount`. Prints the size, FAT type and file list, or "no USB stick found (enum failed at: ...)". |
 | `usbcat <FILE>` | 730 | `ufat_read`. The name match is case-insensitive. |
 | `usbwrite <FILE> <text>` | 736 | `ufat_write_file`. Prints "written to USB" or "write failed". |
@@ -6379,6 +7871,7 @@ This driver is separate from `fs/fat/fat_ata.c` (`fat_mount`, `fat_listdir`, `fa
 | `usb`, `xhci` | 972 | rescans the controllers (`xhci_mouse_autoinit`), then runs `usbinfo` |
 | `ntfs mount [ro] \| umount \| info \| ls \| cat \| write \| mv \| mkdir \| rm` | 1591 | NTFS on the gdisk disk through `nk_mount`/`nvxntfs_*`. Every subcommand except `ls`, `cat`, `info` and `help` needs root. Errors include "ntfs: no NTFS volume found on the disk" and "ntfs: not mounted - run 'ntfs mount' first". |
 | `install` | 361 | `ip_open(ST_DESKTOP)` (root only) |
+| `update [status\|check\|install\|reinstall\|back\|new\|url <url>]` | 552 | NoovexOS updates (8.12): show the state, ask the server, install the new version, go back to the previous one, use the new one again, set the server address |
 | `kcheck` / `memmap` / `memtest` | 1537-1541 | Installer diagnostics: snapshot integrity, the firmware memory map against kernel areas (plus the `g_pci_quiesced` count), and a fill/verify/re-verify test of free RAM. |
 | `pci` | 696 | Prints `vendor:device class=`, flagging network devices. Covers only the `pci_scan` set (buses 0-3, function 0). |
 
@@ -6415,6 +7908,97 @@ Each partition is probed for its file system: NTFS, exFAT, FAT12/16/32, BitLocke
 
 Limits: reads only (writing is still through the main disk); LBAs above 2^32 on the main and USB disks are not reachable through their 32-bit readers; one NVMe namespace.
 
+### 8.12 Updates from inside NoovexOS (`core/update.c`)
+
+An installed system updates itself from noovexos.site. The Settings page "Update & recovery > NoovexOS Update" and the shell command `update` use the same code.
+
+#### The update server
+
+`GET https://noovexos.site/api/public/update` (the website builds it from its download catalog) returns:
+
+```text
+{"product":"NoovexOS 64","version":"10.00","published":"...","iso_url":"https://...iso","iso_name":"...",
+ "iso_bytes":87031808,"iso_sha256":"<64 hex>","changelog_url":"...","notes":["...","..."]}
+```
+
+`update url <url>` stores another address in `/etc/update-url` (for a test server or a mirror); `update url default` goes back. `upd_check()` fetches the answer with `net_get_url` (the redirect-following fetcher of `apt`, `fs/pkg/apt.c`), reads it with `json_str`/`nvx_json_int` and compares versions as `major*100+minor`. If the network was not ready (the first DHCP request at boot often gets no answer), it asks for an address again with `dhcp_renew()` and tries once more. The ISO download in `upd_install` is tried up to three times on a network error ("could not connect", "Connection ...", "No route ...", "Temporary failure ..."), waiting 300 ticks between tries and renewing DHCP after "No route"; the screen shows "The download failed, trying again (N of 3)" (v10.08). Error texts come from `ap_get`: for HTTPS a failed TCP connection is "could not connect to HOST" and a failed lookup "could not find HOST" (before v10.08 both were misreported, the first as "No route to gateway").
+
+#### Checks before anything is changed
+
+| Step | Check |
+|---|---|
+| Download | the whole ISO with `iso_bytes` as the buffer hint; progress comes from `g_net_rx` (bytes received, set by `tls_get` and `tcp_get`) |
+| Size | the download must have exactly `iso_bytes` bytes |
+| Checksum | SHA-256 of the ISO must equal `iso_sha256` |
+| Unpack | the ISO's MBR partition (FAT32 at LBA 2048) is mounted read-only from memory with `vfat` and `/boot/kernel64.bin` is read |
+| Build check | `upd_kcheck`: the `NVX64SIG` block must be present, `image_size` must equal the file size and SHA-256 of the file with the two hash fields zeroed must equal `sha256_full` |
+| Version | the new kernel must be newer than the running one (`update reinstall` skips this) |
+| Installed version | the kernel that will be kept is read from the disk and must pass the same build check, otherwise nothing is changed (there would be no way back) |
+| Space | free space plus the files that will be replaced must hold both kernels plus 1 MB |
+
+#### The boot partition and the state file
+
+The updater finds the boot partition on the system disk (an MBR entry of type `0x0B`/`0x0C`, active first, holding `/boot.cfg` and a kernel) when NoovexOS is installed (`/etc/nvx-installed` and a loaded data partition). Otherwise it looks at the USB stick (`up_find_usb`, see below). Disks with 4 KiB sectors are not supported because `vfat` needs 512-byte sectors.
+
+#### Updating a USB stick (v10.02)
+
+A stick made from the ISO has the same layout as an installed boot partition: one active FAT32 partition at LBA 2048 with `/boot.cfg`, `/boot/kernel64.bin`, `/EFI/BOOT/BOOTX64.EFI`, and the same BIOS stage2 and UEFI loader, which already read `/boot/update.txt`. So the same install order and the same fallback work; only the block functions and the space differ.
+
+- Finding it: when NoovexOS is not installed, `up_find_usb` uses the stick that was mounted at start (`msd_ok`, starting the USB mass storage driver again at most every 10 s if needed), requires 512-byte blocks and an MBR partition with `/boot.cfg` and a kernel, and sets `g_upd.usb`. A CD or an ISO file in a virtual machine has no writable stick, so it is told so.
+- Block access: `up_rd`/`up_wr` call `usb_msd_rdn`/`usb_msd_wrn` (`drivers/usb/xhci.c`), which split requests into chunks of up to 64 sectors that do not cross a 64 KiB boundary of the transfer buffer and retry each chunk once. Flushing sends SCSI SYNCHRONIZE CACHE (`usb_msd_sync`). Data and status phases of USB storage commands now wait up to about 10 s (`msd_wait_rounds`, 150 rounds for SYNCHRONIZE CACHE) instead of 0.4 s; a slow stick or a host that needs longer to flush would otherwise leave the command and status out of step, and every later command failed. While the updater has the stick open for writing, the small FAT driver used for `CRASH.TXT` (`ufat`) is flushed first and mounted again afterwards.
+- Space: the partition in the ISO has only about 8 MiB free, too little to keep a second 77 MB kernel. Before writing, `up_grow` makes the partition larger: the new size is the smaller of what the FATs can describe (`fatsz*128-2` clusters, 512 MiB for a stick made from the 10.02 ISO) and the end of the stick (or the start of another partition). It checks that every FAT entry for the added clusters is zero, then writes, each read back and compared: the ISO9660 volume size (2 KiB sector 16, so firmware that uses the El Torito EFI entry sees the whole partition; without this OVMF failed with "error reading the kernel (status 2)"), the MBR partition size, the backup boot sector and the boot sector's total sector count. Nothing is moved. A stick made from an older ISO has FATs sized for the image, so it cannot grow; the user is told to write the 10.02 ISO (or newer) to it once.
+- After the restart, `upd_tick` retries finding the stick every 5 s for up to 2 minutes, so a stick that answers late still gets its new version confirmed.
+
+Settings shows "(USB stick)" in the footer, "NoovexOS X is kept on the USB stick" and the Go back button. `update` prints "boot partition: found on the USB stick".
+
+The partition is mounted with the same `vfat` driver as a FAT root file system. `vf_swap_out`/`vf_swap_in` save and restore `g_vfat` around it, so a FAT32 data partition stays mounted. `vf_reclaim` frees clusters that no file uses (left by an interrupted write) and makes both FATs equal again.
+
+`/boot/update.txt` is always 512 bytes and is changed in place (`vf_inplace`), so the boot loaders can rewrite its first four bytes without touching the FAT:
+
+```text
+TRY0
+new=10.01
+old=10.00
+```
+
+| State | Meaning | BIOS stage2 and UEFI loader start |
+|---|---|---|
+| (no file), `OK  ` | normal | `kernel64.bin` |
+| `PREP` | the previous version is being saved as `kernel64.old` | `kernel64.bin` (still complete) |
+| `SWAP` | `kernel64.bin` is being replaced | `kernel64.old` |
+| `TRY0` | new version written, not started yet | writes `TRY1`, starts `kernel64.bin` |
+| `TRY1` | first start attempt done | writes `TRY2`, starts `kernel64.bin` |
+| `TRY2` | second start attempt done and not confirmed | writes `FAIL`, starts `kernel64.old` |
+| `FAIL` | the new version did not start twice | `kernel64.old` |
+| `OLD ` | the user went back, or an update was interrupted | `kernel64.old` |
+
+If the chosen kernel file cannot be read, both loaders fall back to the other one (and to `\KERNEL64.BIN` on older installations). The UEFI loader also shows "press P to start the previous version" for 0.6 s when `kernel64.old` exists; the BIOS menu has the entry "NoovexOS 64 (previous version)", which the updater adds to `/boot.cfg`.
+
+#### Install order
+
+1. Write `PREP` (with `new=` and `old=`).
+2. Delete the old `kernel64.old` and a root `\KERNEL64.BIN` if `kernel64.bin` exists.
+3. Write `kernel64.old` (the current kernel), read it back and compare.
+4. Write `SWAP`, delete `kernel64.bin`, write the new kernel, read it back and compare.
+5. Add the "previous version" entry to `/boot.cfg`.
+6. Write `TRY0`, flush the disk and restart.
+
+When `kernel64.old` is the known good kernel (`FAIL`, `OLD`), steps 1-3 are skipped. A failed write puts things back where possible: a failed copy of the current kernel leaves `OK`; a failed new kernel is replaced by the old bytes (`OK`) or, if that fails too, leaves `OLD`.
+
+#### After the restart
+
+`upd_tick()` (main loop) reads the state 3 s after start. If the running version is the one in `new=` and the state is `TRY0`-`TRY2`, it waits 60 s and writes `OK  `. It then compares the UEFI loader files and the BIOS stage2 (LBA 1, only if the first 64 bytes match and no partition starts there) with the copies built into the new kernel and writes them if they differ, so a fixed boot loader reaches installed systems. An interrupted update is reported: `PREP` removes a damaged `kernel64.old` and writes `OK`; `SWAP` writes `OLD`. `FAIL` shows "NoovexOS X did not start twice, so NoovexOS went back to Y."
+
+"Go back" writes `OLD ` and restarts; "Use it again" writes `TRY0` (the new version gets two new attempts). Both check the target kernel first.
+
+#### The update screen
+
+`upd_screen_begin/upd_screen/upd_screen_end` draw a full-screen page: plain blue (`rgb(43,95,201)`), five dots in a row (one bright, the next one half, the rest faint, moving every 14 ticks), "Working on updates NN%" (the title and percentage; no percentage at 100) and "Don't turn off your computer" in Liberation Sans from the word-processor font tables (`us_text`, sizes 20 pt and 12 pt), and "Your computer will restart once when it's done" at the bottom. When the update fails the reason is shown instead of the second line and the bottom line says the current version is kept. The current step is written to the log. It is drawn by `g_wait_pump` during the download and by the block functions during disk writes. The freeze detector is paused (`g_frz_hold`). Percent ranges: download 0-55, checks 56-70, saving the previous version 74-84, new version 85-97, finish 98-100.
+
+#### Speed
+
+`vfat` reads and writes runs of up to 128 clusters, and the updater's block functions use `gdisk_readn`/`gdisk_writen`. AHCI, VirtIO and IDE then move up to 64 KB per command. The NVMe driver still sends one command per 512-byte sector, so an update moves about 300,000 commands there (a few seconds on real hardware, about 10 minutes in QEMU without KVM).
+
 ## Part 9: Networking and Wi-Fi
 
 NoovexOS 64 has a complete, polled, single-threaded network path: PCI NIC drivers,
@@ -6448,6 +8032,8 @@ All paths below are relative to the repository root.
 | `lib/crypto/nvxroots.c`, `lib/crypto/roots/mozilla-cacert.pem` | 120 trusted root CAs (subject + public key), generated by `tools/mkroots.py` from the Mozilla bundle | unit |
 | `drivers/net/wifi/rtw_efuse.c`, `rtw8821ce.c`, `rtw_sec.c`, `rtw_tables.h` | RTL8821CE driver | unit |
 | `net/wifi/wpa2.c`, `net/wifi/wifi_netdev.c` | EAPOL TX/RX, PTK derivation, CCMP netdev | unit |
+| `net/wifi/wifi_mgr.c` | Wi-Fi manager: start-up, saved networks, scan, connect, reconnect, power saving | unit |
+| `net/wifi/wpa3.c`, `net/wifi/eap.c` | WPA3 (SAE), AES-CMAC, KDF; PEAP / MSCHAPv2 (MD4, DES) | unit |
 | `shell/commands.c` | `net`, `dhcp`, `ping`, `dns`, `http`, `netlog`, `wifi ...` | unit |
 
 Each of these files is a unit with a header under `include/nvx/` (for example `include/nvx/net/stack/tcpip.h`, `include/nvx/lib/crypto/nvxtls.h`). `nvxtls.c` calls into the X.509 code (`x509_verify_chain`, `x509_leaf_cv`, `x509_reason`) and into `http.c` (`tls_prepare`, `tls_clock_now`) through those headers.
@@ -6647,7 +8233,7 @@ link:
 | `tcp_get`, `do_ping`, `dns_try`, `dhcp_wait`, `arp_resolve` | `nd_poll` to `g_rx` | `nd_up()` |
 | `sock_*` (`sockets.c`), `tcps_rd` (HTTPS), `lxs_pump` (Linux sockets) | `net_poll` / `nd_rx` to `g_rx` | `nd_up()` |
 | `udp_send`, `tcp_send`, `dhcp_config` | - | `nd_up()` (was the wired-only `net_ok` before v8.95) |
-| `nic_up()` | - | Wi-Fi: `g_linkok()`; wired: `nic_up_raw()` plus DHCP once |
+| `nic_up()` | - | Wi-Fi: `g_linkok()`; wired: `nic_up_raw()` plus DHCP the first time; if DHCP failed, up to three more tries, at least 3 s (300 ticks) apart (v10.07) |
 
 Note: Before v8.95, sockets and HTTPS read only from the wired card and the senders checked the wired-only `net_ok` flag, so they could not work over Wi-Fi. The Wi-Fi path has been checked in code review; the QEMU tests cover only wired cards.
 
@@ -6681,8 +8267,10 @@ socket layer (`lxs_frame` checks the MF bit and fragment offset).
 
 There is no general ARP table. `arp_resolve(ip, mac)` caches only the gateway
 (`gw_mac`, `gw_known`). It answers from that cache when `ip==gw_ip`. Otherwise it
-broadcasts a request and polls up to 20 slices for an ARP reply (`op 2`) whose
-sender IP matches. `dhcp_config` resets `gw_known=0` when it gets a new lease.
+broadcasts a request and polls for an ARP reply (`op 2`) whose sender IP matches:
+20 slices (about 20 ms) after the first request, then up to three more requests
+with 250 slices each (v10.07; with one 20 ms try the first connection after start
+failed with "Host is unreachable" while the card was still coming up). `dhcp_config` resets `gw_known=0` when it gets a new lease.
 
 Since v8.95 the stack answers ARP requests for its own address.
 `arp_auto_reply(frame, len)` (`net/stack/tcpip.c`) checks for an ARP request
@@ -6965,6 +8553,10 @@ the tap device, which tests the same path over the network card.
   which faulted on CPUs without it, for example QEMU's default CPU) and mixes in
   TSC jitter. It now also feeds `getrandom`, `/dev/random` and `/dev/urandom`.
 
+### 9.8a WebSockets (`apps/internet/websock.c`, v10.11)
+
+The browser's `WebSocket` runs here, not in the web engine. `nwk_ws_open` opens a TCP socket through the `lxs_*` layer (section 9.7.2), does the HTTP Upgrade handshake (and, for `wss://`, a TLS 1.3 handshake through the session API in section 9.9.2), and then masks outgoing frames and parses incoming ones (text, binary, ping/pong, close, fragmentation; up to 8 MiB a message). There are eight connection slots. Reads are non-blocking and buffered; the JavaScript side polls. See section 13.33 for the full picture.
+
 ### 9.9 TLS 1.3 client and crypto library
 
 #### 9.9.1 Algorithms
@@ -6980,26 +8572,34 @@ the tap device, which tests the same path over the network card.
 #### 9.9.2 Handshake (`tls_get`)
 
 ClientHello (`build_clienthello`) contains:
-- legacy version 0x0303, a 32-byte random, and a 32-byte session ID (compatibility mode);
-- cipher suites `0x1301` TLS_AES_128_GCM_SHA256 and `0x1303` TLS_CHACHA20_POLY1305_SHA256;
+- legacy version 0x0303, a 32-byte random, and a 32-byte session ID (compatibility mode; since v10.22 a hash of the client random; before, it repeated the private key bytes, see section 13.46);
+- cipher suites `0x1301` TLS_AES_128_GCM_SHA256 and `0x1303` TLS_CHACHA20_POLY1305_SHA256, then for TLS 1.2 `0xC02B`/`0xC02F` ECDHE-ECDSA/RSA-AES128-GCM-SHA256 and `0xCCA9`/`0xCCA8` ECDHE-ECDSA/RSA-CHACHA20-POLY1305 (section 13.46);
 - these extensions:
 
 | Ext | Value |
 |---|---|
 | 0x0000 server_name | host |
-| 0x000a supported_groups | x25519 (0x001d) |
+| 0x000a supported_groups | x25519 (0x001d), secp256r1 (0x0017) |
 | 0x000d signature_algorithms | 0x0403, 0x0503 (ECDSA P-256/P-384), 0x0804, 0x0805, 0x0806 (RSA-PSS), 0x0401, 0x0501, 0x0601 (RSA PKCS#1, for certificates only) |
-| 0x002b supported_versions | 0x0304 |
-| 0x0033 key_share | x25519, 32-byte public key |
+| 0x002b supported_versions | 0x0304, 0x0303 |
+| 0x0017 extended_master_secret | empty |
+| 0xff01 renegotiation_info | empty |
+| 0x000b ec_point_formats | uncompressed |
+| 0x0033 key_share | x25519, 32-byte public key (after a HelloRetryRequest: the group the server asked for, a 65-byte P-256 point for secp256r1) |
+| 0x002c cookie | only in the second ClientHello, copied from the HelloRetryRequest |
 | 0x0010 ALPN | `http/1.1` (comment: "needed by some CDNs e.g. Cloudflare") |
 
 The handshake runs in this order:
 
 ```
-priv = rnd[0..31] (clamped); pub = X25519(priv, 9)
+priv = rnd[0..31] (clamped); pub = X25519(priv, 9); session id = SHA-256(rnd[32..63], 0x53)
 -> ClientHello (plain record 0x16)          transcript = SHA-256
-<- ServerHello: cipher in {1301,1303}, key_share x25519  (else -3/-4)
-ecdhe = X25519(priv, spub); tls_key_schedule -> c/s hs traffic keys
+<- ServerHello: cipher in {1301,1303}, supported_versions 0x0304, key_share x25519 or P-256  (else -3/-4)
+   if its random is the HelloRetryRequest value: transcript = message_hash(CH1) + HRR,
+   new key share for the requested group (P-256 key from SHA-256(rnd, 0x17)), cookie copied,
+   CCS + second ClientHello; a second HRR or a group that was not offered is refused (-3)
+ecdhe = X25519(priv, spub) or the x coordinate of P-256 priv * spub (point checked on the curve)
+tls_key_schedule -> c/s hs traffic keys
 <- encrypted records: skip CCS (0x14), decrypt with s_hs key, append to a 64 KiB
    reassembly buffer (g_tls_hs), then process complete handshake messages:
      EncryptedExtensions (8)  ignored
@@ -7013,6 +8613,8 @@ ecdhe = X25519(priv, spub); tls_key_schedule -> c/s hs traffic keys
 derive c/s ap traffic keys from master
 -> application data: HTTP request (records <= 16000 B)
 <- decrypt app records until close/alert (0x15) or buffer full (<=512 records)
+   KeyUpdate (24) from the server: next server traffic secret; if it asks for an update,
+   send our KeyUpdate and move to the next client secret too
 wipe priv, ecdhe, key schedule, traffic keys
 ```
 
@@ -7292,6 +8894,32 @@ RX (`wnd_rx_eth`): accepts data frames with FromDS that have Protected and ExtIV
 The counters `g_wnd_rx_frames`, `g_wnd_rx_drop` and `g_wnd_tx_frames` are printed
 by `wifi dhcp` when it fails.
 
+### 9.10a Wi-Fi manager, WPA3 and school/work Wi-Fi (v10.57)
+
+The manager (`net/wifi/wifi_mgr.c`) sits above the driver and replaces the
+manual Terminal steps.
+
+| Piece | How it works |
+|---|---|
+| Start-up | `wifi_up()` runs the bring-up steps (`wifi init`, `allbuilt`, `macinit`, `fw`, `rings`) through `run_cmd` with `g_chquiet` set. The desktop, Settings and `wifi on` call it; auto-connect calls it at start when networks are saved. |
+| Delays | `rtw_delay_us` now calls `hr_delay_us` (precise timer, at most 200 ms per call). It used 8 port writes per microsecond before, which made every Wi-Fi step 8 or more times slower; that was most of the "5 minutes" to see networks. A few raw `io_wait` loops became `rtw_delay_us` calls. |
+| Scan | Only the RTL8821CE is matched (`rtw_find_mmio`: vendor 10EC, device C821, B821, C82A or C82B). Opening the tray panel or the Quick Settings tile does not start the radio; the panel's Scan button, Settings Scan and the on switch do (`wifi_gui_scan(1)` calls `wifi_up`). `wifi_scan_start` hops channels from the main loop (`scan_step`, 110 ms per channel): 2.4 GHz 1-13 and, with 5 GHz on, 36-165 (24 channels), about 4 s in all. Results appear while it runs. `scan_add` records RSSI from the PHY status (page 1: bits 15:8 minus 110; page 0: the LNA/VGA gain tables, which depend on the RFE type), clamped to -100..-10 dBm and 12 dB lower when the DS channel differs from the tuned one; the DS channel, HT (and short GI), WMM, RSN AKMs (PSK, SAE, 802.1X, PSK-SHA256), PMF bits and the group cipher. It also takes probe responses. 24 networks are kept; the weakest is replaced. Hidden networks keep an empty name. |
+| Channel | `rtw_set_channel_2g` handles both bands (name kept for the old callers): RF18 band bits, RFSI for 100-140 and above 140, LUTDBG, XTALX2 toggle. `rtw_bb_band` (0x808, 0x454, 0xa80, 0x814, 0xc1c[11:8], 0x860) runs on 5 GHz and when coming back from 5 GHz. On every channel change `rtw_bw20` sets 20 MHz (0x8ac, 0x8c4, 0x948, 0x94c, 0xc20, 0x8f0) and the TX swing 0xc1c[31:21] from efuse 0xC6 (2.4 GHz) / 0xC7 (5 GHz). The 2.4 GHz antenna path is BTG (`rtw_switch_to_btg`) for RFE types 2, 4, 7, 0xa, 0xc, 0xf, otherwise WLG; 5 GHz uses WLA. Management frames use 6 Mbit/s OFDM on 5 GHz (`rtw_txdesc_rate`). All values follow Linux rtw88. |
+| TX power | `rtw_set_txpwr` writes 0x1d00+ from the chip's calibration data (efuse 0x10: CCK and BW40 bases and the 1-stream diffs, 2.4 and 5 GHz groups). There was no power programming before. `g_wifi_txpwr=0` turns it off. |
+| Speed | The association adds extended rates, and HT capabilities (20 MHz, SGI, RX STBC, MCS 0-7) and the WMM IE when the network offers both HT and WMM (`rtw_assoc_ies`). After joining, `rtw_ra_connect` sends MEDIA_STATUS and RA_INFO (rate id, mask, short GI only if the network supports it) and data frames leave USE_RATE off so the firmware picks the rate. Every 2 s (not in power saving) `rtw_ra_rssi` sends H2C 0x42 with RSSI+100. If DHCP fails with automatic rates, the manager switches to fixed rates (1 Mbit/s on 2.4 GHz, 6 Mbit/s on 5 GHz) and tries again. ADDBA requests are declined (status 37), so no aggregation yet. |
+| WPA2 | A 64-character hex password is used directly as the PMK; otherwise PBKDF2 runs (the last result is cached by a SHA-256 of name and password). Networks whose group cipher is not CCMP (TKIP) are refused. Association status 30 (try later) waits 600 ms and sends again once. Message 3 must have Install, Ack, MIC and Secure set, the same ANonce and a verified MIC; a repeated message 1 is answered again (with a new PTK if the ANonce changed). Keys go into the hardware key table; frames the chip already decrypted (descriptor: SWDEC 0, AES, no ICV error, and a plaintext LLC header) are used directly, the others are decrypted in software. A deauth (reason 3) is sent before disconnecting or switching networks; disconnect wipes the PMK and PTK. |
+| Stability | `wnd_rx_mgmt` watches beacons from our access point (time, RSSI, beacon interval) and deauth/disassoc frames to us or broadcast. With PMF on, unprotected deauth/disassoc are ignored and protected ones must pass CCMP (pairwise key, rising PN) before they end the link. `wpa_rx_eapol` answers group-key updates (GTK message 1 inside the encrypted link: MIC check, unwrap, key table and `wnd_set_gtk`, message 2 sent encrypted) and a repeated message 3 (sends message 4 again, no key reinstall). Unencrypted EAPOL is only used for that repeated message 3. A pairwise re-key, a deauth or 12 missed beacon intervals (3-15 s) end the link; the manager reconnects and runs DHCP again. Unicast replay counters are per TID. `net_idle_poll` reads frames while no kernel socket was used in the last 15 s (ARP replies, beacons). |
+| Saved networks | `/etc/noovex/wifi/networks` (root, 0600, folder 0700): `NVWIFI1`, `auto=X 5g=Y`, then `net PRIO HIDDEN AUTO EAP SSIDHEX PASSHEX USERHEX PINHEX` (`-` = empty; PINHEX is the SHA-256 of an Enterprise server's certificate). Up to 16, priority 0-99 (new: 10). Auto-connect scans without blocking, then picks the saved network with the highest priority (then signal, a small bonus for strong 5 GHz); a network that failed is skipped for 3 minutes when others are saved; a wrong password, a failed Enterprise sign-in or a changed certificate turns auto-connect off for that network (notification). Waits grow from 5 s to 60 s. It pauses while you type a Wi-Fi password, and after `wifi disconnect` it does not rejoin that network by itself. Wi-Fi turned off by you stays off after airplane mode. |
+| Open networks | `wnd_setup_open` sends and accepts unencrypted data frames. |
+| WPA3 | Used when the access point offers only SAE (WPA2/WPA3 mixed networks use WPA2). `rtw_sae_auth`: hunting-and-pecking on P-256, commit (with the anti-clogging token if asked) and confirm, then AKM 8, KDF-SHA256 PTK, AES-CMAC MICs (`wpa_mic`, `wpa_key_ver`). The RSN IE sets MFPC (PMF) for SAE and for networks that require PMF; there is no BIP/IGTK yet. PSK-SHA256-only networks use AKM 6. P-256 helpers are exported from `nvxx509.c` (`p256_mul`, `p256_add`, `p256_neg`, `p256_y_from_x`, `p256_modn_add`). |
+| PEAP | For 802.1X-only networks (eduroam). `eap_peap_run`: outer identity `anonymous@realm` when the user name has `@` (otherwise the user name), PEAPv0 over a TLS 1.2 tunnel (`g_tls_only12`, no SNI, fragments of 1000 bytes, L/M/S flags, a repeated request is answered with the last response, 2 resends on timeout), inner identity and MSCHAPv2 without the inner EAP header (NT-Response, the server's proof is checked), Result TLV, then MSK = TLS-PRF(master secret, "client EAP encryption") and PMK = MSK[0..31]. The certificate chain is not checked, but with `g_tls_pin` the ServerKeyExchange signature must match the leaf certificate; the leaf's SHA-256 (`g_tls_leaf`) is remembered on the first connection (logged) and a different certificate later stops the sign-in before the password is sent. Secrets are wiped on every exit. |
+| Captive portal | After DHCP, `http://connectivitycheck.gstatic.com/generate_204`; any 2xx/3xx other than 204 means "Sign-in needed" and a notification. |
+| Power saving | `wifi powersave on`: after 5 s without sending (and not while scanning), SET_PWR_MODE (LPS, RF off) through the shared H2C box counter; any send first leaves it and waits for TCR 0x604 bit 7 to clear. Experimental: the 8821C normally also needs NULL and PS-Poll frames in reserved pages and the AID. Wi-Fi off and airplane mode stop the MAC TX/RX and pause all queues. |
+
+User side: Quick Settings and the Wi-Fi panel show signal bars, a lock, the band and saved networks; Settings > Wi-Fi has the on switch, Scan, "Hidden...", the network list (user name then password for Enterprise; a hidden row asks for the name), options (auto-connect, 5 GHz, power saving, fast speeds) and saved networks (priority + and -, Auto/Manual, Forget). Settings > Network details shows the connection. Shell: `wifi [status] | on | off | scan | list | saved | connect NAME [PASSWORD] | eap NAME USER PASSWORD | hidden NAME [PASSWORD] | forget NAME | disconnect | auto on|off | 5g on|off | powersave on|off | rate auto|safe` (without a password, connect uses the saved one). The command log (klog `cmd:`) cuts `wifi connect/eap/hidden` lines after the network name and `passwd`, `su`, `sudo`, `useradd`, `chpasswd` lines after the command word. The shell's `cat` and `edit` check file permissions, so other accounts cannot read the networks file; `/System/Logs/Security.nvg` is root 0640. `/System/Hardware/wifi.nvh` lists the state (no passwords).
+
+Tests: `tools/tests/wifi/crypto.c` (in `check.py`, group `wifi`, 32 checks): AES-CMAC (RFC 4493), P-256, SAE against IEEE 802.11 Annex J.10 (PWE, commit, KCK, PMK, PMKID), MD4, DES, MSCHAPv2 (RFC 2759). The radio parts need real hardware.
+
 ### 9.11 Network shell commands
 
 | Command | Implementation | Output / behaviour |
@@ -7386,7 +9014,7 @@ static void ps2_byte(void){
 }
 ```
 
-Keyboard. `kbd_feed` decodes scancode set 1 with two 128-entry tables (`kmap_lo`, `kmap_up`). The state flags are `kshift` (0x2A/0x36), `kalt` (0x38), `kcaps` (toggled by 0x3A) and `kext` (the 0xE0 prefix). Extended make codes 0x4B/0x4D/0x48/0x50 become the arrow codes. Releases (bit 7) only clear `kdown[]`. Caps Lock inverts the case of letters only. No keyboard initialisation is sent: the driver relies on the firmware's translated set 1. There are no LEDs, no keymaps other than US, and no function keys (F1-F12 map to 0).
+Keyboard. `kbd_feed` decodes scancode set 1 with two 128-entry tables (`kmap_lo`, `kmap_up`). The state flags are `kshift` (0x2A/0x36), `kalt` (0x38), `kcaps` (toggled by 0x3A) and `kext` (the 0xE0 prefix). Extended make codes 0x4B/0x4D/0x48/0x50 become the arrow codes. Releases (bit 7) only clear `kdown[]`. Caps Lock inverts the case of letters only. No keyboard initialisation is sent: the driver relies on the firmware's translated set 1. There are no LEDs, no keymaps other than US, and no function keys (F1-F12 map to 0). Print Screen goes to the hotkey queue: extended 0x37 is `hk_push(28)`, with Shift 30 and with Alt 29; the non-extended 0x54 that keyboards send for Alt+Print Screen (SysRq) is 29, or 30 with Shift.
 
 Mouse init (`mouse_init`, `ps2_mouse.c`). Every controller wait is bounded:
 
@@ -7402,10 +9030,10 @@ The init sequence:
 1. Enable the aux port (0xA8).
 2. Read the config byte (0x20), set bit 1 (IRQ12) and clear bit 5 (aux clock disable), and write it back (0x60).
 3. Try `etp_detect()` (section 10.4). If it finds a v3/v4 Elantech pad, set `g_mbytes=6`, enable reporting and stop.
-4. Otherwise send defaults (0xF6), then the IntelliMouse "magic knock" (set rate 200, 100, 80), then Get ID (0xF2). An ID of 3 switches to 4-byte packets (`g_mbytes=4`).
+4. Otherwise send defaults (0xF6), then the IntelliMouse "magic knock" (set rate 200, 100, 80), then Get ID (0xF2). An ID of 3 switches to 4-byte packets (`g_mbytes=4`). Since v10.22 a second knock (200, 200, 80) follows; an ID of 4 (IntelliMouse Explorer) sets `g_mimex=1`, then the rate goes back to 100.
 5. Enable reporting (0xF4) and set `g_mouse_ok=1`.
 
-Packet path. `mouse_feed` resyncs on bit 3 of the first byte. It drops packets with the X/Y overflow bits (0xC0) set, sign-extends the deltas from flag bits 4 and 5, and adds the wheel byte (`int8_t mb[3]`) to `mouse_scroll`. When an ELAN pad is active (`g_etp_hw>=3`), every byte goes to `etp_irq_byte` instead.
+Packet path. `mouse_feed` resyncs on bit 3 of the first byte. It drops packets with the X/Y overflow bits (0xC0) set, sign-extends the deltas from flag bits 4 and 5, and subtracts the wheel byte (`int8_t mb[3]`, positive when the wheel turns towards the user) from `mouse_scroll`, where positive means up as for USB mice. In IntelliMouse Explorer mode the fourth byte is read like Linux: top bits `0x40` carry a 6-bit horizontal wheel value (`mouse_hscroll`, positive is right), `0x80` a 6-bit vertical value, otherwise the low nibble is the wheel and bits 4 and 5 are buttons 4 and 5 (`in_xbtn`, counted in `mouse_xback`/`mouse_xfwd`; the browser goes back on button 4). When an ELAN pad is active (`g_etp_hw>=3`), every byte goes to `etp_irq_byte` instead.
 
 Inspect: `mousetest` prints movement, buttons and wheel for up to 3000 ticks (30 s); a key press stops it early. `usbinfo` ends with `PS/2: controller present` or `no controller`.
 
@@ -7471,12 +9099,12 @@ This is MMIO only. `dw_present(base)` requires a page-aligned base below 4 GB an
 2. Controller list (`tp_list_ctrls`, at most 12):
    - ACPI devices `AMDI0010`/`AMDI0510` with a memory resource.
    - On AMD CPUs (CPUID vendor check `tp_is_amd`), fixed MMIO 0xFEDC2000-0xFEDC6000 in 4 KiB steps.
-   - Intel PCI functions on bus 0 with class 0x0C80. `tp_pci_dw` enables memory decode, moves the function to D0 through its PM capability (10 ms wait), and if `COMP_TYPE` does not match, writes 7 to BAR+0x204 and checks again.
-3. For each candidate device (HID-over-I2C or one of 52 `ELAN0000`-`ELAN1000` IDs), resolve its `I2cSerialBus` controller path to a base address (`tp_ctrl_base`). If the resource has no address, try `TP_ADDRS = {0x2C,0x15,0x2A,0x10,0x20,0x24,0x38,0x40,0x14,0x5D}`. If it has no speed, use 400 kHz. A device that has an ELAN ID and is not PNP0C50 tries the native ELAN protocol first, then HID.
+   - Intel PCI functions on bus 0 with class 0x0C80 (all functions of multi-function devices, never device 0x1F, where the SPI flash controller has the same class). `tp_pci_dw` first moves the function to D0 through its PM capability (10 ms wait), then reads the 32- or 64-bit BAR, enables memory decode, reads the LPSS capability register (BAR+0x2FC) and skips the function when its type is UART or SPI, and only then takes it out of reset (BAR+0x204 = 7) and sets the remap address. Each try is recorded in `g_tpc[]` (device and function, ID, BAR, previous power state, capability value, the value read from `COMP_TYPE`, and the outcome), which `tpinfo` prints as "PCI 00:15.1 ..." lines.
+3. For each candidate device (HID-over-I2C or one of 52 `ELAN0000`-`ELAN1000` IDs) the interpreter is asked first (since v10.04): `_STA` (devices that report "off" are only tried after all others), `_INI` (run again for devices that are on, because Intel reference firmware fills in the address, speed and interrupt there), `_DSM` for the HID descriptor register (a result of 0 is ignored) and `_CRS`. Intel-based laptops describe one touchpad template (`TPD0`) and one touch panel template (`TPL1`, `_HID` `XXXX0000`) under several I2C controllers; the copies that `_STA` turns off and templates that still have the `XXXX0000` name are skipped. When the controller path in the resource is missing or the template value `NULL`, the device's parent (for example `\_SB.PC00.I2C1`) is used, and the parent is always added as a last choice. `tp_ctrl_base` resolves a controller from the pre-scanner (`Memory32Fixed`, `_ADR` to PCI device and function) and then from the interpreter (`tpa_ctrl`: the controller's `_PR0`/`_PS0` are run, `_ADR` is evaluated, and `_CRS` is read for `Memory32Fixed`, DWord or QWord memory). If the resource has no address, `TP_ADDRS = {0x2C,0x15,0x2A,0x10,0x20,0x24,0x38,0x40,0x14,0x5D}` are tried, with 0x15 first for ELAN devices. If it has no speed, use 400 kHz. A device that has an ELAN ID and is not PNP0C50 tries the native ELAN protocol first, then HID.
 4. HID descriptor registers are tried in the order `TP_DREGS = {0x20,0x01,0x00,0x10,0x30}`.
 5. If the device's `GpioInt` controller is `AMDI0030`, the interrupt line is read directly: `gpio_base + pin*4`, bit 16, honouring active-low.
 
-`scan_all=1` additionally brute-forces every controller x address x descriptor register. Its only caller is `tpinfo_run(1)`, reached with `tpinfo scan` (the shell checks the first letter of the argument after `tpinfo`).
+`scan_all=1` additionally brute-forces every controller x address x descriptor register, then ELAN at 0x15 on every controller. `tpinfo scan` sets it; since v10.04 the boot probe does the same by itself when the firmware lists a touchpad but none answered, so a wrong or missing controller path in the firmware does not stop the touchpad. Without a touchpad in the firmware the bus is left alone. `tpinfo` prints one block per candidate (path, `_HID`, `_STA` on or off, `_INI` run, none, failed or skipped, the address used and the controller base or why it was not found), then the PCI lines.
 
 Once a descriptor register returns a valid HID descriptor, no other register is tried at that address. `ih_get_desc` decodes into a local copy and writes `t->d` only after the descriptor is valid, so a later failed probe cannot overwrite a good vendor and product. The `_CRS` address that is put in front of the static resource list is removed from the rest of the list (paths compared without `_` and `\`), so it is tried once. A device whose `_HID` starts with `ELAN` is a candidate even without PNP0C50; it is tried with HID first and the ELAN protocol second, like any HID pad with vendor 0x04F3.
 
@@ -7577,8 +9205,8 @@ Failures stop at a named step stored in `xhci_failstep`, for example `"Address D
 
 `xhci_mouse_poll()` to for each controller, `xhci_poll_one()`. It first replays parked events, then handles up to 128 new events. For each transfer event, `hid_xfer` finds the endpoint, copies up to 16 bytes into `xhid_last` (shown by `usbinfo`) and decodes:
 
-- boot mouse: `btn, int8 dx, int8 dy[, int8 wheel]`;
-- boot keyboard, or a report-protocol keyboard turned into an 8-byte boot report: `kbd_report` diffs against the previous report, pushes ASCII through `usb_key_code` and updates `kdown[]`. Caps Lock (usage 0x39) toggles the shared `kcaps`. Reports with ErrorRollOver (`d[2]==1`) are ignored;
+- boot mouse: `btn, int8 dx, int8 dy[, int8 wheel]`; bits 3 and 4 of `btn` are the back and forward buttons (`in_xbtn`, also for report-protocol mice);
+- boot keyboard, or a report-protocol keyboard turned into an 8-byte boot report: `kbd_report` diffs against the previous report, pushes ASCII through `usb_key_code` and updates `kdown[]`. Caps Lock (usage 0x39) toggles the shared `kcaps`. Print Screen (usage 0x46) is not typed: it calls `hk_push` with 28, 30 with a Shift modifier, or 29 with an Alt modifier, like the PS/2 keyboard. Reports with ErrorRollOver (`d[2]==1`) are ignored;
 - report protocol: `hid_report_decode` uses the parsed bit offsets.
 
 Each HID endpoint has 16 transfers in flight (`XHID_INFLIGHT`). `xhid_arm` gives each Normal TRB its own 64-byte slot in the region's data buffer, rotating through `xhid_bs[]`, so reports that arrive while the desktop is redrawing are not overwritten. The transfer event carries the TRB address; `hid_xfer` reads the buffer pointer back from that TRB and decodes the report from its own slot. Parked events (`xh_q`) now store the TRB address too. After decoding, one new TRB is queued, which keeps 16 outstanding. Before v9.05 only one TRB was queued, so a 1000 Hz wireless mouse lost most of its reports and the backlog in the dongle made the pointer lag.
@@ -7629,14 +9257,14 @@ Shell: `shutdown`/`poweroff`/`halt`, `reboot`/`restart`, `suspend`.
 
 #### 10.7.2 AML pre-scanner (`drivers/acpi/aml_scan.c`)
 
-This is a non-executing walker for the touchpad code. It copies pointers to the DSDT and all SSDTs (max 33), finds every Scope/Device (`0x10`, `0x5B 0x82`) up to 768 nodes, and builds full paths. For each device (max 160) it scans raw bytes for:
+This is a non-executing walker for the touchpad code. It copies pointers to the DSDT and all SSDTs (max 33), finds every Scope/Device (`0x10`, `0x5B 0x82`) up to 8192 nodes (`AMLN_MAX`), and builds full paths. For each device (max 1024, `AMLD_MAX`) it scans raw bytes for:
 - `_HID` (string or EISA ID, decoded by `aml_eisa`) and `_ADR`;
 - the `PNP0C50`/`ACPI0C50` HID-over-I2C IDs;
 - `I2cSerialBus` (0x8E, type 1): address, speed and controller path;
 - `GpioInt` (0x8C): pin, polarity and controller path;
 - `Memory32Fixed` (0x86).
 
-Child devices are skipped (`aml_in_child`). Because it never runs methods, a `_CRS` that is built at runtime (`Method(_CRS)` returning a computed buffer) is still found only if the resource bytes appear literally in the device body.
+Child devices are skipped (`aml_in_child`, which stops at the first node that starts after the current byte). Before v10.02 the limits were 768 nodes and 160 devices; the firmware of large laptops (for example an ASUS TUF Gaming F17 with an 11th-generation Intel CPU) describes more, so the touchpad and its I2C controller were never read and `tpinfo` showed "160 devices, 0 I2C touchpads". When a limit is reached, `g_aml_full` is set (bit 0 nodes, bit 1 devices) and `tpinfo` says that devices were left out. Because it never runs methods, a `_CRS` that is built at runtime (`Method(_CRS)` returning a computed buffer) is still found only if the resource bytes appear literally in the device body.
 
 #### 10.7.3 AML interpreter (`drivers/acpi/aml.c`)
 
@@ -7703,6 +9331,20 @@ Shell.
 
 A second `acpi` branch further down `commands.c` (S5/S1/reset summary) cannot be reached because the earlier `seq(cmd,"acpi")` matches first.
 
+#### 10.7.5 Lid, power button, low battery (`drivers/acpi/acpi_dev.c`, `apps/system/powerui.c`) (v10.32)
+
+Devices: after `_INI`, `acpi_aml_init` looks up the first `PNP0C0D` (lid), `PNP0C0C` (control-method power button) and `PNP0C0E` (sleep button) and logs "acpi: lid switch found" and "acpi: power button device found". PM1 enable bit 8 (PWRBTN_EN) is set next to clearing PWRBTN_STS: QEMU sets the status bit only when it is enabled, and the SCI line stays masked in the PIC and the I/O APIC, so no interrupt is raised; `acpi_poll` still reads the status bit.
+
+Lid: `lid_check` evaluates `_LID` on a Notify to the lid device and every 50 ticks from `acpi_poll` (many laptops report the lid through a GPE that is not handled). A change calls `g_acpi_lid_cb` = `pm_lid_changed`. On close, `g_lid_action` 0 turns the screen off (`g_screen_off`, `bl_screen(0)`: `_BCM` with the lowest level from `_BCL` and the Intel PWM duty at 0), 1 sleeps (S1 through `power_sleep` when `g_acpi_have_s1`, otherwise the same as 0), 2 does nothing. Opening the lid restores the saved brightness. While `g_screen_off` is set, `compose_present_body` draws one black frame and then nothing; a key or a click turns the screen back on unless the lid is closed.
+
+Power button: the fixed button (PM1 status) and Notify 0x80 or 0x02 on the `PNP0C0C` device both call `acpi_power_button` -> `pm_power_button`. On the desktop, `g_pbtn_action` 0 opens the power menu (Shut down, Restart, Sleep, Cancel; arrow keys, Tab, Enter, Esc or the mouse; closes itself after 30 s); a second press more than 0.3 s later shuts down. Action 1 sleeps, 2 shuts down at once. Outside the desktop the button shuts down as before. Notify 0x80 on `PNP0C0E` calls `pm_sleep_button`. Presses within one second are merged.
+
+Settings: Power and battery has a "Lid and power button" card (control ids 360-365); the choices are saved as `lid=` and `pbtn=` in `/etc/nvx-setup-done` (`power_prefs_save` in `core/init/setup.c`).
+
+Low battery: `pm_battery_tick` runs after each battery update (every 5 s). While discharging it shows a toast when the charge falls to 15% and to 7% (with the real value). At 3% it starts a 60 s countdown with a toast every 15 s and then calls `power_off`; connecting the charger cancels it.
+
+Browser: `navigator.getBattery()` returns a `BatteryManager` filled from `nwk_battery` (charge, charging, minutes from `_BST`), polled every 30 s with `chargingchange`, `levelchange`, `chargingtimechange` and `dischargingtimechange` events. Without a battery it reports charging at 100% like Chrome on a desktop.
+
 ### 10.8 RTC (`drivers/rtc/cmos.c`)
 
 ```c
@@ -7759,7 +9401,22 @@ The device is PCI class 04/03 with a 32-bit MMIO BAR (BARs above 4 GB are refuse
 
 Host-side tests for both probes, including codec timeout and muted-codec cases, are in `tools/tests/drivers/drvsim.c`.
 
-Sound limits: playback only, no capture; one stream; a fixed format; no jack detection or switching (all found paths are routed at the same time); no HDMI audio codecs beyond what the path search happens to find; the first matching PCI device only.
+Sound limits (HD Audio): playback only, no capture; one stream; a fixed format; no jack detection or switching (all found paths are routed at the same time); no HDMI audio codecs beyond what the path search happens to find; the first matching PCI device only.
+
+#### 10.9.4 USB audio (`drivers/usb/xhci.c`, the `aud_*` functions)
+
+USB Audio Class 1 devices: USB headsets, wireless headsets with a USB dongle (they are USB audio devices to the computer), USB speakers and USB microphones. Bluetooth headsets need a Bluetooth stack and are not supported.
+
+| Step | What happens |
+|---|---|
+| Detection | `xhci_enum_loc`: a configuration with an Audio interface (class 1, subclass 1 or 2) is read again in full (up to 16000 bytes) and given to `aud_attach`. If the device also has HID interfaces (the volume buttons of most dongles), the normal keyboard set-up runs after it and `aud_sync_e0` takes over the endpoint 0 state; an audio-only device keeps its memory region (`aud_reg_hold`). |
+| Parsing | `aud_parse`: the Audio Control interface and its Feature Units, and per streaming alternate setting the `AS_GENERAL` format tag (PCM), the Type I format (channels, subframe size, bits, discrete rates or a range) and the isochronous endpoint (direction, packet size, interval). `aud_pick` chooses 16-bit, stereo before mono, 48 kHz before 44.1 kHz. |
+| Start | `SET_CONFIGURATION`, Feature Units unmuted. Playback starts on the first write, capture on `rec_start`: `SET_INTERFACE`, sample rate with `SET_CUR` to the endpoint when the device offers more than one, then a Configure Endpoint command for an isochronous OUT (type 1) or IN (type 5) endpoint with a 256-TRB ring. |
+| Streaming | Transfer events go to interrupter 2 (its own 4096-entry event ring), so they do not mix with the camera (interrupter 1) or the keyboard and mouse. `aud_service` (called from `snd_poll` and every write and read) handles finished TDs and keeps up to 96 playback TDs (one per service interval, about 96 ms) and 64 capture TDs queued. Frames per TD come from the rate and the interval with a running remainder, so 44.1 kHz gives 44 and 45 frame packets. |
+| Conversion | The system format is 48 kHz 16-bit stereo. Playback is converted to the device rate and channel count (nearest sample, stereo averaged to mono) and scaled by the volume; capture is converted to 48 kHz stereo. |
+| Switching | `snd_usb_arrived` builds the `nvx_snd` entry and `snd_usb_attach` makes it the current device, keeping the built-in one; `aud_unplug` (on port disconnect) calls `snd_usb_detach`, which goes back. A toast says which headset was connected or that it was disconnected. |
+
+Limits: one USB audio device at a time; 16-bit PCM only; feedback endpoints of asynchronous devices are ignored (the nominal rate is sent, which can give an occasional click on some devices); no hardware volume (software volume instead); USB Audio Class 2 devices are not supported.
 
 ### 10.10 Video
 
@@ -7775,7 +9432,7 @@ There is no display-mode driver. The kernel draws into the linear framebuffer th
 | `BPP` | 0x5020 (u8) | 24 or 32 (`BYPP` 3 or 4) |
 | RGB flag | 0x5021 (u8, valid if 0x502C == `'UEFI'`) | 1 = RGBX byte order to `g_fb_rgb` swaps R/B on blit |
 
-All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpaper and icons. Primitives include `fill_rect`, anti-aliased `fill_round` and `fill_circle` (coverage from `isqrt32`), `shadow_soft`, the 8x14 bitmap font (`dchar/dstr`) and proportional anti-aliased text from `fontaa` (`pdstr`). `blit_all()` copies `SCENE` to the hardware buffer row by row, honouring pitch, 24/32 bpp and the RGB swap. If `g_panel_oled` is set, the whole image shifts by 1 px through 4 positions every 3000 ticks (30 s) to protect OLED panels.
+All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpaper and icons. Primitives include `fill_rect`, anti-aliased `fill_round` and `fill_circle` (coverage from `isqrt32`), `shadow_soft`, the 8x14 bitmap font (`dchar/dstr`) and proportional anti-aliased text from `fontaa` (`pdstr`). `blit_all()` copies `SCENE` to the hardware buffer, honouring pitch, 24/32 bpp and the RGB swap. Since v9.85 it only sends what changed: a shadow copy in RAM holds what the screen shows, `dmg_rects` (`drivers/video/fb/damage.c`) compares `SCENE` with it in 64x16 tiles and returns up to 256 rectangles (runs of changed tiles in a tile row, joined with the same run in the row above), and only those are copied, by the CPU or by the NVIDIA copy engine (section 10.10.7). More than 70% changed, too many rectangles, the first frame, a new screen size, the OLED shift and the Intel page-flip path send the whole frame. Everything else that writes the screen (`blit_region`, the boot log) also updates the shadow (`fb_shadow_note`). `fbdamage` in the terminal shows the counts and turns it off and on. If `g_panel_oled` is set, the whole image shifts by 1 px through 4 positions every 3000 ticks (30 s) to protect OLED panels.
 
 #### 10.10.2 SIMD blitting (`arch/x86_64/cpu/simd.c`)
 
@@ -7910,7 +9567,8 @@ Added in v9.81. It follows the boot order of the Linux nouveau r535 code and use
 | `nvgsp vram` | finds the card, sizes the BARs, waits for GFW_BOOT, reads the VRAM size (0x100CE0) and the VGA workspace (0x625F04) and prints the WPR2 layout; touches nothing |
 | `nvgsp boot` | steps 1-10 below: GSP-RM running, BAR2 and BAR1 working |
 | `nvgsp objects` | steps 11-15: the objects and the copy-engine test |
-| `nvgsp all` | boot, then objects |
+| `nvgsp all` | boot, then objects, then step 16 (the screen through the copy engine) |
+| `nvgsp present on`, `nvgsp present off` | desktop frames through the copy engine, or back to the CPU copy |
 | `nvgsp unload` | UNLOADING to GSP-RM, then booter_unload on SEC2, which clears WPR2 |
 | `nvgsp log` | the log of the last command |
 
@@ -7922,7 +9580,7 @@ Added in v9.81. It follows the boot order of the Linux nouveau r535 code and use
 | 4 | VBIOS ROM read (1 MB, IFR header skipped), FWSEC found through the BIT 'p' table (application 0x85), patched for FRTS (or SB) and run on the GSP falcon (0x110000) through `acr/bl.bin`; then WPR2 must be where FRTS was asked for | `nvb_find_fwsec`, `nv_run_fwsec` |
 | 5 | booter_load on SEC2 (0x840000) with the WPR metadata address in the mailboxes | `nv_booter` |
 | 6 | GSP RISC-V core running | `boot_gsp` |
-| 7 | GSP_INIT_DONE event (the GSP sequencer events are run on the way) | `rpc_wait`, `seq_run` |
+| 7 | GSP_INIT_DONE event (the GSP sequencer events are run on the way, including CORE_RESUME, see below) | `rpc_wait`, `seq_run`, `seq_resume` |
 | 8 | GET_GSP_STATIC_INFO: the usable VRAM regions and BAR1 page directory base; the VRAM allocator gets those regions with the console framebuffer reserved | `vram_alloc_init` |
 | 9 | BAR2: page tables in VRAM, UPDATE_BAR_PDE, write and read back a test page through the window | `bars` |
 | 10 | BAR1: page tables under the base GSP-RM reports, the console framebuffer mapped 1:1, read back through the window | `bars` |
@@ -7931,16 +9589,95 @@ Added in v9.81. It follows the boot order of the Linux nouveau r535 code and use
 | 13 | client (NV01_ROOT, 0x0000), device (0x0080), subdevice (0x2080), address space FERMI_VASPACE_A (0x90F1) with its page directory | `objects` |
 | 14 | channels (TURING_CHANNEL_GPFIFO_A, 0xC46F) for GR and the copy engine, context buffers promoted, then `TURING_A` (0xC597), `TURING_COMPUTE_A` (0xC5C0) and `TURING_DMA_COPY_A` (0xC5B5) | `user_chan`, `objects` |
 | 15 | copy-engine test: a push buffer with SET_OBJECT and LAUNCH_DMA copies a 4 KB pattern in VRAM, kicked through the work-submit token and the doorbell | `ce_test` |
+| 16 | the screen through the copy engine: the console framebuffer's VRAM (its address minus BAR1, which step 10 maps 1:1) is mapped into the address space, a copy-engine fill and a 4 KB RAM-to-VRAM copy are read back through PRAMIN, then desktop frames go through the copy engine; if anything does not match the screen stays on CPU copies and `nvgsp all` still succeeds | `scanout` |
+| 17 | the 2D engine: a FERMI_TWOD_A object (class 0x902D) on the graphics channel; one push buffer fills, copies, scales 2x and blends (premultiplied alpha) into a VRAM test surface, ends with a host semaphore release (SEM_EXECUTE with wait-for-idle), and 15 pixels are read back through PRAMIN; only then is the 2D engine used | `twod` |
 
 Memory: `nvv_*` is an extent allocator over VRAM (256 free ranges, 1024 allocations, 4 KB granularity, never returns address 0, clears what it hands out). `nvm_*` builds GPU page tables in the version 2 format (PD3, PD2, PD1, dual PD0, 4 KB small page tables), joins an address space to an instance block (page directory at instance+0x200) and flushes the GPU TLB (0xB830A0). VRAM is reached through the PRAMIN window (0x1700, 0x700000).
 
 Copy engine for other code (v9.82): `nvgsp_ce_ready()` says whether the channels exist; `nvgsp_ce_map(kva, len)` maps kernel memory into the GPU address space page by page through the CPU page tables (`kva_to_pa`, so it also works for pages `early_remap` moved); `nvgsp_ce_copy2d(src, src_pitch, dst, dst_pitch, bytes_per_line, lines)` pushes one pitched multi-line copy with a semaphore release and waits up to 200 ms for it. The Gears app uses it to put frames on the screen. The simulator checks a 300x170 copy into a pitched frame and that nothing outside it changes.
 
-Limits: untested on a real card; only the simulator (`tools/tests/nvidia/nvsim.c`, `check.py nvidia`) has run it. The firmware has no TU117 booter, so a TU117 uses the TU116 one unless `booter_load-535.113.01.bin` for TU117 is put in Files. FWSEC cannot run twice: if WPR2 is still set from an earlier try the driver stops and asks for a full power-off. After `nvgsp boot` a monitor on the NVIDIA card may go dark, because GSP-RM takes over the display engine and there is no mode setting yet. No interrupts are used; every wait polls with a time limit.
+The CPU sequencer: while it starts, GSP-RM sends RUN_CPU_SEQUENCER (event 0x1002) with a list of register writes, polls, delays and core operations for the CPU to carry out (opcodes 0-8: REG_WRITE, REG_MODIFY, REG_POLL, DELAY_US, REG_STORE, CORE_RESET, CORE_START, CORE_WAIT_FOR_HALT, CORE_RESUME). CORE_RESUME (v9.85, found on the GTX 1650 where it is the last command of the list) is done as in nouveau: reset the GSP falcon (0x1103C0 pulse, wait for scrubbing), write the LibOS argument address to GSP mailboxes 0x110040/0x110044 again, start SEC2 again (the booter is still loaded there), wait for bit 26 of 0x1180F8, check that SEC2 mailbox 0 is 0, write the bootloader version to 0x110080 and check that the GSP RISC-V core runs (0x111240 bit 0). A failed sequencer command ends step 7 with its reason.
+
+Physical addresses (v9.85): everything handed to the GPU goes through `kva_to_pa`, page by page for the radix3 tables, the message-queue page list and the log-buffer page lists; buffers that must be contiguous (the log buffers, the method buffer, the FWSEC copy) are checked and allocated again if they are not.
+
+The log: `nvgsp-log.txt` in Files, and `NVGSPLOG.TXT` on the USB stick when one is plugged in (FAT, written with `ufat_write_file`). It starts with `nvgsp <command> - RESULT: all steps passed` or `FAILED at step N: reason`, then the state reached, then the steps; lines are wrapped at 72 columns with a 6-space indent.
+
+Booters: the built-in booter is the TU116 one. linux-firmware links `nvidia/tu117/gsp` to `tu116/gsp`, so TU116 and TU117 use the same file. TU102, TU104 and TU106 need `booter_load-535.113.01.bin` from `nvidia/tu102/gsp` in Files.
+
+Limits: on the owner's GTX 1650 (TU117, 4 GB) v9.84 got through steps 1-6 and stopped in step 7 at the CORE_RESUME sequencer command. v9.85 added CORE_RESUME and then got through steps 7-13 (GSP-RM running, static info "NVIDIA GeForce GTX 1650", 7 TPCs, BAR1/BAR2, engine list, golden context, our client and address space) and stopped in step 14: PROMOTE_CTX for our graphics channel returned NV_ERR_INVALID_ARGUMENT (0x1F) because the shared PRIV_ACCESS_MAP buffer was sent as not mapped and without an address. nouveau maps the shared buffer into the channel's address space for every channel after the golden one; v9.86 does the same, and the simulator now refuses the old entry. v9.86 also puts the copy channel on CE2 (its own runlist 8) instead of CE0, which shares the graphics runlist. Everything after step 14 has only run in the simulator (`tools/tests/nvidia/nvsim.c`, `check.py nvidia`). FWSEC cannot run twice: if WPR2 is still set from an earlier try the driver stops and asks for a full power-off. After `nvgsp boot` a monitor on the NVIDIA card may go dark, because GSP-RM takes over the display engine and there is no mode setting yet. No interrupts are used; every wait polls with a time limit.
+
+#### 10.10.7 2D acceleration on NVIDIA: stages
+
+The Intel path (section 10.10.4) draws the whole desktop on the GPU. For NVIDIA the same result is reached in stages; each stage works on its own and falls back to the CPU when the card does not answer.
+
+| Stage | What | State |
+|---|---|---|
+| 1 | GSP-RM running, BAR1/BAR2, client and channels, copy engine (`nvgsp all`, steps 1-15) | on the GTX 1650 steps 1-13 work (v9.85); step 14 fixed in v9.86 |
+| 2 | Desktop frames to the screen through the copy engine (step 16, `nvgsp_fb_present`), solid fills (`nvgsp_ce_fill`) | v9.84, simulator; needs stage 1 on the card |
+| 3 | Only changed areas are sent: `blit_all` keeps a shadow of the screen, finds changed 64x16 tiles (`dmg_rects`) and sends just those rectangles, all in one copy-engine push buffer (`nvgsp_fb_present_rects`, up to about 80 copies per kick, one semaphore at the end) or by the CPU when the card is not running | v9.85, simulator and QEMU (CPU path) |
+| 4 | The 2D engine (FERMI_TWOD_A, step 17): `nv2d_fill`, `nv2d_blit` (any size, scaled, from RAM or VRAM), constant-alpha and premultiplied per-pixel blending (`NV2D_OVER`), `nv2d_to_screen`. Used for Gears: while its window is fully visible, each frame goes from the renderer to the screen by itself, without redrawing the desktop, through the 2D engine (scaled 2x in half mode) or the CPU | v9.86, simulator and QEMU (CPU path) |
+| 5 | The whole desktop drawn on the GPU by compute shaders on TURING_COMPUTE_A (step 18, `nvdraw.c`): the GPU draw queue `gq.c` of the Intel path sends each operation to `nvc_op`, which writes one launch of the `gqk` shader | v9.87, simulator and QEMU (CPU path) |
+| 6 | Display engine through GSP-RM: mode setting, page flips without tearing, native resolution, the second monitor | separate, can come before 3-5 |
+
+Stage 2 does not make one frame much faster than a write-combined CPU copy; what it shows is that copy-engine writes reach the screen and that the read-back check works. Stage 3 cuts what crosses the bus to the changed part of the screen (for Gears in a window about a third of the screen, for a clock tick a few tiles), on the CPU path as well. Keeping windows in VRAM was planned for stage 3, but the desktop draws rounded corners, shadows and transparent title bars that the copy engine cannot blend, so composing in VRAM only pays off together with the 2D engine; that part moved to stage 4. In v9.86 it was measured: the existing layered compositor (`gpu draw emu`, every drawing operation on the CPU) runs Gears at 2 frames a second in QEMU where direct drawing reaches 5, and the operations that make up most of it (masks for text, shadows and corners) cannot run on the 2D engine. So whole-desktop composition moved again, to stage 5 with compute shaders, and the 2D engine is used where it helps today: frames of a window that changes alone.
+
+Stage 5 in detail (v9.87). The shader `drivers/video/nvidia/shaders/gqk.c` takes one parameter block (`nvop`, 136 bytes: operation, rectangle, offsets, colours, alpha, gradient step and three surfaces with GPU address, pitch, width and height) and runs one thread per pixel in 32x4 thread blocks. It implements fill, blend, mask, copy, masked copy, horizontal and vertical gradient, tint, horizontal and vertical 8-tap blur, and premultiplied "over" with and without mask, with the same integer arithmetic as `cpu_exec` in `gq.c`, so the GPU and the CPU give identical pixels. The source is plain C; clang 18 (`-target nvptx64-nvidia-cuda -march=sm_75 -O2`) makes `gqk.ptx`, NVIDIA's ptxas makes `gqk.cubin`, and `tools/nvcubin.py` embeds it as `include/nvx/drivers/video/nvidia/gqk_cubin.h`. ptxas is the only NVIDIA tool in the chain; `tools/nvshaders.sh` fetches it from PyPI into a private folder and runs it.
+
+`nvc_parse` reads the cubin at run time: it must be a 64-bit CUDA ELF for sm_75 with a `.text.gqk` section and no relocations, local memory, stack or shared memory. The register count comes from the section's info field, the parameter offset in constant bank 0 from `EIATTR_PARAM_CBANK` (0x160), and other constant banks from `.nv.constantN.gqk` (ptxas puts the jump table of the operation switch in bank 2). `cp_load` writes the code to VRAM and maps it read-only, puts bank 2 in system memory, and allocates 1600 launch slots (a 256-byte QMD and a 512-byte constant bank 0 each) and a 64 KB push buffer, all mapped into the channel's address space.
+
+Each operation (`nvc_op`) fills bank 0 with the block size (c[0][0x0], c[0][0x4], used by the shader for its pixel index), the grid size and the parameters at 0x160, and a QMD v2.2 (fields from NVIDIA's `clc3c0qmd.h`, as nouveau and NVK use for Turing): version 2.2, grid, 32x4x1 threads, register count (rounded up), 8-64 KB shared memory configuration, global caching, L1 data and constant cache invalidation, constant banks 0 and 2, program address. It is started with SEND_PCAS_A (QMD address >> 8) and SEND_SIGNALING_PCAS_B (invalidate and schedule). The draw queue already knows which operations read or write the same area; when one depends on an earlier one in the batch, WAIT_FOR_IDLE goes before it. A batch starts with SET_OBJECT, the shared and local memory windows (0xFE000000 and 0xFF000000) and an instruction, data and constant cache invalidation, and ends with WAIT_FOR_IDLE, a host semaphore release that waits for the engine, an L2 flush and a second semaphore release that the CPU waits for (500 ms).
+
+`nvdraw.c` connects this to the desktop: GPU buffers are ordinary RAM mapped into the GPU (`nvgsp_ce_map`), the self-test of the Intel path runs (first fill, cache test, coherency test, 400 random operations against the CPU), and `nvd_start` calls `gfx_start(GFX_GPU, ...)`. From then on the layered compositor (section 11) runs as on Intel, and `blit_all` sends the finished frame to the screen through the copy engine (stages 2 and 3). After `nvgsp all` runs again, buffers are mapped again into the new address space; `nvgsp unload` stops GPU drawing first.
+
+#### 10.10.8 NVIDIA 2D: review results and the plan from here (v10.59)
+
+A line-by-line review of the copy-engine and 2D paths (`nvgsp.c`) and their callers (`framebuffer.c`, `gpu3d.cpp`, `nvdraw.c`) found these problems; all are fixed in v10.59 and the simulator (`check.py`, group `nvidia`, 62 checks) passes:
+
+| Problem | Effect | Fix |
+|---|---|---|
+| `nv2d_screen` only checked that the screen copy path had been set up, not that its picture was still right | after a failed read-back (the copy engine writes somewhere that is not the visible screen) Gears kept drawing into that VRAM and its window stopped updating | `g_sc_wrong` is set on a read-back mismatch; the 2D screen target is refused until `nvgsp present on` or a new `nvgsp all` |
+| The changed-tile shadow was not cleared when the copy-engine screen path switched itself off | screen areas sent wrongly in the frames before the failed check stayed stale | `sc_off` calls `fb_shadow_invalidate` |
+| `nv2d_to_screen` never unmapped the previous source and did not notice a bigger frame at the same address | GPU address space and page tables grew with every Gears resize; a frame larger than the mapping could make the 2D engine read unmapped memory | one tracked mapping (address, length, generation), unmapped before a new one |
+| `sc_prep` replaced the desktop mapping without unmapping the old one | same leak on resolution changes | unmap first |
+| `nvgsp_ce_map` left a half-made mapping when a page could not be mapped | stray GPU mappings of memory that is later freed | rolls back |
+| The 2D push buffer had a size constant (`GPB_CAP`) that nothing checked | a future batch of many operations would write past the 4 KB buffer | `gm` stops at the limit and `gr_end` drops the batch |
+| `twod` (step 17) freed its VRAM test surface but left it mapped, and leaked it on failure | GPU address pointing at reused VRAM | unmap and free on every path |
+| `nd_remap` (compute desktop) did not update the stored address after `nvgsp all` ran again; the self-test freed its images without unmapping | the new mapping was never removed when a window closed, so the GPU kept a mapping of freed memory | address and length updated; self-test unmaps |
+
+Still open (needs the real card): whether system-RAM mappings made by `nvm_map(...,1,0,0)` are cache-coherent (snooped) for the copy and 2D engines - no CPU cache flush is done for the desktop picture or Gears frames before a copy; the constant-alpha mode (`NV2D` alpha 0-255) uses BLEND_PREMULT, which is only right when the source alpha byte is 255 (desktop buffers are X8R8G8B8 with an undefined alpha byte), and step 17 tests the A8R8G8B8 format only, not the X8R8G8B8 format the screen uses.
+
+The plan, ordered by what is most likely to work first on the GTX 1650. Every stage keeps the CPU path and switches itself off after a failed check, as now.
+
+| # | Stage | Test on the laptop | Fallback | Hours |
+|---|---|---|---|---|
+| 1 | Get `nvgsp all` to the end of step 13 again and fix step 14 (channels) on the card; collect the log | `nvgsp all`, photo of the RESULT line and the last 20 lines | nothing changes on the screen; CPU drawing | 2-4 per round, 1-3 rounds |
+| 2 | Copy engine to the screen (steps 15-16): fill test and RAM-to-VRAM test read back | `nvgsp all`, then `gpuinfo`; Gears in a window should look the same | `present off`, CPU | 2-3 |
+| 3 | Cache coherency: test both a snooped and a non-snooped mapping in step 16 with a pattern written just before the copy, choose the one that reads back right, flush when needed | step 16 lines in the log | CPU copies | 2-3 |
+| 4 | Changed tiles only (already written): measure frames per second and bus traffic | `bench`, photo | full copies or CPU | 1-2 |
+| 5 | 2D engine (step 17) with the X8R8G8B8 format the screen uses; constant alpha with BLEND_AND/BETA1 checked by read-back before it is used | step 17 lines; Gears window | CPU blend | 3-5 |
+| 6 | Window contents kept in VRAM and composed by the 2D engine (opaque windows first, rounded corners and shadows still on the CPU) | moving windows smoothly, `bench` | current compositor | 8-12 |
+| 7 | Compute-shader desktop (step 18, already written) on the card | `nvgsp all`, `gpu draw on`, photo | CPU compositor | 4-8 |
+| 8 | Display engine through GSP-RM: native mode set, page flips without tearing | a new `nvgsp mode` command, photo of the monitor | firmware framebuffer | 10-20 |
+
+Photos needed for stage 1: the `nvgsp all` RESULT screen and of `cat /System/Hardware/gpu.nvh`, plus `gpuinfo`.
 
 ### 10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)
 
 The file defines the `cpuid()` and `rdmsr()` inline wrappers that the rest of the kernel uses (`tp_is_amd`, `arch_fpu_init`, timers). `get_brand()` reads leaves 0x80000002-4 into `g_brand[52]` and strips leading spaces, or uses "x86-64 CPU" when the extended leaves are missing. It sets `g_lma` from IA32_EFER (MSR 0xC0000080) bit 10. The `cpu`/`cpuid` command prints these two values. The later `cores`/`cpu` command branch (SMP view) responds only to `cores`, because the earlier `seq(cmd,"cpu")` takes `cpu`. Frequency, cache and feature-flag reporting are not in this file. TSC/HPET calibration lives in `hrtimer.c` (`timers` command).
+
+### 10.11a CPU temperature and speed (`arch/x86_64/cpu/cputemp.c`)
+
+| Item | Detail |
+|---|---|
+| Intel | CPUID 6 EAX bit 0 (digital sensor): `IA32_THERM_STATUS` (0x19C) bits 22:16 are degrees below TjMax; bit 6: package sensor 0x1B1. TjMax from `MSR_TEMPERATURE_TARGET` (0x1A2) bits 23:16 on family 6 models from 0x1A that are not Atom cores, otherwise 100 C. |
+| AMD | Family 17h and later with an AMD root complex at 0:0.0: SMN register 0x59800 through PCI config 0x60/0x64; temperature = bits 31:21 x 0.125 C, minus 49 C when bit 19 is set (Tctl, as Linux k10temp). |
+| HWP | CPUID 6 EAX bit 7: `IA32_PM_ENABLE` (0x770) bit 0, then `IA32_HWP_REQUEST` (0x774) = lowest to highest performance from `IA32_HWP_CAPABILITIES` (0x771), energy preference 0x80 when bit 10 says it exists. |
+| Speed | APERF/MPERF (0xE8/0xE7) ratio times the base clock from CPUID 0x16, every 2 s. |
+| Safety | Nothing is read or written inside a virtual machine (CPUID 1 ECX bit 31). A warning when the CPU is within 5 C of TjMax, at most every 5 minutes. |
+
+### 10.11b AMD GPIO (`drivers/gpio/amd_gpio.c`)
+
+The controller is the ACPI device AMDI0030, AMDI0031 or AMD0030 with a memory resource; each pin is one 32-bit register at base + pin x 4 (Linux pinctrl-amd). Bits used: 16 pin level, 23 output enable, 20/21 pull-up/down, 11 interrupt enable, 12 interrupt mask, 8 level trigger, 10:9 active level, 28 interrupt status, 6:5 debounce. For the touchpad, `amdg_tp_setup` accepts a pin that reads a value other than 0xFFFFFFFF and is an input; `amdg_sample`/`amdg_learn` compare its level with 24 reads that returned data and 24 that did not, and only a pin that matches every time (either polarity) is used to skip empty reads.
 
 ### 10.12 Summary of bounded waits
 
@@ -7972,7 +9709,7 @@ Each GUI and app file is its own compilation unit with a header under `include/n
 | `graphics/ui/wm.c` | `WN[]`, open/close/focus, notifications, window frame |
 | `shell/terminal.c` | terminal grid, scrollback, prompt, `neofetch` text |
 | `shell/commands.c` | parser, pipes, scripting, `run_cmd_one`, live terminal |
-| `apps/*.c` | editor, calculator, chatgpt, browser, settings, files_classic, (fs/pkg.c), file_explorer, small_apps, doom, logs |
+| `apps/*.c` | editor, calculator, browser, settings, files_classic, (fs/pkg.c), file_explorer, small_apps, doom, logs |
 | `graphics/ui/desktop.c`, `graphics/ui/input.c` | compositor, dock, launcher, `process_input` |
 | `core/init/splash.c`, `bootmenu.c`, `installer.c`, `setup.c` | boot UI, installer, OOBE and login |
 
@@ -8196,8 +9933,9 @@ Wallpaper and accent sync with the signed-in Noovex account. `nvx_settings_save(
    - Ctrl+1...4 switches workspace;
    - Win+R opens the Terminal;
    - a Win tap on its own toggles the notification panel.
+   - Print Screen (hotkey 28) opens the screenshot tool; Shift+Print Screen (30) saves the whole screen and Alt+Print Screen (29) the window under the pointer (or the focused window) at once (`graphics/ui/hotkeys.c`).
 3. Trackpad gestures (`g_gesture`): swipe up opens the launcher, swipe down closes the launcher and panels, swipe left/right moves to the next/previous workspace.
-4. Mouse.
+4. Mouse. While the screenshot tool is open (`g_ss_on`), the pointer and buttons go only to `ss_mouse()` and every key only to `ss_key()`.
    - The packet is read with IRQs off and forwarded to user-space as `ux_mouse_push()`.
    - If DOOM holds the mouse, deltas go to `doom_mdx/mdy` and nothing else sees them.
    - Optional acceleration (`g_mouse_accel`) applies.
@@ -8237,7 +9975,7 @@ Both modes share one text grid in shell/terminal.c:
 | Init | `live_init()`: `g_live=1`, AA font, `ux_core_start("root")`, `live_geom()` (grid = whole screen at 8x17 px cells), `live_banner()` ("To boot setup, type `noovexos_install`") | `term_init()`: banner "NoovexOS 64 nsh shell", grid from window size (`term_geom`) |
 | User | root (uid 0) | the logged-in desktop user |
 | Draw | `live_present()`: full repaint only when `g_lfull`; otherwise compares every row with the shadow copies `g_lsh/g_lsc/g_lsb` (characters, colours, backgrounds), repaints changed rows (`live_row`), blits only the changed band, and redraws just the cursor cell. A cell with a background colour gets a filled rectangle; its foreground is drawn as is instead of through the theme's `tmap` | `term_draw()`: glass background, theme colours, gradient accent line, `user@host: cwd` title, scrollback rendering, caret style (`g_tcur` block/bar/underline), status bar with uid dot, path and grid size |
-| Input | `live_input()` discards mouse events and sends keys through the same Ctrl mapping to `tty_key`/`term_key` | `process_input()` (above) |
+| Input | `live_input()` sends keys through the same Ctrl mapping to `tty_key`/`term_key`. Mouse movement is discarded unless a program has `/dev/input/mice` open; then it moves `mx`/`my` like the desktop (the VMware/QEMU absolute pointer computes its deltas from them) and pushes movements and buttons with `ux_mouse_push` (v10.07). While `/dev/fb0` is open `live_present()` draws nothing and the cursor does not blink | `process_input()` (above) |
 
 The two glyph paths differ:
 
@@ -8265,7 +10003,7 @@ The path to the desktop runs through two screens:
 Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 
 1. Choose your language, 6 entries in `SU_LANGS`;
-2. Keyboard layout, 6 entries in `SU_KBDS`;
+2. Keyboard layout, 6 entries in `SU_KBDS` (US, Swedish, German, French, Spanish, UK); since v10.18 the choice sets `g_kbd_layout` in `drivers/input/ps2/ps2.c`, is kept in `/etc/nvx-setup-done`, and can be changed later in Settings > Language & region, where the key repeat speed is set too;
 3. Select your timezone, 7 entries in `SU_TZS`;
 4. Make it yours, user name, accent and theme;
 5. Sign in with Noovex, sign in, create an account, or skip; the forms call `nvx_signin`/`nvx_register`;
@@ -8294,13 +10032,12 @@ Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 | Editor | `editor.c` | `editor_open`, `editor_open_buf`, `ed_load_usb`, `editor_key`, `editor_save`, `editor_run` | 200x200-char text editor with Save/New/Run |
 | Calculator | `calculator.c` | `calc_press`, `calc_apply` | 64-bit integer four-function calculator; 20 buttons `CBL[]`, `<` = backspace, divide-by-zero sets `calc_err` |
 | Browser | `browser.c` | `browser_go`, `web_load_html`, `web_paint`, `browser_draw`, `browser_click`, `browser_key`, `browser_tick` | front end for the web engine (Part 13) |
-| ChatGPT | `chatgpt.c` | `cg_send`, `cg_push`, `chatgpt_draw/_click/_key` | chat client for a hosted backend |
 | DOOM | `doom.c` | `doom_init`, `doom_draw`, `DG_*` hooks | doomgeneric + FreeDoom |
-| Settings | `settings.c` | `settings_draw`, `settings_click`, `nvx_settings_save/load` | 8 categories |
+| Settings | `settings.c` | `settings_draw`, `settings_click`, `settings_title_click`, `settings_key`, `nvx_settings_save/load` | 9 categories, search |
 | Logs | `logs.c` | `logs_draw` | live kernel info and a scrolling hexdump |
 | Terminal Finder | `logs.c` | `tfind_draw`, `TF_CMD[]` | cheat-sheet of hidden developer commands |
 | Presentation | `files_classic.c` | `pptx_load`, `pptx_draw`, `pptx_key`, `pptx_click` | `.pptx` viewer |
-| Clock, Task Manager, Calendar, Snake, Flappy Bird, neofetch, Paint | `small_apps.c` | `clock_draw`, `sysmon_draw/_click`, `calendar_draw/cal_key`, `snake_*`, `flappy_*`, `neofetch_draw`, `paint_*` | small utilities and games |
+| Clock, Calendar, Snake, Flappy Bird, neofetch, Paint | `small_apps.c` | `clock_draw`, `calendar_draw/cal_key`, `snake_*`, `flappy_*`, `neofetch_draw`, `paint_*` | small utilities and games |
 | Welcome, About | `file_explorer.c` | `welcome_draw`, `about_draw` | static pages |
 
 #### Browser (`apps/internet/browser.c`, 698 lines)
@@ -8347,9 +10084,11 @@ There are two implementations.
 
 The editor keeps text in `ED[200][200]` and `ed_ll[]`.
 
+Look (since v10.09, `editor_draw`): a 48 px header bar in the style of Settings and Task Manager with rounded New (+), Save and Run buttons on the left, the file name in bold in the middle with a grey line under it ("Modified" while there are unsaved changes, otherwise the folder, "Not saved yet" or "Python IDE"), and round minimize, maximize and close buttons on the right. Below it a line-number gutter (the current number dark), a light blue current-line band, an anti-aliased monospace font (`mono_glyph` in shell/commands.c, 8x14 glyphs, 20 px lines), a 2 px blinking caret in the accent colour and an overlay scroll bar. A 28 px status bar shows "Ln X, Col Y" on the left and the language (Python, JavaScript or Plain Text), the line count and "UTF-8" on the right. Run is shown only for `.js` and `.nvx` files and in the Python IDE. The output panel is light grey with a bold "Output" heading and a round close button. Clicks in the header go through `editor_title_click` (hook in graphics/ui/input.c), the rest through `editor_click` (apps/system/logs.c); a click in the text puts the cursor there.
+
 - Keys: arrow keys arrive as codes 17-20. Ctrl+C/X/V copy, cut and paste the current line through `g_clip[1024]`.
 - Save: `editor_save()` writes back to the `FS` slot through `fs_wr` and calls `fs_sync`, or "Not enough memory to save" is shown.
-- Run: `editor_run()` joins the buffer and calls `js_run(ed_src,n,ed_run_cb)`. Output goes to a console pane covering 42% of the editor height. If nothing is printed, the pane shows "(no output)" or "[program error]".
+- Run: `editor_run()` joins the buffer and calls `js_run(ed_src,n,ed_run_cb)` with `js_console` set, so `console.log`, `console.info`, `console.warn` and `console.error` print their arguments separated by spaces and end the line (elsewhere `console.*` is still ignored). Output goes to an output panel covering 38% of the editor height. If nothing is printed, the pane shows "(no output)" or "[program error]".
 
 There is no separate `.nvx` binary format in this tree. A `.nvx` file is a source text file for the built-in interpreter (section 11.9) that is auto-run when opened from Files. The default `hello.nvx` (core/syscall.c `fs_init`) is C-flavoured:
 
@@ -8364,16 +10103,6 @@ int main(){
 ```
 
 This works because `js.h` accepts C type keywords as declarations (`js_isctype`), hoists `type name(...)` functions (`js_hoist`), implements `printf` with `%d %i %u %s %c %%`, and calls `main()` automatically after the top-level code (`js_run`).
-
-#### ChatGPT (`apps/internet/chatgpt.c`)
-
-`cg_send()` builds `{"message":"...","source":"noovexos"}` with minimal escaping and calls:
-
-```c
-https_request(CG_HOST,"/api/public/chat","POST","Content-Type: application/json\r\n",body,bl,http_buf,...)
-```
-
-`CG_HOST` is a `*.lovable.app` preview host. The client takes `"reply"` (or `"error"`) from the JSON body with `json_str`. The conversation keeps the last 24 messages (`CG_MAXMSG`), each up to 400 characters, with role 0 = user, 1 = assistant, 2 = system note.
 
 #### DOOM (`apps/games/doom.c`)
 
@@ -8406,7 +10135,7 @@ Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Driver
 | Intel GPU blitter | the Intel iGPU compositor is on (`g_gfx`) | the frame is rendered straight into a GPU surface (`gfx_app_surf`) and blitted into the window with `gq_copy` |
 | CPU copy | otherwise, and for half resolution (2x scaled) | rows are copied into the scene buffer |
 
-Keys: 1 gears, 2 3 4 other scenes (showcase, materials, 192 cubes), W wireframe, S shadows, H half resolution, Space pause, arrows and + - for the camera, R reset, G start the NVIDIA card. Speed: a gears frame at 996x586 takes 8.7 ms on one core of the build machine (about 115 frames a second); in QEMU without hardware acceleration it is 1-2 frames a second.
+Keys: 1 gears, 2 3 4 other scenes (showcase, materials, 192 cubes), W wireframe, S shadows, H half resolution, Space pause, arrows and + - for the camera, R reset, G start the NVIDIA card. Speed: a gears frame at 996x586 takes 8.7 ms on one core of the build machine and 10.2 ms on the owner's desktop. Before v9.84 the window was only redrawn when something else changed on the screen unless the Intel compositor was on, which gave 2 frames a second on the NVIDIA desktop; now the main loop asks `gpu3d_live()` and draws a frame every refresh interval while Gears is open, not minimised and not paused. Since v9.86 those frames skip the desktop when they can (`gpu3d_fast`): if the Gears window is fully visible (on top, no menu, popup, drag, night light, taskbar or dock over it, pointer not over the picture) and was drawn normally less than 0.5 s ago with the same size and mode, only the 3D picture is rendered and put on the screen, by the NVIDIA 2D engine when step 17 passed (scaled 2x in half mode) or by the CPU (`present_rect`). Every 0.5 s a normal frame updates the information bar and the clock. The FPS counter is drawn into the frame itself. The frame rows are 64-byte aligned for the 2D engine. The information bar says "window frames: NVIDIA 2D engine" or "window frames: CPU". With `nvgsp all` done, the information bar also says "desktop: copy engine" when the whole screen goes through the copy engine (section 10.10.7).
 
 #### Settings (`apps/system/settings.c`)
 
@@ -8423,17 +10152,33 @@ The sidebar lists `SC_LBL[8]`. Each category holds the following:
 | Terminal | 6 `TTH` themes, transparency, blur, font Smooth/Pixel, cursor Block/Bar/Underline, status bar |
 | About | version (`g_buildsig.version`), CPU brand, RAM, display mode, kernel size |
 
-The window opens at up to 1000 x 800, sized to the screen and centred above the taskbar. The sidebar is 190-256 px wide with 42-px items 50 px apart; the selected page is an accent-coloured pill. Content has 40-px margins and 28 px between cards. Toggles (`st_toggle`) are 48 x 26 with a shadowed knob and a hover state, buttons (`st_btn`) are 34 px tall with rounded corners, the segmented control (`st_seg`) is a soft tray with a raised white chip, and text uses the proportional font.
+The window opens at up to 1000 x 800, sized to the screen and centred above the taskbar. Since v10.01 it is drawn in the style of GNOME Settings (libadwaita) and does not use `win_frame`: `settings_draw` draws its own shadow, rounded border and header bar. The sidebar (260, 232 or 204 px wide, `ST_SIDE`) has the "Settings" title, a search entry, the nine categories with symbolic icons (`st_glyph`, 40-px rows, the selected row a gray pill with a bold label) and the user row at the bottom. The content pane has the page title centred in the header, a back chevron and three round window buttons (`st_winbtn`) at the same places as the frame buttons, so `win_ctl_hit` still works. Content is at most 720 px wide and centred. Pages are boxed lists (`st_card`: a bold group title above a white card with a 1-px border; `st_tiles`: 56-px rows with icon, title, subtitle and chevron). Switches (`st_toggle`) use the accent colour when on, buttons (`st_btn`) are 34 px tall with a bold label (accent, red-text or gray), the segmented control (`st_seg`) is a gray group with a white selected segment. All text uses the proportional font. When there is no battery, Power shows a status page (icon, bold title, dim text) instead of a card.
+
+Clicks in the header zone are normally a window drag. `on_click` in `graphics/ui/input.c` first gives them to `settings_title_click`, which handles the back button, the search entry and the user row and returns 0 for everything else, so the rest of the header still drags the window.
+
+Search: `g_st_q` holds the query. Clicking the entry focuses it, and while Settings has focus, keys go to `settings_key` (type to search, Backspace, Esc clears, Enter opens the first result). `st_search` compares a normalised form (lower case, letters and digits only, so "wifi" finds "Wi-Fi") and orders results: page titles first, then category titles, then descriptions.
 
 #### Small apps (`apps/accessories/small_apps.c`)
 
 - Clock: an analog face drawn with the integer `isin`/`icos` and `clock_hand`.
-- Task Manager (`sysmon_draw`): one row per open window. Each row shows a per-app memory figure from `tm_app_kb()`, which the source calls "representative" (for example Browser 149504 KB and DOOM 33792 KB). Seven background rows (`TM_BG_N`: System, Compositor, Input, Network stack, NVXFS, TLS engine, Heap manager) use fixed `TM_BG_KB` values. "End task" calls `close_win()` on the selected row.
+- Task Manager: the older `sysmon` code in this file is no longer drawn; the window is `apps/system/taskmgr.c` (see "Task Manager and Settings").
 - Calendar: `cal_dow`, `cal_dim`, month navigation with arrows or the buttons.
 - Snake: a 21x15 grid with an xorshift RNG; step speed is set in `process_input`.
 - Flappy Bird.
 - neofetch: a graphical page that is separate from the text `neofetch()` in terminal.c.
-- Paint: a 540x360 `paint_buf` with a 12-colour `PPAL`, three brush radii (2/4/8) and Clear.
+- Paint: a 540x360 `paint_buf` with a 12-colour `PPAL`, three brush radii (2/4/8) and Clear. Ctrl+V (`paint_paste`) scales the image on the clipboard (`g_clip_img`, for example the last screenshot) into the canvas.
+
+#### Screenshot tool (`apps/system/screenshot.c`)
+
+| Part | What it does |
+|---|---|
+| Opening | `ss_open(mode,now)`: mode 0 area, 1 screen, 2 window. With `now=1` (Shift or Alt with Print Screen) it captures on the next frame without showing anything. |
+| Drawing | `ss_draw()` runs at the end of `compose_build`, after the toasts. It dims the screen, leaves the chosen area clear with a white 2 px frame, corner handles and a size label (or the window under the pointer with a 3 px accent frame), and draws a dark pill at the bottom with Area, Screen and Window, a round capture button and a close button, plus a hint pill above it. |
+| Input | `ss_mouse`: drag to select an area (a second drag replaces it), click a window in window mode, click the pill buttons; right-click closes. `ss_key`: Esc closes, Enter or Space captures, `a`/`s`/`w` switch the mode. |
+| Capture | When a capture is pending, `ss_draw()` waits for queued GPU drawing (`gfx_sync`) and reads the finished frame from `SCENE` instead of drawing the overlay, so the tool itself is never in the picture. |
+| PNG | `png_encode()`: 8-bit RGB, per row the Sub or Up filter (whichever has the smaller sum), zlib with one fixed-Huffman deflate block, LZ77 matches found with a 32 KiB window and hash chains (3-byte hash, 32768 heads, at most 48 candidates per position, plus a direct check for runs of the previous byte), Adler-32 and CRC-32. A 1280 x 800 desktop gives about 0.2-0.7 MB, 1.2 to 1.7 times what an optimising encoder makes. |
+| Saving | `/home/Pictures/Screenshot-YYYY-MM-DD-HHMMSS.png` (the folder is created if needed; the file belongs to the current user), written through the file system and synced at once; the log line is `screenshot: WxH, N KB, path`. The pixels are also copied to `g_clip_img` (`g_clip_iw` x `g_clip_ih`), and a toast says "Screenshot saved to Pictures and copied". |
+| Shell | `screenshot` or `scrot` with `screen`, `window` (the window under the pointer, or the focused window), `area` (opens the tool) or `last` (prints the last file name). |
 
 #### Logs and Terminal Finder (`apps/system/logs.c`)
 
@@ -8614,7 +10359,6 @@ The table lists every `seq(cmd,"...")` branch of `run_cmd_one()` (shell/commands
 | `netlog` | Last 18 network log lines |
 | `colors` | 8-colour swatch |
 | `settings` | Open Settings |
-| `chatgpt`, `ai`, `gpt` | Open ChatGPT |
 | `lua` | Print Lua usage (see section 11.9 for the argument path) |
 | `presentation`, `slides`, `pptx` | Open the first `.pptx` in FS |
 | `reboot`, `restart` | `power_reboot()` |
@@ -8853,9 +10597,177 @@ When the foreground job finishes or stops, `jc_tty_restore` resets the terminal:
 
 ### Task Manager and Settings (v9.73)
 
-Task Manager (`apps/system/taskmgr.c`) has a left rail with Processes, Performance, Devices and Services. Performance samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
+Task Manager (`apps/system/taskmgr.c`) is drawn in the style of GNOME System Monitor since v10.03, like Settings: no `win_frame`, its own header bar with "End task" on the left (red when an app is selected), a view switcher in the middle (Processes, Resources, Devices, Services; icons only below 720 px) and three round window buttons at the frame button positions. Clicks in the title zone go to `sysmon_title_click` first (`graphics/ui/input.c`), so the switcher works there and the rest of the header still moves the window. Processes is one boxed list with column titles (Process Name, % CPU, Memory, Status), an Apps group and a Background group, and a summary line at the bottom. Resources has a list of CPU, Memory, GPU, Disk and Network with a small graph each, and a card with a 60-second graph (line plus fill, dotted grid, "60 seconds" and "now") and right-aligned details for the selected one. Devices is one boxed list of expander rows (coloured icon, name, count, chevron) whose details open inside the list; it scrolls with the mouse wheel and shows a scroll bar. Services shows each service with its description and a Running or Stopped pill. All text uses the proportional font (`tbold`, `tright`, `tclip` cuts long values with ".."). Resources samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
 
 Settings (`apps/system/settings.c`) keeps the current page in `g_stpg`. Pages 0-8 are the category pages (tiles), higher numbers are sub-pages; `pg_parent()` gives each page its parent, which builds the path at the top and the back button. The previous per-category pages are drawn by `old_leaf()` and reused as sub-pages. `settings <page>` opens a page from the terminal.
+
+### 11.13 Classic look (v10.23)
+
+The classic style (`g_dstyle` 1, the default) draws 24-pixel title bars (`TITLEH`) with 16 by 14 buttons and a solid (80, 80, 80) desktop (`g_wallmode` 2, no vignette). `wm.c` has helpers for raised and sunken edges (`ui_bevel`), a 20-pixel menu bar (`ui_menubar`), a 16-pixel scroll bar (`ui_scrollbar`) and tabs (`ui_tabs`). `desktop.c` draws six small desktop icons (double-click opens Files, Terminal, Text Editor, Browser, Calculator or Settings), three quick launch buttons after the start button and two small CPU and memory graphs left of the tray (`sysmon_cpu_pct`, `sysmon_mem_pct`). The start menu has About, six categories with submenus, Settings, Help, Run (opens a Terminal) and Exit. The Terminal (`term_draw_classic`) shows `user@host: path` as its title, a File/Edit/View/Help menu bar, the text on black in a sunken box with a block cursor, and a scroll bar. System Monitor (`sysmon_classic`) has Processes, Performance, Storage, Network and Hardware tabs (hit ids 500 to 504), graphs in group boxes and a status bar. The browser frame uses the window face colour, raised buttons, a sunken white address field and a status bar.
+
+v10.24: the Performance tab draws `sm_graph` (two filled series with a line on top, interpolated between the 60 one-second samples) with right-aligned legends (`sm_rtext`); kernel time is busy time minus the `user_ticks` delta; `heap_stat` returns used and total heap bytes in one walk. The classic prompt uses `term_tilde`, which replaces the home folder (`/root` for root, else `/home`) with `~`.
+
+v10.25: `prop_draw`/`prop_click` show the classic Properties window for `g_prop_slot` (file), `g_prop_dir` (folder) or `g_prop_app` (window). Icon choices are in `g_ficon`, `g_dicon` and `g_aicon` (0 = default, else choice + 1), saved as `f<slot> <n>`, `d<dir> <n>` and `a<app> <n>` lines in `/etc/nvx-icons`; `icon_choice_draw` draws a choice, `item_icon_kind` returns the icon for a Files row, and `mini_icon`, `launch_icon` and `mini_icon_big` use the app choice. `ctx_draw_classic` draws right-click menus with 24-pixel rows. `settings_draw_classic` draws the Settings frame; `st_card`, `st_toggle`, `st_btn`, `st_seg`, `st_sep` and `st_tiles` have classic branches, so the pages themselves are unchanged.
+
+### 11.14 Setup accounts, sign-in screen, lock and Settings > Accounts (v10.40)
+
+Setup (`core/init/setup.c`) has ten pages (`SU_LANG` to `SU_DONE`); `SU_HOST`, `SU_ROOT` and `SU_USER` draw their fields with `acct_field` (label, then `[` black field `]` with `*` for passwords) inside the installer's `ip_box`. Enter moves to the next field and then continues; `su_check_page` validates (computer name, 4-character passwords typed twice, `acct_valid_name`). The user name follows the full name until it is edited (`su_suggest_user`). `su_finish` calls `acct_setup_primary` and `acct_login`; if the accounts cannot be written it goes back to the account page with the reason instead of finishing.
+
+Sign-in. `installed_boot` runs `ux_core_start(0)` first, drops the live root session (`g_logged_in=0`) and shows `ST_LOGIN`. `login_present` lists `acct_list(...,1)` (accounts with uid 1000 to 59999, guest last and only when on) at the bottom left when there is more than one, or a Switch user button while locked. `lg_try` checks the password with `acct_check`; 5 failures start a 30 s wait (`lg_wait_until`); a correct password unlocks the same account or ends the current session (`acct_ui_end_session`) and calls `acct_login` for the new one, then `acct_ui_session_started` clears the Terminal and prints a new prompt. On the live system (`g_lg_installed` 0) Enter unlocks.
+
+Lock and sessions (`core/auth/acctui.c`). `acct_ui_lock` (Win+L, launcher power button, lid close in `pm_lid_changed`, `lock`, Settings, and `acct_idle_tick` after `g_lock_min` minutes without input; an open video player counts as input) keeps the windows. `acct_ui_end_session` closes all windows, kills the account's processes, resets the browser profile (`browser_profile_switch`, `ck_profile_switch`), the Terminal (`term_session_reset`), the Files folder (`fx_session_reset`) and the `sudo` timestamp, then `acct_logout`. Settings keeps `guest=` and `lockmin=` in `/etc/nvx-setup-done`.
+
+Dialogs. `acct_dlg_*` is one modal dialog (title, two text lines, up to five fields, an administrator check box, up to three buttons) drawn by `compose_build` after the other overlays and fed by `process_input` (keys) and `mouse_step` (clicks) while it is open; Tab and the arrows move, Enter presses the focused button or moves to the next field, Esc cancels. Settings > Accounts (`P_ACCOUNT`) uses ids 600 to 675 (`acct_ui_click`): 600 name, 601 password, 602 add, 603 guest, 604 lock, 605 sign out, 606 switch user, 610-613 lock time, 620+i administrator, 640+i password, 660+i remove.
+
+### 11.15 Start menu submenus (v10.47)
+
+Both start menus show categories that open a submenu. The categories and their built-in apps are in `LG_NAME` and `LG_BASE` (`graphics/ui/desktop.c`): Office, Internet, Media & Graphics, Development, Games, System, Accessories and Drivers & Hardware. `lgrp_refresh` adds the Linux programs from `/usr/share/applications` by their `Categories=` line (`xs_cat` in `apps/x11/xapps.c`): Office, WordProcessor, Spreadsheet and Presentation go to Office; Network, WebBrowser, Email, Chat and InstantMessaging to Internet; AudioVideo, Audio, Video, Graphics, Player and Music to Media & Graphics; Development, IDE and TextEditor to Development; Game to Games; System, Settings, Monitor and TerminalEmulator to System; everything else to Accessories. A category without apps is not shown. Each category holds up to 40 apps (16 before, and Linux programs were capped at 15 in total); up to 64 Linux programs are read.
+
+| Menu | Category list | Submenu |
+|---|---|---|
+| Modern style (`g_dstyle` 0) | rows of 48 pixels with a coloured tile, the name and the number of apps (`LR_H`) | a panel to the right of the menu (`lsub_geom`) with the apps as a grid of 4 columns; it opens when the pointer is on a row (or with a click) and closes when the pointer leaves both |
+| Classic (`g_dstyle` 1) | the category items between "About NoovexOS" and "Settings" (`CM_NC` is the number of shown categories) | the list to the right (`cm_sub_geom`); it uses two columns when one would be taller than the screen |
+
+Search in the default menu is unchanged.
+
+### 11.16 Sign-in screen and Face ID (v10.49)
+
+The sign-in and lock screen (`login_present` in `core/init/setup.c`) follows the owner's chosen mockup. `lg_hills` paints the background (sky and three ellipses, scaled to the screen), the clock uses Inter Light 84 px, names and buttons Inter 13 to 40 px from `assets/uifont.c` (made by `tools/mkuifont.py` from the build machine's Inter fonts, drawn with `uf_draw`). The arrow button and Enter check the password as before (5 wrong passwords start a 30 s wait). The power icon at the bottom right opens Sleep, Restart and Shut down.
+
+Face ID has three parts:
+
+| Part | What it does |
+|---|---|
+| `/usr/bin/nvx-faceid` | A static Linux program built from `tools/faceid/nvx-faceid.cpp` with dlib (Boost license, `third_party/dlib`) by `tools/build_faceid.sh`. Models from dlib-models (CC0, `third_party/dlib-models`): `shape_predictor_5_face_landmarks.dat` and `dlib_face_recognition_resnet_model_v1.dat` in `/usr/share/noovex/faceid`. `nvx-faceid serve /dev/nvxface` loads the models once and answers requests; `nvx-faceid compare A.bmp B.bmp ...` prints distances (used for testing on the build machine). |
+| `/dev/nvxface` (device 17, root only) | The kernel puts one request at a time there: a 64-byte header (`NFQ1`, sequence, command, width, height, user name) and the RGB picture (at most 640x640). The program reads it, and writes an 80-byte answer (`NFR1`, status, distance x 1000, face box, five points, number of saved prints). Commands: verify, add (setup), save, reset. |
+| `core/auth/faceid.c` | `fid_begin(FID_VERIFY or FID_ENROLL, user)` starts the camera (`uvc_start`, JPEG frames decoded like the Camera app), starts the program as root with its output in the kernel log, and `fid_tick` (main loop) sends the newest frame whenever the program is free. Verify: two matches in a row succeed; the check gives up 8 s plus three frame times after the first answer (the program itself may take up to 3 minutes to start on a very slow machine or in an emulator). Setup: every usable frame adds a print as long as it is within 0.4 of the first one (otherwise setup starts over); at 5 the prints are saved (written to a new file, then renamed). Before v10.52 a print had to differ from the saved ones by at least 0.03 and 10 were needed. `faceid` in the shell: `faceid status`, `faceid enroll USER`, `faceid verify USER`, `faceid delete USER`, `faceid feed FILE.ppm` (adds a test picture used instead of the camera; `faceid feed` alone goes back to the camera). |
+
+Screens: `fid_scan_draw` darkens the screen, shows the camera picture in a circle with a blue ring (turning while checking, filling up during setup), "Looking for you..." and a "Use password instead" (or "Cancel") button, and "Welcome back, NAME" with a green check on success. It is used by the sign-in screen, the setup step (`SU_FACE`) and Settings (dialog kinds `au_D_FACE`, which checks the password, and `au_D_FACESCAN`).
+
+Limits: a normal camera cannot tell a face from a good photo or video of it, so Face ID is a convenience and the password stays the stronger way in; a liveness check (blink or head turn) is not part of this release. The face print file holds only numbers. The models add about 30 MB to the Linux files.
+
+Since v10.51 the face engine only counts a picture with exactly one face whose box is at least 96 pixels wide (in the picture of at most 640 x 640 sent to it). Otherwise it answers "too small" or "more than one face", and the scan screen shows "Move a little closer" or "Only one face in view, please" (also in `faceid status` and the kernel log as "faceid: hint:"). Two faces in view never count as a match. The 1.2 MB picture buffer is freed once the face engine has stopped after a check, and the kernel resynchronizes on the answer magic if an answer arrives split or shifted.
+
+Since v10.52 setting up is quick: the person only looks at the camera, no head turning. Five face prints are taken from consecutive pictures (`FID_TARGET` 5), each with one face at least 96 pixels wide. Every print must be within 0.4 of the first one; if not (someone else stepped in, or the first picture was bad), the prints taken so far are dropped and it starts again. The scan screen says "Look at the camera" or "Hold still" with the count. The face engine first looks for faces in a half-size picture and only searches the full picture when that finds none, which makes each picture about three times faster; on the build machine one picture takes about 0.15 s, so setting up takes a few seconds on a laptop.
+
+Since v10.53 first-time setup ends on the sign-in screen instead of the desktop (`su_finish` sets `g_lg_installed` so the new accounts are checked even when setup ran without installing). On a live start from a USB stick, `live_lock_start` (called from `kmain` after `installed_boot`) shows the sign-in screen unless `LIVELOCK.TXT` on the stick starts with `0`; unlocking returns to the live Terminal (`g_lg_liveret`). The setting is in Settings > Accounts > Sign-in options (button id 607), only shown on a live start with a mounted stick.
+
+### 11.17 Registry, Program Files and hidden apps in Task Manager (v10.54)
+
+#### Registry (`core/registry.c`, `include/nvx/core/registry.h`)
+
+The registry is a tree of keys and values kept in plain text files:
+
+| File | Contents |
+|---|---|
+| `/etc/noovex/registry/system.reg` | keys under `System` (whole computer) |
+| `/etc/noovex/registry/user-NAME.reg` | keys under `User` for the account NAME (mode 0600) |
+
+The format is `[Key\Path]` lines followed by `Name=Value` lines; `;` starts a comment. `HKLM\` and `HKCU\` are accepted as other names for `System\` and `User\`, and `/` works instead of `\`.
+
+Some values are bound to settings the kernel already had, so changing them in the registry changes the setting at once (and the old settings file is written too, through `power_prefs_save`):
+
+| Key | Values |
+|---|---|
+| `System\Display` | `Accent` 0-4, `Theme` 0-5, `ShowSeconds` 0-1 |
+| `System\Input` | `KeyboardLayout` 0-5, `KeyRepeat` 0-2 |
+| `System\Security` | `GuestAccount` 0-1, `LockMinutes` 0-240 |
+| `System\Power` | `LidAction` 0-2, `PowerButtonAction` 0-2 |
+| `System\SignIn` | `UsbStickSignInScreen` 0-1 (stored on the USB stick, section 11.16) |
+| `User\FaceID` | `Enabled` (read only) |
+| `System\Info` | `Version`, `ComputerName`, `MemoryMB`, `User` (read only) |
+
+Any other key or value can be added; such values are text. `reg_boot` (called from `kmain` after `installed_boot`) loads the files and applies the bound values, or writes them the first time. A sign-in loads the account's user hive (`reg_user_changed`). Changing `System` keys needs root or an administrator account.
+
+Shell: `reg list [KEY]`, `reg get KEY NAME`, `reg set KEY NAME VALUE`, `reg add KEY`, `reg delete KEY [NAME]`, `reg export FILE [KEY]`, `reg import FILE`. Read-only values and numbers outside the allowed range are refused with a message.
+
+#### Registry Editor (hidden app)
+
+`regedit`, or Win+Shift+R, opens the Registry Editor (window slot `W_CHATGPT`, which was unused). It is not in the Start menu. Keys are on the left as a tree, values on the right with Name, Value and About. The toolbar has New key, New value, Edit, Delete, Export, Import and a search box (keys, names and values; Ctrl+F). A double click or Enter edits a value; read-only values are grey. Export and import use the same file format as `reg export`.
+
+#### Program Files (`core/progfiles.c`)
+
+`progfiles_sync` builds `/Programs` with one folder per app and an `app.info` file in it (`Name`, `Version`, `Publisher`, `Kind`, `Package`, `Size`, `Icon`, `Command`, `Description`, `Hidden`, `DesktopFile`). It lists the built-in apps, the Linux programs from `/usr/share/applications` that come with NoovexOS (LibreOffice Writer and Calc), and programs installed with `apt`. For an `apt` program the owning package is found in `/var/lib/nvpkg/*.list`, and the size is the total of its files. Folders of removed programs are deleted. The list is rebuilt at start-up and whenever `g_apps_gen` or the Linux files change. A file is only written when its contents changed. The shell command `programs` lists the folders (`programs -a` includes hidden apps).
+
+Settings > Apps > Installed apps shows the list with icon, kind and size. Open starts the app, and Uninstall (only for `apt` programs, administrators only) runs `apt remove -y PACKAGE`. The mouse wheel scrolls the list.
+
+#### Task Manager
+
+The Processes tab has three sections:
+
+- **Apps:** open windows, as before.
+- **Background services:** the real services from `apps/system/services.c` (web requests, downloads, web cache writer, cookie saving, clock sync, battery and lid, Wi-Fi). Each row shows CPU use, measured from the service's run time per second, and its status. Services that can be stopped have a Stop or Start button; the others say "needed".
+- **Hidden apps:** every running program without a window (the face engine, the X server and its helpers, `init`, programs started from the Terminal), with pid, CPU use and state. "Hide" or "Show hidden" switches the list. Selecting a hidden app and pressing End task ends it (`jc_kill`, never pid 1).
+
+Ctrl+Shift+Esc opens Task Manager.
+
+### 11.18 The System folder (v10.55)
+
+`core/sysfiles.c` builds `/System` (like Windows' System32). `sysfiles_build()` runs from `kmain` after `progfiles_sync`, and the shell command `sysfiles` runs it again. `sysfiles_tick()` runs in the main loop: every 2 seconds it writes the live kernel log, and every 30 seconds it refreshes `kernel.info`, the drivers and the services.
+
+| Path | Contents |
+|---|---|
+| `README.txt` | What the folder is |
+| `Kernel/kernel.info` | `Kernel`, `Built`, `ImageBytes`, `SHA256` (from `g_buildsig`), `Boot` (UEFI or Legacy BIOS), `Processor`, `Cores`, `CoresOnline`, `MemoryMB`, `KernelHeapUsedKB`, `Screen`, `Graphics`, `VirtualMachine`, `ComputerName`, `TimerHz`, `MovedFirmwarePages`, `RestoredFirmwareBytes`, `MovedRange` (from `early_remap`), `UptimeSecondsAtRefresh`, `LogLinesSinceStart` |
+| `Drivers/<name>.drv` | One per driver in the kernel (table `DRV[]`, 28): `Name`, `Type`, `State` (Loaded, Not loaded (device found), Not loaded), `Reason`, `Description`, `Source`. The state comes from the driver's own flags (`ahci_ok`, `nvme_ok`, `g_dktype`, `xhci_present`, `msd_ok`, `g_mnic.name`, `g_wnd_up`, `g_snd.name`, `g_gfx`, `nvgsp_info`, `g_tp.ok`, ...) and the PCI list. |
+| `Drivers/drivers.txt`, `Drivers/devices.txt` | All drivers in one table; every device per category, from `taskmgr_devdump()` (the Task Manager > Devices lists) |
+| `Services/<id>.svc`, `services.txt` | `svc_info`, `svc_every`, `svc_runs`, `svc_us` |
+| `Fonts/<font>.font` | Inter (UI, `assets/uifont.c`), Noovex Smooth and 8x14, Liberation Sans/Serif/Mono (Writer), Emoji |
+| `Config/SYSTEM.reg`, `Config/user-NAME.reg` | Symbolic links to the registry hives in `/etc/noovex/registry` |
+| `Logs/kernel.log` | Every `klog` line since start. `klog` calls `sysfiles_logline` (weak), which appends to a 192 KB buffer under a try-lock (a line is dropped rather than waiting if another CPU holds it; the oldest half is dropped when full). |
+| `Logs/network.log` | `NETLOG[]` from the network driver |
+
+Everything is owned by root (folders 0755, files 0644), so only root can change it. `dt_is_tmp` treats `/System` like `/tmp`, so nothing in it is written to the disk.
+
+`mkdir` now checks write permission on the parent folder (`perm_dir`) in `lx_mkdir`, the native mkdir syscall, the shell's built-in `mkdir` and `vfs_mkparents`; the Files app checks `perm_dir` before New folder, New file, Rename, folder Delete and Paste.
+
+### 11.19 System folder layout, file types and restore points (v10.56)
+
+`/System` now uses NoovexOS file types. Every file is text (`Name=Value` lines, first line a short tag such as `NVA1`) except `.nvn` (WAV sound).
+
+| Folder | Files | Made from |
+|---|---|---|
+| `Kernel` | `noovex.nvk`, `kernel.nvi` | `g_buildsig`, boot info, `g_remap_*` |
+| `Drivers` | `<driver>.nvd`, `drivers.txt` | `DRV[]` + `sf_drv_state` |
+| `Modules` | `net.nvm`, `virtio.nvm`, `sound.nvm`, `modules.txt` | `MODS[]` (the `MODS` list in `build.sh`) |
+| `Libraries` | `<lib>.nvl`, `libraries.txt` | `sysroot_list` over `/lib/x86_64-linux-gnu`, `/usr/lib/x86_64-linux-gnu`, `/lib64`, `/usr/lib`, `/usr/local/lib` (sizes from the new `sysroot_fsize`, no unpacking) |
+| `Programs` | `hello.nvx`, `table.nvx`, `primes.nvx` | built in |
+| `Apps` | `<app>.nva`, `apps.txt` | `progfiles_get` (built-in apps, `Window=` is the window slot) |
+| `Services` | `<id>.nvs` | `svc_info` |
+| `Config` | `SYSTEM.nvr`, `user-NAME.nvr` | links to `/etc/noovex/registry/*.reg` |
+| `Logs` | `System.nvg`, `Security.nvg`, `Application.nvg` | the `klog` buffer, split by source (`sf_cat`), with a level (`sf_lvl`); Security adds `/var/log/auth.log` |
+| `Crash` | `<date>.nvq`, `last.nvf` | `crash-report.txt`; the last 60 s of the log |
+| `Boot` | `boot.nvb` | every `boot:` line (written 2 s after start) |
+| `Hardware` | `<kind>.nvh`, `camera.nvh`, `microphone.nvh` | `taskmgr_devdump`, `camera_info_text`, `mic_info_text` |
+| `Fonts` | `*.nvo` | static list |
+| `Media` | `*.nvn` | WAV, 22 kHz mono, made from a sine table at start |
+| `Themes` | `*.nvw` | `Wallpaper=` (0-5) and `Accent=` (0-4) |
+| `Restore` | `*.nvz` | copies of `/var/lib/noovex/restore` |
+
+`sysfiles_open(k)` is called by Files before its own open logic: `.nva` -> `open_win(Window)`, `.nvr` -> Registry Editor, `.nvw` -> `reg_set` Theme and Accent + `build_bg`. `.nvn` is in the media list of `videoplayer.c`.
+
+Restore points: `sf_restore_create` writes all hives into one `.nvz` (`== path ==` sections) in `/var/lib/noovex/restore` (root, 0600, kept on the disk, at most 10). `sysfiles_restore` (`restore` command) lists, creates, or writes the sections back (only paths under `/etc/noovex/registry/`) and calls `reg_load(1)`; it always makes a restore point first.
+
+Pitfall found: the build stamper finds the signature block by searching for its 8-byte magic text. A string containing that text in `.rodata` made it stamp the wrong place and every start reported "integrity check failed". Do not put the magic text in any string.
+
+File-type logos: `FXI[]` in `file_explorer.c` maps an extension to a glyph, a colour, an optional label and a type name; `fx_ikind` returns `32 + index`, `fx_icon` draws it with `fx_xicon`. User icon choices (0-11) are unchanged.
+
+Cameras (`xhci.c`): `uvc_parse(c,n,target)` reads one VideoStreaming interface; `uvc_choose` lists all (`cam.vs[]`) and picks the first with a colour format; `uvc_select_stream` re-parses the saved descriptors (`cam.desc`). Formats by FourCC (`uvc_fourcc`): YUY2 0, MJPEG 1, NV12 2, UYVY 3, grey 4, I420 5, YV12 6. Bulk cameras: endpoint type 6, normal TRBs of 16 KB, `uvc_bulk_chunk` joins transfers into payloads (a payload ends with a short transfer or at `dwMaxPayloadTransferSize`), stop = CLEAR_FEATURE(ENDPOINT_HALT). `cam.epon` replaces `cur_alt` as "endpoint added". Start tries up to 16 sizes in two passes; the first pass skips sizes no alt setting can carry.
+
+Microphones: `aud_parse` reads USB Audio 2.0 (interface protocol 0x20): clock source id, AS_GENERAL channels, FORMAT_TYPE_I subslot and bits; the rate is set with SET_CUR on the clock (`(clock<<8)|ac_if`) and read back. Capture accepts 2-4 byte samples and 1-8 channels (`aud_s16` takes the top 16 bits of the first two channels). A camera with an audio function: `uvc_add_mic` attaches it on the same slot; `uvc_aud_share` keeps the two copies of the EP0 ring position equal. HDA: `scan_in` also remembers a headset/mic jack with presence detect; `pick_in` uses it when the jack reports a plug.
+
+### 11.20 Focus modes (v10.57)
+
+`core/focus.c` keeps up to 12 focuses (`focus_mode`): four built in (Do not disturb, Sleep, Work, Gaming) and any you create (new ones hide pop-ups). Each is a text file `/etc/noovex/focus/ID.focus` (`NVFOCUS1`, then `Name=`, `Icon=`, `Color=`, `Builtin=`, `HidePopups=`, `AllowApps=`, `Mute=`, `HideGames=`, `NightLight=`, `Brightness=`, `BatterySaver=`, `Theme=`, `LockAfter1Min=`, `Schedule=`, `From=`, `To=` (minutes), `Days=` (bit 0 = Monday), `Apps=` (window bit mask), `SignIn=`, `LowBattery=`, `Taskbar=`, `LockScreen=`), copied to `/System/Focus` with a README. Default schedule 22:00-07:00 every day; Work 08:00-17:00 Monday to Friday (schedules start switched off).
+
+| Part | How |
+|---|---|
+| Turning on | `focus_set(i, why)`: restores the previous focus, saves night light, brightness, battery saver, refresh rate, volume, wallpaper mode and theme, then applies the focus (brightness at least 5%, battery saver 30 Hz). When it ends, each value is put back only if you did not change it meanwhile (volume only if still 0). The previous theme is also kept in `System\Focus\PrevTheme` / `PrevAccent` (written as the system, so it works for standard accounts) and put back after a restart if the focus did not come back. The 1-minute lock uses `g_lock_override` and never touches the saved lock time. `why`: 0 by hand, 1 schedule, 2 app, 3 sign-in, 4 low battery. Only a focus turned on by hand is stored in `User\Focus\Current` and comes back after sign-in. |
+| Pop-ups | With HidePopups, `notify_from(app, title, body)` (and `notify`, app "System") still adds to the notification list but shows no toast unless `focus_allows` finds the app or title (any case) in `AllowApps`. |
+| Sounds | `Mute` sets the volume to 0 while on. |
+| Games | `focus_hides_games` removes the Games group from the Start menu and games from launcher search. |
+| Automatic | `focus_tick` (every 5 s): schedule windows (overnight windows use the day they started; same start and end = all day), low battery (20% or less, not charging, only when no focus is on; again after charging or above 25%). `open_win` / `close_win` call `focus_app_started` / `focus_app_closed` (no app is set by default; Gaming offers DOOM and Quake as a preset); app and schedule triggers only act when no focus is on or the current one came from an app or schedule. Sign-in brings back a focus set by hand, otherwise the first focus with SignIn. A focus turned off by hand during its schedule stays off until the window ends. |
+| Where | Quick Settings Focus tile (classic) or Focus button (modern) opens a list (`fpop_*` in `desktop.c`) with "Turn focus off", "Create focus" and "Focus settings"; Settings > System > Focus (`st_focus_page`, tabs Focuses / Settings / Turn on automatically, ids 1200-1399); taskbar icon in the focus colour; lock screen line; `focus [list | NAME | off | create NAME | delete NAME]`. |
 
 ## Part 12: Testing, quality gates, debugging and history
 
@@ -9150,7 +11062,7 @@ Templates are split into named parts with `@@NAME@@` lines (`template()` in `che
 
 #### 12.4.6 `tools/webhost.c`, the web engine on the host
 
-The web engine (Part 13) builds for Linux unchanged except for `web/krt.c`, whose job glibc does. Compile every `web/*.c` file except `krt.c`, the QuickJS sources and `tools/webhost.c` with `gcc -O1 -g -D_GNU_SOURCE -I.` from the repository root and link with `-lm`. Then:
+The web engine (Part 13) builds for Linux unchanged except for `web/krt.c`, whose job glibc does. Compile every `web/*.c` file except `krt.c`, `wk.c` and `wk_prelude_gen.c`, the QuickJS and wasm3 sources and `tools/webhost.c` with `gcc -O1 -g -D_GNU_SOURCE -DIMGX_HOST -I. -Ithird_party/quickjs` from the repository root; compile the dav1d sources as `build.sh` does (step 3, the `DVF` flags, the template files twice with `-DBITDEPTH=8` and `16`); build the worker blob from `web/wk.c`, `web/wk_prelude_gen.c` (made by `tools/js2c.py web/wk_prelude.js web/wk_prelude_gen.c nwe_wkprelude`), a second copy of the QuickJS objects and three empty functions `nwe_arena_init`, `nwe_arena_reset` and `nwe_arena_size`, joined with `ld -r` and `objcopy --keep-global-symbol=wkx_entry --keep-global-symbol=wkx_fail` (section 13.64); and link everything with `-lm -lz -lpthread`. Then:
 
 ```
 webhost page.html out.ppm [width] [height] [maxheight] [javascript]
@@ -9342,6 +11254,47 @@ Compiled from version tags in the old `ARCHITECTURE.md` and in the sources. Only
 | v9.24 | this document, "What changed in v9.24" | Python IDE package in the start menu |
 | v9.23 | this document, "What changed in v9.23" | CPython 3.13, apt and dpkg for Debian packages, layered sysroot |
 | v9.22 | this document, "What changed in v9.22" | glibc 2.44 and GNU tools, 100 MiB kernel limit |
+
+### 12.6 Crash reports, freeze reports and start-up notes (`core/crash.c`)
+
+| Part | How it works |
+|---|---|
+| Function names | `g_ksyms` (384 KB in `.data`, magic `NVXKSYM1`) is filled by `build.sh` after linking: header `NVXKSYM2`, count, string offset, text start and end, then (address, name offset) pairs sorted by address and the names. `kname_find` does a binary search; `kname_fmt` prints `name+0xoff`. |
+| Call chain | Kernel units are built with frame pointers. `crash_bt` follows saved RBP values while each frame is 8-byte aligned, mapped (a page-table walk), above the previous one and returns into kernel text. |
+| Crash | `panic` calls `crash_panic`, which stops the other CPUs, copies the registers and switches to a 64 KB stack before drawing. The screen is drawn straight into the framebuffer with the anti-aliased font (no compositor, no GPU). The report is saved to `CRASH.TXT` on the USB stick (unless the crash is in USB code) and `crash-report.txt` in Files (unless the heap was busy); R restarts. |
+| Freeze | `freeze_tick` runs in the timer interrupt. When `g_ml_beat` has not changed for 5 s (500 ticks) it builds a report from the interrupted registers and draws it in a box; at 30 s it saves it; when the loop runs again `crash_tick` removes the box, saves the report and shows how long the freeze lasted. |
+| Next start | `crash_tick` checks `crash-new.flag` and `CRASHNEW.TXT` 3 s after the first screen, copies the report into Files, shows a notice and opens it in the Editor on the desktop. |
+| Start-up notes | `drv_begin(id)` writes the driver name to `DRVSTART.TXT` and `driver-start.txt`; `drv_boot_done` writes `-`. `drv_boot_check` (after the xHCI start, which also mounts the boot stick) skips a driver whose name is still there, once. |
+| Stack guards | `stk_guard_boot` splits the 2 MB page at 0x09800000 and unmaps its lowest 4 KB. `stk_watch` puts 8 marker words at the bottom of each 16 KB stack; `stk_check` runs every timer tick. |
+| Tests | `crash test panic`, `crash test stack`, `crash test smash`, `crash test heap`, `crash test freeze`; `crash` prints the last report. |
+
+### 12.12 Testing updates in QEMU
+
+The updater needs an installed disk and an update server. A local server is enough:
+
+1. Build two ISOs that differ only in the version in `core/buildsig.c` (for example 10.00 and 10.01).
+2. Write a manifest next to the newer ISO (`version`, `iso_url` such as `http://10.0.2.2:8000/new.iso`, `iso_bytes`, `iso_sha256`, `notes`) and serve the folder with `python3 -m http.server 8000`.
+3. Install the older ISO to an empty disk (USB stick image as the boot device, the disk as NVMe or SATA), finish the first-start setup, then in the terminal: `update url http://10.0.2.2:8000/update.json` and `update install` (or Settings > Update & recovery > NoovexOS Update).
+4. Watch the serial log: `update: installed`, then the loader line `Starting the new version (try 1 of 2)`, then `update: new version confirmed` one minute after the start.
+
+Useful checks:
+
+| Test | How |
+|---|---|
+| Fallback | build a kernel that stops at start (for example an invalid instruction right after the integrity check) and offer it; restart twice from the crash screen; the loader prints "The new version did not start twice" and starts `kernel64.old` |
+| Power cut | read `/boot/update.txt` from the disk image on the host while the update runs and stop QEMU when it says `SWAP`; the next start uses the previous version and writes `OLD` |
+| Boot partition | `tools/tests/fatck.py` on the partition (offset 2048 sectors) after each step: no lost clusters, both FATs equal |
+| UEFI | the same disk with the OVMF firmware; the loader shows the try count and "press P to start the previous version" |
+
+SATA (`-device ahci`) is much faster than NVMe in QEMU without KVM, because the NVMe driver sends one command per sector.
+
+USB stick updates: copy the ISO to `stick.img`, make it as large as a real stick (`truncate -s 1G stick.img`) and boot it as the only disk: `-device qemu-xhci,id=xh -drive if=none,id=u0,file=stick.img,format=raw -device usb-storage,bus=xh.0,drive=u0,bootindex=0 -netdev user,id=e0 -device e1000,netdev=e0` (add the OVMF firmware for UEFI). `/etc/update-url` lives in memory on a stick, so type `update url ...` again after each restart. The log shows "update: growing the USB stick partition from 90 MB to 516 MB" on the first update. A bad kernel stops at the crash screen; press R twice. For a power cut, stop QEMU right after "update: Installing the new version".
+
+Firmware with many devices: `tools/tests/aml` style tables can be passed to QEMU with `-acpitable file=ssdt.aml`. An SSDT with 420 devices and a touchpad (`ELAN1201`, `_CID PNP0C50`, `I2cSerialBus` 0x15 on `\_SB.I2C1`) after them showed "160 devices, 0 I2C touchpads" on 10.01 and "474 devices, 1 I2C touchpads" with the touchpad on 10.02.
+
+### 12.13 Tracing Linux programs (v10.43)
+
+When a Linux program gets a fault or exception, the kernel log (serial port) shows a line like `lx fault: pid 38 sig 11 vec 14 rip ... addr ... err ... rsp ... (libfoo.so+0x1234) handled 48 c7 07 ...`, followed by the last 16 system calls of that thread (`sc nr(a1, a2) = result`), for the first 24 faults after boot. `tgkill`/`kill` with SIGABRT, SIGSEGV and similar signals and `exit_group` with a non-zero code are logged too. `echo lxtrace on > /dev/kmsg` (from bash) logs every Linux system call with its name and the path argument (`T pid openat("/etc/passwd", ...) = 0x3`) until `echo lxtrace off > /dev/kmsg`; this slows programs down a lot. The ring of recent calls (`lx_sc_dump`) has 512 entries. More modes (v10.44): `lxtrace exec` logs only program starts, exits and missing files, `lxtrace errors` logs failed calls except the common harmless ones (EAGAIN, EINTR, ETIMEDOUT, ENOENT), `lxtrace ps` writes the list of Linux processes every minute (pid, parent, state, thread count, last system call of each thread) and `lxps` writes it once. Since v10.45 the list has one line per thread with the system call it is in now (`in`), its first argument and, for calls on a descriptor, the kind of file; for a Unix socket also its state, bytes and messages waiting on both ends. `nvx-abitest` (24 checks, also run on a normal Linux system for comparison) covers `/proc/cpuinfo`, pseudo-terminals and epoll with reused descriptor numbers; `nvx-sndtest [device] [rate] [seconds]` plays a tone through libasound, reports how long it took and records from the microphone.
 
 ## Part 13: The web engine, JavaScript and cookies
 
@@ -9618,7 +11571,7 @@ In QEMU. The test site used for v9.08 runs a small HTTP server on a tap device t
 
 ### 13.15 Known gaps
 
-- No `<canvas>` drawing, `<iframe>` content, Web Workers, WebSockets or WebAssembly. `<video>` has no subtitles, no encrypted media (EME) and plays at speed 1 only (section 13.17).
+- No WebGL, `OffscreenCanvas`, Web Workers or WebAssembly. WebSockets work (section 13.33). Only one `<iframe>` per page shows its content (section 13.35). Canvas 2D (section 13.31) has no shadows, no real patterns, no `toDataURL` image data and rectangular clipping only. `<video>` has no subtitles, no encrypted media (EME) and plays at speed 1 only (section 13.17).
 - Web fonts with CFF outlines (`.otf` files that are not TrueType inside) are not used; only ligature substitution is taken from `GSUB`, and there is no kerning (`GPOS`).
 - 3D transforms are flattened to their 2D part, and transformed elements are hit-tested at their translated position only. Animations of layout properties relayout the page on every frame, which is slow on large pages.
 - Gradient text is drawn in one colour, not as a gradient.
@@ -9807,3 +11760,546 @@ The host harness now takes `WH_ACT`, a list of actions separated by semicolons: 
 | Pointer pump during network waits | once per 10 ms tick | `busy_pump` (`graphics/ui/desktop.c`) |
 
 `nwk_fetch` (`apps/internet/webglue.c`) adds up the time and number of requests in `g_fetch_ms` and `g_fetch_n`. `browser_go` reports the time to fetch the page, the files fetched while the engine built it, and the engine's own time. The report also goes to the kernel log.
+
+### 13.31 Canvas 2D (v10.10)
+
+`<canvas>` has a real 2D context. The pixels live in an `nimg` hung on the element (`n->img`, non-premultiplied ARGB, created by `cv_get` in `web/canvas.c` at the size of the `width`/`height` attributes, 300x150 by default, at most 8192 on a side and 16 M pixels). `paint_replaced` draws it like an image, scaled to the CSS box.
+
+| Layer | Contents |
+|---|---|
+| `web/prelude.js` | `CanvasRenderingContext2D` with its state (`fillStyle`, `strokeStyle`, `lineWidth`, `lineCap`, `lineJoin`, `miterLimit`, `globalAlpha`, `font`, `textAlign`, `textBaseline`, the line dash, the transform and a clip rectangle) and `save`/`restore`; paths (`moveTo`, `lineTo`, `closePath`, `rect`, `roundRect`, `arc`, `arcTo`, `ellipse`, `quadraticCurveTo`, `bezierCurveTo`) flattened to device-space polygons; strokes turned into polygons (segment quads, miter, bevel and round joins, butt, square and round caps, dashes); `fillRect`, `strokeRect`, `clearRect`, `fill`, `stroke`, `clip` (bounding box), `isPointInPath`; `fillText`, `strokeText`, `measureText`; `drawImage` (3, 5 and 9 arguments, from `<img>` or another canvas); `getImageData`, `putImageData`, `createImageData`; `createLinearGradient`, `createRadialGradient`; `translate`, `scale`, `rotate`, `transform`, `setTransform`, `getTransform`, `resetTransform`, `reset`; `Path2D` (including SVG path strings with M, L, H, V, C, Q, Z) and `ImageData`. Setting `width` or `height` clears the canvas and resets the state. |
+| `web/js.c` | The natives `cvInit`, `cvFill`, `cvText`, `cvImage`, `cvGet`, `cvPut`, `cvColor` (CSS colour parsing through `css_parse_color`) and `textWidth`. They mark the page for repaint. |
+| `web/canvas.c` | `cv_fill`: polygons with anti-aliasing by signed-area accumulation (the method `font.c` uses for glyphs) over the bounding box only, solid colours or linear and radial gradients, `source-over` blending, or erasing for `clearRect` and `destination-out`. `cv_text` draws the glyphs with `font_draw` into a scratch buffer and uses it as coverage. `cv_image` copies with scaling and alpha. `cv_getdata`/`cv_putdata` convert to and from RGBA bytes. |
+
+Overlapping polygons of one fill are combined with the non-zero rule as a union (coverage is clamped at 1), so `evenodd` holes are not supported.
+
+Tested with `tools/webhost.c` (rectangles, a stroked rectangle, a filled circle, a triangle with round joins, a linear and a radial gradient, a rotated rectangle, text, a dashed Bezier curve, `clearRect`, `getImageData`, `drawImage` from the same canvas, `measureText`, `isPointInPath`) and in QEMU, including an animation driven by `requestAnimationFrame`.
+
+### 13.32 Grid layout in Rust (v10.10)
+
+`layout_grid` (`web/layout2.c`) hands CSS Grid containers to Taffy, a Rust layout library (`rust/nvxlayout`, section 4.9 of Part 1). `taffy_grid` converts the container (column and row tracks after `repeat()` is expanded, the implicit row size, gaps, `justify-content`, `align-content`, `justify-items`, `align-items`, `grid-auto-flow` including `dense`) and each in-flow item (line placement and spans, explicit width and height, margins including `auto`, `justify-self`, `align-self`, replaced or not) into plain C structures and calls `nvx_taffy_grid`. Taffy runs the full track sizing algorithm and asks back through `nvx_grid_measure` for item sizes: min-content and max-content widths come from `intrinsic`, heights from laying the item out at the given width with `lay`. The results (position and size of every item) are applied with `lay` and `shift_box`. Absolutely positioned children are handled by the engine as before.
+
+The container's `min-height` and `max-height` (in px) are passed too, so `fr` rows grow to fill a grid with only a minimum height (a holy-grail page with `grid-template-rows: auto 1fr auto` and `min-height: 260px`; the old C code left the middle row at its content height).
+
+If Taffy returns an error or a size that is not a number, the old C grid code runs instead, and `g_taffy_grid = 0` switches Taffy off. A Rust panic ends the page with "layout engine (Rust) stopped" (through `nwe_fail`), never the kernel.
+
+Check: a 200px / 1fr / 2fr grid in a 620 px container with 10 px gaps gives the 1fr column 133.3 px; `repeat(auto-fill, minmax(120px, 1fr))`, spans, `grid-column: 1 / -1`, `justify-items: center` and `justify-self: end` render as in other browsers.
+
+### 13.33 WebSockets (v10.11)
+
+`WebSocket` is real (RFC 6455), for `ws://` and `wss://`. The JavaScript class is in `web/prelude.js`; the protocol runs in the kernel in `apps/internet/websock.c`, reached through the natives `wsOpen`, `wsSend`, `wsRecv`, `wsInfo` and `wsClose` (`web/js.c`, magic 50-54) and the `nwk_ws_*` callbacks (`nwe_api.h`).
+
+| Step | What happens |
+|---|---|
+| Open | `nwk_ws_open` resolves the host, opens a Linux-style TCP socket (`lxs_*`), and for `wss://` runs the TLS 1.3 handshake through the new session API (below). It sends the HTTP Upgrade request (with the page's cookies and `Origin`), checks the `101` reply and the `Sec-WebSocket-Accept` value (SHA-1 of the key plus the RFC GUID, Base64), and reads `Sec-WebSocket-Protocol` and any `Set-Cookie`. |
+| Frames | Client frames are masked (random 4-byte key, as the standard requires); server frames may be fragmented. Text (opcode 1), binary (2), ping (9, answered with pong), pong (10, ignored) and close (8) are handled. Messages up to 8 MiB; the receive buffer grows as needed. |
+| Receive | `WebSocket` polls `wsRecv` on a 30 ms timer in the prelude and fires `message` events (text as a string, binary as an `ArrayBuffer` or `Blob` by `binaryType`). Closing fires `close` with the code, reason and `wasClean`; a dropped connection gives code 1006 and an `error` event first. |
+| Send | `send` masks and frames the data; `close(code, reason)` sends a close frame and waits briefly for the peer's. `ws`/`wss` URL parsing, the ready-state machine, `bufferedAmount` (always 0) and the close-code checks follow the WHATWG API. |
+| Reset | A page load closes every socket (`nwk_ws_close_all` in `reset_engine`). |
+
+TLS session API. `tls_get` (section 9.9.2) handshook, sent one request and read the whole reply. WebSockets need to keep sending and receiving after the handshake, so `lib/crypto/nvxtls.c` now also exposes `tls_connect_sess` (handshake into a `tls_sess` holding the cipher, keys, IVs and record sequence numbers), `tls_sess_write`, `tls_sess_read` and `tls_sess_wipe`. `tls_get` is now a thin wrapper over them, so HTTPS fetching is unchanged.
+
+Tested with `tools/webhost.c` plus a host WebSocket shim over real TCP against a Python `ws://` echo server: connect, text echo, a second text message, a binary message echoed reversed, server ping answered, and a clean close (code 1000); and in QEMU against a local server reached as `10.0.2.2:8090`.
+
+Limits: no `permessage-deflate` compression, no subprotocol negotiation beyond echoing what the server picks, and `wss://` uses the browser's TLS 1.3 client (section 9.9), so a server that needs a cipher or group it does not offer will not connect.
+
+### 13.34 Popups and postMessage for sign-in (v10.11)
+
+The browser still has one page per window, so it cannot open a real popup. `window.open(url, name, features)` with a features string (what "Sign in with Google" and similar use) now returns a detached window object that reports `closed === true` with working `postMessage`, `location` and `close` members, instead of navigating the current page away. Popup-based sign-in libraries read that as "popup blocked" and fall back to a full-page redirect, which the browser can follow; cookies set during the redirects are kept (section 13.10), so the redirect form of OAuth can complete. `window.open(url, '_self')` still navigates the current page. `postMessage` now structure-clones its data and carries the target origin. This was tested in `webhost` (a blocked-popup object with a working `postMessage`, and a delivered message); the full third-party sign-in flow needs a live identity provider and was not tested here.
+
+### 13.35 Iframes (v10.12)
+
+The engine keeps one document in global state, so a page and its iframe cannot share one engine. Instead the kernel links a second, complete copy of the engine for the iframe.
+
+Build. `build.sh` makes `web2_all.o` from the same `web_pre.o` with `objcopy --redefine-sym`: `nwe_entry` becomes `nwe2_entry` and `nwe_fail` becomes `nwe2_fail`, and the frame copy's kernel callbacks are pointed at frame versions (`nwk_alloc_arena2` caps its arena at 256 MiB, `nwk_frame_post` becomes `nwk_frame_post_up`, `nwk_frame_recv` becomes `nwk_frame_recv_down`, `nwk_frame_is` becomes `nwk_frame_is2`, and `nwk_frame_paint`, `nwk_frame_reset` and `nwk_ws_close_all` become no-ops so the frame cannot nest frames or close the page's WebSockets). Both copies keep every other symbol local, so they share nothing but the kernel. The kernel image grows by about 3.6 MB.
+
+| Step | Where | What happens |
+|---|---|---|
+| Ask | `paint_replaced` (`web/paint.c`) | When the page paints an `<iframe>` with a `src` (resolved against the page) or `srcdoc`, it calls `nwk_frame_paint` with the box and clip. The first visible iframe of a page claims the frame engine; other iframes keep the "Embedded page" placeholder. |
+| Hidden | `frameScan` (`web/prelude.js`), native `frameOpen` (magic 58), `nwk_frame_open` | Every 40 ms the page looks for the first `iframe[src]`, including ones that are hidden (`display: none`, 0x0) and so never painted, and asks the kernel to load it at 300x150. Invisible challenge iframes therefore load and run their scripts. |
+| Load | `frame_tick` (`apps/internet/webglue.c`, from `browser_tick`) | Outside any engine call, the kernel fetches the URL with `nwk_fetch` (cookies included, the page's address as `Referer`) or takes the `srcdoc` text, and sends `NWE_OP_LOAD` to the frame engine at the iframe's size. A navigation inside the frame (a link, `location`) loads the new URL into the frame. |
+| Paint | `nwk_frame_paint` | Each time the page paints, the frame engine paints into a buffer the size of the iframe, which is copied into the screen inside the page's clip. A size change sends `NWE_OP_LAYOUT` first. |
+| Run | `frame_tick` | The frame engine gets `NWE_OP_TICK` with the page, so its timers, promises and animations run. |
+| Input | `web_mouse` (`apps/internet/browser.c`) | A click inside the visible iframe goes to the frame engine (move, down, up) at frame coordinates instead of the page. |
+| Messages | `web/prelude.js`, natives `framePost`, `frameRecv`, `isFrame` (`web/js.c`, magic 55-57) | `iframe.contentWindow` and, inside the frame, `window.parent`/`window.top` are window proxies with `postMessage`. Messages are serialized as JSON with the sender's origin and target origin, queued in the kernel (64 per direction, 256 KB each) and delivered by a 40 ms poll as `message` events with the right `origin` and `source`; a target origin that does not match the receiver drops the message. |
+| Reset | `reset_engine` | A new page load forgets the frame and clears both queues. |
+| Crash | `web_fault_land` | A CPU exception while the frame engine runs stops only the frame (`nwe2_fail`); the page stays. |
+
+Limits: one live iframe per page; no keyboard focus or wheel scrolling inside it; `contentDocument` is `null` (the documents live in different engines, as for a cross-origin frame); data sent with `postMessage` must survive JSON (no `Blob`, `ArrayBuffer` or `MessagePort` transfer); `sandbox` and `allow` attributes are not applied.
+
+Why: challenge pages such as Cloudflare's run their check inside an iframe and report the result to the page with `postMessage`. This gives that check a place to run; whether a given service accepts the browser is decided by that service and was not tested here (the build machine cannot reach it).
+
+### 13.36 Reloads, tabs and the toolbar (v10.13)
+
+Bug: since v10.09 the second page load of a session (Reload, a new address, a tab switch, which reloads the tab's page) showed a white page. Cause: `web_load_html` (`apps/internet/browser.c`) filled the shared request block `g_req` and then called `compose_present()` to show "Loading" before sending `NWE_OP_LOAD`. Once a page was showing, that redraw ran `web_paint`, which cleared `g_req` and used it for `NWE_OP_LAYOUT`/`NWE_OP_PAINT`, so the engine received a load with no URL and length 0 and built an empty document. The first load of a session was fine because `web_paint` returns early while there is no page. With several tabs every switch hit this, so most tabs showed nothing.
+
+| Fix | Where |
+|---|---|
+| `compose_present()` runs before the request is filled, not after. | `web_load_html` |
+| `web_paint` uses its own static request (`preq`) and the hover probe in `browser_draw` its own (`mreq`), so drawing can never clobber a request in flight. | `apps/internet/browser.c` |
+| The streaming TCP reader accepts a FIN only when it is in sequence (`seq == ts_rcv`); an early FIN after a missed segment is answered with a duplicate ACK so the server resends the data, instead of ending the response early. | `tcps_rd` (`net/http/http.c`) |
+
+Toolbar (drawing only, all click areas keep their variables): a tab strip in a darker band with the active tab joined to a light toolbar; each tab has a coloured circle with the site's first letter, a title cut with ".." to fit, and a larger close cross; round back, reload (circular arrow) and star buttons; a rounded address field that, when not being edited, shows a lock (green for https, grey for http), the host in dark text and the rest of the address in grey, cut with ".." at the end instead of the start; "Search or enter address" when empty; pill buttons; a thin accent bar under the toolbar while the engine is busy.
+
+Tested in QEMU: one page reloaded twice, then three tabs with different pages switched back and forth five times; every switch and reload showed the right page.
+
+### 13.37 Web Crypto and structuredClone (v10.14)
+
+`crypto.subtle` was an empty object, so pages that hash data (for example the PKCE step of an OAuth sign-in, which sends the SHA-256 of a random verifier) failed. It is now implemented in JavaScript in `web/prelude.js`:
+
+| Method | Supported |
+|---|---|
+| `digest` | SHA-256, SHA-1 |
+| `importKey` (`raw`) | HMAC (SHA-256 or SHA-1), PBKDF2 |
+| `sign`, `verify` | HMAC; `verify` compares in constant time |
+| `deriveBits` | PBKDF2 with HMAC-SHA-256 or HMAC-SHA-1 |
+| `generateKey` | HMAC (random key from `crypto.getRandomValues`) |
+| `exportKey` (`raw`) | extractable keys |
+| `encrypt`, `decrypt`, other algorithms | reject with `NotSupportedError` |
+
+Results are Promises of `ArrayBuffer`, inputs are any `BufferSource`, and unknown algorithms reject with `NotSupportedError` as in browsers. `CryptoKey` keeps the key bytes in a non-enumerable property.
+
+`structuredClone` used a JSON round trip, which turned `Date` into strings and dropped `Map`, `Set`, typed arrays and cycles. It now copies `Date`, `RegExp`, `ArrayBuffer`, typed arrays and `DataView`, `Map`, `Set`, `Error`, boxed primitives, arrays (holes kept) and plain objects, keeps shared and cyclic references, passes `Blob`s through, and throws `DataCloneError` for functions, symbols and DOM nodes.
+
+Tested: SHA-256 ("abc" and 1000 bytes), SHA-1, HMAC-SHA-256 and PBKDF2-HMAC-SHA1 against Python's `hashlib`/`hmac` in QuickJS on the host, and SHA-256, HMAC and `structuredClone` on a page in the browser in QEMU.
+
+JavaScript speed: building QuickJS with -O3 or -march=x86-64-v2 instead of -O2 gave no measurable gain on a host benchmark (recursion, object sort, string building with a regex, Map), and computed-goto dispatch is already on, so there was no quick compiler win. Real gains need an inline cache or a JIT (estimate 15-30 sessions for a JIT).
+
+### 13.38 Framework compatibility, incremental restyle and stability (v10.15)
+
+Method. Gmail, Google Docs, YouTube, GitHub and claude.ai cannot be reached from the build machine, so their public building blocks were installed from the machine's own package cache and run in the engine on the host (`tools/webhost.c`) next to Chromium (Playwright) as the reference: React 19 with Markdown (marked), DOMPurify, highlight.js, KaTeX, Jotai, Zod, TanStack Virtual and Headless UI (a chat app in the style of claude.ai); a GitHub-style repository page with Catalyst-style custom elements, `relative-time`, `details-menu`, `clipboard-copy`, a Turbo-style fetch-and-replace navigation and Primer-like CSS; a YouTube-style grid of 60 shadow-DOM components rendered with a Lit-style template engine (template element, `importNode`, `TreeWalker`), constructable stylesheets, `::part`, `::slotted` and lazy images through `IntersectionObserver`; a Docs-style `contenteditable` editor; D3 and Mermaid charts; and a 1,500-row inbox page with 3,000 CSS rules for speed. All of them now render close to Chromium and react to clicks and typing; differences left are font metrics and emoji glyphs (shown as "?"); SVG markers and emoji were added later in this release (section 13.39).
+
+| Area | Before | Now | Where |
+|---|---|---|---|
+| Custom elements | `connectedCallback` only ran at `define` time; constructors never ran on upgrade; elements created by `innerHTML` or the parser after `define` were never upgraded; no `disconnectedCallback` or `attributeChangedCallback` | Full lifecycle: the parser and `elem_new` record every hyphenated element in `g_ce_pend` (native `cePending`, magic 59); upgrades run the real constructor (the `HTMLElement` constructor returns the element being upgraded), `observedAttributes` callbacks fire for existing attributes, then `connectedCallback`; insertions, removals and attribute changes go through the mutation hook (new kind 5 = attribute changed, fired after the change with the old value); `innerHTML`/`outerHTML`/`insertAdjacentHTML` and shadow-root `innerHTML` flush upgrades and connect/disconnect; template contents stay inert; name and constructor checks as in browsers; `customElements.upgrade` | `web/dom.c`, `web/js.c`, `web/prelude.js` |
+| Mutation events during load | Off while any inline script ran during parsing (`g_dom_parsing`), so `MutationObserver` and custom elements missed everything a page did at load | `js_run_script` clears the parsing flag while a script runs; the hook may nest (depth 8) | `web/js.c` |
+| `isConnected` | False inside shadow trees | Walks through shadow hosts | `web/js.c` |
+| Adopted stylesheets | A hidden `<style>` child that frameworks removed on their first render | Stored on the shadow root node (`value`, native `setAdopted`, magic 60) and parsed by `collect` with the host scope; `replaceSync`/`insertRule` re-apply to every root that adopted the sheet | `web/cssparse.c`, `web/js.c`, `web/prelude.js` |
+| SVG elements | Only tags in the tag table were SVG; `text`, `tspan`, `foreignObject`, `defs`, gradients and markers made with `createElementNS` or parsed inside `<svg>` were plain HTML elements; `getBBox` and friends were missing | `NF_SVG` node flag from `createElementNS` and the parser (children of `foreignObject` stay HTML); `getBBox` (shapes, paths with curves, text with anchor and baseline, groups with transforms), `getComputedTextLength`, `getSubStringLength`, `getTotalLength`, `getPointAtLength`, `getCTM`, `getScreenCTM`, `createSVGPoint`/`Matrix`/`Rect`/`Transform`, `ownerSVGElement`, `transform.baseVal`; `getBoundingClientRect` of SVG elements and of HTML inside `foreignObject` is estimated from geometry and text | `web/nwe.h`, `web/dom.c`, `web/js.c`, `web/prelude.js` |
+| SVG painting | Text attributes were read only from the `text` element; `<tspan>` positions and `em` offsets ignored; `<style>` inside `<svg>` ignored; `foreignObject` not drawn | `font-size`, `text-anchor`, weight, style, family and baseline inherit through groups; `x`/`y`/`dx`/`dy` per `tspan` with `em` units and anchored text chunks; `<style>` blocks inside `<svg>` are collected; `foreignObject` draws its text centred in its box | `web/svg.c`, `web/cssparse.c` |
+| SVG sizing | A `<svg>` with a `viewBox` and no `height` was 150 px high (UA rule `svg:not([height])`); an SVG image without `viewBox` was rasterised at the wrong scale | The 300x150 UA defaults apply only without a `viewBox`; with a `viewBox` and no size the SVG fills the available width and takes its height from the ratio; image rasterisation adds the implied `viewBox` | `web/cssstyle.c`, `web/layout.c`, `web/engine.c` |
+| Tables | `rows`, `cells` and friends were missing (`rows` reflected the textarea attribute) | `rows`, `tBodies`, `tHead`, `tFoot`, `caption`, `create*`/`delete*`, `insertRow`/`deleteRow` on tables and sections, `cells`, `rowIndex`, `sectionRowIndex`, `insertCell`/`deleteCell`, `cellIndex`, `colSpan`, `rowSpan` | `web/prelude.js` |
+| Rich text editing | `execCommand` knew only plain text commands; no `queryCommandState` | `bold`, `italic`, `underline`, `strikeThrough`, `subscript`, `superscript` (toggle, split and merge), `formatBlock`/`heading`, lists, `createLink`/`unlink`, `removeFormat`, `foreColor`, `hiliteColor`/`backColor`, `fontName`, `fontSize`, `justify*`, `indent`/`outdent`, `insertHorizontalRule`, `insertImage`, `insertLineBreak`, `undo`/`redo` (100 steps per editor); `queryCommandState`, `queryCommandValue`, `queryCommandEnabled`, `queryCommandIndeterm` | `web/prelude.js` |
+| `innerText` | `textContent` with collapsed spaces | Rendered-text rules: line breaks around blocks, two around paragraphs, `<br>`, tabs between cells, newlines between rows, hidden and `display:none` content skipped, `pre` kept | `web/js.c` (`itx_walk`) |
+| Closed `<details>` | Author CSS such as `display:flex` showed its content | Everything but the summary is forced to `display:none` while `open` is absent, as in browsers | `web/cssstyle.c` |
+
+Incremental restyle. A class, attribute, hover, focus or text change used to restyle the whole document and lay it out again, and an id or class change even rebuilt the rule index (`css_bump`). Now `eng_style_node(n)` records up to 48 subtree roots (`G.dirty_style = 2`); `style_partial` (`web/cssstyle.c`) recomputes only those subtrees, with the ancestor filter primed from the root's ancestors, and writes each new style over the old style object in place, so boxes and text fragments keep valid pointers. `lay_eq` compares only the properties that affect layout; if none changed, layout is skipped and only a repaint happens (colours, backgrounds, borders' colours, shadows, outlines, radius, opacity changes that keep the same stacking, transforms, cursor). The root is widened to the parent when the style sheet has `+`/`~` combinators (`g_css_sib`) and insertions restyle the parent when it has positional pseudo-classes (`g_css_pos`); `:has()` anywhere (`g_css_has`), a changed style sheet, a root inside a `display:none` subtree, or garbage beyond three times the last full restyle fall back to a full restyle. Hover, `:active` and focus changes restyle only the elements whose state changed (`eng_chain_dirty`, from the lowest common ancestor down). Typing in an input or textarea restyles only that control and lays out only for a textarea. The UA rule `fieldset+p` (a typo that forced sibling handling everywhere) was removed. Animations outside a partial root keep running (`anim_after_style_part`).
+
+CSS rule lookup. Rules whose rightmost compound has only an attribute selector (`[data-state=open]`, `[aria-expanded]`) were checked for every element; they are now bucketed by attribute name (`battr`).
+
+Measured on the host (`webhost`, 1,500-row inbox with 3,000 rules): page load 187 ms to 118 ms; 20 class toggles each followed by a layout query 124 ms to 15 ms. In QEMU under TCG emulation (final build) the React chat app loads in 3.0 s and in 0.64 s on reload (code cache, section 13.39), the GitHub-style page in 0.8 s (2.2 s with the first v10.15 build, before the detached-tree and cache work) and the YouTube-style grid in 1.3 s.
+
+Stability. A sweep over 260 real HTML documents found on the build machine (library documentation, man pages, NetSurf resources), 18 test pages and 557 randomly mutated pages under ASan and UBSan found and fixed:
+
+| Bug | Effect | Fix |
+|---|---|---|
+| `add_text_pieces` (`web/layout.c`): a carriage return in `white-space: pre` text matched no branch and the word scanner stopped without advancing | Any page with a `<pre>` block and Windows line endings froze the browser (NetSurf licence page, the ncurses HOWTO: more than 2 minutes, now 90 ms) | Skip the character when the word is empty |
+| `collect` passed a missing `href` of a `<link>` to `url_resolve` | Crash (NULL dereference) | `url_resolve` treats NULL as empty |
+| Huge font sizes (`font-size: 1e30px`) | Integer overflow in font metrics and glyph code | `font-size` clamped to 10,000 px in the cascade and 100,000 px in `font_metrics` |
+
+The second fuzz batch (260 pages) ran clean. `webhost` got `WH_PRE` (JavaScript evaluated before the timer loop) and a `w X Y D` wheel action; its `readfile` rejects unreadable paths.
+
+Not done, with estimates: a JIT or inline caches for QuickJS (15-30 sessions; compiler flags gave nothing measurable, see 13.37); incremental layout (layout still runs for the whole page when a layout property changes, 3-5 sessions); SVG filters and gradients by `url()`; symbols outside the fonts and the emoji table still show as "?". The real Gmail, Docs, YouTube and claude.ai still need far more JavaScript speed and APIs (Service Workers, WebAssembly for some) and were not tested. Keyboard modifiers, IndexedDB, Workers and SVG markers were added later in this release (section 13.39).
+
+### 13.39 Code cache, HTTP cache, IndexedDB, Workers and keys (v10.15)
+
+Profile of the React chat app load: 78% of the time was QuickJS parsing and compiling the 900 KB bundle and 14% running it, so the speed work went where real browsers also put it.
+
+| Feature | How it works | Where |
+|---|---|---|
+| Bytecode cache | Classic scripts of 8 KB or more are compiled with `JS_EVAL_FLAG_COMPILE_ONLY`, written with `JS_WriteObject(JS_WRITE_OBJ_BYTECODE)` into a kernel-side cache (`nwk_code_put`, 96 entries, 40 MiB, least recently used dropped first) keyed by a 64-bit FNV hash of the source text, its name and length, then run with `JS_EvalFunction`. On the next load of the same script `nwk_code_get` returns the bytecode and `JS_ReadObject` replaces parsing. The cache lives outside the per-page arena, so it survives reloads, tab switches and navigation; only the engine writes it, which is what makes `JS_READ_OBJ_BYTECODE` safe. Modules are not cached. Host numbers: React chat app 157 ms first load, 60-79 ms after; D3 + Mermaid page 745 ms, then 146-212 ms. The first load pays about 15-20 ms for writing. | `web/js.c`, `apps/internet/webglue.c`, `tools/webhost.c`, `include/nvx/apps/nwe_api.h` |
+| HTTP memory cache | `nwk_fetch` keeps GET responses with status 200 (256 entries, 48 MiB, LRU) unless the response says `no-store` or sets a cookie. A response is reused while it is younger than its `Cache-Control: max-age` (capped at one day); scripts, style sheets, fonts and images without a lifetime are reused for 10 minutes. `g_http_mode` 1 (tab switch, Back) lets the first fetch, the page itself, use any cached copy younger than 10 minutes; mode 2 (Reload) bypasses the cache for the page and all its resources. The cookies page clears the cache too. | `apps/internet/webglue.c`, `apps/internet/browser.c` |
+| IndexedDB | In memory, per origin, for the session: `indexedDB.open` with versioned `upgradeneeded`, `blocked`/`versionchange`, `deleteDatabase`, `databases`, `cmp`; object stores with in-line or out-of-line keys and key generators, `add`/`put`/`get`/`getKey`/`getAll`/`getAllKeys`/`count`/`delete`/`clear`; indexes with `unique` and `multiEntry`; cursors (`openCursor`, `openKeyCursor`, `continue`, `advance`, `update`, `delete`, all four directions); `IDBKeyRange`; transactions that complete after their last request, abort on an unhandled request error and roll back their stores; spec key ordering (number < date < string < binary < array); values copied with `structuredClone`. | `web/prelude.js` |
+| Web Workers | Same-thread workers: the script is loaded from a URL, `blob:` or `data:` URL and run inside `with (scope)` so `onmessage = ...`, `self`, `postMessage`, `close`, `importScripts` (global eval), `addEventListener` and timers belong to the worker; messages are copied with `structuredClone` and delivered asynchronously both ways; `terminate`; load failures fire `error`. Module workers that use `import` report an error. Heavy work in a worker still blocks the page, because the engine has one JavaScript thread. | `web/prelude.js` |
+| Keyboard | The Browser passes Ctrl, Shift, Alt and the Windows key as bits 24-27 of the key; Ctrl+letter arrives as the letter instead of a control code (which used to be read as Home, End and so on). Pages get `ctrlKey`, `shiftKey`, `altKey`, `metaKey`, `getModifierState`, physical `code` values (`KeyK`, `Digit1`, `Space`, `Slash`, ...), `keyCode`/`which` for shifted digits, and a `keyup` after every key. Ctrl and the Windows key suppress `keypress` and text insertion, so shortcuts reach the page. | `apps/internet/browser.c`, `web/engine.c`, `web/prelude.js` |
+| Emoji | `tools/mkemoji.py` turns the CBDT bitmaps of Noto Color Emoji into `assets/emoji32.bin` (1,413 single-code-point emoji from the symbol and emoji ranges, 32x32, 128-colour palette PNGs, 1.44 MB; header `NVEM`, count, size, then sorted code point/offset/length entries). The kernel links it as a blob and serves `nwk_emoji_has` (binary search) and `nwk_emoji` (decode through `nwk_image`). When a code point has no glyph in the page fonts but is in the table, `font_adv` gives it 1.2 em and `font_draw` blits it scaled with bilinear filtering and the text colour's alpha; up to 96 decoded emoji are cached per page. Joined sequences (ZWJ, skin tones, flags) show as their parts. Tested in QEMU: the folder and file emoji of the GitHub-style page. | `tools/mkemoji.py`, `assets/emoji32.bin`, `apps/internet/webglue.c`, `web/font.c`, `build.sh` |
+| SVG markers | `marker-start`/`marker-end` (attribute or style) on paths, lines and polylines draw the referenced `<marker>` at the end point with `orient` (`auto`, `auto-start-reverse`, angle), `refX`/`refY`, `markerWidth`/`markerHeight`, `viewBox` and `markerUnits`. | `web/svg.c` |
+
+Tested against Chromium: IndexedDB (upgrade, stores, indexes, multiEntry, cursors in reverse, key ranges, rollback on abort, constraint error, array keys, `cmp`, version error, `databases`) and Workers (URL with `importScripts`, `blob:`, `data:`, failing URL) give the same results; key events for Ctrl+K, Shift+A, Alt+1, `!` and Enter carry the same `key`, `code`, `keyCode` and modifier values.
+
+### 13.40 WebAssembly, Service Workers and the Cache API (v10.16)
+
+WebAssembly runs on wasm3, an interpreter vendored in `third_party/wasm3` (MIT, `LICENSE` there), built into both web engine copies with the flags `W3F` in `build.sh`: no POSIX host, no thread-local storage (`M3_THREAD_LOCAL` empty, the kernel has no `%fs` segment), no typed function references, stack switching, snapshots or gas metering, and a native stack budget of 1.5 MiB below the entry point (the engine stack is 6 MiB and QuickJS keeps 3 MiB). The JavaScript API is in `web/prelude.js` on top of the natives in `web/wasm.c`.
+
+| Part | How it works |
+|---|---|
+| Runtime | One wasm3 environment and runtime per page, created on first use; the page arena reset frees it with the page. Every instance is loaded into it as a module named `__iN`. |
+| `Module` | The bytes are copied (wasm3 keeps pointers into them) and parsed; a parse error is a `CompileError`. `imports`, `exports` and `customSections` come from a small section reader in the prelude. Function bodies are validated when they are compiled: exported functions when the instance is made, the rest on first call. |
+| `Instance` | The import object is checked like Chromium (`TypeError` for a missing module object, `LinkError` for a wrong kind). Function imports become host functions (`CompileRawFunction`) that call the JavaScript value; imported memories, tables and globals are linked by renaming the import to the owning module and export, so wasm3's own linker shares the same object; plain numbers for immutable globals go through `m3_LinkGlobal`. The start function runs inside the constructor. |
+| Calls | Exported functions are JavaScript functions with the function index as `name`, the parameter count as `length` and the same object every time (table `get` included). Values convert like the spec: i32 numbers, i64 `BigInt` (a `TypeError` for numbers), f32 rounding, `externref` held in a per-page table, `funcref` as exported functions. JavaScript exceptions thrown in imports come out unchanged; traps are `RuntimeError` with Chromium's messages, stack overflow is `RangeError`. |
+| `Memory` | `buffer` is an `ArrayBuffer` over the linear memory itself (no copy). After every call into wasm, at the start of every import call and on `grow`, the engine compares the memory's address and size with the buffer and detaches the old buffer when they changed, so a view of grown memory is never left pointing at freed bytes. |
+| `Table`, `Global` | `new` builds a tiny module in memory that declares and exports the object, so it can be imported like an exported one. `get`, `set`, `grow`, `length`, `value`, `valueOf` and `type`. |
+| Async | `compile`, `instantiate` (bytes or module), `compileStreaming` and `instantiateStreaming` (any content type is accepted). |
+| Long runs | Every 16,384 loop iterations or branches the interpreter asks the engine whether to stop: Escape held in the Browser or more than 20 s in one call stops the code with a `RuntimeError`, and the desktop keeps drawing in between. Found by fuzzing: a module whose inner loop ran one iteration per outer iteration skipped the check when it was tied to the outer loop's back edge. |
+
+Service Workers run on the page thread like the Workers of section 13.39, in a scope object of their own (`self`, `registration`, `clients`, `caches`, `skipWaiting`, `importScripts`, the usual globals).
+
+| Part | How it works |
+|---|---|
+| Registration | `navigator.serviceWorker.register(url, {scope})` with Chromium's checks (http or https, same origin, scope under the script's directory). The worker script runs, `install` waits for `waitUntil` promises, then `activate`; states `installing`, `installed`, `activating`, `activated` with `statechange` events and `updatefound`; `ready` resolves on activation. Registering a different script for the same scope updates it. |
+| Persistence | Registrations (scope, script URL, script hash) are kept in the origin's persistent web storage under a separate namespace (native `storeGet(2, ...)`, stored as origin `sw|<origin>`). On the next visit the page starts controlled: `controller` is set before page scripts run and the worker script is run again on first use; a changed script is installed again. `unregister` removes it. |
+| Fetch events | `fetch()` from a controlled page dispatches `fetch` to the worker with a `FetchEvent`; `respondWith` answers it, otherwise the request goes to the network. The worker's own `fetch` goes straight to the network. Subresources the engine loads itself (`img`, `script`, CSS) and `XMLHttpRequest` are not intercepted. |
+| Clients | `clients.claim` sets the controller and fires `controllerchange`; `matchAll`, `get`, `postMessage` both ways (`ExtendableMessageEvent` with `source`). |
+| Cache API | `caches.open/has/delete/keys/match` and `Cache.match/matchAll/add/addAll/put/delete/keys` with `ignoreSearch` and `ignoreMethod`; only GET, http(s) and non-206 responses are stored. The caches live in memory for the page. |
+
+Other changes in this release: `performance.now()` and event time stamps use the high-resolution timer (0.1 ms steps instead of 10 ms); `Date.now()` advanced only once per second because `k_realtime_ms` in `fs/vfs/dirtree.c` read the CMOS clock on every call instead of keeping its base (now a static); Ctrl+A in the address bar selects the address instead of typing `a`, and other Ctrl or Windows-key combinations no longer insert letters there.
+
+Tested: a WebAssembly test page (40 checks: imports and exports, i64, f32, traps, deep recursion, memory growth from JavaScript and from wasm with buffer detaching, tables, globals, errors, streaming) gives the same output as Chromium on the host and in QEMU except the detail text of one compile error; real WASI programs from the wasm3 test set (`c-ray` ray tracer, `mal` Lisp interpreter) give byte-identical output to Chromium on the host and in QEMU; CoreMark runs at 3,584 on the host (V8 with its optimizing compiler: 30,917). A Service Worker test page (register, ready, controller, fetch interception for GET and POST, Cache API, messages both ways, scope and 404 errors, registrations, unregister) gives the same output as Chromium, and a reload starts controlled, on the host and in QEMU. Mutation fuzzing of three modules under AddressSanitizer found the stop-check gap above and no memory errors.
+
+Not done: a WebAssembly JIT (wasm3 is an interpreter, about a tenth of V8's speed on CoreMark), SIMD, threads and shared memory, tail calls and exception tags in the JavaScript API; Service Worker interception of engine-loaded subresources and navigations, background sync and push; Cache API storage across visits.
+
+### 13.41 Freeze and crash fixes, popover and dialog (v10.17)
+
+Prompted by the owner's report: clicking the Code button on a GitHub repository page froze NoovexOS for 60 s, with the freeze report pointing at `strcmp`.
+
+| Problem | Fix |
+|---|---|
+| Elements inside a `display:none` subtree kept style pointers into the style pool after a full restyle reset it (only direct children were cleared). Showing or changing them later read freed memory: crashes, or loops over garbage. Found with a random DOM mutation tester that compares the layout before and after a forced full restyle. | Whole hidden subtrees (and shadow roots) are cleared (`unstyle_tree` in `web/dom.c`, used by `web/cssstyle.c`), and every removed node is cleared too, so a detached element never carries a stale style. |
+| The HTML parser gave an empty attribute (`class=""`, `value=""`, `id=""`) the text of the previous quoted attribute value, because the reused text buffer was not reset to an empty string. Pages got wrong classes, ids and input values. Found by comparing 150 random selectors with Chromium. | `web/dom.c` uses the empty string when no value text was read. |
+| Selector matching with several descendant or sibling combinators retried every ancestor for every inner step, which grows very fast on deep pages with large style sheets. | `match_from` in `web/cssparse.c` returns "fails for all ancestors" and stops retrying (the WebKit approach); results are unchanged. |
+| `querySelectorAll` kept at most 1,024 pending nodes and silently skipped the rest of large pages. | Growable work list. |
+| `getElementById` walked the whole document every call. | 64-entry cache keyed by root, id and a DOM generation counter that every insert, remove and attribute change bumps (`g_dom_gen`). |
+| Long C loops in the engine never gave the desktop a turn, so a slow page froze the whole OS instead of stopping. | `nwe_check_stop` (Escape, desktop pumping) also runs in `querySelector`/`querySelectorAll` and `getElementById`, and stops any engine call that runs longer than 45 s with "This page stopped". |
+
+Popover API: `popover` attribute (`auto`, `manual`, `hint`), `showPopover`, `hidePopover`, `togglePopover` (with `force`), `beforetoggle`/`toggle` events with `oldState`/`newState`, `popovertarget`/`popovertargetaction` buttons, light dismiss (click outside or Escape closes the top auto popover, nested popovers stay), `:popover-open`, and UA styles that hide closed popovers. `<dialog>`: `showModal` (modal styles, `:modal`, focus of `[autofocus]` or the first control, Escape fires `cancel`), `close` with `returnValue` and an asynchronous `close` event, and `requestClose`. The open state is stored in internal attributes (`nvx-popover-open`, `nvx-modal`).
+
+Browser: Ctrl shortcuts use the Ctrl state recorded with each key (`g_key_ctrl` from the keyboard queue) instead of the live key state, so Ctrl+A in the address bar works even when the engine was busy; closing a background tab no longer reloads the current tab; Back addresses kept per tab are no longer cut to 255 characters; navigation and page URLs may be up to 4,095 characters (were 1,023).
+
+Tested: 540 random mutation pages (with shadow roots, clones, hiding and re-showing, moves) give the same layout before and after a forced full restyle and are clean under AddressSanitizer; 150 random combinator selectors give the same counts as Chromium; a GitHub-style repository page with 4,000 rules, 400 rows and the Code menu (popover, tabs, copy button, portal) opens and closes without errors.
+
+Not done: the exact loop on the real GitHub page could not be confirmed here (github.com is not reachable from the build machine); browser look and wider HTML/CSS/JS coverage got no further work in this release.
+
+### 13.42 Mouse, keyboard, clipboard and container queries (v10.18)
+
+Mouse. `mouse_step` in `graphics/ui/input.c` now calls `browser_mouse_down`, `browser_mouse_held` and `browser_mouse_release`, so the engine gets `NWE_OP_DOWN`, `NWE_OP_MOVE` (with the held buttons) and `NWE_OP_UP` instead of one click. The engine passes `button`, `buttons` and `detail` (click count) to JavaScript packed in one key value (`0x40000000 | button | buttons << 4 | detail << 8`), and `__dispatch` in `web/prelude.js` decodes it for `MouseEvent` and `PointerEvent` (`pointerType` "mouse", `pressure`). Pointer capture retargets moves and ups; `getCoalescedEvents` returns the event itself.
+
+| Gesture | Result |
+|---|---|
+| Drag in a text field | Selection from the press point (`sela` anchor plus `caret`), painted in light blue; `selectionStart`/`selectionEnd` follow. |
+| Double-click / triple-click in a field | Selects the word / the whole value. |
+| Drag over page text | `__pageSel` builds a DOM `Selection` from the text under the pointer (`text_at`), the highlight is painted by `eng_set_highlight` and `paint.c` (spaces between words included). |
+| Drag a range slider | `input` events while moving, `change` on release. |
+| Drag a `draggable=true` element | `dragstart`, `dragenter`/`dragover`/`dragleave`, `drop` with a `DataTransfer`, `dragend`. |
+| Right-click | `mousedown`/`mouseup` with button 2 and `contextmenu`; if the page calls `preventDefault`, the OS menu is not shown. |
+| Middle button | `auxclick` (the OS mouse driver does not report it yet). |
+
+Keyboard in fields: Shift with arrows, Home and End selects; Ctrl with arrows, Backspace and Delete works by words; typing replaces the selection; Up, Down, Home and End move by lines in a `textarea`; `readonly` fields ignore edits; long single-line fields scroll with the caret, and clicks account for that scroll. Ctrl+A, Ctrl+C, Ctrl+X and Ctrl+V use the OS clipboard (`g_clip`, 64 KB, shared with the editor) through `nwk_clip_get`/`nwk_clip_set` and fire `copy`, `cut` and `paste` events whose `clipboardData` the page can read or replace; outside fields they copy the page selection or select all page text. `navigator.clipboard.readText`/`writeText` and `execCommand('copy')` use the same clipboard. Tab and Shift+Tab move focus both ways; Space, Shift+Space, Page Up and Page Down scroll; Enter submits the form.
+
+Keyboard layouts: `drivers/input/ps2/ps2.c` has override tables for Swedish, German, French, Spanish and UK on top of US. `kbd_char` returns Latin-1 characters (for example 0xE5 for a-ring), AltGr (right Alt, or Ctrl+Alt) gives the third level (`@`, `{`, `[`, `\`, currency signs), Caps Lock swaps the case of letters, and the keypad `/` and Enter are mapped. The browser and the desktop take the Latin-1 byte directly; the Terminal passes it to Linux programs as UTF-8. The layout is applied from `/etc/nvx-setup-done` at boot and changed with `kbd_set_layout` (Settings > Language & region > Change).
+
+Container queries: `@container` blocks are parsed at top level and nested (`g_parse_cq`), rules keep their condition in `rule.cq`, and `css_gather` drops a rule whose condition fails for the element. The condition is checked against the nearest ancestor with `container-type` (and the given `container-name`) using its content box from the last layout; `cqw`, `cqh`, `cqi`, `cqb`, `cqmin` and `cqmax` use the same box. When a container's size changes, the engine restyles and lays out once more (`css_cq_changed`).
+
+Sizing: `aspect-ratio` with a set height and automatic width gives width = height x ratio, also for flex row items; `aspect-ratio: auto 4/3` is accepted; extra table width goes to columns without a fixed width first. A sizing page with `vh`, `aspect-ratio`, `fit-content`, `min()`/`max()`/`clamp()`, container queries and percentage heights matches Chromium except rows that depend on font metrics and `min-width: fit-content`.
+
+New JavaScript: `CompressionStream` (stored deflate blocks with gzip and zlib framing) and `DecompressionStream` (real inflate through `N.inflateRaw`), `scheduler.postTask`/`yield`, `TaskController`, `window.event`, `navigator.share`, `canShare`, `userActivation`, `connection`, `CloseWatcher`, `document.getAnimations`, `ToggleEvent`, `PromiseRejectionEvent`, `FormDataEvent`, `CompositionEvent` and other event classes, and interface names such as `TreeWalker`, `CSSStyleRule` and the SVG element types for `instanceof` checks.
+
+Tested: on the host, keyboard and mouse scripts for every row above, 150 DOM mutation seeds with no layout difference, 150 selectors equal to Chromium, the WebAssembly and Service Worker pages, seven app pages with no JavaScript errors and a sanitizer sweep over the page corpus; in QEMU, double-click, slider drag, page text selection, drag-and-drop, right-click, Shift+End, Ctrl+C, Ctrl+V, Shift+Tab and both `/` keys.
+
+### 13.43 Hit testing, form control sizes, intrinsic keywords, middle click, text and file drag, key repeat (v10.19)
+
+Prompted by the owner's photo: on Google's sign-in page the e-mail field could not be clicked and its label sat above the field.
+
+Hit testing (`hit_rec` in `web/layout.c`): a box or text fragment whose style has `pointer-events: none` or `visibility: hidden` is never the target, but its children are still tested (they can turn pointer events back on). Before, such a hit went to the parent element, so a decoration layer over a field (outline and label layers in Material and Google fields) sent the click to the wrapper. Positioned children are tested in `z-index` order (highest first, later in the page first among equals), then in-flow children, then negative `z-index` children.
+
+Percentage heights of inline-level boxes: `measure_atom` gets the definite content height of the block that lays out the line (`g_icbh`), so `height: 100%` on a field or inline block inside a sized container works.
+
+Form controls: text fields are content-box with 2px/3px padding and a 1px border (the same outer size as Chromium's 1px/2px padding and 2px border), no fixed height; width = size x 0.58 em + 1.5 em, height = the normal line height; text areas are cols x 0.6 em + 15px wide and rows x line height high; buttons have 2px/7px padding. The old `size`, `cols` and `rows` width/height hints and the intrinsic aspect ratio of controls are gone.
+
+Intrinsic keywords: `intrinsic_content` measures a box as if its width were `auto`; `clamp_w` uses it for `min-width`/`max-width` with `min-content`, `max-content` and `fit-content`, and flex items use it for the min/max main size. Font metrics follow Chromium: line height = round(ascent) + round(descent) + round(line gap), and one pixel moves from ascent to descent when the descent was rounded down. `ch` uses the width of "0" in the element's font, `lh` the element's line height.
+
+Middle button: `in_btn_raw` counts presses in `mouse_mpress`; the desktop sends a press over the Browser to `browser_mclick`, which sends `NWE_OP_DOWN`/`NWE_OP_UP` with button 3. If the page does not cancel `auxclick` and the target is a link, the engine returns `ret = 2` and the link opens in a new tab.
+
+Text drag: a press inside the current page selection (`__pageSel` checks `Range.comparePoint`) or inside a field selection (`__tdragArm` from the engine) arms a drag instead of starting a new selection. After 5 px the polyfill fires `dragstart` with `text/plain`, then `dragenter`/`dragover`/`drop`; on an editable target that does not cancel `drop` the text is inserted at the drop point (`N.caretAt`, magic 66) with `insertFromDrop` input events, and removed from a source field (`deleteByDrag`).
+
+File drag: dropping a file from the Files app on the Browser calls `browser_drop_file`, which sends the bytes with `NWE_OP_DROPFILE` (16). `__fileDrop` builds a `File` (type from the extension) in a `DataTransfer` (`files`, `items`, type `Files`); if the page cancels `dragover` it gets `drop`, otherwise an `<input type=file>` (or its label) under the pointer receives the file with `input` and `change` events.
+
+Key repeat: `ps2.c` ignores the keyboard's own repeats and repeats the last held key from the timer interrupt (`ps2_kbd_tick`) after `g_krep_delay` ticks every `g_krep_rate` ticks (Slow 700/60 ms, Normal 500/30 ms, Fast 300/20 ms; Settings > Language & region > Key repeat, kept as `krep=` in `/etc/nvx-setup-done`). Modifiers, locks, Escape and hotkeys do not repeat. USB keyboards use the same timing. Repeated keys carry a flag through the keyboard queue (`g_key_rep`), so the browser sends `keydown` with `repeat: true` and no extra `keyup`.
+
+`addEventListener`, `removeEventListener` and `dispatchEvent` called without an object use `window`.
+
+Tested: sizing pages against Chromium (59 + 51 + 19 boxes; remaining differences are the default serif font for `ch` and 3 px on 16 px fields), 80 DOM mutation seeds, seven app pages without errors, host scripts for text and file drops; in QEMU a field under an overlay, held keys, middle click and a text drag.
+
+### 13.44 Connection reuse, parallel fetching, persistent caches, page timing and more interfaces (v10.20)
+
+Prompted by the owner's question why Google's sign-in page is slow. The analysis: the page needs several megabytes of scripts from several servers, and every request paid for a new connection and a new TLS handshake.
+
+Connections (`apps/internet/webglue.c`): requests now go through the TCP code that Linux programs use (`sys/linux/lxsock.c`), which keeps many connections apart, retransmits and advertises a 64 KB window. A pool of 12 connections (`pconn`) is keyed by host, port and scheme; each HTTPS entry has its own `tls_io` buffer and `tls_sess`. Requests send `Connection: keep-alive`; `http_recv` reads exactly one response (`Content-Length`, chunked with `chunk_done`, or until close for old servers) so the connection can be used again. A reused connection that turns out to be closed is retried once on a fresh one. Idle connections are dropped after 50 s, when the server closed them, or when unexpected data arrived. A lost first SYN is resent after 250 ms (`lxs_resyn`). The e1000 and RTL8169 drivers keep 128 receive descriptors instead of 32, so a full 64 KB window from several servers is not dropped.
+
+Parallel fetching: before the HTML is parsed, `prefetch_scan` in `web/engine.c` collects up to 32 `<script src>`, `<link rel=stylesheet>`, `modulepreload` and `preload` (script, style, font) addresses and calls `nwk_prefetch`. That sends up to 6 requests at a time (at most 4 per server) on separate connections, reads the answers in order and keeps them for 60 s (`pf_store`); the normal fetch for the same address then takes the stored answer (`pf_take`) and goes on to the cache as usual. Cookies set by those answers are applied at once.
+
+Caches: compiled scripts (bytecode) and cacheable static files with an expiry time or a validator are written to `webcache.bin` (at most 28 MB, most recently used first, at most once a minute and at power off or restart, never uploaded to the cloud) and read back at the first page after boot; the file starts with the build time so bytecode from another build is ignored. Cached files now carry `ETag` and `Last-Modified`; an expired file is fetched with `If-None-Match`/`If-Modified-Since` and a `304` answer serves the stored copy. Clearing cookies and site data also clears this file.
+
+Time limits: 30 s per script plus 1 s per 100 KB of source (up to 60 s more), 90 s of script time per page, and the engine's stop after 120 s now ignores time spent waiting for the network.
+
+Timing: `about:perf` (`show_perf` in `apps/internet/browser.c`) shows the last page: network totals from `nwk_netstat` (requests, bytes, cache hits, parallel fetches, name lookups, connecting, handshakes, waiting for the first byte, downloading) and engine totals from `nwe_perf`, fetched with `NWE_OP_PERF` (scripts, compiling, styles, layout, painting), plus the time spent moving the pointer while the page was busy (`busy_pump`, measured well under 1%). The status bar shows "Done in ... s: network ..., scripts ..., layout ..." after each load.
+
+Interfaces added in `web/prelude.js`:
+
+| Area | What |
+|---|---|
+| Web Animations | `element.animate` interpolates numbers with units, colours and transform functions between keyframes (array or object form, offsets, per-keyframe easing) with `duration`, `delay`, `endDelay`, `iterations`, `direction`, `easing` (keywords, `cubic-bezier`, `steps`) and `fill`; `Animation` with `play`, `pause`, `reverse`, `finish`, `cancel`, `currentTime`, `playbackRate`, `finished`, `onfinish`; `KeyframeEffect`, `DocumentTimeline`, `getAnimations`. Values are written to the inline style and restored afterwards. |
+| Security | `trustedTypes` with policies, `TrustedHTML`/`TrustedScript`/`TrustedScriptURL` (accepted wherever strings are). |
+| Components | `attachInternals` and `ElementInternals` (form value included in `FormData`, `states`, validity, ARIA reflection). |
+| Sign-in | `navigator.credentials` (`get` returns `null`, password and federated credentials can be created), `PublicKeyCredential` reporting no platform authenticator and no conditional mediation. |
+| Media | `navigator.mediaDevices` with no devices, `MediaStream`/`MediaStreamTrack`, `canvas.captureStream`; a Web Audio graph (`AudioContext`, `OfflineAudioContext` and the usual nodes and params) that keeps time but produces no sound; `speechSynthesis` with no voices. |
+| Fonts and canvas | `FontFace` (URL or binary sources, added as `@font-face` rules), `document.fonts.add/delete/has`, `OffscreenCanvas` backed by a hidden canvas. |
+| Performance | `PerformanceMark`, `PerformanceMeasure` with marks or options, the navigation entry, paint entries at `load`, `PerformanceObserver` with `buffered`, `performance instanceof Performance`. |
+| Other | `URLPattern`, `cookieStore`, `ClipboardItem` with `navigator.clipboard.read/write`, `document.caretPositionFromPoint`/`caretRangeFromPoint` (native `N.textAt`), `window instanceof Window`, elements with an `id` (and named forms, frames and images) as `window` properties through a named-properties object behind the global, `Touch`/`TouchList`, `navigator.getGamepads`, `wakeLock`, `keyboard`, bar objects, more element and SVG filter interface names, WebGL interface names (contexts are still not available), and the missing `on...` handler properties. |
+
+Scroll wheel: the PS/2 IntelliMouse wheel byte and the vmmouse wheel value count a turn towards the user as positive, while USB HID and the rest of NoovexOS count up as positive; both are now negated, so the QEMU pointer and PS/2 mice scroll the right way.
+
+Not done: no JavaScript JIT; the QuickJS interpreter itself was profiled (a virtual-machine style benchmark is about 11 times slower than Node, large bundles are dominated by parsing) but not changed; streaming `fetch` bodies still arrive at the end; WebGL, WebRTC and real audio output are not available.
+
+### 13.45 Faster AES-GCM, TCP window scaling, after-load timing (v10.21)
+
+AES (`lib/crypto/nvxtls.c`): `aes128_enc` now uses one 256-entry table of the combined S-box and MixColumns step (`TLS_TE0`) with rotations for the other three columns and the plain S-box for the last round; the round keys stay in the old 176-byte format, so `nvxwpa.c` (WPA2 CCMP) is unchanged and faster too. GHASH uses a 16-entry table per key (`gcm_tab_init`, `gcm_mul`, the Shoup 4-bit method). Checked on the host against the old code on 300 random keys, nonces, additional data and lengths up to 20 KB, and against the standard all-zero test vector; 6.6 MB/s before, 97 MB/s after.
+
+TCP (`sys/linux/lxsock.c`, `net/stack/tcpip.c`): outgoing SYNs carry the window-scale option (shift 2, `g_tcp_syn_ws`); if the SYN-ACK has one too, our advertised window is the free space of the 256 KB buffer shifted right by 2 and the peer's window is shifted left by its value. Listening sockets keep unscaled windows. `lxs_mv` copies 8 bytes at a time. The e1000 and RTL8169 drivers have 256 receive descriptors.
+
+After-load timing: `nwe_entry` adds every engine call after the load (timer ticks, events, painting) to `after_us`, `tick_us`, `event_us` and `longest_us`; scripts that run after `G.loaded` count in `after_scripts`/`after_js_us`. When `about:perf` is opened from a page, `perf_after` reads those totals and the network counters since the load before the page is replaced.
+
+Network waits: `pc_wait` calls `nwk_busy`, which moves the pointer, keeps the freeze watchdog fed and notices a held Esc (then the wait ends). Prefetching uses a 4 s limit (`g_pc_tmo`) and stops opening connections to a server whose connection or handshake failed in that round; the normal fetch then loads those files.
+
+Engine: 16 MB engine stack (`ESTACK_SZ`), `JS_SetMaxStackSize` 8 MB in NoovexOS (3 MB in the host test program), `JS_SetGCThreshold` 16 MB.
+
+### 13.46 TLS 1.2, P-256 and HelloRetryRequest, faster DOM bindings, feature tests, wheel events (v10.22)
+
+TLS (`lib/crypto/nvxtls.c`): `supported_groups` lists x25519 and secp256r1; the first key share is still x25519 only. `parse_serverhello` fills a `tls_sh` (cipher, group, key, HelloRetryRequest flag, cookie) and requires `supported_versions` 0x0304. A HelloRetryRequest (the fixed SHA-256 random) replaces the transcript with `message_hash` (0xFE 00 00 20, hash of the first ClientHello), adds the HRR, and sends a change_cipher_spec plus a second ClientHello with the requested group and the cookie; a second HRR, an HRR that asks for the group already sent without a cookie, or a ServerHello for another group is refused. The P-256 code is `x509_p256_ecdh` in `nvxx509.c` (Jacobian points with the existing field code, a double-and-add-always loop with masked selection, peer point checked to be in range and on the curve, result wiped). The client change_cipher_spec is sent once. `tls_sess` keeps both application traffic secrets and the key length; `tls_sess_read` handles KeyUpdate (`traffic upd`) and answers `update_requested` with its own KeyUpdate. Session ID: `tls_connect_sess` used `rnd[0..31]` both as the X25519 private key and as the 32-byte legacy session ID, which is sent in the clear, so a passive observer could compute the shared secret. The session ID is now SHA-256 of the client random and the byte 0x53; check.py captures a ClientHello and checks that X25519 of the session ID is not the key share.
+
+TLS 1.2 (`tls12_handshake`): the ClientHello also lists 0x0303 in `supported_versions`, the suites 0xC02B, 0xC02F, 0xCCA9 and 0xCCA8, `extended_master_secret`, an empty `renegotiation_info` and `ec_point_formats`. A ServerHello without `supported_versions` and with legacy version 0x0303 selects TLS 1.2; a server random ending in `DOWNGRD` 01 or 00 is refused. Only the ServerHello itself goes into the transcript; messages that follow it in the same record are handed on. Certificate (1.2 layout), ServerKeyExchange (named curve x25519 or secp256r1, signature over client random, server random and the parameters, checked with `x509_leaf_sig12`: 0x0401/0501/0601 PKCS#1, 0x0403/0503/0603 ECDSA, 0x0804-0806 PSS), CertificateRequest (answered with an empty Certificate) and ServerHelloDone are read from plain records. The premaster secret is the ECDH result; the master secret uses `prf12` (P_SHA256) with "extended master secret" over the session hash when the server echoed the extension, else "master secret" over the randoms; the key block gives 16-byte AES or 32-byte ChaCha keys and 4-byte (GCM salt) or 12-byte IVs. Records (`t12_write`, `t12_open`): GCM uses the salt plus an explicit 8-byte sequence number in front of the ciphertext, ChaCha20-Poly1305 the IV XOR the sequence number; the additional data is sequence, type, version and length. Finished messages are 12 bytes of `prf12` over the transcript hash. `tls_sess.v12` switches `tls_sess_write`/`tls_sess_read` to these records; a HelloRequest is answered with a no_renegotiation warning; `tls_get` now reads through `tls_sess_read`.
+
+Host tests in `tools/tests/tls/x509h.c` (`ecdh` and `get` modes, the last arguments are PEM files to trust) are run by check.py against the cryptography module and `openssl s_server`: TLS 1.3 with X25519, P-256 and an RSA certificate, TLS 1.2 with the four suites, and a proxy that changes the last byte of the ServerKeyExchange, which must be refused.
+
+DOM speed: `qsel` in `web/cssparse.c` keeps 64 parsed selectors keyed by root and an FNV hash; results are reused while `g_dom_gen` is unchanged and the selector has no `:` (state pseudo-classes can change without a DOM change). `lc`, `ieq` and `is_ws` are inline in `nwe.h`; `attr_get` compares the first letter before calling `ieq`. Native 69 (`clsOp`) does `contains`/`add`/`remove`/`toggle` on a token attribute in C (duplicates removed, an unchanged `toggle` does not rewrite the attribute, -1/-2 for an empty or spaced token so the right DOMException is thrown). `attr_set` records a 256-bit hash set of `on...` attribute names; native 70 (`onSeen`) lets `run()` skip `inlineHandler` for event types no element has. `kebab` and `dsKey` results are cached in maps.
+
+Sort (`third_party/quickjs/quickjs.c`): `js_array_sort` calls `vs_natural_sort` (runs, reversal of strictly descending runs, binary insertion up to 24 elements, bottom-up merging into a temporary array, a merge is skipped when the two runs are already in order); if memory runs out it falls back to `rqsort`. The compare function still breaks ties by position, so the result is stable either way.
+
+Ring-3 waits (`sys/native/syscall.c`): syscalls 51 (wait for a key) and 71 (sleep) set `g_frz_hold` while they wait and restore it after.
+
+Feature tests: the pages `es.html`, `dom.html` and `b3.html` (kept with the build scripts) list each check as name, function and expected value; Chromium 141 and the host test program both print the failures. Chromium's two failures are its own (`SharedArrayBuffer` needs cross-origin isolation there, `Math.sumPrecise` is not in 141).
+
+New interfaces (`web/prelude.js`, last block): live collections are a `Proxy` over an array that is refilled when `domGen` changes; form validity follows the HTML rules for barred elements (disabled, read-only, hidden, buttons), with Chromium's messages; `toDataURL` writes an uncompressed (stored deflate) RGBA PNG with CRC-32 and Adler-32; `cssRules` splits the sheet text at top level into rule objects with `selectorText`, `style`, nested `cssRules` for `@media`/`@supports`, and `insertRule`/`deleteRule` rewrite the text; `img.width` of an element that is not rendered returns the attribute, then the natural size (`web/js.c`).
+
+Horizontal scrolling: `box.sx` is the horizontal scroll offset (the field already existed and was unused) and `node.scrollx` keeps it across layouts (`build_box`, `apply_scroll_offsets`). `box_scroll_w` walks the box's descendants (not into boxes that clip horizontally, not into fixed boxes) for the right-most edge of boxes and fragments plus the right padding. Painting (`paint_box`, `sub_bounds`, absolute boxes, the focus ring), hit testing and caret positions subtract `sx` like `sy`. `box_rect` now subtracts the scroll offsets of the ancestors (it did not, so `getBoundingClientRect` was wrong inside any scrolled box); `box_rect_s(..., 0)` keeps the unscrolled position for `offsetLeft`/`offsetTop`. `scrollLeft` reads `node.scrollx` and clamps writes to 0 .. scroll width minus client width; `scrollWidth` uses `box_scroll_w`. A wheel or box scroll fires a non-bubbling `scroll` event at the element; a change of `scrollTop`/`scrollLeft` from a script queues the element (`eng_queue_scroll`, 16 entries) and the next tick fires its `scroll` event. Both setters lay out first (`js_flush_n`) and clamp to the scroll range when the layout is up to date; otherwise `apply_scroll_offsets` clamps after the next layout.
+
+Wheel: `do_wheel(x, y, dy, dx)` dispatches `wheel` at the element under the pointer (deltaY in the low 16 bits of the key, deltaX in the high 16) and scrolls only if it was not cancelled: `dx` scrolls the nearest box with `overflow-x: auto`/`scroll` that can move, `dy` as before. Listeners keep a `passive` flag (default true for wheel and touch listeners on `window`, `document`, `html` and `body`); `preventDefault` does nothing while a passive listener runs. `browser_wheel` turns Shift+wheel into `deltaX`; `browser_wheelxy` also takes the horizontal amount the GUI loop now reads from `mouse_hscroll` (touchpads and PS/2 mice). `ps2_mouse.c` sends the 200-200-80 rate sequence after the wheel mode and uses ID 4 (IntelliMouse Explorer); `mouse_feed` decodes the fourth byte like Linux (`0x40` horizontal, `0x80` vertical, else wheel nibble plus buttons 4 and 5). `in_xbtn` counts back/forward presses (PS/2 and USB boot or report mice); a back press goes back in the browser.
+
+### 13.47 Request headers, animation events, frame load events (v10.23)
+
+Request headers (`apps/internet/webglue.c`): `g_nwk_kind` tells `req_head` what kind of request it builds (1 page load, 2 script request, 0 other) and `g_nwk_xhdr` holds the page's own header lines. For kind 2 the page's headers are copied after removing CR and LF and dropping the forbidden names (`xh_forbidden`: `Host`, `Cookie`, `Content-Length`, `Content-Type` (sent separately), `Connection`, `Origin`, `Referer`, `User-Agent`, `Proxy-*`, `Sec-*` and the rest of the Fetch list); `Accept: */*` is added unless the page set one; `Sec-Fetch-Site` (`same-origin`, `same-site` by registrable domain from `reg_dom`, else `cross-site`), `Sec-Fetch-Mode: cors` and `Sec-Fetch-Dest: empty` are sent; `Origin` is sent for posts and cross-origin requests. Kind 1 sends `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, `Sec-Fetch-User: ?1` and `Upgrade-Insecure-Requests: 1`. `browser.c` sets `g_nav_from_page` when a page started the navigation; a typed address sends no `Referer`. `nwk_fetch_real` copies the response header block to `nwk_resp.hdrs` for kind 2.
+
+Scripts (`web/js.c`, `web/prelude.js`): `fetch` takes a sixth argument (the header block, from `hdrBlock`) and returns the response headers as a fifth element, parsed by `parseHdrs` into the `Headers` of the `Response`. `XMLHttpRequest` checks the state in `setRequestHeader`, joins repeated names with ", ", fills `status`, `statusText` (from `STATUS_TEXT` when the server sent none), `responseURL` and the headers, fires `loadstart`, `progress`, `load`/`error`, `loadend` (and the upload events when there is a body) and sets `readyState` 4 on errors. The host test program `tools/webhost.c` can fetch from `127.0.0.1`, which is how the test server checks the headers.
+
+Animation events (`web/anim.c`): queued events carry the event name, the animation or property name and the elapsed time, and duplicates in one frame are dropped. Transitions fire `transitionrun` when created and `transitionstart` after the delay, `transitioncancel` when the element gets `display: none`, is removed or gets a new transition for the same property; `animationcancel` fires when an animation is removed. Property names come from `css_prop_names`. Snapshots skip nodes with `NF_NOTRANS` (512), which Web Animations set while they apply their own values so their end does not start a CSS transition. `engine.c` passes each event to `js_anim_event`, which builds a real `AnimationEvent` or `TransitionEvent` and lets it bubble.
+
+Frames: `frameScan` runs every 40 ms and fires one `load` event per frame for each `src` or `srcdoc` value. For an empty frame, `contentDocument` is a document from `N.parseDoc` with `open`, `write` and `close`, and `contentWindow` an object in the same realm with `document`, `parent`, `top`, `eval` and a `postMessage` that delivers to its own listeners.
+
+### 13.48 Name lookups, frames, streaming, faster built-ins (v10.25)
+
+Lookups (`net/stack/tcpip.c`): `dns_try` and `arp_resolve` poll the card directly; frames that are not their answer now go to `lxs_frame_ext` (the socket layer) instead of being dropped. A query is resent after 100 and 200 ticks and a server is given 3 s. The cache has 64 entries with an expiry from the answer's TTL (at least 60 s, at most 1 h). `pc_get` writes `host d<ms> t<ms> s<ms> r<n>` to the network log for each new connection and keeps the slowest in `g_nwk_slow`; `pc_wait` calls `nwk_busy` always, which beats the main loop so long downloads do not trigger the freeze report.
+
+Frames: `N.frameOpen(url, srcdoc)` (native 58) hands a `srcdoc` document to `nwk_frame_open_doc`, which loads it in the frame engine like a fetched page; `frameScan` picks the first `iframe[srcdoc]` or `iframe[src]`.
+
+Streaming: during a page fetch (`g_nwk_kind` 1) `http_recv` calls `stream_try`, which (at most twice, after 0.3 s and 1.5 s, with at least 2 KB new) de-chunks the bytes so far, inflates gzip with `pz_inflate_part` (returns what it could decode) and calls `g_nwk_stream`. The browser loads that HTML with `btn` 2: the engine parses without scripts, lays out and paints; `g_nwk_offline` makes fetches answer only from the cache.
+
+QuickJS: `js_regexp_replace_fast` runs `lre_exec` directly for standard regular expressions without sticky flag or named groups when the replacement is a function or a string without `$`, collects all matches first and then calls the function with the captures, position and string. `map_hash_key` finishes with a 32-bit mix and the table grows at one entry per bucket. `json_quote_to` writes quoted strings in runs; arrays skip the index string and `js_json_check` for primitives when there is no replacer; numbers, booleans and null are written directly. After a collection the next one starts at twice the live size (at least the value given to `JS_SetGCThreshold`).
+
+### 13.49 Script order, parallel late downloads, prelude bytecode, faster built-ins (v10.26)
+
+Script order: `eng_node_inserted` (DOM insertion from JavaScript) used to skip scripts while `G.parsing` was set, so scripts added by an inline script during the parse were lost. `on_ins` now runs a script without `src` at once when it has text (`run_script_node`; an empty one is left for later), and queues one with `src` in `pend_scripts`. `do_load` runs the queue after the parse and before the `defer` list and `js_fire_load`; queued scripts added later run at the next tick. `js_run_script_in` keeps the deadline of an outer script that is running (nested runs used to clear it).
+
+Parallel downloads: `prefetch_nodes` collects the `src` of queued scripts and calls `nwk_prefetch_more`, which, unlike `nwk_prefetch`, keeps earlier results, skips addresses it already holds and replaces the oldest entry when all 32 are used. The tick also prefetches up to 6 pending images and `prefetch_links` (style sheet gathering) up to 8 style sheets that have not been fetched yet.
+
+Prelude: `js_init` looks up the compiled prelude in the code cache (`nwk_code_get` with a key from its length and a sample of its bytes); the first time it compiles with `JS_EVAL_FLAG_COMPILE_ONLY`, stores `JS_WriteObject` bytecode and runs it.
+
+QuickJS: `json_obj_fast` writes plain objects from their shape (string keys only, data properties, no replacer list); `js_array_every` reads fast arrays directly and appends `map`/`filter` results with `add_fast_array_element`; `js_append_enumerate` copies fast arrays and `arguments` without making an iterator when the array iterator is unchanged; `json_parse_string` returns plain ASCII strings without a string buffer; `json_parse_number` and `next_token` read integers of up to 9 digits directly. Before an assignment expression that starts with `(` is checked for an arrow function (`js_parse_skip_parens_token`, which tokenizes up to the matching `)`), `arrow_params_possible` peeks at the next token: only `)`, `[`, `{`, `.`, an identifier, `of` or `await` can start parameters, so `(function`, `((` and similar are parsed at once. Regression check: 3000 scripts from npm packages compiled with the v10.24 and the new QuickJS give byte-identical bytecode and the same errors.
+
+Busy box: `web_busy_ms` gives the time of the running engine call; `busy_pump` draws the box into the scene and presents its rectangle once a second after 3 s.
+
+### 13.50 Error page, honest status, cut-off downloads (v10.27)
+
+Error log: `webglue.c` keeps a ring of 64 entries of up to 400 characters with a time (`nwk_error`, `web_err_count`, `web_err_get`, `web_err_total`). `nwk_error_mark` adds a "Page <address>" line from `browser_go`. The `nwk_fetch` wrapper adds a line for every failed request when the browser is online: the return code picks the text (-100 name lookup, -2 connect, -5 secure connection, -4 cut off, -3 no answer), a status of 400 or more gives "HTTP <status>". In `js.c`, `report` (uncaught errors with their stack) and `console.error` (level 2) or `reportError` (level 3) also call `nwk_error`; the host promise rejection tracker keeps up to 32 rejected promises without a handler and logs those still unhandled at the start of the next `js_tick`. `show_errors` in `browser.c` builds `about:errors` from the ring.
+
+Status: `run_script_node` sets "Running script <name>" before a script runs and compares the error counter `g_js_errs` after it. `nwk_status` in `browser.c` changes a plain "Done" into "Done, N errors - see about:errors" when the error total has grown since the page started.
+
+Cut-off downloads: `http_recv` returns whether the body was complete. `http_once` retries once when it was not, then returns -4; the prefetcher only keeps complete results.
+
+Compiling: `get_closure_var` scans up to 23 closure variables; above that it keeps an open-addressing hash of (`var_idx`, `closure_type`) in the function definition (`cvh`), filled in for new entries on each lookup (entries never change once added) and freed with the definition.
+
+### 13.51 Google sign-in checks, long addresses, locales (v10.28)
+
+Token lists: `DOMTokenList.prototype.supports` looks up the owner element and attribute: `rel` on `link` uses the link types Chromium supports (`preload`, `modulepreload`, `preconnect`, `dns-prefetch`, `prefetch`, `stylesheet`, `icon`, `manifest`, `alternate`, `next`, `search`, `expect`, `compression-dictionary`), `rel` on `a`, `area` and `form` uses `noreferrer`, `noopener` and `opener`, `sandbox` uses the 14 sandbox flags and `blocking` uses `render`. Any other list throws a `TypeError`, as in Chromium.
+
+Reflected properties: a block after the iframe code in `prelude.js` adds string, boolean, URL, integer and enumerated reflections with five small helpers (`rS`, `rB`, `rU`, `rI`, `rE`); each one is only added when the property does not already exist anywhere in the prototype chain (`findDesc`), so native getters win.
+
+Blank frames: the `contentWindow` of an `about:blank` frame copies every other own property of the page's global object (data properties as values, accessors as getters that read the page's value) after the fixed list.
+
+Addresses: `url_resolve` and `norm_path` in `util.c` use static 8 KB buffers (the functions are not reentrant and the engine runs on one thread), so relative addresses and query strings are no longer cut. Buffers of 1 and 2 KB for addresses in the engine, the style parser, the network layer (`purl`, request lines, redirects, cache entries, frame addresses), `nwk_resp.final_url` and the browser (`g_url`, `g_cururl`, the back stack, tabs, the resolved address) are now 4 KB; `sset` in `browser.c` stops at 4095 characters.
+
+Locales: the `Intl` replacement has a table `LT` of separators, date order and separator, zero padding, 12 or 24 hours, currency placement and names. `NumberFormat.format` maps the US result to the locale's separators (Spanish and Polish do not group four-digit numbers); `DateTimeFormat.formatToParts` hands every non-US locale to `locParts`, which builds numeric or named dates and times from the table.
+
+Layout: a `<button>` that is a block box and taller than its content moves its fragments and children down by half the difference. `list-style-type: disclosure-closed` and `disclosure-open` are new marker types (`LS_DCLOSED`, `LS_DOPEN`) drawn as triangles; an `inside` marker now moves the first line's text to the right. An absolutely positioned box with `left` and `right` and `width: fit-content` (or `max-content`, `min-content`) is no longer stretched, so auto margins center it.
+
+### 13.52 about:pending, two frame engines (v10.29)
+
+Pending list: a block at the end of `prelude.js` (main page only) wraps `fetch`, `XMLHttpRequest.prototype.send`, `setTimeout` (timers of 1 s or more), `setInterval` and `clearTimeout`/`clearInterval`, listens in the capture phase for `transitionrun`/`end`/`cancel`, `animationstart`/`end`/`cancel` and `load`/`error`, and once a second (and on `pagehide`) builds a text with one line per item; lines starting with `@`, `=` and `#` are the address, the state line and section titles. `N.pendingSet` stores it in `webglue.c` (12 KB, with the time), `browser_go` clears it when a real page starts, and `show_pending` in `browser.c` turns it into `about:pending`.
+
+Frame engines: `build.sh` links the engine three times: the page engine, `nwe2_entry` and `nwe3_entry` (each copy has its own globals, about 2 MB of static data, and its own memory arena; the third may take up to 128 MB). In `webglue.c` the frame state is an array of two slots (`fslot`: address, `srcdoc`, state, position, paint buffer, request and two message queues); `F` points at the slot in use, the old `g_frame_*` names are macros on it, and `nwk_frame_slot` (page script `N.frameSlot`) chooses the slot for the calls that follow. `frame_call` calls the slot's engine; `frame_tick`, `frame_hit` and `frame_mouse` go over both slots; `nwk_frame_paint` uses the slot whose address matches. The copies' own `framePost`/`frameRecv` are renamed to slot-specific queue functions (`nwk_frame_post_up3`, `nwk_frame_recv_down3` for the second). To keep the image under the 0x6000000 installer limit, the Doom WAD is linked as `doom1.wad.xz` and unpacked with `xzk_decode_into` when Doom starts.
+
+Frames: `FR` in `prelude.js` holds two slots (`S`), each with the element running there (`run`), its key (address or `srcdoc` length), whether it has loaded, and the time of the last message; `want` lists the frames the page has sent messages to. `FrameWindowProxy.postMessage` posts at once only to the running, loaded frame; otherwise the message is kept on the element (`__fq`). `frameScan` (every 40 ms) watches `N.frameInfo` (the frame engine state: 2 loaded, 3 failed) to fire the running frame's `load` once and flush its messages, restarts the frame when its address changes, and switches (`N.frameSwitch` resets the frame engine, then `N.frameOpen`) to a wanted frame when the running one has been quiet for 1.5 s or failed. Frames that do not run still get an immediate `load` as before. In the frame engine the three new kernel functions are redefined to no-ops (`build.sh`).
+
+Animation limits: `SNAP` (the values before a style pass) holds 4096 entries and is allocated with `nwk_alloc_arena` on first use, because the kernel's static area (`__bss_end`, 0x18000000) cannot hold another 2 MB for each of the two engines; `EV_MAX` is 512 and `anim_events` keeps what it could not return.
+
+Time zone: `nwk_tz_min` computes the offset of the setup time zone (`nvx_tz_index`) for the current time, with EU summer time (last Sunday of March to last Sunday of October, 01:00 UTC) and US summer time (second Sunday of March to first Sunday of November, 02:00 local); `localtime_r` in `krt.c` and QuickJS dates use it.
+
+Import maps: `im_load` in `js.c` walks the document once per page (reset in `js_init`) for `script[type=importmap]`, parses it with `JS_ParseJSON` and keeps up to 256 `imports`; `mod_normalize` maps the specifier (exact match, then the longest prefix ending in `/`), then the resolved address.
+
+### 13.53 Promise tracking, code snippets for errors, Content-Length (v10.30)
+
+Promises: the pending block in `prelude.js` wraps browser functions with `patchM` (methods) and `patchG` (getters such as `document.fonts.ready`); a wrapper hands the result to `regP`, which keeps the label (with the first string argument, for example the element name of `whenDefined`) and the time until the promise settles (at most 300 entries; a promise is only counted once). `IntersectionObserver`, `ResizeObserver`, `MutationObserver` and `PerformanceObserver` are replaced by subclasses that count `observe` calls and callbacks; only intersection and resize observers are listed when they never called back (they must report once after `observe`). `requestIdleCallback` is wrapped to list callbacks that have not run.
+
+Code snippets: `run_script_node` records the address and text of every external script (`eng_src_add`, 256 per page, reset in `do_load`; the text lives in the page arena). `js_err_snippet` in `js.c` takes the first `(address:line:column)` of a stack, finds the text (`eng_src_get`), and adds a line with up to 70 characters before and 90 after the column to the error ring. It runs for uncaught errors (`report`) and for errors reported by the page script (`reportErr`, level 3).
+
+Content-Length: `nwk_fetch_t` in `webglue.c` adds `Content-Length` for every method starting with P or D, 0 when there is no body; `Content-Type` only when the page or the body gives one. `bodyType`/`bodyRaw` in `prelude.js` encode `FormData` as multipart with a random boundary kept on the object (`fdBound`, `fdBytes`).
+
+New APIs: a block before the pending block in `prelude.js` (MediaQueryList and its event, IdleDeadline, LockManager and Lock, MediaSession, StorageManager, ScreenOrientation, PerformanceTiming and PerformanceNavigation, VideoPlaybackQuality, MediaList, MediaCapabilities). `MediaQueryList` objects with a `change` listener or `onchange` are checked on every `resize` and once a second.
+
+Elements: `layout_table` lays captions out from the border-box top and moves the rows below them; `paint_bg_border` draws the table background and border from the bottom of the last caption. Ruby uses the default styles `ruby{display:inline-flex;flex-direction:column}` and `rt{order:-1;font-size:50%}` (an older `ruby{display:inline}` rule later in the default sheet was removed). `flatten` in `layout.c` marks the piece before a `<wbr>` as a break opportunity. `attr_set` in `dom.c` calls `details_exclusive` when `open` is set on a `<details>` with a `name`. `paint.c` draws a moving segment for a `<progress>` without `value` and sets `g_prog_indet`, which makes the engine tick repaint every 50 ms.
+
+### 13.54 Unfired events, hit testing, loading indicators, messaging (v10.31)
+
+Unfired events: the pending block in `prelude.js` wraps `EventTarget.prototype.addEventListener`. The first time a type is registered, a capture listener for it is added on `window` that records that the type was fired. `about:pending` lists the types that were registered but never fired, with the target and the time since registration; types matching `USER_EV` (input, focus, pointer, page lifecycle and other rare events) are grouped on one line, because a page normally waits for them.
+
+Hit testing: "What is under the mouse" calls `elementFromPoint` at the centre of the page and three other points. For each hit it shows the element, its position, z-index and opacity, and the first ancestor with `inert`, `aria-busy`, `aria-disabled` or `pointer-events: none`. Fixed or absolute elements covering more than half of the viewport are listed as overlays; the focused element and `document.hasFocus()` close the section.
+
+Loading indicators: elements with `role=progressbar`, `progress` elements and elements whose class contains "progress" are listed with their computed display, visibility, opacity, size and classes. A `MutationObserver` (`pbWatch`) on each indicator and its parent, attributes only, records when the classes last changed, so a bar that is never told to stop shows "classes not changed since first seen".
+
+Load order: `do_load` in `engine.c` calls `js_fire_stage(1)` after parsing (`readystatechange` to "interactive"), runs the pending and deferred scripts, calls `js_fire_stage(2)` (custom element and document flushes, `DOMContentLoaded`), sets `G.loaded` to 2 and calls `js_fire_stage(3)` ("complete", `load`, `pageshow`). `__fireLoad` still runs stages 2 and 3 for callers that load without the split.
+
+Messaging: `G.postMessage` always sets `origin` to `N.origin()` and drops a message whose target origin (parsed with `URL`) differs; `framePoll` compares the target by origin too. `MessagePort` extends `EventTarget`; messages wait in `_q` until `start()` or an `onmessage` handler, and transferred ports arrive in `e.ports` (`MessageEvent` copies `ports` and `lastEventId` from its init). `BroadcastChannel` keeps the open channels per name in `BCH` and delivers a structured clone to every other open channel.
+
+Fonts: `document.fonts.load(spec)` takes the family list after the size in `spec`, loads the faces of the set with those families and returns them; `loading` and `loadingdone` (or `loadingerror`) are dispatched through the small listener table on `document.fonts`, which also calls the `on...` properties.
+
+List boxes and dialogs: `sel_listbox_rows` (`size` above 1, or 4 for `multiple`), `sel_items` and `sel_item_h` in `layout.c` size a list box from its rows and the widest option or group label. `paint.c` draws the rows, group labels and the selected options; `listbox_click` in `engine.c` selects the row under the pointer (in a `multiple` list it replaces the selection; Ctrl-click to add is not done yet) and fires `input` and `change`. A modal dialog (`nvx-modal` with `open`) gets `height: fit-content` and a translucent rectangle over the page before it is painted; `layout_abs` no longer stretches boxes whose height is `fit-content`, `max-content` or `min-content`.
+
+Error reports from pages: `G.__repSeen(url, body)` in `prelude.js` is called from the wrapped `XMLHttpRequest.open`/`send`, `fetch`, `navigator.sendBeacon` and the `src` setter of `img` elements. For addresses containing `jserror` or a CSP report path it reads `error`/`message`, `script`/`url`, `line` and `trace`/`stack` from the query or a form-encoded body and logs one entry per distinct message (at most 41) with `N.log(..., 4)`. Level 4 in `js.c` goes to `about:errors` without the "Uncaught" prefix and without a code snippet. `sendBeacon` now posts the data with `fetch` (`keepalive`, `credentials: include`, `no-cors`).
+
+### 13.55 Old event names, attributes, element properties, XPath, scroll snap (v10.32)
+
+Old event names: `invoke` in `prelude.js` checks trusted `animationend`, `animationiteration`, `animationstart` and `transitionend` events (`LEGACY_EV`). If the node has no listener and no handler for the event's own type (listeners wrapped with `nvxL`, the browser's own trackers, do not count), the listeners and the `on...` handler for the old name (`webkitAnimationEnd` and the others) run with `event.type` set to that name. `invokeIn` holds the old listener loop.
+
+Attributes: the native `attributes` getter (array of name/value objects) is wrapped. `mkMap` returns a `Proxy` over a `NamedNodeMap` prototype, cached per element in `MC`; indices and attribute names resolve through `attrOf`, which looks the name up exactly, then lower-cased, and returns the cached `Attr` for that element and name (`AC`). `Attr` objects keep `_e` (owner) and `_v` (last value); writing `value` calls `setAttribute`. Names starting with `nvx-` (internal markers such as `nvx-modal` and `nvx-design`) are left out. `SVGN` restores the case of SVG attribute names that the parser stores lower-cased.
+
+Element properties: the native accessors on `Element.prototype` in `elem_funcs` (`js.c`) are copied by the `MV` table to the tag prototypes that have them in Chrome and deleted from `Element.prototype` (`G.__elemOnly` keeps the descriptors). Tags without a native tag id (`col`, `slot`, `track` and others) get their prototype from `tagproto_nm` in `js.c`, filled by `N.setProto` with the tag name.
+
+XPath: a tokenizer, a recursive parser for the XPath 1.0 grammar and an evaluator over the live DOM (attribute nodes are the `Attr` objects above; node sets are sorted with `compareDocumentPosition`). HTML element names match without case. `document.evaluate`, `document.createExpression`, `XPathEvaluator`, `XPathExpression` and `XPathResult` (all ten result types with the type checks Chrome makes) use it. Variables and namespaces are not supported.
+
+Design mode: setting `document.designMode` to "on" puts `nvx-design` on the document element; `edit_host` in `engine.c` returns the body when it reaches such a root, so clicks place the caret and typing edits the whole document. `isContentEditable` (`G_ISCONTENTEDITABLE`) is `edit_host(n) != 0`.
+
+Scroll snap: `scroll-snap-type`, `scroll-snap-align` and `scroll-snap-stop` are kept in the style (`snaptype`, `snapstrict`, `snapalign`, `snapstop`) and returned by `getComputedStyle`. In `do_wheel`, a scroll box (or the page, from the document element's style) with block snapping collects the snap positions of its descendants (`snap_collect`, not inside nested snap containers) and `snap_pick` moves to the next position in the scroll direction (mandatory) or to the nearest one within 30% of the viewport (proximity). `scrollend` is dispatched after each wheel scroll of a box and after the page's `scroll` event.
+
+Web cache file: `wc_save` writes the stamp, then the payload length and a 64-bit FNV-1a hash of the payload, then the entries; `wc_load` ignores the file when the length or the hash do not match.
+
+### 13.56 The desktop keeps running during page loads (v10.33)
+
+Engine calls run on the engine stack (`nwe_call_stack`). While a script runs, QuickJS calls `interrupt_cb`, network waits call `nwk_busy`, and style, parsing and now `lay` (every 128th box) call `nwe_check_stop`, which calls `nwk_busy`. When `g_web_pump_ok` is set and the engine is not already nested, `nwk_busy` runs `desk_nested_step` at most every 30 ms: pointer and touchpad polling, ACPI and sound polling, media, input handling (`process_input`) and one full `compose_present`. The time spent there is subtracted from the engine's clocks (`g_susp_total`, `nwk_ms_active`), so it does not count against the 60 s script and 300 s job limits. Without `g_web_pump_ok`, `busy_pump` only moves the pointer and draws the "This page is busy." box after 3 s.
+
+`g_web_pump_ok` is now set for page loads (`web_load_html`) and for navigations that a page tick asks for (`web_process_nav` in `browser_tick`), in addition to ticks and queued input (`bq_drain`). Two guards keep the nested step safe wherever an engine call starts: `g_comp_depth` (`compose_present`) makes it return at once inside a compose, and `g_pi_depth` (`process_input`, lowered around the `browser_tick` call at its end, where nesting was already allowed) makes it only move the pointer and compose when the engine was entered from input handling (for example the Terminal's `browse` command). During a nested step the browser window shows its saved picture (`pc_show`) and browser input is queued (`bq_push`) until the engine returns. `close_win(W_BROWSER)` sets `g_busy_esc` while the engine is busy, which stops the page like Esc.
+
+### 13.57 Chrome-size cookies, long waits and more redirects (v10.34)
+
+The cookie jar (`net/http/cookies.c`) holds `CK_MAX` 3000 entries. A cookie's value is a separate block (`value`, `vcap`) that `ck_val` grows when a longer value arrives; a slot keeps its block when it is reused. A `Set-Cookie` whose name and value together exceed `CK_VMAX` 4096 bytes is refused, as in Chrome. Before a new cookie is stored, the cookies of the same site (the last two labels of the domain, `ck_site`) are counted; at `CK_PER_SITE` 180 the oldest of them gives up its slot, otherwise a free slot is used, otherwise the oldest cookie overall. `cookie_header` sorts by path length and then by creation time, and skips a cookie that does not fit instead of stopping. Up to 16 KB of cookies go into a request (`req_head`), the WebSocket handshake and `document.cookie`; the request buffers of `nwk_fetch_real` and `nwk_prefetch` are 64 KB, so the largest header (address, page headers, cookies, referrer) always fits. `tools/tests/cookies/ck_t.c` includes the real file and is run by `check.py --only cookies`.
+
+`pc_rd` picks its wait from `pc_rd_limit`: 300 s for script requests (`g_nwk_kind` 2), 120 s for page loads (1) and the old 20 s otherwise; prefetches keep their short limit. Every 45 s without data it calls `lxs_keepalive`, which sends an ACK one byte behind `nxt` when nothing is unacknowledged; the server answers with an ACK, which keeps NAT entries alive and shows a dead connection. `nwk_fetch_real` follows up to 40 redirects. The script time limit in `web/js.c` now uses `js_clk`, the active time minus the time spent in network fetches (`nwk_net_us`), so a script that waits for the network is not stopped for it.
+
+### 13.58 Background requests, services, WebGL and CSS 3D (v10.35)
+
+Background requests. `apps/internet/webglue.c` runs script requests on fibers: `struct nfib` with a 512 KB stack (`NF_STK`, a guard page at the bottom), up to `NF_N` 16 at once, switched by the small assembly routine `nf_swap`. When a fiber resumes, `nf_resume` restores the per-request globals (`g_nwk_kind`, `g_nwk_xhdr`, `g_pc_tmo`, `g_pc_abort`, `g_tls_scr`, the stream state). The TLS code keeps its buffers in `struct tls_scratch`, reached through `g_tls_scr`, so each fiber has its own. Inside a fiber `pc_wait` yields instead of spinning. The request table `nreq` holds `NQ_N` 96 requests, at most 6 per host, bodies up to `NQ_MAXBODY` 48 MB; `nf_recv` and `nf_body` decode chunked bodies (with trailers) as data arrives and `nq_decode` unpacks gzip in steps. The page engine sees `nwk_net_start`, `nwk_net_event`, `nwk_net_abort`, `nwk_net_cancel_owner`, `nwk_net_active` and `nwk_net_list`; `browser_tick` calls `nwk_net_step`, which runs the fibers for up to 4 ms. In `web/js.c` the natives `netstart`, `netpoll` and `netabort` connect this to `fetch` and `XMLHttpRequest` in `web/prelude.js`: `fetch` resolves at the headers and gives a lazy stream for the body; XHR reports `readyState` 3 with the text so far. A new page cancels the old page's requests by owner.
+
+Services. `apps/system/services.c` keeps a table of services (`net`, `downloads`, `power` required; `webcache`, `cookies`, `clock`, `wifi` optional). `svc_tick` runs from the main loop; the stopped set is saved as `svcoff=` in the settings file. The clock service sends an NTP request over UDP, sets the system time with `k_realtime_set` and the hardware clock with `write_clock`, and repeats every 6 hours. Downloads (`g_dl[8]` in `apps/internet/browser.c`) run on the same request fibers with the owner `DL_OWNER`; progress shows in the browser and on the taskbar.
+
+Security. A frame's `sandbox` flags travel from `frOpen` in the prelude to `nwk_frame_sandbox` and into the frame request key; `web/engine.c` sets `G.sandbox`, uses the origin `null`, does not start scripts without `allow-scripts` and blocks forms without `allow-forms`; the prelude blocks dialogs, pop-ups, storage and cookies. `cookie_header2` applies `SameSite`. `eng_mixed` blocks or upgrades insecure loads on HTTPS pages. CSP: `csp_parse`, `csp_check` and `csp_allow` in `web/engine.c` (with their own SHA-256 for hashes), fed by `nwk_doc_policy`; `frame_refused` applies `frame-ancestors` and `X-Frame-Options`. `mm_guard` in `mem/pmm_vmm.c` unmaps one page (splitting a 2 MB page when needed) below the engine stack and the fiber stacks and after the page memory.
+
+WebGL. `web/webgl.c` is a software WebGL 1.0. Shaders go through a preprocessor (`#define` with arguments, `#if` expressions, `#ifdef`), a lexer and a recursive parser into a syntax tree, and the code generator emits register bytecode (`ginst`: operation, size, destination and two or three operands, all offsets into one float array per shader). Variables and temporaries sit at the bottom of that array and constants at the top; after compiling, `peep` removes a copy when the instruction before it can write straight into the destination (only for temporaries, never at a jump target), and the array is cut down to the used part. Each function gets its own range of temporaries, so a call cannot overwrite the caller's values. `run_sh` interprets the bytecode with a fast path for one-component operations and a step limit. Linking matches varyings, assigns attribute locations and collects uniforms; each program gets its own copy of both shaders, so uniforms belong to the program as the standard says. `gl_draw` reads the vertex attributes from the JavaScript array buffers, runs the vertex shader once per vertex, clips against the near plane, and rasterizes triangles, lines and points with perspective-correct varyings, the depth test, blending, culling, scissor, color mask and polygon offset. The JavaScript side (`WebGLRenderingContext` in `web/prelude.js`) keeps buffers, textures, framebuffers and renderbuffers as typed arrays, converts texture formats to RGBA, and presents the drawing buffer to the canvas once per task through `N.glPresent`.
+
+CSS 3D. Transform functions are kept as `tfn` entries with 16 values; `tf_matrix4` in `web/cssstyle.c` multiplies them into a 4x4 matrix (`rotateX`, `rotateY`, `rotate3d`, `perspective()`, `translateZ`, `matrix3d` included) and `tf_matrix` gives the 2D part for layout. In `web/paint.c`, `k_m4` adds the parent's `perspective` around `perspective-origin`, and `paint_transformed` turns the matrix into a 3x3 homography of the element's plane: when it is affine the old path is used, otherwise each screen pixel is mapped back through the inverse homography. `bf_hidden` multiplies the orientation of the element and of its `preserve-3d` ancestors and skips elements whose back faces the viewer when `backface-visibility: hidden`. Transitions and animations interpolate the new functions value by value and fall back to a 4x4 matrix when the lists differ.
+
+Unresponsive pages. While a page job runs longer than 8 s, `web_paint` in `apps/internet/browser.c` shows the "Page unresponsive" box; a click on Stop page sets `g_busy_esc` (the same as Esc), Wait hides it for 15 s.
+
+Inert inserted scripts. `frag_scripts_inert` in `web/js.c` sets `NF_SCRIPTDONE` on every `script` element of a fragment parsed for `innerHTML` (except into a `template`), `outerHTML` and `insertAdjacentHTML`, so `on_ins` in `web/engine.c` does not run them. `createContextualFragment` goes through a `template`, so its scripts run when the fragment is inserted, as the standard says.
+
+### 13.59 Ports between frames, reliable parallel requests, WebGL 2 (v10.36)
+
+Ports between frames. Frame messages are JSON strings carried by `N.framePost` and `N.frameRecv`. When `postMessage` on a frame proxy has ports in its transfer list, `xpOut` gives each port an id, marks it with `_rel` (relay: the id and the frame route) and keeps it in the `XP` table; the payload carries the ids. On the other side `xpIn` makes a new `MessagePort` per id with `_rp` (remote: the id and the route back). `MessagePort.postMessage` forwards to the route when the port is a remote one, or when its partner is a relay; the payload `{k: 'p', i: id, d: data, p: ids}` is handled in `framePoll` by `xpRecv`, which delivers to the remote port or to the partner of the relay. The route is `FRAME_PARENT` in a frame and the frame's `contentWindow` proxy in the parent (`FrameWindowProxy._send`).
+
+Connections and the handshake. `pc_get` keeps `busy` set on a new connection until the request gives it back with `pc_put` (before, it was cleared right after the TCP connect, and with background requests another fiber could pick the connection during the TLS handshake). `tls_connect_sess` keeps the parsed ServerHello on the stack instead of in a static variable. `dns_try` waits by time (`g_ticks`, 150 ticks, the question sent again after 50 and 100) instead of by the number of received frames; `dns_query` tries the servers twice. `nwk_net_keep` marks a `keepalive` request; `nwk_net_cancel_owner` leaves such a request running as an orphan, and `fetch` with `keepalive` starts the request at once instead of in a timer.
+
+Switches. `g_web_netbg` (`nwk_net_start` returns 0, so `fetch` and XHR use the old one-at-a-time path), `g_web_csp` (`csp_allow` logs "[CSP off, allowed]" and allows; `frame_refused` returns 0) and `g_ck_samesite` (`cookie_header2` skips the SameSite filter), set by the Terminal command `browser` and saved as `broff=` in `/etc/nvx-setup-done`.
+
+WebGL 2. `WebGL2RenderingContext` extends the WebGL 1 class in `web/prelude.js`. `glsl300` rewrites a `#version 300 es` shader into the GLSL ES 1.00 dialect the compiler in `web/webgl.c` reads: `in` and `out` become `attribute` and `varying`, `layout(location)` on vertex inputs becomes attribute bindings at link time, the first fragment output becomes `gl_FragColor`, and a uniform block becomes a struct uniform named after the block (or plain uniforms when it has no instance name). `std140` computes the member offsets; before each draw `_ublocks` copies the members out of the bound uniform buffer into the program's uniforms when the buffer changed. The compiler adds `textureLod`, `textureGrad`, `textureProj`, `texelFetch` and `textureSize` (`I_TEX` with `aux` 2 and 3), `round`, `trunc`, and maps `uint` and `uvec` to the integer types and the extra sampler types to `sampler2D` or `samplerCube`. Instanced drawing reuses the per-instance path of `ANGLE_instanced_arrays`; sampler objects override the texture parameters during a draw; `blitFramebuffer` copies color between the read and the draw framebuffer with nearest scaling. 3D and array textures, transform feedback and more than one color attachment are accepted but do nothing.
+
+### 13.60 Visible frames first, a page allocator that reuses memory (v10.37)
+
+`frameScan` sorts frame candidates: visible frames (`frVis`: at least 24x24 pixels, on the screen, not `display: none`, `visibility: hidden` or `opacity: 0` on the frame or an ancestor) first, then frames with waiting messages, then the rest. A visible frame takes a free place, else the place of a running frame that is not visible (loaded, or opening for more than 3 s), else the oldest quiet place; a frame with waiting messages does not take the place of a visible frame.
+
+`web/krt.c`: large blocks (over 64 KB) live in `lfree`. `malloc` takes the first free block that is large enough and splits off a remainder of 64 KB or more. When the bump area is full, `lf_coalesce` sorts the free list by address (merge sort), joins neighbours and gives a free block at the top back to the bump pointer, and the request is tried again; a small request that still fails is cut from a free large block (`carve`). `realloc` grows the block at the top of the bump area in place.
+
+### 13.61 Code for self-reported errors, frame reasons (v10.38)
+
+The report watcher in the prelude (the one that writes "Page reported its own error") passes the reported stack to `N.errSnippet`, or builds `(script:line:column)` from the reported fields; `n_errsnippet` in `web/js.c` runs `js_err_snippet`, which finds the script text in the engine's source list (`eng_src_get`) and logs the "Code at" line.
+
+Each frame place (`fslot`) keeps `why`, set when the frame request fails (by the error code) or when `frame_refused` refuses it (`g_frame_refuse_why`); failures are also kept by address in `g_ffail` (8 entries). `nwk_frame_status` returns the place's state (1 loading, 2 running, 3 failed) and reason, or 3 with the remembered reason, or 0 when no place runs that address. `paint.c` draws the reason and the address in the grey box. In the prelude, `frFailed` remembers failed frames by key so `frameScan` does not open them again, and a visible frame may take the place of a failed one.
+
+Visibility cache. `frVis` in the prelude keeps each frame's answer in `frVisC` (a `WeakMap`) for 300 ms and only then calls `frVis0`, the walk over the frame and its parents with `getComputedStyle`. `frameScan` and `mediaScan` keep the result of `querySelectorAll` in `frAll` and `msAll` and search again only when `N.domGen()` (the `g_dom_gen` counter that `dom.c` increments on every insert, remove and attribute change) differs from the value they stored.
+
+### 13.62 Every frame failure keeps its reason, retry when shown (v10.39)
+
+`frame_fail_why` in `apps/internet/webglue.c` stores the reason in the frame place, remembers it by address in `g_ffail` and writes "Embedded page failed" to the error log; it is used for network failures and when the frame's page engine call returns -1. `nwk_frame_fail` (native `N.frameFail`) lets the prelude record its own reason for the selected place, and `nwk_frame_status` reports 3 whenever a place that is not running has a reason. In the prelude the load limit is 60 s; `frFailed` holds `{k, n, v}` (key, failures, visible when it failed) and `frBlocked` allows a new attempt when a frame that failed while hidden is now visible and has failed fewer than 3 times.
+
+### 13.63 Four frames, real pop-up windows, keys in frames, CSS and stability (v10.41)
+
+Frames. `build.sh` now makes five copies of the page engine (`nwe2_entry` ... `nwe6_entry`, one loop, each copy with its own globals): slots 0-3 are for frames (`NFS_IF`), slot 4 (`PSLOT`) is the pop-up window. `webglue.c` keeps a table of entries and fail functions (`g_fent`, `g_ffn`), and the per-copy names `nwk_frame_post_upK`/`nwk_frame_recv_downK`. The frame scan in `prelude.js` uses `FR.S` with four slots. A click in a frame now also gives it the keyboard (`g_kfocus`, `frame_key`), and the wheel scrolls the frame under the mouse (`frame_wheel`). Forms in frames and pop-ups can post (`frame_take_nav` keeps the method and body).
+
+Pop-up windows. `window.open(url, name, features)` with features or a name opens a pop-up when the page has a transient user activation (a trusted click or key in the last 5 s, `G.__actT`), like Chrome; without one it returns `null` and logs "Pop-up blocked". Opening uses up the activation. `noopener`/`noreferrer` open the window but return `null`. The returned `PopupProxy` has `postMessage` (both ways, origin checked), `closed`, `close()`, `focus()`, `name` and a `location` that can be set; reading `document` throws the cross-origin `SecurityError`. In the pop-up `window.opener` exists and `window.close()` closes it. A pop-up opened by a frame (the "Sign in with Google" button is a frame) is relayed through the page: the frame sends `{k:'po'}`, messages go `pm`/`pf`, closing `px`/`pc`. The browser draws the pop-up as a window over the tab (`popup_draw` in `browser.c`: address with Secure/Not secure, a close button), clicks and keys go to it, X-Frame-Options does not apply to it.
+
+CSS. `round()`, `mod()`, `rem()`, `abs()`, `sign()`, `sin()`, `cos()`, `tan()`, `asin()`, `acos()`, `atan()`, `atan2()`, `pow()`, `sqrt()`, `hypot()`, `log()`, `exp()`, angle units and `pi`/`e` in `calc()`; `:has()` with `>`, `+` and `~`; `:nth-child(An+B of S)`; cascade layers (`@layer` blocks and statements, nested names, anonymous layers, layer order before specificity, reversed for `!important`; kept for cached style sheets); `@property` initial values and `CSS.registerProperty`; `filter` (blur, brightness, contrast, grayscale, invert, opacity, saturate, sepia, hue-rotate; drawn after the element by comparing with the pixels before it; drop-shadow is read but not drawn); `display: flow-root` and container query containers start a new block formatting context (margins no longer collapse through them); `getComputedStyle` falls back to the winning declared value (with `em`/`rem` turned into px) for properties it has no special code for; alpha in colours is printed like Chrome (0.5, 0.267); `CSS.supports` checks the property name and the brackets, `and`/`or`/`not` and `selector()` (it no longer answers true for everything). `getBoundingClientRect` includes rotate and scale of the element and its parents.
+
+HTML. `valueAsNumber` for date, month, week, time and datetime-local; `meter` and `progress` values as numbers and `progress.position`; `output.value`/`defaultValue`; `ol.reversed`, `ol.start`, `ol.type`.
+
+Stability of the script engine (no change to the interpreter loop). An out of memory error can now be caught by the page (QuickJS-ng made every InternalError uncatchable; only the time limit stays uncatchable). After an out of memory error, and whenever more than 70 % of the script memory is in use (at most every 2 s), the next tick runs the garbage collector and `about:errors` says how much memory is left. The automatic collection threshold never goes above 7/8 of the limit, so the collector runs before the limit is reached. Test page `p41/heavy.html`: a 3.3 MB script with 40000 functions, out of memory caught and recovered, 200000 objects, 20000 cycles, a 26 MB string and a chain of 50000 promises in 3.2 s on the host.
+
+### 13.64 Web Workers on the second CPU core (v10.42)
+
+Before v10.42 a `Worker` ran its script on the page's own thread, inside a `with` scope, so a busy worker stopped the page. Now a worker runs on CPU 1 when it can.
+
+The worker engine. `web/wk.c` with its own small prelude `web/wk_prelude.js` (embedded as `nwe_wkprelude`), QuickJS, `web/krt.c` and the maths library are linked into one blob, `build/wkx_all.o`, in which every name except `wkx_entry` and `wkx_fail` is local (`objcopy --keep-global-symbol`), the same way the frame copies of the page engine are made. It has its own QuickJS runtime and its own memory arena, so nothing in it is shared with the page engine on CPU 0. All workers of a page share this one runtime as separate `JSContext`s (at most 128), which is enough because there is one spare core.
+
+The kernel side (`apps/internet/webwork.c`). `nwk_wk_ok` checks that the other cores run (`g_smp_on`, CPU 1 online) and on first use allocates two 8 MiB rings (page to worker and worker to page, one writer and one reader each, so no lock is needed: the writer moves `head`, the reader `tail`, with memory barriers between data and index), a 4 MiB stack with a guard page and the arena (256 MiB, or the largest of 192, 128, 96, 64, 48 or 32 MiB that `nwk_alloc_arena` allows; the QEMU tests with 2 GiB of memory got 32 MiB). `ap_loop` on CPU 1 calls `wk_ap_turn` after each scheduling round: when there is a message or a worker timer is due, it switches to the worker stack (`nwe_call_stack`) and calls `wkx_entry`, which handles up to 25 ms of messages, runs the due timers and the promise jobs of every worker, and returns how long until the next timer. A message from the page wakes CPU 1 with `smp_kick(1)`. Linux programs scheduled on CPU 1 still get their turns between worker turns. A CPU exception inside the worker engine is caught by `wk_fault_redirect` (called before `web_fault_redirect` in the exception handler): it jumps to `wkx_fail`, every worker gets an error event and the engine starts fresh on the next message; after 32 such faults the second-core workers stay off until restart.
+
+Messages. Values are copied with QuickJS's own serializer (`JS_WriteObject`/`JS_ReadObject` with object references), so objects, arrays, cycles, `Map`, `Set`, `Date`, `RegExp`, typed arrays and `ArrayBuffer` arrive intact; the page side calls `structuredClone` first, so functions and DOM nodes throw `DataCloneError` as in Chrome. Message kinds: start (script text, address, name, user agent), message, terminate, reply, terminate-all (sent by `js_init` of the main page, so leaving a page stops its workers); back to the page: message, error (text and stack, which becomes an `ErrorEvent` with file, line and column), console line, request and closed. A message is at most 6 MiB.
+
+What a worker has. `self`, `postMessage`, `onmessage` and the event listener functions, `close()`, `setTimeout`/`setInterval` (repeating timers at least 4 ms), `queueMicrotask`, `console`, `performance.now()`, `TextEncoder`/`TextDecoder` (UTF-8 in C, invalid bytes become U+FFFD or a `TypeError` with `fatal`), `atob`/`btoa`, `structuredClone`, `location`, `navigator` (the page's user agent, `hardwareConcurrency` 2), `fetch` (asked of the page, which runs its own `fetch` and sends status, headers and body back) with `Headers` and `Response`, and `importScripts` (the worker waits up to 30 s while the page loads the script, keeping other messages aside). Errors call `self.onerror` and `error` listeners first, as in Chrome. The interrupt handler stops a callback that runs for more than 20 s, and `terminate()` stops even a busy loop at once (a per-worker flag the interrupt handler checks).
+
+When the page thread is used instead. `prelude.js` looks at the worker's script: if it uses something the worker engine does not have (WebAssembly, IndexedDB, OffscreenCanvas, XMLHttpRequest, Blob or File, URL, WebSocket, MessageChannel, BroadcastChannel, crypto, Intl, streams, AbortController and a few more, or module syntax), if the page is a frame or pop-up, or if the other cores are not running, the worker runs on the page thread as before. `__nvxWorkerCores()` tells a test page how many workers run on the second core.
+
+Host testing. `tools/webhost.c` builds the same blob for Linux and runs `wkx_entry` on its own thread with mutex-protected queues; `WH_WK=0` turns it off. Test pages `p42/wk.html` (messages of every type, errors, timers, fetch, console, close, a 300 ms busy worker while a page timer keeps running), `p42/wk2.html` (2000 messages, a 5 MiB buffer, `terminate()` of an endless loop, 40 workers, intervals, `once` listeners, `self.onerror`) and `p42/e.html` give the same results with and without ASan.
+
+### 13.65 AVIF and JPEG XL images (v10.42)
+
+`web/imgx.c` decodes both formats inside the page engine (the engine may use floating point, the kernel may not); `img_load` in `engine.c` calls `imgx_decode` before `nwk_image`, which still decodes PNG, JPEG, WebP, GIF, BMP and ICO in the kernel. `-1` from `imgx_decode` means "not AVIF or JPEG XL", `-2` a broken file (the image shows as broken).
+
+AVIF. The container is read in `imgx.c`: `ftyp` with the `avif` or `avis` brand, then `meta` with `pitm`, `iinf`/`infe`, `iloc` (versions 0-2, data in the file or in `idat`, several extents), `iprp` (`ipco` properties and `ipma` associations), `iref` (`dimg` for grids, `auxl` for alpha) and the properties `ispe`, `colr` (nclx), `auxC`, `irot` and `imir`. Grid images (`grid` items made of tiles) are put together tile by tile, an alpha item (auxC `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`) fills the alpha channel, and rotation and mirroring are applied last. The AV1 data goes to dav1d 1.5 (`third_party/dav1d`, BSD licence; C only, no assembly, 8 and 16 bit templates, one thread, `third_party/dav1d/config.h` written by hand instead of meson). YUV to RGB uses the matrix from `colr` or the sequence header (BT.601, BT.709, BT.2020, FCC, SMPTE 240M, identity), limited or full range, 8, 10 and 12 bit, and 4:2:0 and 4:2:2 chroma is upsampled bilinearly like libavif. Compared with Pillow/libavif the pixels differ by at most 2 (p99 1). Animated AVIF shows its still primary item; HDR transfer curves (PQ, HLG) are not tone mapped.
+
+JPEG XL. J40 (`third_party/j40`, a public domain single-file decoder, version 2270) with three fixes made for NoovexOS: an image that fits in one group (one TOC entry) read its sections in the wrong order (HfGlobal before LfGroup), so every small lossy image failed; the LF colour correlation factors used 127 instead of 128 as their zero point, which turned colours pink at encoder effort 7 and above; and the Gaborish smoothing filter was parsed but never applied (now applied per LF group before the colour conversion). Compared with libjxl through FFmpeg: lossless images are exact, lossy images differ by at most 3 in 99 % of pixels (the edge-preserving filter is still not applied). Not supported by J40: modular images with the Squeeze transform (lossy alpha and lossy modular mode), patches, splines, noise, animation, progressive files; these show as broken images. J40's internal checks call `imgx_j40_trap`, which jumps out of the decoder instead of the undefined behaviour J40 has without debug mode.
+
+Both decoders were run over 1400 damaged files (bytes changed, cut short, bytes inserted) under ASan and UBSan without a crash. `Accept` headers now list `image/avif` and `image/jxl`, and `<picture><source type="image/avif">` is chosen. The host harness links dav1d too (`build.sh` in the harness folder).
+
+### 13.66 Smart address bar, bookmarks bar and site permissions (v10.42)
+
+Address bar (`apps/internet/browser.c`). While typing, a list of up to 8 suggestions opens under the bar: open tabs, bookmarks and history entries whose address or title contains the typed text, and a "Search for" line when the text has a space or no dot. Up and Down move through the list, Enter or a click opens the choice, Escape closes it. The bookmarks bar under the address bar shows the bookmarks when there are any (`g_bmbar`).
+
+Site permissions. Six permissions per site: notifications, geolocation, camera, microphone, pop-ups and clipboard reading, each Ask, Allow or Block, saved per account in `permissions.txt` in the browser profile (at most 256 sites). `nwk_perm_get`, `nwk_perm_ask` and `nwk_perm_poll` (natives `permGet`, `permAsk`, `permPoll`) connect the page to the browser: asking shows a bar under the address bar ("site wants to show notifications", Allow, Block, x); one question is shown at a time and a second one waits until the first is answered (`-3` from `nwk_perm_ask`). The lock icon in the address bar opens the site menu with the six settings (a click cycles Ask, Allow, Block), and `about:permissions` lists and clears them. In the prelude `navigator.permissions.query` returns a `PermissionStatus` with `onchange`, `Notification.requestPermission` and `Notification.permission` use the stored value, `navigator.geolocation` asks first (allowed: error 2, there is no location source; blocked: error 1), and a blocked pop-up offers "Always allow" for the site.
+
+### 13.67 Partial layout (v10.42)
+
+A change inside an element whose size cannot depend on its contents no longer lays out the whole page. `lay_boundary` in `web/layout.c` accepts block, flex and grid elements that are not floating or sticky, clip their overflow in both directions, have a fixed height in pixels and a fixed width (or an automatic width in normal flow), and are not `html` or `body`. `eng_lay_mark` (called for text changes, child list changes, attribute changes that are not style, `innerHTML` and shadow hosts) walks up from the changed node to the nearest boundary and records it; `eng_layout_if_dirty` then calls `layout_partial`, which builds the boundary's boxes again with `relayout_one` at the same position and containing block size, checks that the outer size and position came out the same (otherwise the whole page is laid out), and copies the parts of the old box that the parent uses. Up to 32 boundaries per layout and 64 partial layouts in a row are allowed before a full layout. On a page with 3000 paragraphs a change inside a fixed-size box takes 0.47 ms instead of 24.8 ms, with the same rectangles as a full layout; `WH_PERF=1` in the host harness prints the counts and times.

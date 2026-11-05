@@ -159,21 +159,30 @@ int vm_map(u64 pml4,u64 v,u64 pa,u64 flags){ u64* e=vm_walk(pml4,v,1); if(!e)ret
     *e=(pa&~0xFFFULL)|flags|1ULL; cpu_flush_page(v); return 0; }
 
 int vm_map_lazy(u64 pml4,u64 v){ u64* e=vm_walk(pml4,v,1); if(!e)return -1; if(*e&1)return 0; *e=PTE_LAZY; return 0; }
+int g_nx_on=0;
+void cpu_nx_init(void){ u32 a,b,c,d; cpu_cpuid(0x80000000u,0,&a,&b,&c,&d); if(a<0x80000001u)return; cpu_cpuid(0x80000001u,0,&a,&b,&c,&d); if(!(d&(1u<<20)))return;
+    cpu_wrmsr(0xC0000080,cpu_rdmsr(0xC0000080)|(1ULL<<11)); g_nx_on=1; }
+u64 vm_prot_bits(int prot){ u64 b=0; if(!(prot&2))b|=PTE_PRO; if(!(prot&7))b|=PTE_PNO; if(g_nx_on&&!(prot&4))b|=PTE_NX; return b; }
+u64 vm_pflags(u64 base,u64 bits){ u64 e=base|bits; if(bits&PTE_PRO)e&=~2ULL; if(bits&PTE_PNO)e&=~4ULL; if(!g_nx_on)e&=~PTE_NX; return e; }
+u64 vm_live(u64 pa,u64 old){ return vm_pflags((pa&PTE_ADDR)|0x7ULL|(old&PTE_SHR),old&PTE_PBITS); }
+int vm_map_lazy_p(u64 pml4,u64 v,u64 bits){ u64* e=vm_walk(pml4,v,1); if(!e)return -1; if(*e&1)return 0; *e=PTE_LAZY|(bits&PTE_PBITS); return 0; }
 int vm_pte_used(u64 e){ return (e&1)||(e&PTE_LAZY); }
 int vm_fault_user(u64 cr3,u64 va,int write){
     u64* e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e)return -1;
     if(!(*e&1)){
         if(!(*e&PTE_LAZY))return -1;
+        if(*e&PTE_PNO)return -1;
+        if(write&&(*e&PTE_PRO))return -1;
         u64 f=pframe_alloc(); if(!f)return -2;
-        *e=f|0x7ULL; cpu_flush_page(va&~0xFFFULL); return 0; }
+        *e=vm_live(f,*e); cpu_flush_page(va&~0xFFFULL); return 0; }
     if(!(*e&4))return -1;
     if(write&&!(*e&2)){
-        if(!(*e&PTE_COW))return -1;
+        if(!(*e&PTE_COW)||(*e&PTE_PRO))return -1;
         u64 pa=*e&PTE_ADDR;
-        if(pframe_refs(pa)<=1){ *e=pa|0x7ULL; cpu_flush_page(va&~0xFFFULL); return 0; }
+        if(pframe_refs(pa)<=1){ *e=vm_live(pa,*e&~PTE_SHR); cpu_flush_page(va&~0xFFFULL); return 0; }
         u64 f=pframe_alloc(); if(!f)return -2;
         u8* d=(u8*)f; const u8* s=(const u8*)pa; for(int b=0;b<4096;b++)d[b]=s[b];
-        *e=f|0x7ULL; cpu_flush_page(va&~0xFFFULL); smp_tlb_sync(cr3); pframe_free(pa); return 0; }
+        *e=vm_live(f,*e&~PTE_SHR); cpu_flush_page(va&~0xFFFULL); smp_tlb_sync(cr3); pframe_free(pa); return 0; }
     return 0;
 }
 static void vm_unmap(u64 pml4,u64 v){ u64* e=vm_walk(pml4,v,0); if(e){ *e=0; cpu_flush_page(v); } }
@@ -196,3 +205,23 @@ int vm_selftest(u32* r1,u32* r2){
     pframe_free(fa); pframe_free(fb);
     return (a==0xAAAA1111u && b==0xBBBB2222u)?0:3;
 }
+int g_guard_pages;
+int mm_guard(u64 va){
+    va&=~0xFFFULL; u64 cr3=cpu_get_pt(); u64* pml4=(u64*)(cr3&~0xFFFULL); u64 e4=pml4[(va>>39)&511]; if(!(e4&1))return 0;
+    u64* pdpt=(u64*)(e4&PTE_ADDR); u64 e3=pdpt[(va>>30)&511]; if(!(e3&1)||(e3&0x80ULL))return 0;
+    u64* pd=(u64*)(e3&PTE_ADDR); int pi=(int)((va>>21)&511); u64 e2=pd[pi]; if(!(e2&1))return 0;
+    u64* pt;
+    if(e2&0x80ULL){
+        u8* raw=(u8*)kmalloc(8192); if(!raw)return 0; pt=(u64*)(((u64)raw+4095ULL)&~4095ULL);
+        u64 base=e2&0x000FFFFFFFE00000ULL; u64 fl=(e2&0x7FULL)|(e2&0x100ULL)|((e2&0x1000ULL)?0x80ULL:0)|(e2&0x8000000000000000ULL);
+        for(int k=0;k<512;k++) pt[k]=(base+((u64)k<<12))|fl;
+        cpu_mb();
+        pd[pi]=((u64)pt)|(e2&0x7ULL)|0x20ULL;
+        cpu_flush_page(base);
+    } else pt=(u64*)(e2&PTE_ADDR);
+    pt[(va>>12)&511]&=~1ULL;
+    cpu_flush_page(va);
+    g_guard_pages++;
+    return 1;
+}
+int mm_guard_range_bottom(void* p, unsigned long n){ u64 a=((u64)p+4095ULL)&~4095ULL; a+=4096; if(a+4096>(u64)p+n)return 0; return mm_guard(a); }

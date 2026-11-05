@@ -258,9 +258,9 @@ void neofetch_draw(int i){
     { char b[48],*p=b; p=scopy(p,g_user);*p++='@';p=scopy(p,"noovex64");*p=0; dstr(x,y,b,ACC,2); } y+=26;
     { int w=WN[i].w-80; for(int k=0;k<w/8;k++)dchar(x+k*8,y,'-',rgb(150,158,176),1); } y+=20;
     char v[80],*p;
-    nf_line(x,&y,"OS: ","NoovexOS 64 v9.83 (x86-64)");
+    nf_line(x,&y,"OS: ","NoovexOS 64 v10.60 (x86-64)");
     nf_line(x,&y,"Kernel: ","NoovexOS monolithic x86_64");
-    nf_line(x,&y,"Build: ","v9.83");
+    nf_line(x,&y,"Build: ","v10.60");
     nf_line(x,&y,"Firmware: ","BIOS / VESA LFB");
     { u32 up=(u32)(g_ticks/100); p=v; p=udec(p,up/3600);*p++='h';*p++=' ';p=udec(p,(up/60)%60);*p++='m';*p++=' ';p=udec(p,up%60);*p++='s';*p=0; nf_line(x,&y,"Uptime: ",v); }
     { p=v; { const char*b=g_brand[0]?g_brand:"x86-64 CPU"; while(*b)*p++=*b++; } *p=0; nf_line(x,&y,"CPU: ",v); }
@@ -281,6 +281,9 @@ static u32 paint_buf[PCW*PCH]; int paint_col=6, paint_size=1, paint_inited=0, pc
 int pt_colx[12], pt_coly[12], pt_bx[3], pt_by, pt_clrx, pt_clry, pt_clrw, pt_clrh;
 static const u32 PPAL[12]={rgb(20,22,28),rgb(120,128,146),rgb(228,76,74),rgb(230,140,40),rgb(240,200,50),rgb(90,200,110),rgb(50,120,224),rgb(150,90,220),rgb(40,180,190),rgb(230,120,180),rgb(120,80,40),rgb(255,255,255)};
 void paint_clear(void){ for(int i=0;i<PCW*PCH;i++)paint_buf[i]=rgb(255,255,255); }
+void paint_paste(void){ extern u32* g_clip_img; extern int g_clip_iw, g_clip_ih; if(!g_clip_img||g_clip_iw<1||g_clip_ih<1)return; if(!paint_inited){ paint_clear(); paint_inited=1; }
+    int sw=g_clip_iw, sh=g_clip_ih; long num=PCW, den=sw; if((long)sh*PCW>(long)PCH*sw){ num=PCH; den=sh; } if(num>den)num=den; int dw=(int)(sw*num/den), dh=(int)(sh*num/den); if(dw<1)dw=1; if(dh<1)dh=1;
+    for(int y=0;y<dh;y++){ int sy=(int)((long)y*den/num); if(sy>=sh)sy=sh-1; for(int x=0;x<dw;x++){ int sx=(int)((long)x*den/num); if(sx>=sw)sx=sw-1; paint_buf[y*PCW+x]=g_clip_img[(long)sy*sw+sx]; } } }
 void paint_at(int px,int py){
     int bx=px-pcx, by=py-pcy; if(bx<0||by<0||bx>=PCW||by>=PCH) return;
     int R=(paint_size==0)?2:(paint_size==1)?4:8; u32 c=PPAL[paint_col];

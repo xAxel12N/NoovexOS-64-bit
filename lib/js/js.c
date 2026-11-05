@@ -153,6 +153,7 @@ static JVal call_func(JVal fn,JVal* args,int na){
 }
 
 /* built-in: base object name.method(args) or global func(args). Returns 1 if handled. */
+int js_console=0;
 static int builtin_call(const char* obj,int objl,const char* meth,int methl,JVal* args,int na,JVal* out){
     /* helper macros */
     #define OBJ(x) (objl==(int)(sizeof(x)-1) && js_ideqs(obj,objl,x))
@@ -160,7 +161,7 @@ static int builtin_call(const char* obj,int objl,const char* meth,int methl,JVal
     /* document.write / writeln */
     if(objl==8 && obj[0]=='d'&&obj[1]=='o'&&obj[2]=='c'&&obj[3]=='u'){
         int wr=(methl==5&&meth[0]=='w')||(methl==7&&meth[0]=='w'); if(wr){ for(int i=0;i<na;i++){ int L; const char* s=jv_tostr(args[i],&L); if(js_out)js_out(s,L); } if(methl==7&&js_out)js_out("\n",1); *out=jv_undef(); return 1; } }
-    if(objl==7 && obj[0]=='c'&&obj[1]=='o'&&obj[2]=='n'){ *out=jv_undef(); return 1; } /* console.* -> ignore */
+    if(objl==7 && obj[0]=='c'&&obj[1]=='o'&&obj[2]=='n'){ if(js_console&&js_out){ for(int i=0;i<na;i++){ int L; const char* s=jv_tostr(args[i],&L); if(i)js_out(" ",1); js_out(s,L); } js_out("\n",1); } *out=jv_undef(); return 1; }
     if(objl==4 && obj[0]=='M'&&obj[1]=='a'&&obj[2]=='t'&&obj[3]=='h'){
         int a0=na>0?jv_tonum(args[0]):0, a1=na>1?jv_tonum(args[1]):0;
         if(methl==5&&meth[0]=='f'){ *out=jv_num(a0); return 1; }              /* floor (ints) */

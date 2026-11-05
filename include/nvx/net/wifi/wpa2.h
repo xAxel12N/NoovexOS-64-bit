@@ -5,7 +5,9 @@
 
 extern u8 g_ptk[48];
 extern u8 g_pmk[32];
-extern int g_wpa_ok;
+extern int g_wpa_ok, g_wpa_mfp;
+int wpa_rx_eapol(const u8* eap,int el);
+int wnd_send_eapol(const u8* eap,int el);
 
 void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int elen);
 int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms);

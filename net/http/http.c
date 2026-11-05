@@ -17,7 +17,8 @@
 /* ---- HTTP client ---- */
 u8 http_buf[262144];
    /* defined later */
-static void ck_url(const char* host,char* url){ char* p=url; const char* h="https://"; while(*h)*p++=*h++; for(int i=0;host[i]&&i<180;i++)*p++=host[i]; *p++='/'; *p=0; }
+static int g_ck_http=0;
+static void ck_url(const char* host,char* url){ char* p=url; const char* h=g_ck_http?"http://":"https://"; while(*h)*p++=*h++; for(int i=0;host[i]&&i<180;i++)*p++=host[i]; *p++='/'; *p=0; }
 static void ck_parse(const char* host,const u8* buf,int hdrend){
     char url[200]; ck_url(host,url);
     for(int i=0;i<hdrend;i++){ if(i!=0&&buf[i-1]!='\n')continue;
@@ -39,10 +40,10 @@ int http_fetch_to(const char*host,const char*path,u8*buf,int cap){
     const char* h1=" HTTP/1.0\r\nHost: "; for(int i=0;h1[i]&&r<440;i++)req[r++]=h1[i];
     for(int i=0;host[i]&&r<500;i++)req[r++]=host[i];
     const char* h2="\r\nConnection: close\r\nUser-Agent: Noovex64\r\n"; for(int i=0;h2[i]&&r<560;i++)req[r++]=h2[i];
-    { char ch[400]; ck_header(host,ch); for(int i=0;ch[i]&&r<940;i++)req[r++]=ch[i]; }
+    { char ch[400]; g_ck_http=1; ck_header(host,ch); g_ck_http=0; for(int i=0;ch[i]&&r<940;i++)req[r++]=ch[i]; }
     req[r++]='\r'; req[r++]='\n';
     int n=tcp_get(ip,80,req,r,buf,cap-1);
-    if(n>0){ int he=n; for(int i=0;i+3<n;i++)if(buf[i]=='\r'&&buf[i+1]=='\n'&&buf[i+2]=='\r'&&buf[i+3]=='\n'){he=i+2;break;} ck_parse(host,buf,he); }
+    if(n>0){ int he=n; for(int i=0;i+3<n;i++)if(buf[i]=='\r'&&buf[i+1]=='\n'&&buf[i+2]=='\r'&&buf[i+3]=='\n'){he=i+2;break;} g_ck_http=1; ck_parse(host,buf,he); g_ck_http=0; }
     return n;
 }
 int http_fetch(const char*host,const char*path){ return http_fetch_to(host,path,http_buf,sizeof(http_buf)); }
@@ -89,13 +90,13 @@ int tcps_wr(void* c,const u8* buf,int len){ (void)c; int off=0;
 int tcps_rd(void* c,u8* buf,int max){ (void)c; if(ts_fin)return 0; u8 rx[1600];
     for(int idle=0; idle<2500; ){ int n=net_poll(rx,1600,1); if(n<=0){ idle++; continue; }
         if(rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6)continue; int ihl=(ip[0]&0x0F)*4; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue;
-        int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; if(dl<0)dl=0; u32 seq=rd32(t+4); u8 fl=t[13];
+        int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; if(ihl<20||thl<20||14+ihl+thl>n)continue; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0; u32 seq=rd32(t+4); u8 fl=t[13];
         if(fl&TF_RST){ ts_fin=1; return 0; }
         if(dl>0){ if(seq==ts_rcv){ int cp=dl; if(cp>max)cp=max; for(int i=0;i<cp;i++)buf[i]=t[thl+i]; ts_rcv+=(u32)cp;
                 tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_ACK,0,0);
                 if(cp==dl&&(fl&TF_FIN)){ ts_rcv+=1; ts_fin=1; tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_FIN|TF_ACK,0,0); ts_snd+=1; } return cp; }
             else { tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_ACK,0,0); } }
-        else if(fl&TF_FIN){ ts_rcv+=1; ts_fin=1; tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_FIN|TF_ACK,0,0); ts_snd+=1; return 0; } }
+        else if(fl&TF_FIN){ if(seq!=ts_rcv){ tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_ACK,0,0); continue; } ts_rcv+=1; ts_fin=1; tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_FIN|TF_ACK,0,0); ts_snd+=1; return 0; } }
     return 0;
 }
  
@@ -176,7 +177,7 @@ int nvx_json_int(const u8* j,int n,const char* key,int def){
             int v=0; while(p<n&&j[p]>='0'&&j[p]<='9'){v=v*10+(j[p]-'0');p++;} return neg?-v:v; } } }
     return def;
 }
-/* ---- Noovex OAuth (mynexus.site) - public client_id embedded by choice of the OS owner ---- */
+/* ---- Noovex OAuth (noovexos.site) - public client_id embedded by choice of the OS owner ---- */
 
 char g_nvx_token[320]="", g_nvx_user[64]="", g_nvx_email[96]="", g_nvx_name[64]="", g_nvx_state[10]="";
 int  g_nvx_signedin=0;
@@ -232,7 +233,7 @@ void nvx_hist_add(const char* url){
    ========================================================================= */
 volatile u64 g_ticks=0;                    /* PIT ticks (100 Hz)     */
 volatile int mouse_dx=0, mouse_dy=0;        /* accumulated deltas     */
-volatile int mouse_btn=0, mouse_btn_prev=0; /* left button            */
+volatile int mouse_btn=0, mouse_btn_prev=0; volatile int mouse_lpress=0, mouse_rpress=0, mouse_mpress=0; volatile u64 mouse_press_t=0; /* left button            */
 volatile int mouse_rbtn=0, mouse_rbtn_prev=0;/* right button           */
 volatile int mouse_scroll=0;                /* wheel delta            */
 volatile int mouse_mid=0;                   /* middle button (ported driver) */
@@ -241,7 +242,8 @@ volatile int mouse_evt=0;
 
 #define KBUFN 64
 static volatile char kbuf[KBUFN]; volatile int kh=0,kt=0;
-extern int kshift; extern volatile unsigned char kdown[128]; static unsigned char kmod[KBUFN]; int g_key_ctrl=0, g_key_shift=0;
-void kpush(char c){ int n=(kh+1)%KBUFN; if(n!=kt){kbuf[kh]=c; kmod[kh]=(unsigned char)((kdown[0x1D]?1:0)|(kshift?2:0)); kh=n;} }
+extern int kshift; extern volatile unsigned char kdown[128]; static unsigned char kmod[KBUFN]; int g_key_ctrl=0, g_key_shift=0, g_key_rep=0; extern int g_krep_flag;
+void kpush(char c){ int n=(kh+1)%KBUFN; if(n!=kt){kbuf[kh]=c; kmod[kh]=(unsigned char)((kdown[0x1D]?1:0)|(kshift?2:0)|(g_krep_flag?4:0)); kh=n;} }
 volatile unsigned char kdown[128];
-int kpop(void){ if(kh==kt)return -1; char c=kbuf[kt]; g_key_ctrl=kmod[kt]&1; g_key_shift=(kmod[kt]>>1)&1; kt=(kt+1)%KBUFN; return c; }
+int kpending(void){ return kh!=kt; }
+int kpop(void){ if(kh==kt)return -1; int c=(unsigned char)kbuf[kt]; g_key_ctrl=kmod[kt]&1; g_key_shift=(kmod[kt]>>1)&1; g_key_rep=(kmod[kt]>>2)&1; kt=(kt+1)%KBUFN; return c; }

@@ -22,7 +22,7 @@ void lxs_lo_tx(const u8* f,int n){
     u32 k=lo_head%LO_SLOTS; u8* d=lo_buf+k*LO_FRAME; for(int i=0;i<n;i++)d[i]=f[i]; lo_len[k]=(u16)n; lo_head++;
 }
 
-static void lxs_mv(u8* d,const u8* s,int n){ for(int i=0;i<n;i++)d[i]=s[i]; }
+static void lxs_mv(u8* d,const u8* s,int n){ int i=0; if(d+8<=s||d>=s+n){ for(;i+8<=n;i+=8)*(u64*)(d+i)=*(const u64*)(s+i); } for(;i<n;i++)d[i]=s[i]; }
 static int lxs_route_mac(u32 dip,u8* mac){
     if(dip==0xFFFFFFFFu){ for(int i=0;i<6;i++)mac[i]=0xFF; return 1; }
     u32 route=((dip&my_mask)==(my_ip&my_mask))?dip:gw_ip;
@@ -40,7 +40,8 @@ static struct lxsock* lxs_get(int i){ return (i>=0&&i<NLXS&&g_lxs[i].used)?&g_lx
 static int lxs_port_busy(int type,u16 p){ for(int i=0;i<NLXS;i++) if(g_lxs[i].used&&g_lxs[i].type==type&&g_lxs[i].lport==p)return 1; return 0; }
 static u16 lxs_eph(int type){ for(int k=0;k<64;k++){ u16 p=next_ephport(); if(!lxs_port_busy(type,p))return p; } return next_ephport(); }
 
-static void lxs_seg(struct lxsock* s,u32 seq,u8 fl,const u8* d,int n){ int fr=LXS_RXCAP-s->rxn; if(fr>65535)fr=65535; if(fr<0)fr=0; g_tcp_wnd=(u16)fr; tcp_send(s->rip,s->lport,s->rport,s->rmac,seq,s->rcv,fl,d,n); g_tcp_wnd=8192; }
+extern int g_tcp_syn_ws;
+static void lxs_seg(struct lxsock* s,u32 seq,u8 fl,const u8* d,int n){ int fr=LXS_RXCAP-s->rxn; if(fr<0)fr=0; if(s->ws_ok&&!(fl&TF_SYN))fr>>=LXS_WS; if(fr>65535)fr=65535; g_tcp_wnd=(u16)fr; if((fl&TF_SYN)&&!(fl&TF_ACK)&&s->st==LXS_SYN)g_tcp_syn_ws=LXS_WS; tcp_send(s->rip,s->lport,s->rport,s->rmac,seq,s->rcv,fl,d,n); g_tcp_syn_ws=-1; g_tcp_wnd=8192; }
 static void lxs_ack(struct lxsock* s){ lxs_seg(s,s->nxt,TF_ACK,0,0); }
 
 static void lxs_enqueue(struct lxsock* s){
@@ -56,12 +57,12 @@ static void lxs_tcp_in(struct lxsock* s,u8* t,int thl,int dl,u32 seq,u32 ack,u8 
         s->una=s->nxt=s->iss+1; s->pwin=rd16(t+14); s->st=LXS_EST; s->tries=0; s->tlast=g_ticks;
         lxs_enqueue(s); if(s->st!=LXS_EST)return; }
     if(s->st==LXS_SYN){
-        if((fl&(TF_SYN|TF_ACK))==(TF_SYN|TF_ACK)&&ack==s->iss+1){ s->rcv=seq+1; s->una=s->nxt=s->iss+1; s->pwin=rd16(t+14); s->st=LXS_EST; s->tries=0; s->tlast=g_ticks; lxs_ack(s); }
+        if((fl&(TF_SYN|TF_ACK))==(TF_SYN|TF_ACK)&&ack==s->iss+1){ for(int o=20;o+1<thl;){ u8 k=t[o]; if(k==0)break; if(k==1){ o++; continue; } u8 l=t[o+1]; if(l<2||o+l>thl)break; if(k==3&&l==3){ s->ws_ok=1; s->pws=t[o+2]>14?14:t[o+2]; } o+=l; } s->rcv=seq+1; s->una=s->nxt=s->iss+1; s->pwin=rd16(t+14); s->st=LXS_EST; s->tries=0; s->tlast=g_ticks; lxs_ack(s); }
         return; }
     if(s->st!=LXS_EST)return;
     if(fl&TF_SYN){ lxs_ack(s); return; }
     if(fl&TF_ACK){
-        s->pwin=rd16(t+14);
+        s->pwin=s->ws_ok?((u32)rd16(t+14)<<s->pws):rd16(t+14);
         u32 adv=ack-s->una; u32 out=s->nxt-s->una;
         if(adv>0&&adv<=out){
             u32 dbytes=adv; if(s->fin_out&&ack==s->nxt)dbytes--;
@@ -165,6 +166,9 @@ void lxs_release(int i){
     if(s->rx)kfree(s->rx); if(s->tx)kfree(s->tx); s->rx=s->tx=0; s->used=0;
 }
 
+void lxs_frame_ext(u8* f,int n){ lxs_frame(f,n); }
+void lxs_keepalive(int i){ struct lxsock* s=lxs_get(i); if(s&&s->type==1&&s->st==LXS_EST&&s->una==s->nxt&&!s->txn) lxs_seg(s,s->nxt-1,TF_ACK,0,0); }
+void lxs_resyn(int i){ struct lxsock* s=lxs_get(i); if(s&&s->type==1&&s->st==LXS_SYN){ lxs_seg(s,s->iss,TF_SYN,0,0); s->tlast=g_ticks; } }
 int lxs_connect(int i,u32 dip,u16 dport,int nb){
     struct lxsock* s=lxs_get(i); if(!s)return -9;
     if(s->type==2){
@@ -224,7 +228,7 @@ int lxs_recv(int i,u8* b,int n,int peek,u32* from,u16* fport){
         return c; }
     if(from)*from=s->rip; if(fport)*fport=s->rport;
     if(s->rxn>0){ int c=s->rxn<n?s->rxn:n; lxs_mv(b,s->rx,c);
-        if(!peek){ int was_full=s->rxn+1600>LXS_RXCAP; lxs_mv(s->rx,s->rx+c,s->rxn-c); s->rxn-=c; if(was_full&&s->st==LXS_EST)lxs_ack(s); }
+        if(!peek){ int was_full=s->rxn+1600>LXS_RXCAP||(s->ws_ok&&s->rxn>LXS_RXCAP/2); lxs_mv(s->rx,s->rx+c,s->rxn-c); s->rxn-=c; if(was_full&&s->st==LXS_EST)lxs_ack(s); }
         return c; }
     if(s->fin_in||s->rd_shut)return 0;
     if(s->st==LXS_DEAD){ int e=s->err; s->err=0; return e?-e:0; }

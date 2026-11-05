@@ -70,6 +70,7 @@ int perm_can_exec(unsigned int mode){ if(g_uid==0)return 1; return (mode&0100)?1
 struct nvx_g_env_t g_env[NENV];
 static int g_env_init=0;
 static int env_find(const char* nm){ for(int i=0;i<NENV;i++) if(g_env[i].used){ int j=0; while(nm[j]&&g_env[i].name[j]&&nm[j]==g_env[i].name[j])j++; if(!nm[j]&&!g_env[i].name[j])return i; } return -1; }
+const char* env_get(const char* nm){ int i=env_find(nm); return i<0?0:g_env[i].val; }
 int env_set(const char* nm,const char* val){ int i=env_find(nm); if(i<0){ for(i=0;i<NENV;i++) if(!g_env[i].used)break; if(i>=NENV)return -1; g_env[i].used=1; int j=0; while(nm[j]&&j<23){g_env[i].name[j]=nm[j];j++;} g_env[i].name[j]=0; } int j=0; while(val[j]&&j<127){g_env[i].val[j]=val[j];j++;} g_env[i].val[j]=0; return 0; }
 
 int env_pack(char* buf,int cap,int* off,int max){
@@ -81,7 +82,7 @@ int env_pack(char* buf,int cap,int* off,int max){
         for(int k=0;k<V;k++)buf[used++]=g_env[i].val[k]; buf[used++]=0; }
     return n;
 }
-void env_init(void){ if(g_env_init)return; g_env_init=1; env_set("PATH","/opt/gnu/bin:/bin:/usr/bin"); env_set("HOME","/home"); env_set("PWD","/home"); env_set("USER","root"); env_set("SHELL","/bin/nsh"); env_set("TERM","xterm-256color"); env_set("XZ_DEFAULTS","--memlimit-compress=20MiB"); env_set("PYTHON_BASIC_REPL","1"); }
+void env_init(void){ if(g_env_init)return; g_env_init=1; env_set("PATH","/usr/local/bin:/opt/gnu/bin:/bin:/usr/bin"); env_set("HOME","/home"); env_set("PWD","/home"); env_set("USER","root"); env_set("SHELL","/bin/nsh"); env_set("TERM","xterm-256color"); env_set("EDITOR","vim"); env_set("PAGER","less"); env_set("LESS","-R"); env_set("XZ_DEFAULTS","--memlimit-compress=20MiB"); env_set("PYTHON_BASIC_REPL","1"); }
 
                static int env_find(const char*);   
 
@@ -120,7 +121,7 @@ void syscall_dispatch(struct sysregs* r){
         case 45: blit_all(); break;                                                      /* fb_present */
         /* ---- input ---- */
         case 50: { int k=kpop(); r->rax=(u64)(long)k; } break;                           /* getkey (non-blocking, -1) */
-        case 51: { int k; while((k=kpop())<0){ cpu_idle(); } r->rax=(u64)(long)k; } break;  /* waitkey */
+        case 51: { extern volatile int g_frz_hold; int hold=g_frz_hold; g_frz_hold=1; int k; while((k=kpop())<0){ cpu_idle(); } g_frz_hold=hold; r->rax=(u64)(long)k; } break;  /* waitkey */
         case 52: { int* xp=(int*)r->rbx,*yp=(int*)r->rcx,*bp=(int*)r->rdx; if(xp)*xp=mx; if(yp)*yp=my; if(bp)*bp=mouse_btn; } break; /* getmouse */
         /* ---- memory: sbrk (grow the user heap) ---- */
         case 61: r->rax=(u64)thread_create_k(r->rbx); break;                             /* thread_create(fn) */
@@ -137,7 +138,7 @@ void syscall_dispatch(struct sysregs* r){
         case 93: dstr((int)r->rbx,(int)r->rcx,(const char*)r->rdx,(u32)r->rsi,1); break;           /* screen_text */
         case 94: blit_all(); break;                                                               /* screen_present */
         case 95: r->rax=(u64)(long)msg_recv_k(0,(u8*)r->rbx,(int)r->rdx>0?(int)r->rdx:64); break;  /* wm_poll (queue 0) */
-        case 60: { long inc=(long)r->rbx; u64 old=g_ubrk; u64 nb=g_ubrk+((inc+0xFFF)&~0xFFFULL);
+        case 60: { long inc=(long)r->rbx; u64 old=g_ubrk; if(inc>0x10000000L){ r->rax=(u64)-1; goto sb_done; } u64 nb=g_ubrk+((inc+0xFFF)&~0xFFFULL);
             u64 cr3; cr3=cpu_get_pt();
             for(u64 v=(old+0xFFF)&~0xFFFULL; v<nb; v+=0x1000){ u64 f=pframe_alloc(); if(!f){r->rax=(u64)-1;goto sb_done;} vm_map(cr3,v,f,0x7ULL); }
             g_ubrk=nb; r->rax=old; sb_done:; } break;                                        /* sbrk(inc) */
@@ -147,7 +148,7 @@ void syscall_dispatch(struct sysregs* r){
             for(u64 i=0;i<pages;i++){ u64 f=pframe_alloc(); if(!f){ r->rax=(u64)-1; goto mm_done; } vm_map(cr3,base+i*0x1000ULL,f,0x7ULL); u32* z=(u32*)f; for(int j=0;j<1024;j++)z[j]=0; }
             g_mmap_next+=pages*0x1000ULL; r->rax=base; mm_done:; } break;
         case 11: r->rax=0; break;                                                            /* munmap (accepted; no reclaim yet) */
-        case 12: { u64 addr=r->rbx; if(addr==0){ r->rax=g_ubrk; } else { u64 nb=(addr+0xFFF)&~0xFFFULL; u64 cr3; cr3=cpu_get_pt(); while(g_ubrk<nb){ u64 f=pframe_alloc(); if(!f)break; vm_map(cr3,g_ubrk,f,0x7ULL); g_ubrk+=0x1000ULL; } r->rax=g_ubrk; } } break;  /* brk(addr) */
+        case 12: { u64 addr=r->rbx; if(addr==0){ r->rax=g_ubrk; } else { u64 nb=(addr+0xFFF)&~0xFFFULL; if(nb>g_ubrk+0x10000000ULL)nb=g_ubrk; u64 cr3; cr3=cpu_get_pt(); while(g_ubrk<nb){ u64 f=pframe_alloc(); if(!f)break; vm_map(cr3,g_ubrk,f,0x7ULL); g_ubrk+=0x1000ULL; } r->rax=g_ubrk; } } break;  /* brk(addr) */
         case 39: r->rax=(u64)(long)(g_curproc>=0?g_curproc+1:1); break;                       /* getpid */
         case 120: { /* getenv(name)->copies value into caller buf(rcx,cap rdx), rax=len or -1 */
                     const char* nm=(const char*)r->rbx; char* out=(char*)r->rcx; int cap=(int)r->rdx;
@@ -170,8 +171,10 @@ void syscall_dispatch(struct sysregs* r){
         case 16: { u64 ms=r->rbx; for(u64 t=0;t<ms;t++)rtw_delay_us(1000); } break;              /* sleep_ms */
         case 17: r->rax=0; break;                                                                /* kill (accepted; single-proc) */
         case 18: { char* b=(char*)r->rbx; int n=(int)r->rcx; dt_init(); char pb[192]; dt_path(g_dcwd,pb); int i=0; for(;pb[i]&&i<n-1;i++)b[i]=pb[i]; b[i]=0; r->rax=(u64)(long)b; } break;   /* getcwd */
-        case 19: { const char* p=(const char*)r->rbx; dt_init(); int d=dt_resolve_dir(p); if(d>=0){g_dcwd=d;r->rax=0;}else r->rax=(u64)-1; } break;   /* chdir */
-        case 21: { const char* p=(const char*)r->rbx; dt_init(); int nd=dt_mkdir_at(g_dcwd,p); if(nd>=0)dt_setmode(nd,0040000u|(0777u&~(unsigned)g_umask)); r->rax=(u64)(long)((nd>=0)?0:-1); } break;   /* mkdir */
+        case 19: { const char* p=(const char*)r->rbx; dt_init(); int d=dt_resolve_dir(p); if(d>=0&&ux_dir_ok(d,1)){g_dcwd=d;r->rax=0;}else r->rax=(u64)-1; } break;   /* chdir */
+        case 21: { const char* p=(const char*)r->rbx; dt_init(); int d; char b[64]; long rv=-1; extern int perm_dir(int);
+            if(k_split(p,&d,b)==0&&b[0]&&perm_dir(d)){ int ex=dt_child(d,b); int nd=ex>=0?ex:dt_mkdir_at(d,b); if(nd>=0){ if(ex<0){ dt_setmode(nd,0040000u|(0777u&~(unsigned)g_umask)); DT[nd].uid=g_uid; DT[nd].gid=g_gid; dt_save(); } rv=0; } }
+            r->rax=(u64)rv; } break;   /* mkdir */
         case 38: r->rax=(u64)(long)ux_unlink((const char*)r->rbx); break;
         case 160: r->rax=(u64)(long)ux_link((const char*)r->rbx,(const char*)r->rcx); break;
         case 161: r->rax=(u64)(long)ux_symlink((const char*)r->rbx,(const char*)r->rcx); break;
@@ -198,7 +201,7 @@ void syscall_dispatch(struct sysregs* r){
         case 140: r->rax=(u64)g_ticks*10ULL; break;                                                /* monotonic ms since boot */
         /* ---- time ---- */
         case 70: r->rax=(u64)g_ticks; break;                                             /* ticks (100 Hz) */
-        case 71: { u64 until=g_ticks+(r->rbx/10); while(g_ticks<until)cpu_idle(); } break;  /* sleep(ms) */
+        case 71: { extern volatile int g_frz_hold; int hold=g_frz_hold; g_frz_hold=1; u64 until=g_ticks+(r->rbx/10); while(g_ticks<until)cpu_idle(); g_frz_hold=hold; } break;  /* sleep(ms) */
         default: r->rax=(u64)-1; break;
     }
 }
@@ -211,8 +214,15 @@ int fs_save_bin(const char*name,const u8*data,int len,int folder){   /* create o
     if(slot<0) return -1;
     int n=0; while(name[n]&&n<63){FS[slot].name[n]=name[n];n++;} FS[slot].name[n]=0;
     if(len>FS_CAP-1)len=FS_CAP-1; if(fs_set(slot,(const char*)data,len))return -1; FS[slot].used=1; FS[slot].folder=folder; ux_touch(slot,1);
-    if(g_cloud_fs && g_nvx_signedin && !g_fs_pulling && !seq(name,"history.html") && !seq(name,"bookmarks.html")) nvx_file_put(name,(const u8*)fsd(slot),len);
+    if(g_cloud_fs && g_nvx_signedin && !g_fs_pulling && !seq(name,"history.html") && !seq(name,"bookmarks.html") && !seq(name,"webcache.bin")) nvx_file_put(name,(const u8*)fsd(slot),len);
     if(disk_ok && !g_fs_pulling && !seq(name,"history.html") && !seq(name,"bookmarks.html")) fs_sync(slot);
+    return slot; }
+int fs_store_nosync(const char*name,const u8*data,int len,int folder){
+    int slot=-1; for(int i=0;i<FS_N;i++) if(FS[i].used&&seq(FS[i].name,name)){ slot=i; break; }
+    if(slot<0){ for(int i=0;i<FS_N;i++) if(!FS[i].used){ slot=i; break; } if(slot>=0)fs_newslot(slot); }
+    if(slot<0) return -1;
+    int n=0; while(name[n]&&n<63){FS[slot].name[n]=name[n];n++;} FS[slot].name[n]=0;
+    if(len>FS_CAP-1)len=FS_CAP-1; if(fs_set(slot,(const char*)data,len))return -1; FS[slot].used=1; FS[slot].folder=folder; ux_touch(slot,1);
     return slot; }
 #include "assets/demo_pptx.h"
 void fs_init(void){

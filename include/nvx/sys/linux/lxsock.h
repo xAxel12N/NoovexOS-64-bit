@@ -5,7 +5,8 @@
 
 #define NLXS 128
 #define LXS_QMAX 32
-#define LXS_RXCAP 65536
+#define LXS_RXCAP 262144
+#define LXS_WS 2
 #define LXS_TXCAP 32768
 enum { LXS_NEW=0, LXS_SYN=1, LXS_EST=2, LXS_DEAD=3, LXS_LISTEN=4, LXS_SYNRCVD=5 };
 struct lxsock {
@@ -14,7 +15,7 @@ struct lxsock {
     u32 iss, una, nxt, rcv; u32 pwin;
     u8* rx; int rxn; u8* tx; int txn;
     u64 tlast; int tries;
-    int rd_shut, wr_shut, fin_in, fin_out;
+    int rd_shut, wr_shut, fin_in, fin_out, ws_ok, pws;
     int parent, backlog, qn, q[LXS_QMAX];
 };
 
@@ -24,6 +25,8 @@ int lxs_new(int type);
 void lxs_pump(void);
 void lxs_release(int i);
 int lxs_connect(int i,u32 dip,u16 dport,int nb);
+void lxs_resyn(int i);
+void lxs_keepalive(int i);
 int lxs_send(int i,const u8* b,int n,u32 dip,u16 dport,int has_to);
 int lxs_recv(int i,u8* b,int n,int peek,u32* from,u16* fport);
 int lxs_shutdown(int i,int how);

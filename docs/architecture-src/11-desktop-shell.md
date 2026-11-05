@@ -13,7 +13,7 @@ Each GUI and app file is its own compilation unit with a header under `include/n
 | `graphics/ui/wm.c` | `WN[]`, open/close/focus, notifications, window frame |
 | `shell/terminal.c` | terminal grid, scrollback, prompt, `neofetch` text |
 | `shell/commands.c` | parser, pipes, scripting, `run_cmd_one`, live terminal |
-| `apps/*.c` | editor, calculator, chatgpt, browser, settings, files_classic, (fs/pkg.c), file_explorer, small_apps, doom, logs |
+| `apps/*.c` | editor, calculator, browser, settings, files_classic, (fs/pkg.c), file_explorer, small_apps, doom, logs |
 | `graphics/ui/desktop.c`, `graphics/ui/input.c` | compositor, dock, launcher, `process_input` |
 | `core/init/splash.c`, `bootmenu.c`, `installer.c`, `setup.c` | boot UI, installer, OOBE and login |
 
@@ -237,8 +237,9 @@ Wallpaper and accent sync with the signed-in Noovex account. `nvx_settings_save(
    - Ctrl+1...4 switches workspace;
    - Win+R opens the Terminal;
    - a Win tap on its own toggles the notification panel.
+   - Print Screen (hotkey 28) opens the screenshot tool; Shift+Print Screen (30) saves the whole screen and Alt+Print Screen (29) the window under the pointer (or the focused window) at once (`graphics/ui/hotkeys.c`).
 3. Trackpad gestures (`g_gesture`): swipe up opens the launcher, swipe down closes the launcher and panels, swipe left/right moves to the next/previous workspace.
-4. Mouse.
+4. Mouse. While the screenshot tool is open (`g_ss_on`), the pointer and buttons go only to `ss_mouse()` and every key only to `ss_key()`.
    - The packet is read with IRQs off and forwarded to user-space as `ux_mouse_push()`.
    - If DOOM holds the mouse, deltas go to `doom_mdx/mdy` and nothing else sees them.
    - Optional acceleration (`g_mouse_accel`) applies.
@@ -278,7 +279,7 @@ Both modes share one text grid in shell/terminal.c:
 | Init | `live_init()`: `g_live=1`, AA font, `ux_core_start("root")`, `live_geom()` (grid = whole screen at 8x17 px cells), `live_banner()` ("To boot setup, type `noovexos_install`") | `term_init()`: banner "NoovexOS 64 nsh shell", grid from window size (`term_geom`) |
 | User | root (uid 0) | the logged-in desktop user |
 | Draw | `live_present()`: full repaint only when `g_lfull`; otherwise compares every row with the shadow copies `g_lsh/g_lsc/g_lsb` (characters, colours, backgrounds), repaints changed rows (`live_row`), blits only the changed band, and redraws just the cursor cell. A cell with a background colour gets a filled rectangle; its foreground is drawn as is instead of through the theme's `tmap` | `term_draw()`: glass background, theme colours, gradient accent line, `user@host: cwd` title, scrollback rendering, caret style (`g_tcur` block/bar/underline), status bar with uid dot, path and grid size |
-| Input | `live_input()` discards mouse events and sends keys through the same Ctrl mapping to `tty_key`/`term_key` | `process_input()` (above) |
+| Input | `live_input()` sends keys through the same Ctrl mapping to `tty_key`/`term_key`. Mouse movement is discarded unless a program has `/dev/input/mice` open; then it moves `mx`/`my` like the desktop (the VMware/QEMU absolute pointer computes its deltas from them) and pushes movements and buttons with `ux_mouse_push` (v10.07). While `/dev/fb0` is open `live_present()` draws nothing and the cursor does not blink | `process_input()` (above) |
 
 The two glyph paths differ:
 
@@ -306,7 +307,7 @@ The path to the desktop runs through two screens:
 Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 
 1. Choose your language, 6 entries in `SU_LANGS`;
-2. Keyboard layout, 6 entries in `SU_KBDS`;
+2. Keyboard layout, 6 entries in `SU_KBDS` (US, Swedish, German, French, Spanish, UK); since v10.18 the choice sets `g_kbd_layout` in `drivers/input/ps2/ps2.c`, is kept in `/etc/nvx-setup-done`, and can be changed later in Settings > Language & region, where the key repeat speed is set too;
 3. Select your timezone, 7 entries in `SU_TZS`;
 4. Make it yours, user name, accent and theme;
 5. Sign in with Noovex, sign in, create an account, or skip; the forms call `nvx_signin`/`nvx_register`;
@@ -335,13 +336,12 @@ Setup is seven pages (`NSU 7`, titles in `SU_TITLE[]`):
 | Editor | `editor.c` | `editor_open`, `editor_open_buf`, `ed_load_usb`, `editor_key`, `editor_save`, `editor_run` | 200x200-char text editor with Save/New/Run |
 | Calculator | `calculator.c` | `calc_press`, `calc_apply` | 64-bit integer four-function calculator; 20 buttons `CBL[]`, `<` = backspace, divide-by-zero sets `calc_err` |
 | Browser | `browser.c` | `browser_go`, `web_load_html`, `web_paint`, `browser_draw`, `browser_click`, `browser_key`, `browser_tick` | front end for the web engine (Part 13) |
-| ChatGPT | `chatgpt.c` | `cg_send`, `cg_push`, `chatgpt_draw/_click/_key` | chat client for a hosted backend |
 | DOOM | `doom.c` | `doom_init`, `doom_draw`, `DG_*` hooks | doomgeneric + FreeDoom |
-| Settings | `settings.c` | `settings_draw`, `settings_click`, `nvx_settings_save/load` | 8 categories |
+| Settings | `settings.c` | `settings_draw`, `settings_click`, `settings_title_click`, `settings_key`, `nvx_settings_save/load` | 9 categories, search |
 | Logs | `logs.c` | `logs_draw` | live kernel info and a scrolling hexdump |
 | Terminal Finder | `logs.c` | `tfind_draw`, `TF_CMD[]` | cheat-sheet of hidden developer commands |
 | Presentation | `files_classic.c` | `pptx_load`, `pptx_draw`, `pptx_key`, `pptx_click` | `.pptx` viewer |
-| Clock, Task Manager, Calendar, Snake, Flappy Bird, neofetch, Paint | `small_apps.c` | `clock_draw`, `sysmon_draw/_click`, `calendar_draw/cal_key`, `snake_*`, `flappy_*`, `neofetch_draw`, `paint_*` | small utilities and games |
+| Clock, Calendar, Snake, Flappy Bird, neofetch, Paint | `small_apps.c` | `clock_draw`, `calendar_draw/cal_key`, `snake_*`, `flappy_*`, `neofetch_draw`, `paint_*` | small utilities and games |
 | Welcome, About | `file_explorer.c` | `welcome_draw`, `about_draw` | static pages |
 
 ### Browser (`apps/internet/browser.c`, 698 lines)
@@ -388,9 +388,11 @@ There are two implementations.
 
 The editor keeps text in `ED[200][200]` and `ed_ll[]`.
 
+Look (since v10.09, `editor_draw`): a 48 px header bar in the style of Settings and Task Manager with rounded New (+), Save and Run buttons on the left, the file name in bold in the middle with a grey line under it ("Modified" while there are unsaved changes, otherwise the folder, "Not saved yet" or "Python IDE"), and round minimize, maximize and close buttons on the right. Below it a line-number gutter (the current number dark), a light blue current-line band, an anti-aliased monospace font (`mono_glyph` in shell/commands.c, 8x14 glyphs, 20 px lines), a 2 px blinking caret in the accent colour and an overlay scroll bar. A 28 px status bar shows "Ln X, Col Y" on the left and the language (Python, JavaScript or Plain Text), the line count and "UTF-8" on the right. Run is shown only for `.js` and `.nvx` files and in the Python IDE. The output panel is light grey with a bold "Output" heading and a round close button. Clicks in the header go through `editor_title_click` (hook in graphics/ui/input.c), the rest through `editor_click` (apps/system/logs.c); a click in the text puts the cursor there.
+
 - Keys: arrow keys arrive as codes 17-20. Ctrl+C/X/V copy, cut and paste the current line through `g_clip[1024]`.
 - Save: `editor_save()` writes back to the `FS` slot through `fs_wr` and calls `fs_sync`, or "Not enough memory to save" is shown.
-- Run: `editor_run()` joins the buffer and calls `js_run(ed_src,n,ed_run_cb)`. Output goes to a console pane covering 42% of the editor height. If nothing is printed, the pane shows "(no output)" or "[program error]".
+- Run: `editor_run()` joins the buffer and calls `js_run(ed_src,n,ed_run_cb)` with `js_console` set, so `console.log`, `console.info`, `console.warn` and `console.error` print their arguments separated by spaces and end the line (elsewhere `console.*` is still ignored). Output goes to an output panel covering 38% of the editor height. If nothing is printed, the pane shows "(no output)" or "[program error]".
 
 There is no separate `.nvx` binary format in this tree. A `.nvx` file is a source text file for the built-in interpreter (section 11.9) that is auto-run when opened from Files. The default `hello.nvx` (core/syscall.c `fs_init`) is C-flavoured:
 
@@ -405,16 +407,6 @@ int main(){
 ```
 
 This works because `js.h` accepts C type keywords as declarations (`js_isctype`), hoists `type name(...)` functions (`js_hoist`), implements `printf` with `%d %i %u %s %c %%`, and calls `main()` automatically after the top-level code (`js_run`).
-
-### ChatGPT (`apps/internet/chatgpt.c`)
-
-`cg_send()` builds `{"message":"...","source":"noovexos"}` with minimal escaping and calls:
-
-```c
-https_request(CG_HOST,"/api/public/chat","POST","Content-Type: application/json\r\n",body,bl,http_buf,...)
-```
-
-`CG_HOST` is a `*.lovable.app` preview host. The client takes `"reply"` (or `"error"`) from the JSON body with `json_str`. The conversation keeps the last 24 messages (`CG_MAXMSG`), each up to 400 characters, with role 0 = user, 1 = assistant, 2 = system note.
 
 ### DOOM (`apps/games/doom.c`)
 
@@ -447,7 +439,7 @@ Added in v9.82 and written in C++: a 3D demo like glxgears, under Start > Driver
 | Intel GPU blitter | the Intel iGPU compositor is on (`g_gfx`) | the frame is rendered straight into a GPU surface (`gfx_app_surf`) and blitted into the window with `gq_copy` |
 | CPU copy | otherwise, and for half resolution (2x scaled) | rows are copied into the scene buffer |
 
-Keys: 1 gears, 2 3 4 other scenes (showcase, materials, 192 cubes), W wireframe, S shadows, H half resolution, Space pause, arrows and + - for the camera, R reset, G start the NVIDIA card. Speed: a gears frame at 996x586 takes 8.7 ms on one core of the build machine (about 115 frames a second); in QEMU without hardware acceleration it is 1-2 frames a second.
+Keys: 1 gears, 2 3 4 other scenes (showcase, materials, 192 cubes), W wireframe, S shadows, H half resolution, Space pause, arrows and + - for the camera, R reset, G start the NVIDIA card. Speed: a gears frame at 996x586 takes 8.7 ms on one core of the build machine and 10.2 ms on the owner's desktop. Before v9.84 the window was only redrawn when something else changed on the screen unless the Intel compositor was on, which gave 2 frames a second on the NVIDIA desktop; now the main loop asks `gpu3d_live()` and draws a frame every refresh interval while Gears is open, not minimised and not paused. Since v9.86 those frames skip the desktop when they can (`gpu3d_fast`): if the Gears window is fully visible (on top, no menu, popup, drag, night light, taskbar or dock over it, pointer not over the picture) and was drawn normally less than 0.5 s ago with the same size and mode, only the 3D picture is rendered and put on the screen, by the NVIDIA 2D engine when step 17 passed (scaled 2x in half mode) or by the CPU (`present_rect`). Every 0.5 s a normal frame updates the information bar and the clock. The FPS counter is drawn into the frame itself. The frame rows are 64-byte aligned for the 2D engine. The information bar says "window frames: NVIDIA 2D engine" or "window frames: CPU". With `nvgsp all` done, the information bar also says "desktop: copy engine" when the whole screen goes through the copy engine (section 10.10.7).
 
 ### Settings (`apps/system/settings.c`)
 
@@ -464,17 +456,33 @@ The sidebar lists `SC_LBL[8]`. Each category holds the following:
 | Terminal | 6 `TTH` themes, transparency, blur, font Smooth/Pixel, cursor Block/Bar/Underline, status bar |
 | About | version (`g_buildsig.version`), CPU brand, RAM, display mode, kernel size |
 
-The window opens at up to 1000 x 800, sized to the screen and centred above the taskbar. The sidebar is 190-256 px wide with 42-px items 50 px apart; the selected page is an accent-coloured pill. Content has 40-px margins and 28 px between cards. Toggles (`st_toggle`) are 48 x 26 with a shadowed knob and a hover state, buttons (`st_btn`) are 34 px tall with rounded corners, the segmented control (`st_seg`) is a soft tray with a raised white chip, and text uses the proportional font.
+The window opens at up to 1000 x 800, sized to the screen and centred above the taskbar. Since v10.01 it is drawn in the style of GNOME Settings (libadwaita) and does not use `win_frame`: `settings_draw` draws its own shadow, rounded border and header bar. The sidebar (260, 232 or 204 px wide, `ST_SIDE`) has the "Settings" title, a search entry, the nine categories with symbolic icons (`st_glyph`, 40-px rows, the selected row a gray pill with a bold label) and the user row at the bottom. The content pane has the page title centred in the header, a back chevron and three round window buttons (`st_winbtn`) at the same places as the frame buttons, so `win_ctl_hit` still works. Content is at most 720 px wide and centred. Pages are boxed lists (`st_card`: a bold group title above a white card with a 1-px border; `st_tiles`: 56-px rows with icon, title, subtitle and chevron). Switches (`st_toggle`) use the accent colour when on, buttons (`st_btn`) are 34 px tall with a bold label (accent, red-text or gray), the segmented control (`st_seg`) is a gray group with a white selected segment. All text uses the proportional font. When there is no battery, Power shows a status page (icon, bold title, dim text) instead of a card.
+
+Clicks in the header zone are normally a window drag. `on_click` in `graphics/ui/input.c` first gives them to `settings_title_click`, which handles the back button, the search entry and the user row and returns 0 for everything else, so the rest of the header still drags the window.
+
+Search: `g_st_q` holds the query. Clicking the entry focuses it, and while Settings has focus, keys go to `settings_key` (type to search, Backspace, Esc clears, Enter opens the first result). `st_search` compares a normalised form (lower case, letters and digits only, so "wifi" finds "Wi-Fi") and orders results: page titles first, then category titles, then descriptions.
 
 ### Small apps (`apps/accessories/small_apps.c`)
 
 - Clock: an analog face drawn with the integer `isin`/`icos` and `clock_hand`.
-- Task Manager (`sysmon_draw`): one row per open window. Each row shows a per-app memory figure from `tm_app_kb()`, which the source calls "representative" (for example Browser 149504 KB and DOOM 33792 KB). Seven background rows (`TM_BG_N`: System, Compositor, Input, Network stack, NVXFS, TLS engine, Heap manager) use fixed `TM_BG_KB` values. "End task" calls `close_win()` on the selected row.
+- Task Manager: the older `sysmon` code in this file is no longer drawn; the window is `apps/system/taskmgr.c` (see "Task Manager and Settings").
 - Calendar: `cal_dow`, `cal_dim`, month navigation with arrows or the buttons.
 - Snake: a 21x15 grid with an xorshift RNG; step speed is set in `process_input`.
 - Flappy Bird.
 - neofetch: a graphical page that is separate from the text `neofetch()` in terminal.c.
-- Paint: a 540x360 `paint_buf` with a 12-colour `PPAL`, three brush radii (2/4/8) and Clear.
+- Paint: a 540x360 `paint_buf` with a 12-colour `PPAL`, three brush radii (2/4/8) and Clear. Ctrl+V (`paint_paste`) scales the image on the clipboard (`g_clip_img`, for example the last screenshot) into the canvas.
+
+### Screenshot tool (`apps/system/screenshot.c`)
+
+| Part | What it does |
+|---|---|
+| Opening | `ss_open(mode,now)`: mode 0 area, 1 screen, 2 window. With `now=1` (Shift or Alt with Print Screen) it captures on the next frame without showing anything. |
+| Drawing | `ss_draw()` runs at the end of `compose_build`, after the toasts. It dims the screen, leaves the chosen area clear with a white 2 px frame, corner handles and a size label (or the window under the pointer with a 3 px accent frame), and draws a dark pill at the bottom with Area, Screen and Window, a round capture button and a close button, plus a hint pill above it. |
+| Input | `ss_mouse`: drag to select an area (a second drag replaces it), click a window in window mode, click the pill buttons; right-click closes. `ss_key`: Esc closes, Enter or Space captures, `a`/`s`/`w` switch the mode. |
+| Capture | When a capture is pending, `ss_draw()` waits for queued GPU drawing (`gfx_sync`) and reads the finished frame from `SCENE` instead of drawing the overlay, so the tool itself is never in the picture. |
+| PNG | `png_encode()`: 8-bit RGB, per row the Sub or Up filter (whichever has the smaller sum), zlib with one fixed-Huffman deflate block, LZ77 matches found with a 32 KiB window and hash chains (3-byte hash, 32768 heads, at most 48 candidates per position, plus a direct check for runs of the previous byte), Adler-32 and CRC-32. A 1280 x 800 desktop gives about 0.2-0.7 MB, 1.2 to 1.7 times what an optimising encoder makes. |
+| Saving | `/home/Pictures/Screenshot-YYYY-MM-DD-HHMMSS.png` (the folder is created if needed; the file belongs to the current user), written through the file system and synced at once; the log line is `screenshot: WxH, N KB, path`. The pixels are also copied to `g_clip_img` (`g_clip_iw` x `g_clip_ih`), and a toast says "Screenshot saved to Pictures and copied". |
+| Shell | `screenshot` or `scrot` with `screen`, `window` (the window under the pointer, or the focused window), `area` (opens the tool) or `last` (prints the last file name). |
 
 ### Logs and Terminal Finder (`apps/system/logs.c`)
 
@@ -655,7 +663,6 @@ The table lists every `seq(cmd,"...")` branch of `run_cmd_one()` (shell/commands
 | `netlog` | Last 18 network log lines |
 | `colors` | 8-colour swatch |
 | `settings` | Open Settings |
-| `chatgpt`, `ai`, `gpt` | Open ChatGPT |
 | `lua` | Print Lua usage (see section 11.9 for the argument path) |
 | `presentation`, `slides`, `pptx` | Open the first `.pptx` in FS |
 | `reboot`, `restart` | `power_reboot()` |
@@ -896,6 +903,175 @@ When the foreground job finishes or stops, `jc_tty_restore` resets the terminal:
 
 ## Task Manager and Settings (v9.73)
 
-Task Manager (`apps/system/taskmgr.c`) has a left rail with Processes, Performance, Devices and Services. Performance samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
+Task Manager (`apps/system/taskmgr.c`) is drawn in the style of GNOME System Monitor since v10.03, like Settings: no `win_frame`, its own header bar with "End task" on the left (red when an app is selected), a view switcher in the middle (Processes, Resources, Devices, Services; icons only below 720 px) and three round window buttons at the frame button positions. Clicks in the title zone go to `sysmon_title_click` first (`graphics/ui/input.c`), so the switcher works there and the rest of the header still moves the window. Processes is one boxed list with column titles (Process Name, % CPU, Memory, Status), an Apps group and a Background group, and a summary line at the bottom. Resources has a list of CPU, Memory, GPU, Disk and Network with a small graph each, and a card with a 60-second graph (line plus fill, dotted grid, "60 seconds" and "now") and right-aligned details for the selected one. Devices is one boxed list of expander rows (coloured icon, name, count, chevron) whose details open inside the list; it scrolls with the mouse wheel and shows a scroll bar. Services shows each service with its description and a Running or Stopped pill. All text uses the proportional font (`tbold`, `tright`, `tclip` cuts long values with ".."). Resources samples once a second: CPU use is 100% minus the share of idle ticks counted by the scheduler on cores 1 and up (core 0 runs the desktop and is not sampled), memory is the kernel heap in use against installed memory, GPU busy is the GPU drawing plus screen copy time of the last frame against one refresh period. Devices builds its lists from the PCI scan, `igpu_info()`, the ACPI battery objects, `gdisk_*`, the USB device table and the sound driver; categories open on click and the list scrolls with the mouse wheel.
 
 Settings (`apps/system/settings.c`) keeps the current page in `g_stpg`. Pages 0-8 are the category pages (tiles), higher numbers are sub-pages; `pg_parent()` gives each page its parent, which builds the path at the top and the back button. The previous per-category pages are drawn by `old_leaf()` and reused as sub-pages. `settings <page>` opens a page from the terminal.
+
+## 11.13 Classic look (v10.23)
+
+The classic style (`g_dstyle` 1, the default) draws 24-pixel title bars (`TITLEH`) with 16 by 14 buttons and a solid (80, 80, 80) desktop (`g_wallmode` 2, no vignette). `wm.c` has helpers for raised and sunken edges (`ui_bevel`), a 20-pixel menu bar (`ui_menubar`), a 16-pixel scroll bar (`ui_scrollbar`) and tabs (`ui_tabs`). `desktop.c` draws six small desktop icons (double-click opens Files, Terminal, Text Editor, Browser, Calculator or Settings), three quick launch buttons after the start button and two small CPU and memory graphs left of the tray (`sysmon_cpu_pct`, `sysmon_mem_pct`). The start menu has About, six categories with submenus, Settings, Help, Run (opens a Terminal) and Exit. The Terminal (`term_draw_classic`) shows `user@host: path` as its title, a File/Edit/View/Help menu bar, the text on black in a sunken box with a block cursor, and a scroll bar. System Monitor (`sysmon_classic`) has Processes, Performance, Storage, Network and Hardware tabs (hit ids 500 to 504), graphs in group boxes and a status bar. The browser frame uses the window face colour, raised buttons, a sunken white address field and a status bar.
+
+v10.24: the Performance tab draws `sm_graph` (two filled series with a line on top, interpolated between the 60 one-second samples) with right-aligned legends (`sm_rtext`); kernel time is busy time minus the `user_ticks` delta; `heap_stat` returns used and total heap bytes in one walk. The classic prompt uses `term_tilde`, which replaces the home folder (`/root` for root, else `/home`) with `~`.
+
+v10.25: `prop_draw`/`prop_click` show the classic Properties window for `g_prop_slot` (file), `g_prop_dir` (folder) or `g_prop_app` (window). Icon choices are in `g_ficon`, `g_dicon` and `g_aicon` (0 = default, else choice + 1), saved as `f<slot> <n>`, `d<dir> <n>` and `a<app> <n>` lines in `/etc/nvx-icons`; `icon_choice_draw` draws a choice, `item_icon_kind` returns the icon for a Files row, and `mini_icon`, `launch_icon` and `mini_icon_big` use the app choice. `ctx_draw_classic` draws right-click menus with 24-pixel rows. `settings_draw_classic` draws the Settings frame; `st_card`, `st_toggle`, `st_btn`, `st_seg`, `st_sep` and `st_tiles` have classic branches, so the pages themselves are unchanged.
+
+## 11.14 Setup accounts, sign-in screen, lock and Settings > Accounts (v10.40)
+
+Setup (`core/init/setup.c`) has ten pages (`SU_LANG` to `SU_DONE`); `SU_HOST`, `SU_ROOT` and `SU_USER` draw their fields with `acct_field` (label, then `[` black field `]` with `*` for passwords) inside the installer's `ip_box`. Enter moves to the next field and then continues; `su_check_page` validates (computer name, 4-character passwords typed twice, `acct_valid_name`). The user name follows the full name until it is edited (`su_suggest_user`). `su_finish` calls `acct_setup_primary` and `acct_login`; if the accounts cannot be written it goes back to the account page with the reason instead of finishing.
+
+Sign-in. `installed_boot` runs `ux_core_start(0)` first, drops the live root session (`g_logged_in=0`) and shows `ST_LOGIN`. `login_present` lists `acct_list(...,1)` (accounts with uid 1000 to 59999, guest last and only when on) at the bottom left when there is more than one, or a Switch user button while locked. `lg_try` checks the password with `acct_check`; 5 failures start a 30 s wait (`lg_wait_until`); a correct password unlocks the same account or ends the current session (`acct_ui_end_session`) and calls `acct_login` for the new one, then `acct_ui_session_started` clears the Terminal and prints a new prompt. On the live system (`g_lg_installed` 0) Enter unlocks.
+
+Lock and sessions (`core/auth/acctui.c`). `acct_ui_lock` (Win+L, launcher power button, lid close in `pm_lid_changed`, `lock`, Settings, and `acct_idle_tick` after `g_lock_min` minutes without input; an open video player counts as input) keeps the windows. `acct_ui_end_session` closes all windows, kills the account's processes, resets the browser profile (`browser_profile_switch`, `ck_profile_switch`), the Terminal (`term_session_reset`), the Files folder (`fx_session_reset`) and the `sudo` timestamp, then `acct_logout`. Settings keeps `guest=` and `lockmin=` in `/etc/nvx-setup-done`.
+
+Dialogs. `acct_dlg_*` is one modal dialog (title, two text lines, up to five fields, an administrator check box, up to three buttons) drawn by `compose_build` after the other overlays and fed by `process_input` (keys) and `mouse_step` (clicks) while it is open; Tab and the arrows move, Enter presses the focused button or moves to the next field, Esc cancels. Settings > Accounts (`P_ACCOUNT`) uses ids 600 to 675 (`acct_ui_click`): 600 name, 601 password, 602 add, 603 guest, 604 lock, 605 sign out, 606 switch user, 610-613 lock time, 620+i administrator, 640+i password, 660+i remove.
+
+
+## 11.15 Start menu submenus (v10.47)
+
+Both start menus show categories that open a submenu. The categories and their built-in apps are in `LG_NAME` and `LG_BASE` (`graphics/ui/desktop.c`): Office, Internet, Media & Graphics, Development, Games, System, Accessories and Drivers & Hardware. `lgrp_refresh` adds the Linux programs from `/usr/share/applications` by their `Categories=` line (`xs_cat` in `apps/x11/xapps.c`): Office, WordProcessor, Spreadsheet and Presentation go to Office; Network, WebBrowser, Email, Chat and InstantMessaging to Internet; AudioVideo, Audio, Video, Graphics, Player and Music to Media & Graphics; Development, IDE and TextEditor to Development; Game to Games; System, Settings, Monitor and TerminalEmulator to System; everything else to Accessories. A category without apps is not shown. Each category holds up to 40 apps (16 before, and Linux programs were capped at 15 in total); up to 64 Linux programs are read.
+
+| Menu | Category list | Submenu |
+|---|---|---|
+| Modern style (`g_dstyle` 0) | rows of 48 pixels with a coloured tile, the name and the number of apps (`LR_H`) | a panel to the right of the menu (`lsub_geom`) with the apps as a grid of 4 columns; it opens when the pointer is on a row (or with a click) and closes when the pointer leaves both |
+| Classic (`g_dstyle` 1) | the category items between "About NoovexOS" and "Settings" (`CM_NC` is the number of shown categories) | the list to the right (`cm_sub_geom`); it uses two columns when one would be taller than the screen |
+
+Search in the default menu is unchanged.
+
+## 11.16 Sign-in screen and Face ID (v10.49)
+
+The sign-in and lock screen (`login_present` in `core/init/setup.c`) follows the owner's chosen mockup. `lg_hills` paints the background (sky and three ellipses, scaled to the screen), the clock uses Inter Light 84 px, names and buttons Inter 13 to 40 px from `assets/uifont.c` (made by `tools/mkuifont.py` from the build machine's Inter fonts, drawn with `uf_draw`). The arrow button and Enter check the password as before (5 wrong passwords start a 30 s wait). The power icon at the bottom right opens Sleep, Restart and Shut down.
+
+Face ID has three parts:
+
+| Part | What it does |
+|---|---|
+| `/usr/bin/nvx-faceid` | A static Linux program built from `tools/faceid/nvx-faceid.cpp` with dlib (Boost license, `third_party/dlib`) by `tools/build_faceid.sh`. Models from dlib-models (CC0, `third_party/dlib-models`): `shape_predictor_5_face_landmarks.dat` and `dlib_face_recognition_resnet_model_v1.dat` in `/usr/share/noovex/faceid`. `nvx-faceid serve /dev/nvxface` loads the models once and answers requests; `nvx-faceid compare A.bmp B.bmp ...` prints distances (used for testing on the build machine). |
+| `/dev/nvxface` (device 17, root only) | The kernel puts one request at a time there: a 64-byte header (`NFQ1`, sequence, command, width, height, user name) and the RGB picture (at most 640x640). The program reads it, and writes an 80-byte answer (`NFR1`, status, distance x 1000, face box, five points, number of saved prints). Commands: verify, add (setup), save, reset. |
+| `core/auth/faceid.c` | `fid_begin(FID_VERIFY or FID_ENROLL, user)` starts the camera (`uvc_start`, JPEG frames decoded like the Camera app), starts the program as root with its output in the kernel log, and `fid_tick` (main loop) sends the newest frame whenever the program is free. Verify: two matches in a row succeed; the check gives up 8 s plus three frame times after the first answer (the program itself may take up to 3 minutes to start on a very slow machine or in an emulator). Setup: every usable frame adds a print as long as it is within 0.4 of the first one (otherwise setup starts over); at 5 the prints are saved (written to a new file, then renamed). Before v10.52 a print had to differ from the saved ones by at least 0.03 and 10 were needed. `faceid` in the shell: `faceid status`, `faceid enroll USER`, `faceid verify USER`, `faceid delete USER`, `faceid feed FILE.ppm` (adds a test picture used instead of the camera; `faceid feed` alone goes back to the camera). |
+
+Screens: `fid_scan_draw` darkens the screen, shows the camera picture in a circle with a blue ring (turning while checking, filling up during setup), "Looking for you..." and a "Use password instead" (or "Cancel") button, and "Welcome back, NAME" with a green check on success. It is used by the sign-in screen, the setup step (`SU_FACE`) and Settings (dialog kinds `au_D_FACE`, which checks the password, and `au_D_FACESCAN`).
+
+Limits: a normal camera cannot tell a face from a good photo or video of it, so Face ID is a convenience and the password stays the stronger way in; a liveness check (blink or head turn) is not part of this release. The face print file holds only numbers. The models add about 30 MB to the Linux files.
+
+Since v10.51 the face engine only counts a picture with exactly one face whose box is at least 96 pixels wide (in the picture of at most 640 x 640 sent to it). Otherwise it answers "too small" or "more than one face", and the scan screen shows "Move a little closer" or "Only one face in view, please" (also in `faceid status` and the kernel log as "faceid: hint:"). Two faces in view never count as a match. The 1.2 MB picture buffer is freed once the face engine has stopped after a check, and the kernel resynchronizes on the answer magic if an answer arrives split or shifted.
+
+Since v10.52 setting up is quick: the person only looks at the camera, no head turning. Five face prints are taken from consecutive pictures (`FID_TARGET` 5), each with one face at least 96 pixels wide. Every print must be within 0.4 of the first one; if not (someone else stepped in, or the first picture was bad), the prints taken so far are dropped and it starts again. The scan screen says "Look at the camera" or "Hold still" with the count. The face engine first looks for faces in a half-size picture and only searches the full picture when that finds none, which makes each picture about three times faster; on the build machine one picture takes about 0.15 s, so setting up takes a few seconds on a laptop.
+
+Since v10.53 first-time setup ends on the sign-in screen instead of the desktop (`su_finish` sets `g_lg_installed` so the new accounts are checked even when setup ran without installing). On a live start from a USB stick, `live_lock_start` (called from `kmain` after `installed_boot`) shows the sign-in screen unless `LIVELOCK.TXT` on the stick starts with `0`; unlocking returns to the live Terminal (`g_lg_liveret`). The setting is in Settings > Accounts > Sign-in options (button id 607), only shown on a live start with a mounted stick.
+
+## 11.17 Registry, Program Files and hidden apps in Task Manager (v10.54)
+
+### Registry (`core/registry.c`, `include/nvx/core/registry.h`)
+
+The registry is a tree of keys and values kept in plain text files:
+
+| File | Contents |
+|---|---|
+| `/etc/noovex/registry/system.reg` | keys under `System` (whole computer) |
+| `/etc/noovex/registry/user-NAME.reg` | keys under `User` for the account NAME (mode 0600) |
+
+The format is `[Key\Path]` lines followed by `Name=Value` lines; `;` starts a comment. `HKLM\` and `HKCU\` are accepted as other names for `System\` and `User\`, and `/` works instead of `\`.
+
+Some values are bound to settings the kernel already had, so changing them in the registry changes the setting at once (and the old settings file is written too, through `power_prefs_save`):
+
+| Key | Values |
+|---|---|
+| `System\Display` | `Accent` 0-4, `Theme` 0-5, `ShowSeconds` 0-1 |
+| `System\Input` | `KeyboardLayout` 0-5, `KeyRepeat` 0-2 |
+| `System\Security` | `GuestAccount` 0-1, `LockMinutes` 0-240 |
+| `System\Power` | `LidAction` 0-2, `PowerButtonAction` 0-2 |
+| `System\SignIn` | `UsbStickSignInScreen` 0-1 (stored on the USB stick, section 11.16) |
+| `User\FaceID` | `Enabled` (read only) |
+| `System\Info` | `Version`, `ComputerName`, `MemoryMB`, `User` (read only) |
+
+Any other key or value can be added; such values are text. `reg_boot` (called from `kmain` after `installed_boot`) loads the files and applies the bound values, or writes them the first time. A sign-in loads the account's user hive (`reg_user_changed`). Changing `System` keys needs root or an administrator account.
+
+Shell: `reg list [KEY]`, `reg get KEY NAME`, `reg set KEY NAME VALUE`, `reg add KEY`, `reg delete KEY [NAME]`, `reg export FILE [KEY]`, `reg import FILE`. Read-only values and numbers outside the allowed range are refused with a message.
+
+### Registry Editor (hidden app)
+
+`regedit`, or Win+Shift+R, opens the Registry Editor (window slot `W_CHATGPT`, which was unused). It is not in the Start menu. Keys are on the left as a tree, values on the right with Name, Value and About. The toolbar has New key, New value, Edit, Delete, Export, Import and a search box (keys, names and values; Ctrl+F). A double click or Enter edits a value; read-only values are grey. Export and import use the same file format as `reg export`.
+
+### Program Files (`core/progfiles.c`)
+
+`progfiles_sync` builds `/Programs` with one folder per app and an `app.info` file in it (`Name`, `Version`, `Publisher`, `Kind`, `Package`, `Size`, `Icon`, `Command`, `Description`, `Hidden`, `DesktopFile`). It lists the built-in apps, the Linux programs from `/usr/share/applications` that come with NoovexOS (LibreOffice Writer and Calc), and programs installed with `apt`. For an `apt` program the owning package is found in `/var/lib/nvpkg/*.list`, and the size is the total of its files. Folders of removed programs are deleted. The list is rebuilt at start-up and whenever `g_apps_gen` or the Linux files change. A file is only written when its contents changed. The shell command `programs` lists the folders (`programs -a` includes hidden apps).
+
+Settings > Apps > Installed apps shows the list with icon, kind and size. Open starts the app, and Uninstall (only for `apt` programs, administrators only) runs `apt remove -y PACKAGE`. The mouse wheel scrolls the list.
+
+### Task Manager
+
+The Processes tab has three sections:
+
+- **Apps:** open windows, as before.
+- **Background services:** the real services from `apps/system/services.c` (web requests, downloads, web cache writer, cookie saving, clock sync, battery and lid, Wi-Fi). Each row shows CPU use, measured from the service's run time per second, and its status. Services that can be stopped have a Stop or Start button; the others say "needed".
+- **Hidden apps:** every running program without a window (the face engine, the X server and its helpers, `init`, programs started from the Terminal), with pid, CPU use and state. "Hide" or "Show hidden" switches the list. Selecting a hidden app and pressing End task ends it (`jc_kill`, never pid 1).
+
+Ctrl+Shift+Esc opens Task Manager.
+
+## 11.18 The System folder (v10.55)
+
+`core/sysfiles.c` builds `/System` (like Windows' System32). `sysfiles_build()` runs from `kmain` after `progfiles_sync`, and the shell command `sysfiles` runs it again. `sysfiles_tick()` runs in the main loop: every 2 seconds it writes the live kernel log, and every 30 seconds it refreshes `kernel.info`, the drivers and the services.
+
+| Path | Contents |
+|---|---|
+| `README.txt` | What the folder is |
+| `Kernel/kernel.info` | `Kernel`, `Built`, `ImageBytes`, `SHA256` (from `g_buildsig`), `Boot` (UEFI or Legacy BIOS), `Processor`, `Cores`, `CoresOnline`, `MemoryMB`, `KernelHeapUsedKB`, `Screen`, `Graphics`, `VirtualMachine`, `ComputerName`, `TimerHz`, `MovedFirmwarePages`, `RestoredFirmwareBytes`, `MovedRange` (from `early_remap`), `UptimeSecondsAtRefresh`, `LogLinesSinceStart` |
+| `Drivers/<name>.drv` | One per driver in the kernel (table `DRV[]`, 28): `Name`, `Type`, `State` (Loaded, Not loaded (device found), Not loaded), `Reason`, `Description`, `Source`. The state comes from the driver's own flags (`ahci_ok`, `nvme_ok`, `g_dktype`, `xhci_present`, `msd_ok`, `g_mnic.name`, `g_wnd_up`, `g_snd.name`, `g_gfx`, `nvgsp_info`, `g_tp.ok`, ...) and the PCI list. |
+| `Drivers/drivers.txt`, `Drivers/devices.txt` | All drivers in one table; every device per category, from `taskmgr_devdump()` (the Task Manager > Devices lists) |
+| `Services/<id>.svc`, `services.txt` | `svc_info`, `svc_every`, `svc_runs`, `svc_us` |
+| `Fonts/<font>.font` | Inter (UI, `assets/uifont.c`), Noovex Smooth and 8x14, Liberation Sans/Serif/Mono (Writer), Emoji |
+| `Config/SYSTEM.reg`, `Config/user-NAME.reg` | Symbolic links to the registry hives in `/etc/noovex/registry` |
+| `Logs/kernel.log` | Every `klog` line since start. `klog` calls `sysfiles_logline` (weak), which appends to a 192 KB buffer under a try-lock (a line is dropped rather than waiting if another CPU holds it; the oldest half is dropped when full). |
+| `Logs/network.log` | `NETLOG[]` from the network driver |
+
+Everything is owned by root (folders 0755, files 0644), so only root can change it. `dt_is_tmp` treats `/System` like `/tmp`, so nothing in it is written to the disk.
+
+`mkdir` now checks write permission on the parent folder (`perm_dir`) in `lx_mkdir`, the native mkdir syscall, the shell's built-in `mkdir` and `vfs_mkparents`; the Files app checks `perm_dir` before New folder, New file, Rename, folder Delete and Paste.
+
+## 11.19 System folder layout, file types and restore points (v10.56)
+
+`/System` now uses NoovexOS file types. Every file is text (`Name=Value` lines, first line a short tag such as `NVA1`) except `.nvn` (WAV sound).
+
+| Folder | Files | Made from |
+|---|---|---|
+| `Kernel` | `noovex.nvk`, `kernel.nvi` | `g_buildsig`, boot info, `g_remap_*` |
+| `Drivers` | `<driver>.nvd`, `drivers.txt` | `DRV[]` + `sf_drv_state` |
+| `Modules` | `net.nvm`, `virtio.nvm`, `sound.nvm`, `modules.txt` | `MODS[]` (the `MODS` list in `build.sh`) |
+| `Libraries` | `<lib>.nvl`, `libraries.txt` | `sysroot_list` over `/lib/x86_64-linux-gnu`, `/usr/lib/x86_64-linux-gnu`, `/lib64`, `/usr/lib`, `/usr/local/lib` (sizes from the new `sysroot_fsize`, no unpacking) |
+| `Programs` | `hello.nvx`, `table.nvx`, `primes.nvx` | built in |
+| `Apps` | `<app>.nva`, `apps.txt` | `progfiles_get` (built-in apps, `Window=` is the window slot) |
+| `Services` | `<id>.nvs` | `svc_info` |
+| `Config` | `SYSTEM.nvr`, `user-NAME.nvr` | links to `/etc/noovex/registry/*.reg` |
+| `Logs` | `System.nvg`, `Security.nvg`, `Application.nvg` | the `klog` buffer, split by source (`sf_cat`), with a level (`sf_lvl`); Security adds `/var/log/auth.log` |
+| `Crash` | `<date>.nvq`, `last.nvf` | `crash-report.txt`; the last 60 s of the log |
+| `Boot` | `boot.nvb` | every `boot:` line (written 2 s after start) |
+| `Hardware` | `<kind>.nvh`, `camera.nvh`, `microphone.nvh` | `taskmgr_devdump`, `camera_info_text`, `mic_info_text` |
+| `Fonts` | `*.nvo` | static list |
+| `Media` | `*.nvn` | WAV, 22 kHz mono, made from a sine table at start |
+| `Themes` | `*.nvw` | `Wallpaper=` (0-5) and `Accent=` (0-4) |
+| `Restore` | `*.nvz` | copies of `/var/lib/noovex/restore` |
+
+`sysfiles_open(k)` is called by Files before its own open logic: `.nva` -> `open_win(Window)`, `.nvr` -> Registry Editor, `.nvw` -> `reg_set` Theme and Accent + `build_bg`. `.nvn` is in the media list of `videoplayer.c`.
+
+Restore points: `sf_restore_create` writes all hives into one `.nvz` (`== path ==` sections) in `/var/lib/noovex/restore` (root, 0600, kept on the disk, at most 10). `sysfiles_restore` (`restore` command) lists, creates, or writes the sections back (only paths under `/etc/noovex/registry/`) and calls `reg_load(1)`; it always makes a restore point first.
+
+Pitfall found: the build stamper finds the signature block by searching for its 8-byte magic text. A string containing that text in `.rodata` made it stamp the wrong place and every start reported "integrity check failed". Do not put the magic text in any string.
+
+File-type logos: `FXI[]` in `file_explorer.c` maps an extension to a glyph, a colour, an optional label and a type name; `fx_ikind` returns `32 + index`, `fx_icon` draws it with `fx_xicon`. User icon choices (0-11) are unchanged.
+
+Cameras (`xhci.c`): `uvc_parse(c,n,target)` reads one VideoStreaming interface; `uvc_choose` lists all (`cam.vs[]`) and picks the first with a colour format; `uvc_select_stream` re-parses the saved descriptors (`cam.desc`). Formats by FourCC (`uvc_fourcc`): YUY2 0, MJPEG 1, NV12 2, UYVY 3, grey 4, I420 5, YV12 6. Bulk cameras: endpoint type 6, normal TRBs of 16 KB, `uvc_bulk_chunk` joins transfers into payloads (a payload ends with a short transfer or at `dwMaxPayloadTransferSize`), stop = CLEAR_FEATURE(ENDPOINT_HALT). `cam.epon` replaces `cur_alt` as "endpoint added". Start tries up to 16 sizes in two passes; the first pass skips sizes no alt setting can carry.
+
+Microphones: `aud_parse` reads USB Audio 2.0 (interface protocol 0x20): clock source id, AS_GENERAL channels, FORMAT_TYPE_I subslot and bits; the rate is set with SET_CUR on the clock (`(clock<<8)|ac_if`) and read back. Capture accepts 2-4 byte samples and 1-8 channels (`aud_s16` takes the top 16 bits of the first two channels). A camera with an audio function: `uvc_add_mic` attaches it on the same slot; `uvc_aud_share` keeps the two copies of the EP0 ring position equal. HDA: `scan_in` also remembers a headset/mic jack with presence detect; `pick_in` uses it when the jack reports a plug.
+
+## 11.20 Focus modes (v10.57)
+
+`core/focus.c` keeps up to 12 focuses (`focus_mode`): four built in (Do not disturb, Sleep, Work, Gaming) and any you create (new ones hide pop-ups). Each is a text file `/etc/noovex/focus/ID.focus` (`NVFOCUS1`, then `Name=`, `Icon=`, `Color=`, `Builtin=`, `HidePopups=`, `AllowApps=`, `Mute=`, `HideGames=`, `NightLight=`, `Brightness=`, `BatterySaver=`, `Theme=`, `LockAfter1Min=`, `Schedule=`, `From=`, `To=` (minutes), `Days=` (bit 0 = Monday), `Apps=` (window bit mask), `SignIn=`, `LowBattery=`, `Taskbar=`, `LockScreen=`), copied to `/System/Focus` with a README. Default schedule 22:00-07:00 every day; Work 08:00-17:00 Monday to Friday (schedules start switched off).
+
+| Part | How |
+|---|---|
+| Turning on | `focus_set(i, why)`: restores the previous focus, saves night light, brightness, battery saver, refresh rate, volume, wallpaper mode and theme, then applies the focus (brightness at least 5%, battery saver 30 Hz). When it ends, each value is put back only if you did not change it meanwhile (volume only if still 0). The previous theme is also kept in `System\Focus\PrevTheme` / `PrevAccent` (written as the system, so it works for standard accounts) and put back after a restart if the focus did not come back. The 1-minute lock uses `g_lock_override` and never touches the saved lock time. `why`: 0 by hand, 1 schedule, 2 app, 3 sign-in, 4 low battery. Only a focus turned on by hand is stored in `User\Focus\Current` and comes back after sign-in. |
+| Pop-ups | With HidePopups, `notify_from(app, title, body)` (and `notify`, app "System") still adds to the notification list but shows no toast unless `focus_allows` finds the app or title (any case) in `AllowApps`. |
+| Sounds | `Mute` sets the volume to 0 while on. |
+| Games | `focus_hides_games` removes the Games group from the Start menu and games from launcher search. |
+| Automatic | `focus_tick` (every 5 s): schedule windows (overnight windows use the day they started; same start and end = all day), low battery (20% or less, not charging, only when no focus is on; again after charging or above 25%). `open_win` / `close_win` call `focus_app_started` / `focus_app_closed` (no app is set by default; Gaming offers DOOM and Quake as a preset); app and schedule triggers only act when no focus is on or the current one came from an app or schedule. Sign-in brings back a focus set by hand, otherwise the first focus with SignIn. A focus turned off by hand during its schedule stays off until the window ends. |
+| Where | Quick Settings Focus tile (classic) or Focus button (modern) opens a list (`fpop_*` in `desktop.c`) with "Turn focus off", "Create focus" and "Focus settings"; Settings > System > Focus (`st_focus_page`, tabs Focuses / Settings / Turn on automatically, ids 1200-1399); taskbar icon in the focus colour; lock screen line; `focus [list | NAME | off | create NAME | delete NAME]`. |

@@ -1,6 +1,6 @@
 #include "include/kapi.h"
 #include "include/drivers.h"
-#define NRX 32
+#define NRX 256
 #define NTX 16
 #define BUF 2048
 struct rxd { volatile u64 addr; volatile u16 len, csum; volatile u8 status, errors; volatile u16 special; };

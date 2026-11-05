@@ -149,6 +149,15 @@ int fat_read_file(const char* path, uint8_t* dest, uint32_t max, uint32_t* size_
     return 0;
 }
 
+int fat_file_lba(const char* path, uint32_t* lba, uint32_t* size){
+    uint32_t cluster, sz; int isd;
+    if(!fat_find(path, &cluster, &sz, &isd)) return -1;
+    if(isd || cluster < 2 || cluster >= 0x0FFFFFF8u) return -1;
+    *lba = cluster_to_lba(cluster);
+    *size = sz;
+    return 0;
+}
+
 int fat_readdir(int index, char* name, uint32_t* size, int* isdir){
     uint32_t cluster = g_root_cluster;
     int n = 0;

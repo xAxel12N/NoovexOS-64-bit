@@ -6,7 +6,8 @@
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
 volatile u64 g_ticks;
 static u64 cpu_irq_save(void){ return 0; } static void cpu_irq_on(void){} static void cpu_irq_restore(u64 f){ (void)f; }
-static volatile int mouse_dx,mouse_dy,mouse_evt,mouse_btn,mouse_rbtn,mouse_mid,mouse_scroll;
+static volatile int mouse_dx,mouse_dy,mouse_evt,mouse_btn,mouse_rbtn,mouse_mid,mouse_scroll; static volatile int mouse_lpress,mouse_rpress,mouse_mpress; static volatile u64 mouse_press_t;
+int g_vmm_mode=0;
 static void io_wait(void){}
 static void klog(const char* s){ (void)s; }
 static void* kmalloc(unsigned long n){ return malloc(n); }
@@ -133,6 +134,9 @@ int tpa_timing(const char* ctrl,u16 ss[3],u16 fs[3]){ (void)ctrl; (void)ss; (voi
 void tpa_lpss_init(u64 base){ (void)base; }
 u64 tpa_map(u64 base){ return base; }
 int tpa_hid(const char* dev,char* out){ (void)dev; out[0]=0; return -1; }
+int tpa_sta(const char* dev){ (void)dev; return -1; }
+int tpa_ini(const char* dev){ (void)dev; return -1; }
+int tpa_ctrl(const char* ctrl,tpa_ctl* c){ (void)ctrl; c->found=0; c->adr_ok=0; c->adr=0; c->mem=0; return -1; }
 static int g_nf=5; static u16 g_scan;
 typedef struct { int id, x, y, tip, conf; } fin;
 static void report(const fin* f,int n,int cc,int btn){
@@ -174,6 +178,12 @@ static void build_intel_dsdt(void){
     d=dev_open("TPD1"); name_str("_HID","ELAN0001"); name_str("_CID","PNP0C50");
     { ab(0x08); aseg("SBFB"); int p,q; buf_open(&p,&q); i2cres(0x15,400000,"\\_SB.PCI0.I2C1"); buf_close(p,q); } pk_close(d);
     pk_close(s); }
+static void build_asus_dsdt(int wrong){
+    an=0; ab(0x10); int s=pk_open(); ab('\\'); aseg("_SB_");
+    int d=dev_open("I2CA"); name_str("_HID","AMDI0010"); { ab(0x08); aseg("_CRS"); int p,q; buf_open(&p,&q); mem32((u32)CTRL_BASE,0x1000); buf_close(p,q); }
+    int t=dev_open("TPL1"); name_str("_HID","XXXX0000"); name_str("_CID","PNP0C50"); { ab(0x08); aseg("SBFB"); int p,q; buf_open(&p,&q); i2cres(0,400000,"NULL"); buf_close(p,q); } pk_close(t);
+    t=dev_open("TPD0"); name_str("_HID","ELAN1203"); name_str("_CID","PNP0C50"); { ab(0x08); aseg("SBFB"); int p,q; buf_open(&p,&q); i2cres(wrong?0x2C:0,400000,wrong?"\\_SB.NOPE":"NULL"); buf_close(p,q); } pk_close(t);
+    pk_close(d); pk_close(s); }
 static void aml_load_from_acpi(void){ g_amlt[0]=aml; g_amll[0]=(u32)an; g_amlt_n=1; }
 static int ok=1; static void chk(const char* w,int c){ printf("    %-66s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
 int main(void){
@@ -225,6 +235,11 @@ int main(void){
     { int td2=-1; for(int i=0;i<g_amld_n;i++) if(g_amld[i].is_hidi2c)td2=i;
       chk("Intel layout: \\_SB.PCI0 scope, string _CID, I2C1 with _ADR 0x00150001", td2>=0&&!strcmp(g_amln[g_amld[td2].node].path,"\\_SB_.PCI0.TPD1")&&g_amld[td2].i2c[0].addr==0x15&&aml_find_dev("\\_SB.PCI0.I2C1")>=0&&g_amld[aml_find_dev("\\_SB.PCI0.I2C1")].adr==0x00150001u); }
     chk("Intel controller not reachable in this test: no touchpad, no crash", !g_tp.ok);
+    sim_reset(); g_dev_addr=0x15; g_cpu_amd=0; build_asus_dsdt(0); tp_init();
+    chk("ASUS layout: template \"NULL\" bus and address 0, touchpad found on the parent bus at 0x15", g_tp.ok&&g_tp.addr==0x15&&!strcmp(g_tp.hid,"ELAN1203"));
+    chk("ASUS layout: the touch-panel template XXXX0000 is not used", g_tp.ok&&strcmp(g_tp.hid,"XXXX0000")!=0);
+    sim_reset(); g_dev_addr=0x15; g_cpu_amd=1; build_asus_dsdt(1); tp_init();
+    chk("wrong controller path in ACPI: found by trying the known controllers", g_tp.ok&&g_tp.addr==0x15);
     sim_reset(); g_dev_addr=0x2C; g_cpu_amd=1; an=0; tp_init();
     chk("no ACPI entry: the boot probe leaves the I2C bus alone", !g_tp.ok&&S.xfers==0);
     tp_init_ex(1);

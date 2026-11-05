@@ -115,6 +115,10 @@ The menu draws a box titled `myboot 0.5` with one row per entry. Before it accep
 
 The terminal (`term.c`) supports `help`, `ls`, `cat`, `mem` (prints the E820 map from `0x0FF0`/`0x1000`), `clear`, `reboot`, `ver`, `exit` and `boot`. The countdown decrements on each RTC second change and boots the selection when it reaches 0.
 
+### Update states and fallback (`upd_pick` in `stage2.c`)
+
+After the menu, if the chosen entry is `/boot/kernel64.bin` (or `/KERNEL64.BIN`), stage2 reads the first sector of `/boot/update.txt` (found with `fat_file_lba`, the first cluster of the file) and acts on its first four bytes: `TRY0` and `TRY1` are counted up to `TRY1`/`TRY2` and the new kernel starts; `TRY2` becomes `FAIL` and `/boot/kernel64.old` starts; `FAIL`, `SWAP` and `OLD ` start `/boot/kernel64.old`. The sector is written back in place with `disk_write` (BIOS INT 13h AH=43h through the same real-mode thunk as reads; `bios_disk_read` now takes the function from `bd_op`) and read back to check it. If the write fails, the previous version starts. If the chosen kernel cannot be read, stage2 tries the others: for the new kernel `\KERNEL64.BIN` and then `kernel64.old` (a half-written `kernel64.old` from an interrupted `PREP` is the last choice), for the previous kernel `kernel64.bin` and then `\KERNEL64.BIN`; the path that was really loaded replaces the entry's `kernel` field, so the boot log shows it. See 8.12 for the full state table.
+
 ### Kernel format dispatch and validation
 
 | First bytes | Branch | Validation | Handoff |
@@ -181,7 +185,7 @@ Because they enter with `EAX=0`, `boot64.S` skips its Multiboot branch and does 
 
 1. Disables the watchdog (`SetWatchdogTimer(0,...)`), clears the screen and prints `NoovexOS UEFI loader 2.0`.
 2. Finds a file system: the Simple File System of the loaded image's device, or else the first one from `LocateProtocol`.
-3. Opens `\KERNEL64.BIN` (installed disks), falling back to `\boot\kernel64.bin` (ISO/USB).
+3. Reads `\boot\update.txt` (opened read-write) and applies the same update states as stage2 (8.12), writing the next state with `EFI_FILE_PROTOCOL.Write` and reading it back. If `\boot\kernel64.old` exists it shows "press P to start the previous version" for 0.6 s. It then opens the kernel: with no state file `\KERNEL64.BIN`, `\boot\kernel64.bin`, `\boot\kernel64.old`; with a state that starts the new version `\boot\kernel64.bin` first; for the previous version `\boot\kernel64.old` first. Paths are returned as literals, not through a table of pointers, because the loader is not relocated and a static pointer table would hold link-time addresses.
 4. Gets the file size from `EFI_FILE_INFO` (offset 8). It must not exceed `KERNEL_MAX = 0x1000000-0x100000` = 0xF00000 (15,728,640 bytes; 8 MiB in v9.08 to v9.10, 0x5C0000 before). The file is read in 1 MiB chunks into `AllocatePages(AnyPages, LoaderData)`.
 5. Locates the signature block. It searches the loaded bytes for `NVX64SIG` and reads `uefi_entry` at +80 and `bss_end` at +120. `bss_end` is clamped to `0x0B000000` if it is outside `[0x1300000, 0x0B000000]`. If `uefi_entry` is 0 or outside `[0x100000, 0x100000+size)`, the loader fails with "this file is not a NoovexOS 64 kernel (no UEFI entry point)". This is the only kernel validation on the UEFI path; the hashes are not checked here.
 6. GOP: takes the console's GOP or else `LocateProtocol`, then scores every mode as `w*h*4 + (BGR?2:0) + (current?1:0)`. Only modes that are BGR (format 1, or bitmask with R=`FF0000`, G=`FF00`, B=`FF`) or RGB (format 0) and at most 1920x1080 count. It switches to the best mode. A Blt-only mode (format 3) is fatal.
@@ -528,6 +532,23 @@ def signature_ok(k):
 | `boot.cfg` | 8191 bytes, 16 entries | `stage2.c`, `config.h` |
 
 Every limit is now 15 MiB, and the 10.2 MB v9.11 kernel fits with about 4.8 MB to spare. v9.11 raised it from 8 MiB by moving the boot stack, the fixed DMA buffers and `.bss` up by 7 MiB, and replaced the fixed TLS scratch buffers at `0x908000`-`0x930000` with static ones. Before v9.08 the UEFI loader allowed only 0x5C0000 bytes and the boot stack started at `0x700000`, directly above the image; a bigger kernel was silently overwritten by the stack, which the integrity check then reported as "kernel code was modified" (section 13.12).
+
+## 2.13b The Linux files outside the kernel (v10.41)
+
+Until v10.40 the Linux files (glibc, CPython, gcc, the ports, 36 MB) were linked into the kernel, which made the kernel 98.65 of the 100 MiB the boot loaders read. They are now a separate file next to the kernel:
+
+| Item | Value | Where |
+|---|---|---|
+| File name | `/sysroot/XXXXXXXX.BIN`, XXXXXXXX = CRC-32 of the file in upper case hex | `build.sh` step 6, `mkhybrid.py` |
+| Kernel header | offset 16: CRC-32, offset 20: size (Multiboot `header_addr`/`load_addr`, unused because flag bit 16 is clear) | `build.sh` step 6, `fs/vfs/sysroot.c` `sysroot_want_crc`/`sysroot_want_size` |
+| Load address | `0x20000000`, at most `0x10000000` bytes (256 MiB, since v10.48; was `0x06600000` and 50 MiB) | `boot/src/stage2.c`, `boot/uefi/uefiboot.c`, `include/nvx/fs/vfs/sysroot.h` `SR_SLOT` |
+| Kernel image now | about 72 MB (with five page engine copies) | `build.sh` |
+
+Both loaders read the kernel first, take the name from its header and read the file to `0x20000000` (the UEFI loader reads it into a buffer outside the kernel areas and copies it there after ExitBootServices, like the kernel). `sysroot_init` accepts the memory only when its size and CRC-32 match the kernel header, so an older file left in memory after a warm restart, or a file from another build, is never used. Because the CRC is in the name, the files of the current, the new and the previous kernel can sit side by side on the boot partition.
+
+When the loader did not bring the file (the first start after an update with an old loader, before `up_heal` refreshes it), the kernel reads it itself from the boot partition of the installed disk or the USB stick (`up_sr_load_disk` in `core/update.c`, called from `up_boot`). If it is missing there too, `update status` says so and `update repair` (also started once by itself on the desktop) downloads the ISO again, takes the file out of it, checks the CRC, saves it and loads it without a restart.
+
+The installer writes the file to the new boot partition after the boot partition check (`upd_put_sysroot_part`); the updater writes the new file before it touches the kernel, removes files no kernel on the partition needs (`up_sr_prune` keeps the current, `KERNEL64.BIN`, `kernel64.bin` and `kernel64.old` ones) and makes room by dropping an old `kernel64.old` first when the partition is full.
 
 ## 2.14 Gotchas
 

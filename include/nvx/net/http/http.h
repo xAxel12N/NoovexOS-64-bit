@@ -3,7 +3,7 @@
 
 #include "include/nvx/base.h"
 
-#define NVX_HOST   "mynexus.site"
+#define NVX_HOST   "noovexos.site"
 #define NVX_CID    "nvx_77a5f6669ec49183c5d2a9b2"          /* NoovexOS app (public) */
 #define NVX_SECRET "123456789012"
 
@@ -15,6 +15,8 @@ extern int g_cloud_fs , g_fs_pulling;
 extern volatile u64 g_ticks;
 extern volatile int mouse_dx , mouse_dy;
 extern volatile int mouse_btn , mouse_btn_prev;
+extern volatile int mouse_lpress , mouse_rpress, mouse_mpress;
+extern volatile u64 mouse_press_t;
 extern volatile int mouse_rbtn , mouse_rbtn_prev;
 extern volatile int mouse_scroll;
 extern volatile int mouse_mid;

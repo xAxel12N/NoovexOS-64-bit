@@ -1,0 +1,18 @@
+replay.refAction::
+	Specifies the default mode for handling reference updates.
+	The value can be:
++
+--
+////
+These use the first sentences from the description list in git-replay(1).
+////
+`update`;; (default) Update refs directly using an atomic transaction.
+`print`;; Output update-ref commands for pipeline use.
+--
++
+ifdef::git-replay[]
+See `--ref-action`.
+endif::git-replay[]
+ifndef::git-replay[]
+See `--ref-action` in linkgit:git-replay[1] for details.
+endif::git-replay[]

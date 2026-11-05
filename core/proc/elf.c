@@ -20,6 +20,8 @@ extern const unsigned char _binary_user_user_thread_elf_start[], _binary_user_us
 #define ELF_PIE_BASE 0x40000400000ULL
 #define ELF_INTERP_BASE 0x40030000000ULL
 #define ELF_IMG_LO   0x40000000000ULL
+#define ELF_BIG_BASE 0x47000000000ULL
+#define ELF_BIG_MAX  0x1000000000ULL
 
 char g_exec_args[2048]={0}; u64 g_arg_rsp=0,g_arg_argv=0; int g_arg_argc=0;
 char g_xa_buf[XA_CAP]; int g_xa_off[XA_MAX], g_xa_n=0, g_xa_set=0;
@@ -73,6 +75,9 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
     u16 phentsz=*(const u16*)(elf+54), phnum=*(const u16*)(elf+56);
     if(!elf_ph_ok(len,phoff,phentsz,phnum))return 0;
     u64 base=(etype==3)?ELF_PIE_BASE:0; g_elf_pie=(etype==3);
+    u64 lim_lo=ELF_IMG_LO, lim_hi=ELF_IMG_TOP;
+    if(etype==3){ u64 span=0; for(int i=0;i<phnum;i++){ const u8* ph=elf+phoff+(u64)i*phentsz; if(*(const u32*)ph!=1)continue; u64 va=*(const u64*)(ph+16), memsz=*(const u64*)(ph+40); if(va+memsz>span)span=va+memsz; }
+        if(span>ELF_IMG_TOP-ELF_PIE_BASE){ if(span>ELF_BIG_MAX)return 0; base=ELF_BIG_BASE; lim_lo=ELF_BIG_BASE; lim_hi=ELF_BIG_BASE+ELF_BIG_MAX; } }
     u64 phdr_va=0, first_off0=0; int have_off0=0, nload=0, entok=0; char interp[128]; interp[0]=0;
     for(int i=0;i<phnum;i++){ const u8* ph=elf+phoff+(u64)i*phentsz; u32 t=*(const u32*)ph;
         u64 off=*(const u64*)(ph+8), va=*(const u64*)(ph+16)+base, filesz=*(const u64*)(ph+32), memsz=*(const u64*)(ph+40);
@@ -80,7 +85,7 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
         if(t==3){ if(filesz<2||filesz>127||off>len||filesz>len-off)return 0; for(u64 k=0;k<filesz;k++)interp[k]=(char)elf[off+k]; interp[filesz]=0; continue; }
         if(t!=1)continue;
         if(filesz>memsz||off>len||filesz>len-off)return 0;
-        if(va<ELF_IMG_LO||memsz>ELF_IMG_TOP||va>ELF_IMG_TOP-memsz)return 0;
+        if(va<lim_lo||memsz>lim_hi||va>lim_hi-memsz)return 0;
         if(va<USTK_V+0x1000ULL&&va+memsz>ELF_STK_LO)return 0;
         if(off==0&&!have_off0){ have_off0=1; first_off0=va; }
         if(ent+base>=va&&ent+base<va+memsz&&(*(const u32*)(ph+4)&1))entok=1;

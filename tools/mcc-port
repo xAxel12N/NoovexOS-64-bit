@@ -1,0 +1,9 @@
+#!/bin/sh
+M=${NVX_MUSL:?NVX_MUSL not set}
+MS=${NVX_MUSL_SH:?NVX_MUSL_SH not set}
+PS=${NVX_PSYS:?NVX_PSYS not set}
+CI=$(clang -print-resource-dir)/include
+I="--sysroot=$PS -fPIE -nostdinc -isystem $PS/usr/include -isystem $M/include -isystem $CI -Wno-unused-command-line-argument"
+for a in "$@"; do case "$a" in -c|-S|-E|-M|-MM) exec clang $I "$@";; esac; done
+for a in "$@"; do case "$a" in -shared) exec clang $I -fuse-ld=bfd -fPIC -nostdlib -Wl,-z,noexecstack -L"$PS/usr/lib" -L"$MS/lib" "$MS/lib/crti.o" "$@" -lc "$(gcc -print-libgcc-file-name)" "$MS/lib/crtn.o";; esac; done
+exec clang $I -fuse-ld=bfd -pie -nostdlib -Wl,-dynamic-linker,/lib/ld-musl-x86_64.so.1 -Wl,-z,noexecstack -L"$PS/usr/lib" -L"$MS/lib" "$MS/lib/Scrt1.o" "$MS/lib/crti.o" "$@" -lc "$(gcc -print-libgcc-file-name)" "$MS/lib/crtn.o"

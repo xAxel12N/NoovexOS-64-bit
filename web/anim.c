@@ -9,7 +9,7 @@ typedef struct aval { unsigned char kind, ntf; unsigned col; float f; L l; tfn t
 
 #define AR_MAX 256
 #define TR_MAX 256
-#define EV_MAX 64
+#define EV_MAX 512
 
 typedef struct arun {
     node* n;
@@ -26,15 +26,19 @@ typedef struct arun {
     int nprops;
 } arun;
 
-typedef struct trun { node* n; short prop; aval from, to; double start; float dur, delay; tfunc tf; int used; } trun;
+typedef struct trun { node* n; short prop; aval from, to; double start; float dur, delay; tfunc tf; int used, startev; } trun;
 
 static kfset* g_kf;
 static arun AR[AR_MAX];
 static trun TR[TR_MAX];
 static int g_gen;
-static struct { node* n; const char* t; } EV[EV_MAX];
+static struct { node* n; const char* t; const char* name; float el; } EV[EV_MAX];
+extern const char* css_prop_names[];
 static int nev;
-static struct { node* n; short prop; aval v; } SNAP[512];
+typedef struct snapent { node* n; short prop; aval v; } snapent;
+static snapent* SNAP;
+#define SNAP_CAP 4096
+extern void* nwk_alloc_arena(unsigned long n);
 static int nsnap;
 int g_anim_active;
 
@@ -168,7 +172,8 @@ static int same_val(aval* a, aval* b) {
     case AV_F: case AV_DISC: return a->f == b->f;
     case AV_COL: return a->col == b->col;
     case AV_L: return a->l.px == b->l.px && a->l.pct == b->l.pct && a->l.k == b->l.k;
-    case AV_TF: return a->ntf == b->ntf && !memcmp(a->tf, b->tf, sizeof(tfn) * a->ntf) && a->rot == b->rot && a->scale == b->scale && a->tx.px == b->tx.px && a->ty.px == b->ty.px && a->tx.pct == b->tx.pct && a->ty.pct == b->ty.pct;
+    case AV_TF: { if (a->ntf != b->ntf) return 0; for (int i = 0; i < a->ntf; i++) { tfn* x = &a->tf[i]; tfn* y = &b->tf[i]; if (x->t != y->t) return 0; for (int k = 0; k < 16; k++) if (x->v[k] != y->v[k]) return 0; for (int k = 0; k < 2; k++) if (x->l[k].px != y->l[k].px || x->l[k].pct != y->l[k].pct || x->l[k].k != y->l[k].k) return 0; } }
+        return a->rot == b->rot && a->scale == b->scale && a->tx.px == b->tx.px && a->ty.px == b->ty.px && a->tx.pct == b->tx.pct && a->ty.pct == b->ty.pct;
     }
     return 1;
 }
@@ -182,10 +187,12 @@ static unsigned lerpc(unsigned a, unsigned b, float t) {
 }
 static void tf_identity_like(tfn* src, tfn* dst) {
     *dst = *src;
-    if (src->t == TF_TRANSLATE) { dst->l[0] = (L){ 0, 0, -1e30f, 1e30f, LK_VAL }; dst->l[1] = dst->l[0]; }
+    if (src->t == TF_TRANSLATE) { dst->l[0] = (L){ 0, 0, -1e30f, 1e30f, LK_VAL }; dst->l[1] = dst->l[0]; dst->v[0] = 0; }
     else if (src->t == TF_SCALE) { dst->v[0] = dst->v[1] = 1; }
-    else if (src->t == TF_ROTATE) dst->v[0] = 0;
+    else if (src->t == TF_ROTATE || src->t == TF_ROTX || src->t == TF_ROTY || src->t == TF_PERSPF) dst->v[0] = 0;
+    else if (src->t == TF_ROT3D) dst->v[3] = 0;
     else if (src->t == TF_SKEW) dst->v[0] = dst->v[1] = 0;
+    else if (src->t == TF_M3D) { for (int i = 0; i < 16; i++) dst->v[i] = (i % 5) == 0 ? 1.0f : 0.0f; }
     else { dst->v[0] = 1; dst->v[1] = 0; dst->v[2] = 0; dst->v[3] = 1; dst->v[4] = 0; dst->v[5] = 0; }
 }
 static void to_matrix(aval* v, node* n, tfn* out) {
@@ -194,6 +201,7 @@ static void to_matrix(aval* v, node* n, tfn* out) {
     tmp.tf = v->tf; tmp.ntf = v->ntf; tmp.rotate = v->rot; tmp.scale = v->scale ? v->scale : 1; tmp.tx = v->tx; tmp.ty = v->ty;
     float w = n && n->box ? n->box->w : 0, h = n && n->box ? n->box->h : 0;
     memset(out, 0, sizeof *out);
+    if (tf_is3d(&tmp)) { float M[16]; tf_matrix4(&tmp, w, h, M); out->t = TF_M3D; for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) out->v[c * 4 + r] = M[r * 4 + c]; return; }
     out->t = TF_MATRIX;
     tf_matrix(&tmp, w, h, out->v);
 }
@@ -218,13 +226,14 @@ static void lerp_tf(aval* a, aval* b, float t, aval* r, node* n) {
         aa.tx = bb.tx = (L){ 0, 0, -1e30f, 1e30f, LK_VAL }; aa.ty = bb.ty = aa.tx;
         to_matrix(&aa, n, &A[0]);
         to_matrix(&bb, n, &B[0]);
+        for (int q = 0; q < 2; q++) { tfn* X = q ? &B[0] : &A[0]; tfn* Y = q ? &A[0] : &B[0]; if (X->t == TF_MATRIX && Y->t == TF_M3D) { float v6[6]; memcpy(v6, X->v, sizeof v6); for (int i = 0; i < 16; i++) X->v[i] = (i % 5) == 0 ? 1.0f : 0.0f; X->v[0] = v6[0]; X->v[1] = v6[1]; X->v[4] = v6[2]; X->v[5] = v6[3]; X->v[12] = v6[4]; X->v[13] = v6[5]; X->t = TF_M3D; } }
         na = nb = 1;
     }
     r->ntf = (unsigned char)na;
     for (int i = 0; i < na; i++) {
         tfn* o = &r->tf[i];
         *o = A[i];
-        for (int k = 0; k < 6; k++) o->v[k] = lerpf(A[i].v[k], B[i].v[k], t);
+        for (int k = 0; k < 16; k++) o->v[k] = lerpf(A[i].v[k], B[i].v[k], t);
         o->l[0] = lerpl(A[i].l[0], B[i].l[0], t);
         o->l[1] = lerpl(A[i].l[1], B[i].l[1], t);
     }
@@ -257,13 +266,18 @@ static float timing(tfunc* f, float t) {
     return 3 * v * v * u * y1 + 3 * v * u * u * y2 + u * u * u;
 }
 
-static void ev_push(node* n, const char* t) { if (nev < EV_MAX) { EV[nev].n = n; EV[nev].t = t; nev++; } }
+static void ev_push2(node* n, const char* t, const char* name, float el) {
+    for (int i = 0; i < nev; i++) if (EV[i].n == n && EV[i].t == t && EV[i].name == name) { EV[i].el = el; return; }
+    if (nev < EV_MAX) { EV[nev].n = n; EV[nev].t = t; EV[nev].name = name; EV[nev].el = el; nev++; }
+}
+static const char* tr_name(int p) { return p >= 0 && p < P_NPROPS ? css_prop_names[p] : "all"; }
 
 static int add_prop(short* list, int* n, int cap, short p) { for (int i = 0; i < *n; i++) if (list[i] == p) return 0; if (*n < cap) list[(*n)++] = p; return 1; }
 
 static void snap_node(node* n) {
     style* s = n->st;
-    if (!s || s->ntrans == 0) return;
+    if (!s || s->ntrans == 0 || (n->flags & NF_NOTRANS)) return;
+    if (!SNAP) { SNAP = (snapent*)nwk_alloc_arena((unsigned long)sizeof(snapent) * SNAP_CAP); if (!SNAP) return; }
     short props[64];
     int np = 0;
     for (int i = 0; i < s->ntrans; i++) {
@@ -272,7 +286,7 @@ static void snap_node(node* n) {
         if (t->prop == -1) { for (unsigned k = 0; k < sizeof(ALLP) / sizeof(ALLP[0]); k++) add_prop(props, &np, 64, ALLP[k]); }
         else if (t->prop >= 0) { short e[4]; int ne = expand(t->prop, e); for (int k = 0; k < ne; k++) add_prop(props, &np, 64, e[k]); }
     }
-    for (int i = 0; i < np && nsnap < 512; i++) { SNAP[nsnap].n = n; SNAP[nsnap].prop = props[i]; get_val(s, props[i], &SNAP[nsnap].v); nsnap++; }
+    for (int i = 0; i < np && nsnap < SNAP_CAP; i++) { SNAP[nsnap].n = n; SNAP[nsnap].prop = props[i]; get_val(s, props[i], &SNAP[nsnap].v); nsnap++; }
 }
 static void walk(node* n, void (*fn)(node*)) {
     node* stack[4096];
@@ -359,7 +373,8 @@ static void start_transitions(void) {
         trun* r = 0;
         for (int j = 0; j < TR_MAX; j++) if (TR[j].used && TR[j].n == n && TR[j].prop == p) { r = &TR[j]; break; }
         if (r && same_val(&r->to, &nv)) continue;
-        if (same_val(&SNAP[i].v, &nv)) { if (r) r->used = 0; continue; }
+        if (same_val(&SNAP[i].v, &nv)) { if (r) { if (r->startev) ev_push2(n, "transitioncancel", tr_name(p), 0); r->used = 0; } continue; }
+        if (r && r->used) ev_push2(n, "transitioncancel", tr_name(p), 0);
         if (!r) for (int j = 0; j < TR_MAX; j++) if (!TR[j].used) { r = &TR[j]; break; }
         if (!r) continue;
         r->used = 1;
@@ -371,8 +386,9 @@ static void start_transitions(void) {
         r->dur = t->dur * 1000;
         r->delay = t->delay * 1000;
         r->tf = t->tf;
-        ev_push(n, "transitionrun");
-        if (r->delay <= 0) ev_push(n, "transitionstart");
+        r->startev = r->delay <= 0;
+        ev_push2(n, "transitionrun", tr_name(p), 0);
+        if (r->startev) ev_push2(n, "transitionstart", tr_name(p), 0);
     }
     nsnap = 0;
 }
@@ -396,10 +412,10 @@ static int apply_runs(double now) {
             prog = 0;
             cur_iter = 0;
         } else {
-            if (!r->started) { r->started = 1; ev_push(r->n, "animationstart"); }
+            if (!r->started) { r->started = 1; ev_push2(r->n, "animationstart", r->kf->name, a->delay < 0 ? (float)-a->delay : 0); }
             double total = iter < 0 ? 1e300 : dur * iter;
             if (el >= total) {
-                if (!r->ended) { r->ended = 1; ev_push(r->n, "animationend"); }
+                if (!r->ended) { r->ended = 1; ev_push2(r->n, "animationend", r->kf->name, (float)(total / 1000.0)); }
                 if (!(a->fill & 1)) active = 0;
                 double it = iter;
                 cur_iter = (int)floor(it);
@@ -408,7 +424,7 @@ static int apply_runs(double now) {
             } else {
                 cur_iter = (int)(el / dur);
                 prog = (el - cur_iter * dur) / dur;
-                if (cur_iter > r->iters_done) { r->iters_done = cur_iter; ev_push(r->n, "animationiteration"); }
+                if (cur_iter > r->iters_done) { r->iters_done = cur_iter; ev_push2(r->n, "animationiteration", r->kf->name, (float)(cur_iter * dur / 1000.0)); }
                 flags |= 1;
             }
         }
@@ -445,13 +461,14 @@ static int apply_runs(double now) {
         trun* r = &TR[i];
         if (!r->used) continue;
         style* s = r->n->st;
-        if (!s) { r->used = 0; continue; }
+        if (!s || s->display == D_NONE) { ev_push2(r->n, "transitioncancel", tr_name(r->prop), 0); r->used = 0; continue; }
         double el = now - r->start - r->delay;
+        if (el >= 0 && !r->startev) { r->startev = 1; ev_push2(r->n, "transitionstart", tr_name(r->prop), 0); }
         float t = el <= 0 ? 0 : (r->dur > 0 ? (float)(el / r->dur) : 1);
         if (t >= 1) {
             put_val(s, r->prop, &r->to);
             r->used = 0;
-            ev_push(r->n, "transitionend");
+            ev_push2(r->n, "transitionend", tr_name(r->prop), r->dur / 1000.0f);
             flags |= 1;
             if (is_layout_prop(r->prop)) flags |= 2;
             continue;
@@ -465,9 +482,22 @@ static int apply_runs(double now) {
     return flags;
 }
 
+static const char* kf_keep(const char* nm) { kfset* k = kf_find(nm); return k ? k->name : nstrdup(nm); }
 void anim_after_style(node* root) {
     g_gen++;
     if (root) walk(root, link_anims);
+    for (int j = 0; j < AR_MAX; j++) if (AR[j].n && AR[j].gen != g_gen) { if (AR[j].started && !AR[j].ended) ev_push2(AR[j].n, "animationcancel", AR[j].name[0] ? kf_keep(AR[j].name) : "", 0); memset(&AR[j], 0, sizeof AR[j]); }
+    for (int j = 0; j < TR_MAX; j++) if (TR[j].used && TR[j].n->agen != (unsigned)g_gen) { ev_push2(TR[j].n, "transitioncancel", tr_name(TR[j].prop), 0); TR[j].used = 0; }
+    { int k = 0; for (int i = 0; i < nsnap; i++) if (SNAP[i].n->agen == (unsigned)g_gen) SNAP[k++] = SNAP[i]; nsnap = k; }
+    start_transitions();
+    g_anim_active = apply_runs(now_ms());
+}
+
+void anim_after_style_part(node* root) {
+    g_gen++;
+    if (root) walk(root, link_anims);
+    for (int j = 0; j < AR_MAX; j++) if (AR[j].n && AR[j].gen != g_gen && !node_contains(root, AR[j].n)) AR[j].gen = g_gen;
+    for (int j = 0; j < TR_MAX; j++) if (TR[j].used && TR[j].n->agen != (unsigned)g_gen && !node_contains(root, TR[j].n)) TR[j].n->agen = (unsigned)g_gen;
     for (int j = 0; j < AR_MAX; j++) if (AR[j].n && AR[j].gen != g_gen) memset(&AR[j], 0, sizeof AR[j]);
     for (int j = 0; j < TR_MAX; j++) if (TR[j].used && TR[j].n->agen != (unsigned)g_gen) TR[j].used = 0;
     { int k = 0; for (int i = 0; i < nsnap; i++) if (SNAP[i].n->agen == (unsigned)g_gen) SNAP[k++] = SNAP[i]; nsnap = k; }
@@ -484,10 +514,11 @@ int anim_tick(void) {
     return g_anim_active;
 }
 
-int anim_events(node** ns, const char** ts, int cap) {
+int anim_events(node** ns, const char** ts, const char** nm, float* el, int cap) {
     int n = nev < cap ? nev : cap;
-    for (int i = 0; i < n; i++) { ns[i] = EV[i].n; ts[i] = EV[i].t; }
-    nev = 0;
+    for (int i = 0; i < n; i++) { ns[i] = EV[i].n; ts[i] = EV[i].t; nm[i] = EV[i].name; el[i] = EV[i].el; }
+    for (int i = n; i < nev; i++) EV[i - n] = EV[i];
+    nev -= n;
     return n;
 }
 

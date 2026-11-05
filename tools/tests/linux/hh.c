@@ -22,7 +22,7 @@ typedef uint64_t u64; typedef uint32_t u32;
 
 u64 hk_setup(void); int hk_spawn(const char*); int hk_step(void); int hk_state(int); int hk_exitst(int); int hk_pid(int); void hk_reap(int);
 const char* hk_cap(int*); void hk_cap_reset(void); void hk_fault(void*); u64 hk_fsbase(void); u32 hk_free_frames(void); int hk_free_vfiles(void); int hk_free_pipes(void); int hk_used_files(void);
-void hk_setenv(const char*,const char*); int hk_pf(u64,int); int hk_readfile(const char*,char*,int); int hk_exists(const char*); int hk_addfile(const char*,const char*,const unsigned char*,int); void hk_delfile(int);
+void hk_setenv(const char*,const char*); int hk_pf(u64,int); int hk_pf2(u64,u64); int hk_readfile(const char*,char*,int); int hk_exists(const char*); int hk_addfile(const char*,const char*,const unsigned char*,int); void hk_delfile(int);
 int hk_shm_clear(void); void linux_syscall(void*); void syscall_dispatch(void*); int hk_dns_build(const char*,unsigned char*,int); void hk_udp_big(void);
 
 static int g_memfd; static u64 g_kpml4, g_cur; static u32 g_map[NPG]; static u32 g_maxidx;
@@ -39,12 +39,21 @@ static u64* pte_of(u64 cr3,u64 va){
     u64* l2=(u64*)(e&ADDR); e=l2[(va>>21)&511]; if(!(e&1)||(e&0x80))return 0;
     u64* l1=(u64*)(e&ADDR); return &l1[(va>>12)&511];
 }
+#define H_PRO 0x0010000000000000ULL
+#define H_PNO 0x0020000000000000ULL
+#define H_NX  0x8000000000000000ULL
 static void map_one(u64 va,u64 pte){
     if(va<WIN)return; u64 idx=(va-WIN)>>12; if(idx>=NPG)h_fatal("guest page outside the 16 GB test window");
     u32 want=0;
-    if(pte&1){ u64 fr=pte&ADDR; if(fr<PFB||fr>=PFT)h_fatal("PTE points outside the frame pool"); want=(u32)((fr-PFB)>>12)+1; if(!(pte&2))want|=0x80000000u; }
+    if(pte&1){ u64 fr=pte&ADDR; if(fr<PFB||fr>=PFT)h_fatal("PTE points outside the frame pool"); want=(u32)((fr-PFB)>>12)+1;
+        if(!(pte&2)||(pte&H_PRO))want|=0x80000000u;
+        if(pte&H_NX)want|=0x40000000u;
+        if((pte&H_PNO)||!(pte&4))want|=0x20000000u; }
     if(g_map[idx]==want)return;
-    if(want){ int prot=(want&0x80000000u)?(PROT_READ|PROT_EXEC):(PROT_READ|PROT_WRITE|PROT_EXEC); if(mmap((void*)va,4096,prot,MAP_SHARED|MAP_FIXED,g_memfd,(off_t)((want&0x7FFFFFFFu)-1)*4096)==MAP_FAILED)h_fatal("mmap"); if(idx+1>g_maxidx)g_maxidx=(u32)idx+1; }
+    if(want){ int prot;
+        if(want&0x20000000u)prot=PROT_NONE;
+        else { prot=PROT_READ|((want&0x80000000u)?0:PROT_WRITE)|((want&0x40000000u)?0:PROT_EXEC); }
+        if(mmap((void*)va,4096,prot,MAP_SHARED|MAP_FIXED,g_memfd,(off_t)((want&0x0FFFFFFFu)-1)*4096)==MAP_FAILED)h_fatal("mmap"); if(idx+1>g_maxidx)g_maxidx=(u32)idx+1; }
     else munmap((void*)va,4096);
     g_map[idx]=want;
 }
@@ -97,7 +106,7 @@ static void on_fault(int sig,siginfo_t* si,void* ucv){
     ucontext_t* uc=(ucontext_t*)ucv; greg_t* g=uc->uc_mcontext.gregs; u64 rip=(u64)g[REG_RIP];
     if((sig==SIGSEGV||sig==SIGBUS)&&(u64)si->si_addr>=WIN&&(u64)si->si_addr<WIN*2){
         g_pfaults++;
-        if(hk_pf((u64)si->si_addr,(int)((g[REG_ERR]>>1)&1))==0){ u64 va=(u64)si->si_addr&~0xFFFULL; if(((va-WIN)>>12)<NPG){ u64* pp=pte_of(g_cur,va); map_one(va,pp?*pp:0); } if(rip>=WIN&&rip<WIN*2)set_fs(hk_fsbase()); return; } }
+        if(hk_pf2((u64)si->si_addr,(u64)g[REG_ERR])==0){ u64 va=(u64)si->si_addr&~0xFFFULL; if(((va-WIN)>>12)<NPG){ u64* pp=pte_of(g_cur,va); map_one(va,pp?*pp:0); } if(rip>=WIN&&rip<WIN*2)set_fs(hk_fsbase()); return; } }
     if(rip<WIN||rip>=WIN*2){ fprintf(stderr,"HARNESS CRASH: signal %d at rip=%llx addr=%p\n",sig,(unsigned long long)rip,si->si_addr); fflush(stderr); _exit(91); }
     if(getenv("HH_DEBUG"))fprintf(stderr,"guest fault: signal %d code %d pid %d rip=%llx addr=%p rsp=%llx last syscall %llu(%llx,%llx,%llx,%llx,%llx,%llx)\n",sig,si->si_code,(int)si->si_pid,(unsigned long long)rip,si->si_addr,(unsigned long long)g[REG_RSP],(unsigned long long)g_last[0],(unsigned long long)g_last[1],(unsigned long long)g_last[2],(unsigned long long)g_last[3],(unsigned long long)g_last[4],(unsigned long long)g_last[5],(unsigned long long)g_last[6]);
     if(getenv("HH_DEBUG")){ for(int i=0;i<16;i++)fprintf(stderr," %llu",(unsigned long long)g_ring[(g_rn+i)&15]); fprintf(stderr,"\n"); }
@@ -198,6 +207,10 @@ int main(int argc,char** argv){
       hk_udp_big(); rec(1,"udp_send refuses a payload larger than one Ethernet frame",0); }
     run_prog("smptest 3 3 200000",&st,out,sizeof out);
     rec(st==0&&strstr(out,"smptest: PASS")&&strstr(out,"0 errors"),"smptest: forks, pipes, files and copy-on-write from several processes",out);
+    { static char ko[8192]; run_prog("kfeat",&st,ko,sizeof ko);
+      char* l=strtok(ko,"\n"); int kp=0;
+      while(l){ if(!strncmp(l,"FAIL ",5))rec(0,l+5,0); else if(!strncmp(l,"ok   ",5)||!strncmp(l,"ok  ",4))kp++; l=strtok(0,"\n"); }
+      rec(st==0&&kp>=16,"kfeat: guard pages, NX, mprotect, sigaltstack, statx and membarrier all work",0); }
     fs0=hk_used_files();
     run_prog("musltest",&st,out,sizeof out);
     printf("---- musltest ----\n%s",out);

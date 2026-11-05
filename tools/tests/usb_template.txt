@@ -10,6 +10,7 @@ typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t
 static u32 g_devbuf=DMW_FIXED;
 #define DMW(off) (g_devbuf+(u32)(off))
 static void uvc_reset(void){}
+static void aud_reset(void){} static void aud_unplug(int port){ (void)port; } static void aud_sync_e0(void){} static void aud_mark_sync(void){}
 void* kmalloc(unsigned long n){ return malloc(n); }
 void kfree(void* p){ free(p); }
 void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name);
@@ -23,7 +24,11 @@ static u8 xhci_port_conn[32], xhci_port_speed[32], usb_seen[32];
 static u32 xhci_base, xhci_op;
 @@XHC_CTX@@ static int xhci_csz=0; static u32 xhci_dboff=0x2000, xhci_rtoff=0x3000; static u32 cmd_enq,cmd_cyc=1,ev_deq=0,ev_cyc=1;
 static u64 g_ticks; static u8 kdown[128]; static int mouse_dx,mouse_dy,mouse_evt,mouse_btn,mouse_rbtn,mouse_mid,mouse_scroll;
+static int mouse_lpress,mouse_rpress; static u64 mouse_press_t; int g_krep_delay=50, g_krep_rate=3, g_krep_flag=0;
+void in_xbtn(int b4,int b5){ (void)b4; (void)b5; }
+void in_btn_raw(int l,int r,int m){ l=l?1:0; r=r?1:0; if((l&&!mouse_btn)||(r&&!mouse_rbtn))mouse_press_t=g_ticks; if(l&&!mouse_btn)mouse_lpress++; if(r&&!mouse_rbtn)mouse_rpress++; if(l!=mouse_btn||r!=mouse_rbtn)mouse_evt=1; mouse_btn=l; mouse_rbtn=r; mouse_mid=m?1:0; }
 static char kq[256]; static int kqn; static void kpush(int c){ if(kqn<255)kq[kqn++]=(char)c; kq[kqn]=0; }
+int g_hk_last=-1; void hk_push(int id){ g_hk_last=id; }
 static void io_wait(void){} static void klog(const char* s){(void)s;}
 static int g_next_slot=1, g_disabled[16], g_ndis; static u8 g_cfg_snapshot[4096]; static int g_cfg_done;
 static const u8* g_conf; static int g_conflen; static const u8* g_rd[4]; static int g_rdl[4]; static int g_req[32][3], g_nreq;
@@ -73,7 +78,10 @@ static int xh_ctrl(u8 rt,u8 req,u16 val,u16 idx,u16 len,int in,u8* data){ (void)
 volatile u32 g_kbd_last_tick;
 void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name){ (void)port;(void)vid;(void)pid;(void)cfg;(void)n;(void)name; }
 static int uvc_has_video(const u8* c,int n){ (void)c;(void)n; return 0; }
+static int aud_has_audio(const u8* c,int n){ (void)c;(void)n; return 0; }
+static int aud_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)full;(void)wtot;(void)cfgval;(void)vid;(void)pid;(void)nm; return 0; }
 static int uvc_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)full;(void)wtot;(void)cfgval;(void)vid;(void)pid;(void)nm; return 0; }
+static void uvc_add_mic(const usbloc_t* L,int d,const u8* big,int tw,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)big;(void)tw;(void)cfgval;(void)vid;(void)pid;(void)nm; }
 static int ok=1; static void chk(const char* w,int c){ printf("  %-70s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
 static const u8 UNIFYING[]={9,2,0x54,0,3,1,4,0xA0,0x31,
  9,4,0,0,1,3,1,1,0, 9,0x21,0x11,1,0,1,0x22,0x3B,0, 7,5,0x81,3,8,0,8,
@@ -146,6 +154,8 @@ static void more_mouse_tests(void){
   mouse_dx=mouse_dy=0; if(e>=0){ u8 r[]={0x02,0xFB,0x04,0}; send(e,r,4); }
   chk("boot report decoded (dx -5, dy -4, right button)", mouse_dx==-5&&mouse_dy==-4&&mouse_rbtn==1);
   chk("each report is counted with its raw bytes kept (for usbinfo)", e>=0&&xhid_cnt[e]==1&&xhid_lastn[e]>=3&&xhid_last[e][1]==0xFB);
+  mouse_lpress=0; mouse_evt=0; if(e>=0){ u8 a[]={0x00,0,0,0}; send(e,a,4); mouse_evt=0; u8 p[]={0x01,0,0,0}; send(e,p,4); u8 q[]={0x00,0,0,0}; send(e,q,4); }
+  chk("a quick click (press and release between two desktop frames) is counted, and the release alone is reported", mouse_lpress==1&&mouse_btn==0&&mouse_evt==1);
 }
 static const u8 GAMING_DONGLE[]={9,2,59,0,2,1,0,0xA0,0x32,
  9,4,0,0,1,3,0,2,0, 9,0x21,0x11,1,0,1,0x22,68,0, 7,5,0x81,3,16,0,1,
@@ -233,6 +243,10 @@ static void hub_tests(void){
   kqn=0; kq[0]=0; if(ekb>=0){ u8 r[8]={0,0,0x0B,0,0,0,0,0}; send(ekb,r,8); u8 z[8]={0}; send(ekb,z,8); }
   mouse_dx=mouse_dy=0; if(ems2>=0){ u8 r[]={0x01,4,0xFE,0}; send(ems2,r,4); }
   chk("keyboard behind the hub types 'h'; mouse behind the nested hub moves", !strcmp(kq,"h")&&mouse_dx==4&&mouse_dy==2&&mouse_btn==1);
+  { int hk[3]; u8 z[8]={0}; u8 r0[8]={0,0,0x46,0,0,0,0,0}; g_hk_last=-1; if(ekb>=0){ send(ekb,r0,8); send(ekb,z,8); } hk[0]=g_hk_last;
+    u8 r1[8]={0x02,0,0x46,0,0,0,0,0}; g_hk_last=-1; if(ekb>=0){ send(ekb,r1,8); send(ekb,z,8); } hk[1]=g_hk_last;
+    u8 r2[8]={0x04,0,0x46,0,0,0,0,0}; g_hk_last=-1; if(ekb>=0){ send(ekb,r2,8); send(ekb,z,8); } hk[2]=g_hk_last;
+    chk("PrtSc opens the screenshot tool; Shift+PrtSc screen, Alt+PrtSc window", hk[0]==28&&hk[1]==30&&hk[2]==29); }
   M[MS2].present=0; M[B].cflag[2]=1; int dis=g_ndis; xhub_poll_ports();
   chk("unplugging the nested mouse frees it and disables its slot only", ems2>=0&&!xhid_used[ems2]&&g_ndis==dis+1&&g_disabled[g_ndis-1]==sMS2&&xhid_used[ekb]&&xhid_used[ems]&&ems3>=0&&xhid_used[ems3]);
   int S=madd(5,0x4,1,3,3,0,0,0,0,0,64); (void)S; M[A].cflag[4]=1; xhub_poll_ports();

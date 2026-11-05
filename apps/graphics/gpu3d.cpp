@@ -1,6 +1,8 @@
 #include "include/nvx/lib/cxx.h"
 
 extern "C" {
+void nvd_run_request(void);
+int nvd_run_state(int* res);
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/drivers/video/fb/framebuffer.h"
 #include "include/nvx/drivers/video/fb/gfx.h"
@@ -11,13 +13,20 @@ extern "C" {
 #include "include/nvx/core/klog.h"
 #include "include/nvx/drivers/video/nvidia/nvgsp.h"
 #include "apps/graphics/r3d/r3d.h"
+#include "include/nvx/assets/fontaa.h"
 extern volatile unsigned char kdown[128];
+extern int mx, my, g_nightlight, g_fb_rgb, g_tby, DOCK_x, DOCK_y, DOCK_w, DOCK_h;
 int gfx_app_surf(u32** px, int w, int h);
+int desk_win_exposed(int i);
+void present_rect(int x, int y, int w, int h);
+void fb_shadow_note(int x, int y, int w, int h);
+extern u32* SCENE_NC;
 }
 
 namespace {
 
 enum class Present { Cpu, CpuScaled, Intel, Nvidia };
+enum class Fast { None, Cpu, Gpu2d };
 
 enum Key : int {
     K_MINUS = 0x0C, K_PLUS = 0x0D, K_UP = 0x48, K_LEFT = 0x4B, K_RIGHT = 0x4D, K_DOWN = 0x50
@@ -41,6 +50,24 @@ private:
     char* p_;
 };
 
+void frame_text(u32* buf, int pitch, int bw, int bh, int x, int y, const char* s, u32 col, int sc) {
+    for(; *s; ++s, x += 8 * sc) {
+        int idx = (unsigned char)*s - 32;
+        if(idx < 0 || idx >= 95) continue;
+        const unsigned char* g = fontaa[idx];
+        for(int r = 0; r < 14; ++r) for(int c = 0; c < 8; ++c) {
+            int a = g[r * 8 + c];
+            if(a < 6) continue;
+            for(int dy = 0; dy < sc; ++dy) for(int dx = 0; dx < sc; ++dx) {
+                int px = x + c * sc + dx, py = y + r * sc + dy;
+                if(px < 0 || py < 0 || px >= bw || py >= bh) continue;
+                u32* p = buf + (u64)py * pitch + px;
+                *p = a >= 250 ? col : mix(*p, col, a);
+            }
+        }
+    }
+}
+
 class Gpu3dApp {
 public:
     Gpu3dApp() : magic_(0x3D3D3D3D) { reset_view(); }
@@ -48,8 +75,10 @@ public:
     void draw(int win);
     void click() {}
     void key(int c);
-    void closed() { nv_frame_va_ = 0; nv_frame_ptr_ = 0; nv_scene_va_ = 0; nv_scene_ptr_ = 0; }
+    void closed() { nv_frame_va_ = 0; nv_frame_ptr_ = 0; nv_scene_va_ = 0; nv_scene_ptr_ = 0; nv_gen_ = 0; nv2d_va_ = 0; nv2d_ptr_ = 0; lay_.valid = false; }
     bool constructed() const { return magic_ == 0x3D3D3D3D; }
+    bool live() const { return constructed() && init_state_ != 2 && (!paused_ || gpu_req_ != 0); }
+    bool fast();
 
 private:
     void reset_view() {
@@ -64,6 +93,9 @@ private:
     void cpu_copy(int x, int y, int w, int h, int scale);
     void info_bar(int x, int y, int w);
     void message(int x, int y, int w, int h, const char* a, const char* b);
+    void step_time();
+    void render(u32* target, int rw, int rh, int pitch);
+    void overlay_text(u32* target, int pitch, int rw, int rh, int scale);
 
     u32 magic_;
     int scene_ = 0;
@@ -72,7 +104,7 @@ private:
     int init_state_ = 0;
     nvx::KBuf<u8> arena_, work_;
     nvx::KBuf<u32> frame_;
-    int fw_ = 0, fh_ = 0;
+    int fw_ = 0, fh_ = 0, fp_ = 0;
     u64 t_us_ = 0, last_ns_ = 0, fps_t0_ = 0;
     u32 frames_ = 0, fps_ = 0, render_us_ = 0;
     r3d_stats st_ = { 0, 0, 0, 0, 0 };
@@ -81,9 +113,17 @@ private:
     const void* nv_frame_ptr_ = 0;
     const void* nv_scene_ptr_ = 0;
     u32 nv_fail_ = 0;
+    u32 nv_gen_ = 0;
     int intel_sid_ = 0;
     int gpu_req_ = 0;
     char gpu_msg_[96] = { 0 };
+    struct Layout { bool valid; int wx, wy, ww, wh, ox, oy, rw, rh, scale; bool half; int scene; } lay_ = { false, 0, 0, 0, 0, 0, 0, 0, 0, 1, false, 0 };
+    u64 t_full_ns_ = 0;
+    u32 fast_frames_ = 0, fast_gpu_ = 0;
+    Fast fast_path_ = Fast::None;
+    u64 nv2d_va_ = 0;
+    const void* nv2d_ptr_ = 0;
+    u32 nv2d_gen_ = 0;
 };
 
 Gpu3dApp g_app;
@@ -105,10 +145,11 @@ bool Gpu3dApp::ensure_init() {
 bool Gpu3dApp::ensure_buffers(int w, int h) {
     if(w == fw_ && h == fh_ && frame_ && work_) return true;
     frame_.reset(); work_.reset(); fw_ = fh_ = 0;
-    nv_frame_va_ = 0; nv_frame_ptr_ = 0;
-    if(!frame_.alloc((unsigned long)w * h)) return false;
+    nv_frame_va_ = 0; nv_frame_ptr_ = 0; nv2d_va_ = 0; nv2d_ptr_ = 0; lay_.valid = false;
+    int fp = (w + 15) & ~15;
+    if(!frame_.alloc((unsigned long)fp * h)) return false;
     if(!work_.alloc(r3d_work_bytes(w, h))) { frame_.reset(); return false; }
-    fw_ = w; fh_ = h;
+    fw_ = w; fh_ = h; fp_ = fp;
     return true;
 }
 
@@ -155,7 +196,7 @@ void Gpu3dApp::cpu_copy(int x, int y, int w, int h, int scale) {
         int dy = y + yy;
         if((u32)dy >= H) continue;
         u32* d = sc + (u64)dy * SW + x;
-        const u32* s = src + (u64)(yy / scale) * fw_;
+        const u32* s = src + (u64)(yy / scale) * fp_;
         int xm = w * scale;
         if(x + xm > (int)W) xm = (int)W - x;
         if(scale == 1) for(int xx = 0; xx < xm; ++xx) d[xx] = s[xx];
@@ -166,11 +207,12 @@ void Gpu3dApp::cpu_copy(int x, int y, int w, int h, int scale) {
 void Gpu3dApp::present(Present p, int x, int y, int w, int h) {
     if(p == Present::Nvidia) {
         u32* sc = SCENE;
-        if(nv_frame_ptr_ != frame_.get()) { nv_frame_va_ = nvgsp_ce_map((u64)frame_.get(), (u64)fw_ * fh_ * 4); nv_frame_ptr_ = frame_.get(); }
+        if(nv_gen_ != nvgsp_ce_gen()) { nv_gen_ = nvgsp_ce_gen(); nv_frame_ptr_ = 0; nv_scene_ptr_ = 0; }
+        if(nv_frame_ptr_ != frame_.get()) { nv_frame_va_ = nvgsp_ce_map((u64)frame_.get(), (u64)fp_ * fh_ * 4); nv_frame_ptr_ = frame_.get(); }
         if(nv_scene_ptr_ != sc) { nv_scene_va_ = nvgsp_ce_map((u64)sc, (u64)SW * H * 4); nv_scene_ptr_ = sc; }
         int cw = nvx::min(w, (int)W - x), ch = nvx::min(h, (int)H - y);
         if(nv_frame_va_ && nv_scene_va_ && cw > 0 && ch > 0 &&
-           nvgsp_ce_copy2d(nv_frame_va_, (u32)fw_ * 4, nv_scene_va_ + ((u64)y * SW + x) * 4, SW * 4, (u32)cw * 4, (u32)ch)) {
+           nvgsp_ce_copy2d(nv_frame_va_, (u32)fp_ * 4, nv_scene_va_ + ((u64)y * SW + x) * 4, SW * 4, (u32)cw * 4, (u32)ch)) {
             path_ = Present::Nvidia;
             return;
         }
@@ -206,7 +248,25 @@ void Gpu3dApp::info_bar(int x, int y, int w) {
     const char* how = path_ == Present::Nvidia ? "NVIDIA copy engine: " : path_ == Present::Intel ? "Intel GPU blitter" : path_ == Present::CpuScaled ? "CPU copy, 2x scaled" : "CPU copy";
     b << "to screen: " << how;
     if(path_ == Present::Nvidia) b << nvgsp_gpu_name();
-    if(path_ != Present::Nvidia && !nvgsp_ce_ready()) b << "   (press G to start the NVIDIA card)";
+    if(path_ != Present::Nvidia && !nvgsp_ce_ready()) {
+        if(nvgsp_off_why()[0]) {
+            char why[64];
+            int i = 0;
+            for(; i < 63 && nvgsp_off_why()[i]; ++i) why[i] = nvgsp_off_why()[i];
+            why[i] = 0;
+            b << "   NVIDIA off: " << why;
+        } else if(g_nv_step > 0) {
+            char why[64];
+            int i = 0;
+            for(; i < 63 && g_nv_why[i]; ++i) why[i] = g_nv_why[i];
+            why[i] = 0;
+            b << "   NVIDIA start failed at step " << (u32)g_nv_step << ": " << why;
+        } else {
+            b << "   (press G to start the NVIDIA card)";
+        }
+    }
+    if(nvgsp_present_on()) b << "   desktop: copy engine";
+    if(fast_frames_) b << "   window frames: " << (fast_path_ == Fast::Gpu2d ? "NVIDIA 2D engine" : "CPU");
     dstr(x + 10, y + 24, b.str(), path_ == Present::Nvidia ? rgb(118, 185, 0) : rgb(154, 163, 184), 1);
     if(w >= 800) dstr(x + 10, y + 42, "1 gears  2 3 4 more scenes | W wire | S shadows | H half | Space pause | arrows + - camera | R reset | G NVIDIA", rgb(100, 109, 132), 1);
 }
@@ -226,22 +286,17 @@ void Gpu3dApp::draw(int win) {
         gpu_req_ = 2;
         return;
     }
-    if(gpu_req_ == 2) {
-        int r = nvgsp_cmd("all");
-        if(r > 0) scopy(gpu_msg_, "NVIDIA card ready: frames now go through its copy engine");
-        else scopy(gpu_msg_, "NVIDIA card not started - see nvgsp-log.txt in Files");
+    if(gpu_req_ == 2) { nvd_run_request(); gpu_req_ = 3; }
+    if(gpu_req_ == 3) {
+        int r = 0;
+        if(nvd_run_state(&r)) { message(cx, cy, cw, ch, "Starting the NVIDIA card...", "nvgsp all: FWSEC, booter, GSP-RM, channels. This can take up to 30 seconds."); return; }
+        if(r > 0) scopy(gpu_msg_, nv2d_ready() ? "NVIDIA card ready: copy engine and 2D engine working" : "NVIDIA card ready: copy engine working, 2D engine not verified");
+        else scopy(gpu_msg_, "NVIDIA card not started - the reason is below, full log in nvgsp-log.txt");
         klog(gpu_msg_);
         nv_fail_ = 0;
         gpu_req_ = 0;
         last_ns_ = hr_ns();
     }
-
-    u64 now = hr_ns();
-    u64 dt = (now - last_ns_) / 1000;
-    last_ns_ = now;
-    if(dt > 200000) dt = 200000;
-    if(focus == win) input(dt);
-    if(!paused_) t_us_ += dt;
 
     int scale = half_ ? 2 : 1;
     int rw = nvx::min(cw / scale, kMaxW), rh = nvx::min(rh_area / scale, kMaxH);
@@ -255,8 +310,32 @@ void Gpu3dApp::draw(int win) {
         else want = Present::Cpu;
     }
     if(!ensure_buffers(rw, rh)) { message(cx, cy, cw, ch, "Not enough memory for a frame this size", "make the window smaller"); return; }
-    if(!target) target = frame_.get();
+    if(!target) { target = frame_.get(); pitch = fp_; }
 
+    step_time();
+    render(target, rw, rh, pitch);
+    overlay_text(target, pitch, rw, rh, scale);
+
+    int ox = cx + (cw - rw * scale) / 2, oy = cy + (rh_area - rh * scale) / 2;
+    if(ox > cx || oy > cy) fill_rect(cx, cy, cw, rh_area, rgb(8, 10, 16));
+    present(want, ox, oy, rw, rh);
+    info_bar(cx, cy + rh_area, cw);
+    lay_ = { want != Present::Intel, WN[win].x, WN[win].y, WN[win].w, WN[win].h, ox, oy, rw, rh, scale, half_, scene_ };
+    t_full_ns_ = hr_ns();
+}
+
+void Gpu3dApp::step_time() {
+    u64 now = hr_ns();
+    u64 dt = (now - last_ns_) / 1000;
+    last_ns_ = now;
+    if(dt > 200000) dt = 200000;
+    if(focus == W_GPU3D) input(dt);
+    if(!paused_) t_us_ += dt;
+    ++frames_;
+    if(now - fps_t0_ >= 1000000000ULL) { fps_ = frames_; frames_ = 0; fps_t0_ = now; }
+}
+
+void Gpu3dApp::render(u32* target, int rw, int rh, int pitch) {
     r3d_view v;
     v.scene = scene_;
     v.wire = wire_ ? 1 : 0;
@@ -268,18 +347,51 @@ void Gpu3dApp::draw(int win) {
     u64 r0 = hr_ns();
     r3d_frame(target, rw, rh, pitch, work_.get(), &v, &st_);
     render_us_ = (u32)((hr_ns() - r0) / 1000);
+}
 
-    int ox = cx + (cw - rw * scale) / 2, oy = cy + (rh_area - rh * scale) / 2;
-    if(ox > cx || oy > cy) fill_rect(cx, cy, cw, rh_area, rgb(8, 10, 16));
-    present(want, ox, oy, rw, rh);
-
-    ++frames_;
-    if(now - fps_t0_ >= 1000000000ULL) { fps_ = frames_; frames_ = 0; fps_t0_ = now; }
-    info_bar(cx, cy + rh_area, cw);
+void Gpu3dApp::overlay_text(u32* target, int pitch, int rw, int rh, int scale) {
     TextLine fps;
     fps << "FPS: " << fps_;
-    dstr(ox + 14, oy + 12, fps.str(), rgb(60, 255, 60), 3);
-    if(gpu_msg_[0]) dstr(ox + 14, oy + 50, gpu_msg_, rgb(255, 196, 107), 1);
+    frame_text(target, pitch, rw, rh, 14 / scale, 12 / scale, fps.str(), rgb(60, 255, 60), scale == 1 ? 3 : 1);
+    if(gpu_msg_[0]) frame_text(target, pitch, rw, rh, 14 / scale, 50 / scale, gpu_msg_, rgb(255, 196, 107), 1);
+}
+
+bool Gpu3dApp::fast() {
+    if(!lay_.valid || !constructed() || init_state_ != 1 || paused_ || gpu_req_) return false;
+    const Win& w = WN[W_GPU3D];
+    if(w.x != lay_.wx || w.y != lay_.wy || w.w != lay_.ww || w.h != lay_.wh || half_ != lay_.half || scene_ != lay_.scene) return false;
+    if(hr_ns() - t_full_ns_ > 500000000ULL) return false;
+    if(g_nightlight || !desk_win_exposed(W_GPU3D)) return false;
+    if(choose_path() == Present::Intel) return false;
+    int s = lay_.scale, x0 = lay_.ox, y0 = lay_.oy, dw = lay_.rw * s, dh = lay_.rh * s;
+    if(x0 < 0 || y0 < 0 || x0 + dw > (int)W || y0 + dh > (int)H) return false;
+    const int cb = 128;
+    if(mx - cb / 2 < x0 + dw && mx + cb / 2 > x0 && my - cb / 2 < y0 + dh && my + cb / 2 > y0) return false;
+    int bar = g_tby > 0 ? g_tby : (int)H - 64;
+    if(y0 + dh > bar) return false;
+    if(DOCK_w > 0 && DOCK_h > 0 && DOCK_x < x0 + dw && DOCK_x + DOCK_w > x0 && DOCK_y < y0 + dh && DOCK_y + DOCK_h > y0) return false;
+    if(!ensure_buffers(lay_.rw, lay_.rh)) return false;
+    step_time();
+    u32* f = frame_.get();
+    render(f, lay_.rw, lay_.rh, fp_);
+    overlay_text(f, fp_, lay_.rw, lay_.rh, s);
+    cpu_copy(x0, y0, lay_.rw, lay_.rh, s);
+    bool gpu = false;
+    if(nv2d_ready() && !g_fb_rgb && BYPP == 4) {
+        if(nv2d_gen_ != nvgsp_ce_gen()) { nv2d_gen_ = nvgsp_ce_gen(); nv2d_va_ = 0; nv2d_ptr_ = 0; }
+        gpu = nv2d_to_screen(f, (u32)fp_, lay_.rw, lay_.rh, x0, y0, s, &nv2d_va_, &nv2d_ptr_) != 0;
+    }
+    if(gpu) {
+        u32* sc = SCENE;
+        for(int r = 0; r < dh; ++r) { u32* d = SCENE_NC + (u64)(y0 + r) * SW + x0; const u32* q = sc + (u64)(y0 + r) * SW + x0; for(int k = 0; k < dw; ++k) d[k] = q[k]; }
+        fb_shadow_note(x0, y0, dw, dh);
+    } else {
+        present_rect(x0, y0, dw, dh);
+    }
+    fast_path_ = gpu ? Fast::Gpu2d : Fast::Cpu;
+    ++fast_frames_;
+    if(gpu) ++fast_gpu_;
+    return true;
 }
 
 }
@@ -288,3 +400,5 @@ extern "C" void gpu3d_draw(int i) { g_app.draw(i); }
 extern "C" void gpu3d_click(void) { g_app.click(); }
 extern "C" void gpu3d_key(int c) { g_app.key(c); }
 extern "C" void gpu3d_closed(void) { g_app.closed(); }
+extern "C" int gpu3d_live(void) { return g_app.live() ? 1 : 0; }
+extern "C" int gpu3d_fast(void) { return g_app.fast() ? 1 : 0; }

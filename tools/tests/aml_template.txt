@@ -10,6 +10,7 @@ static void* lo_alloc(unsigned long n){ if(!g_lo){ g_lo=mmap((void*)0x80000000UL
 static void* kmalloc(unsigned long n){ if(g_fail_after==0)return 0; if(g_fail_after>0)g_fail_after--; void* p=lo_alloc(n); if(!p)return 0; *(unsigned long*)p=n; g_live++; g_allocs++; return (char*)p+16; }
 static void kfree(void* p){ if(!p)return; g_live--; char* h=(char*)p-16; unsigned long sz=(*(unsigned long*)h+16+15)&~15UL, b=sz/16; if(b<=256){ *(void**)(h+16)=g_lo_free[b]; g_lo_free[b]=h; } }
 static u64 g_clk=1000000000ULL; static long g_iow=0; static void io_wait(void){ g_iow++; g_clk+=1000; }
+static int early_remap_moved(u64 s,u64 e){ (void)s; (void)e; return 0; }
 static u64 g_ticks=1000; static char g_klog[4096]; static int g_kln=0;
 static void klog(const char* s){ int n=(int)strlen(s); if(g_kln+n+2<(int)sizeof g_klog){ memcpy(g_klog+g_kln,s,n); g_kln+=n; g_klog[g_kln++]='|'; g_klog[g_kln]=0; } }
 static void* dma_alloc_pages(unsigned long n){ (void)n; return 0; }
@@ -62,6 +63,9 @@ void hk_push(int id){ (void)id; }
 void klog_key(u32 v){ (void)v; }
 void osd_show(int kind,int val,const char* txt){ (void)kind; (void)val; (void)txt; }
 int laptop_notify(anode* n,u32 v){ (void)n; (void)v; return 0; }
+void pm_sleep_button(void){}
+void pm_battery_tick(void){}
+void pm_power_button(void){}
 void power_off(void){}
 void smp_tlb_shootdown(void){}
 static int ok=1, nchk=0; static void chk(const char* w,int c){ nchk++; printf("    %-66s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }

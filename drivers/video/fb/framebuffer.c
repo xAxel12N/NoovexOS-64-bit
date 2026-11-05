@@ -6,6 +6,9 @@
 #include "include/nvx/drivers/video/fb/gfx.h"
 #include "include/nvx/net/http/http.h"
 #include "include/nvx/apps/system/settings.h"
+#include "include/nvx/mem/heap.h"
+#include "include/nvx/drivers/video/fb/damage.h"
+#include "include/nvx/drivers/video/nvidia/nvgsp.h"
 /* =========================================================================
    Framebuffer + back buffers
    ========================================================================= */
@@ -41,7 +44,8 @@ int cut(int i,int j,int w,int h,int r,int m){
     return 0;
 }
 /* anti-aliased rounded rectangle */
-void fill_round(int x,int y,int w,int h,int r,int m,u32 c){
+int g_round_off=0;
+void fill_round(int x,int y,int w,int h,int r,int m,u32 c){ if(g_round_off){ fill_rect(x,y,w,h,c); return; }
     if(g_gfx){ gfx_round(x,y,w,h,r,m,c,256); return; }
     for(int j=0;j<h;j++)for(int i=0;i<w;i++){
         int dx=-1,dy=0;
@@ -98,6 +102,33 @@ void pdstr_ctr(int cx,int y,const char*s,u32 c,int sc){ pdstr(cx-pw_str(s,sc)/2,
 
 /* ---- present SCENE -> hardware framebuffer (honours pitch + bpp) ---- */
     /* fwd: OLED setting + PIT ticks */
+static u32* g_shadow=0; static u32 g_sh_w=0, g_sh_h=0, g_sh_sw=0; static int g_sh_valid=0;
+int g_dmg_on=1; u32 g_dmg_frames=0, g_dmg_full=0, g_dmg_idle=0, g_dmg_last_px=0, g_dmg_last_n=0, g_dmg_gpu=0;
+static dmg_rect g_dr[DMG_MAX];
+void fb_shadow_invalidate(void){ g_sh_valid=0; }
+static int sh_ready(void){
+    if(!g_dmg_on)return 0;
+    if(!g_shadow||g_sh_w!=W||g_sh_h!=H||g_sh_sw!=SW){ if(g_shadow)kfree(g_shadow); g_shadow=(u32*)kmalloc((unsigned long)SW*H*4UL+64UL); g_sh_valid=0;
+        if(!g_shadow){ g_dmg_on=0; return 0; } g_sh_w=W; g_sh_h=H; g_sh_sw=SW; }
+    return 1; }
+static void sh_rect(int x,int y,int w,int h){ for(int r=0;r<h;r++){ u32* d=g_shadow+(u64)(y+r)*SW+(u32)x; const u32* s=SCENE+(u64)(y+r)*SW+(u32)x; if(g_accel2d)sse_copy32(d,s,w); else for(int i=0;i<w;i++)d[i]=s[i]; } }
+void fb_shadow_note(int x,int y,int w,int h){
+    if(!g_sh_valid||!g_shadow||g_sh_w!=W||g_sh_h!=H||g_sh_sw!=SW)return;
+    if(x<0){w+=x;x=0;} if(y<0){h+=y;y=0;} if(x+w>(int)W)w=(int)W-x; if(y+h>(int)H)h=(int)H-y; if(w<=0||h<=0)return;
+    sh_rect(x,y,w,h); }
+static void cpu_rect(int x,int y,int w,int h){
+    for(int r=0;r<h;r++){ u32* d=(u32*)(FBB+(u64)(y+r)*PITCHB)+x; const u32* s=SCENE+(u64)(y+r)*SW+(u32)x;
+        if(g_fb_rgb)copy_swap32(d,s,w); else if(g_accel2d)sse_copy32(d,s,w); else for(int i=0;i<w;i++)d[i]=s[i]; } }
+static int dmg_present(void){
+    const u32* sc=SCENE; int full=!g_sh_valid; int n=0;
+    if(!full){ n=dmg_rects(sc,g_shadow,SW,(int)W,(int)H,g_dr,DMG_MAX); if(n<0||dmg_area(g_dr,n)*10>(u64)W*H*7)full=1; }
+    if(full){ g_dr[0].x=0; g_dr[0].y=0; g_dr[0].w=(int)W; g_dr[0].h=(int)H; n=1; g_dmg_full++; }
+    if(!n){ g_dmg_idle++; g_dmg_last_n=0; g_dmg_last_px=0; g_dmg_frames++; return 1; }
+    int gpu=0;
+    if(!g_fb_rgb&&nvgsp_present_on()) gpu=full?nvgsp_fb_present(sc,SW,W,H,(volatile u32*)FBB,PITCHB):nvgsp_fb_present_rects(sc,SW,W,H,g_dr,n,(volatile u32*)FBB,PITCHB);
+    if(!gpu) for(int i=0;i<n;i++)cpu_rect(g_dr[i].x,g_dr[i].y,g_dr[i].w,g_dr[i].h); else g_dmg_gpu++;
+    for(int i=0;i<n;i++)sh_rect(g_dr[i].x,g_dr[i].y,g_dr[i].w,g_dr[i].h);
+    g_sh_valid=1; g_dmg_frames++; g_dmg_last_n=(u32)n; g_dmg_last_px=(u32)dmg_area(g_dr,n); return 1; }
 void blit_all(void){
     g_scene_quiet++; void blit_all2(void); blit_all2(); g_scene_quiet--; }
 void blit_all2(void){
@@ -105,8 +136,11 @@ void blit_all2(void){
     { extern int g_igpu_flip; extern void igpu_pre_blit(void); if(g_igpu_flip)igpu_pre_blit(); }
     /* OLED care: shift the whole image by 1px through 4 positions, changing every ~30s */
     int shx=0,shy=0; if(g_panel_oled){ int ph=(int)((g_ticks/3000ULL)&3); shx=(ph==1)?1:(ph==3)?-1:0; shy=(ph==2)?1:0; }
+    { extern int g_igpu_flip; if(BYPP==4&&shx==0&&shy==0&&!g_igpu_flip&&sh_ready()&&dmg_present())goto presented; g_sh_valid=0; }
     { extern int g_igpu_flip, g_blt_present; extern int igpu_blt_present(void); if(g_igpu_flip&&g_blt_present&&!g_fb_rgb&&BYPP==4&&shx==0&&shy==0&&igpu_blt_present()==0)goto presented; }
     { extern int g_igpu_flip; extern void igpu_present_dirty_all(void); if(g_igpu_flip)igpu_present_dirty_all(); }
+    {
+      if(BYPP==4&&!g_fb_rgb&&shx==0&&shy==0&&nvgsp_present_on()&&nvgsp_fb_present(SCENE,SW,W,H,(volatile u32*)FBB,PITCHB))goto presented; }
     for(u32 y=0;y<H;y++){ int sr=(int)y-shy; if(sr<0)sr=0; if(sr>=(int)H)sr=(int)H-1; u32*s=SCENE+(u64)sr*SW;
         if(BYPP==4){ u32*d=(u32*)(FBB+(u64)y*PITCHB);
             if(g_fb_rgb){ if(shx==0)copy_swap32(d,s,(int)W); else for(u32 x=0;x<W;x++){ int sx=(int)x-shx; if(sx<0)sx=0; if(sx>=(int)W)sx=(int)W-1; copy_swap32(d+x,s+sx,1); } }

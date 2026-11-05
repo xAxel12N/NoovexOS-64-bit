@@ -1,0 +1,19 @@
+[binaries]
+c = 'clang'
+c_ld = 'lld'
+cpp = 'clang++'
+cpp_ld = 'lld'
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'noovex'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+
+[built-in options]
+cpp_args = ['-D__cpp_concepts=202002L', '-Wno-builtin-macro-redefined', '-Wno-macro-redefined']

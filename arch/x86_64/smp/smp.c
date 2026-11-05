@@ -34,7 +34,7 @@ extern const unsigned char ap_tramp_start[], ap_tramp_end[];
 volatile int g_cores_online=1;                 /* BSP counts as 1 */
 volatile unsigned long g_core_load[8]={0};   /* jobs completed per core (per-core run-queue stats) */
 volatile unsigned long g_core_cycles[8]={0}; /* approx work units per core */
-static u8 g_ap_stacks[NCPU][16384] __attribute__((aligned(16)));
+static u8 g_ap_stacks[NCPU][32768] __attribute__((aligned(16)));
 /* ---- a lock-protected work queue so the extra cores do REAL parallel work ----
    Jobs are self-contained compute (touch only their own struct + stack), so this
    is safe without making the whole kernel SMP-safe: one spinlock guards claiming. */
@@ -81,7 +81,8 @@ int smp_start_aps(void){
     int next=1;
     for(int i=0;i<nc&&next<NCPU;i++){ if(ids[i]==bsp) continue;
         percpu_setup(next,ids[i]); g_ncpu=next+1;
-        *(volatile u64*)0x8FE0ULL=(u64)(g_ap_stacks[next]+16384);
+        *(volatile u64*)0x8FE0ULL=(u64)(g_ap_stacks[next]+32768);
+        { extern void stk_watch(const char*,int,void*) __attribute__((weak)); if(stk_watch)stk_watch("start stack of CPU",next,g_ap_stacks[next]); }
         *(volatile int*)0x8FD8ULL=next;
         int before=g_cores_online;
         if(g_lapic_x2){ cpu_wrmsr(0x830,((u64)ids[i]<<32)|0x4500); ap_udelay(10000); cpu_wrmsr(0x830,((u64)ids[i]<<32)|0x4608); ap_udelay(200); cpu_wrmsr(0x830,((u64)ids[i]<<32)|0x4608); }

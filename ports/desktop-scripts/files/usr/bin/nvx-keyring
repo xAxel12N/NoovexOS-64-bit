@@ -1,0 +1,362 @@
+#!/usr/bin/python3
+import os, sys, socket, struct, json, time, base64, select
+
+SERVICE = 'org.freedesktop.secrets'
+SPATH = '/org/freedesktop/secrets'
+CPATH = SPATH + '/collection/login'
+APATH = SPATH + '/aliases/default'
+SI = 'org.freedesktop.Secret.Service'
+CI = 'org.freedesktop.Secret.Collection'
+II = 'org.freedesktop.Secret.Item'
+SEI = 'org.freedesktop.Secret.Session'
+PI = 'org.freedesktop.DBus.Properties'
+
+def store_path():
+    d = os.path.join(os.environ.get('XDG_DATA_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'share'), 'nvx-keyring')
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return os.path.join(d, 'login.json')
+
+
+class Sig:
+    def __init__(self, s): self.s = s; self.i = 0
+    def one(self):
+        s = self.s; i = self.i; c = s[i]
+        if c == 'a':
+            self.i += 1; self.one(); return s[i:self.i]
+        if c in '({':
+            close = ')' if c == '(' else '}'
+            self.i += 1
+            while s[self.i] != close: self.one()
+            self.i += 1; return s[i:self.i]
+        self.i += 1; return c
+
+def split_sig(s):
+    p = Sig(s); out = []
+    while p.i < len(s): out.append(p.one())
+    return out
+
+ALIGN = {'y': 1, 'b': 4, 'n': 2, 'q': 2, 'i': 4, 'u': 4, 'x': 8, 't': 8, 'd': 8, 's': 4, 'o': 4, 'g': 1, 'a': 4, '(': 8, '{': 8, 'v': 1, 'h': 4}
+FMT = {'y': 'B', 'b': 'I', 'n': 'h', 'q': 'H', 'i': 'i', 'u': 'I', 'x': 'q', 't': 'Q', 'd': 'd', 'h': 'I'}
+
+class W:
+    def __init__(self): self.b = bytearray()
+    def pad(self, n):
+        while len(self.b) % n: self.b.append(0)
+    def put(self, t, v):
+        c = t[0]
+        self.pad(ALIGN[c])
+        if c in FMT:
+            if c == 'b': v = 1 if v else 0
+            self.b += struct.pack('<' + FMT[c], v)
+        elif c in 'so':
+            e = v.encode(); self.b += struct.pack('<I', len(e)) + e + b'\0'
+        elif c == 'g':
+            e = v.encode(); self.b += bytes([len(e)]) + e + b'\0'
+        elif c == 'v':
+            vt, vv = v; self.put('g', vt); self.put(vt, vv)
+        elif c == 'a':
+            et = t[1:]
+            self.b += b'\0\0\0\0'; at = len(self.b) - 4
+            self.pad(ALIGN[et[0]]); st = len(self.b)
+            if et == 'y':
+                self.b += bytes(v)
+            elif et[0] == '{':
+                kt, vt = split_sig(et[1:-1])
+                for k, x in v.items():
+                    self.pad(8); self.put(kt, k); self.put(vt, x)
+            else:
+                for x in v: self.put(et, x)
+            struct.pack_into('<I', self.b, at, len(self.b) - st)
+        elif c == '(':
+            self.pad(8)
+            for st2, x in zip(split_sig(t[1:-1]), v): self.put(st2, x)
+        else:
+            raise ValueError('type ' + t)
+
+class R:
+    def __init__(self, b, o=0): self.b = b; self.o = o
+    def pad(self, n):
+        self.o = (self.o + n - 1) // n * n
+    def get(self, t):
+        c = t[0]
+        self.pad(ALIGN[c])
+        if c in FMT:
+            f = '<' + FMT[c]; n = struct.calcsize(f); v = struct.unpack_from(f, self.b, self.o)[0]; self.o += n
+            return bool(v) if c == 'b' else v
+        if c in 'so':
+            n = struct.unpack_from('<I', self.b, self.o)[0]; self.o += 4; v = self.b[self.o:self.o + n].decode('utf-8', 'replace'); self.o += n + 1; return v
+        if c == 'g':
+            n = self.b[self.o]; self.o += 1; v = self.b[self.o:self.o + n].decode(); self.o += n + 1; return v
+        if c == 'v':
+            vt = self.get('g'); return (vt, self.get(vt))
+        if c == 'a':
+            n = struct.unpack_from('<I', self.b, self.o)[0]; self.o += 4
+            et = t[1:]; self.pad(ALIGN[et[0]]); end = self.o + n
+            if et == 'y':
+                v = bytes(self.b[self.o:end]); self.o = end; return v
+            if et[0] == '{':
+                kt, vt = split_sig(et[1:-1]); d = {}
+                while self.o < end:
+                    self.pad(8); k = self.get(kt); d[k] = self.get(vt)
+                return d
+            out = []
+            while self.o < end: out.append(self.get(et))
+            return out
+        if c == '(':
+            self.pad(8); return tuple(self.get(x) for x in split_sig(t[1:-1]))
+        raise ValueError('type ' + t)
+
+def unvar(v):
+    return v[1] if isinstance(v, tuple) and len(v) == 2 and isinstance(v[0], str) else v
+
+
+class Bus:
+    def __init__(self):
+        addr = os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
+        self.s = None
+        for part in addr.split(';'):
+            if not part.startswith('unix:'): continue
+            kv = dict(x.split('=', 1) for x in part[5:].split(',') if '=' in x)
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                if 'path' in kv: s.connect(kv['path'])
+                elif 'abstract' in kv: s.connect('\0' + kv['abstract'])
+                else: continue
+                self.s = s; break
+            except OSError:
+                s.close()
+        if not self.s: raise SystemExit('nvx-keyring: no session bus (DBUS_SESSION_BUS_ADDRESS)')
+        self.serial = 0
+        self.buf = bytearray()
+        uid = str(os.getuid()).encode().hex()
+        self.s.sendall(b'\0AUTH EXTERNAL ' + uid.encode() + b'\r\n')
+        line = self.readline()
+        if not line.startswith(b'OK'): raise SystemExit('nvx-keyring: bus refused authentication')
+        self.s.sendall(b'BEGIN\r\n')
+        self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'Hello', '', [])
+        self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'RequestName', 'su', [SERVICE, 4])
+
+    def readline(self):
+        while b'\r\n' not in self.buf:
+            d = self.s.recv(4096)
+            if not d: raise SystemExit(0)
+            self.buf += d
+        i = self.buf.index(b'\r\n'); l = bytes(self.buf[:i]); del self.buf[:i + 2]; return l
+
+    def send(self, mtype, fields, sig, body, flags=0):
+        self.serial += 1
+        bw = W()
+        for t, v in zip(split_sig(sig), body): bw.put(t, v)
+        if sig: fields.append((8, ('g', sig)))
+        hw = W()
+        hw.b += b'l' + bytes([mtype, flags, 1]) + struct.pack('<II', len(bw.b), self.serial)
+        hw.put('a(yv)', fields)
+        hw.pad(8)
+        self.s.sendall(bytes(hw.b) + bytes(bw.b))
+        return self.serial
+
+    def call(self, dest, path, iface, member, sig, body):
+        n = self.send(1, [(1, ('o', path)), (2, ('s', iface)), (3, ('s', member)), (6, ('s', dest))], sig, body)
+        while True:
+            m = self.recv_raw()
+            if m['type'] in (2, 3) and m['fields'].get(5) == n: return m
+            self.pending.append(m)
+
+    pending = []
+
+    def recv(self):
+        if self.pending: return self.pending.pop(0)
+        return self.recv_raw()
+
+    def recv_raw(self):
+        while len(self.buf) < 16:
+            d = self.s.recv(65536)
+            if not d: raise SystemExit(0)
+            self.buf += d
+        endian = self.buf[0]
+        e = '<' if endian == ord('l') else '>'
+        blen, ser, flen = struct.unpack_from(e + 'III', self.buf, 4)
+        hend = 16 + flen; hend = (hend + 7) // 8 * 8; tot = hend + blen
+        while len(self.buf) < tot:
+            d = self.s.recv(65536)
+            if not d: raise SystemExit(0)
+            self.buf += d
+        raw = bytes(self.buf[:tot]); del self.buf[:tot]
+        if e == '>': raise SystemExit('nvx-keyring: big-endian messages are not supported')
+        r = R(raw, 12)
+        fl = r.get('a(yv)')
+        fields = {k: v[1] for k, v in fl}
+        sig = fields.get(8, '')
+        br = R(raw[hend:])
+        body = [br.get(t) for t in split_sig(sig)]
+        return {'type': raw[1], 'flags': raw[2], 'serial': ser, 'fields': fields, 'body': body, 'sig': sig}
+
+    def reply(self, m, sig, body):
+        f = [(5, ('u', m['serial']))]
+        if 7 in m['fields']: f.append((6, ('s', m['fields'][7])))
+        self.send(2, f, sig, body, 1)
+
+    def error(self, m, name, text):
+        f = [(5, ('u', m['serial'])), (4, ('s', name))]
+        if 7 in m['fields']: f.append((6, ('s', m['fields'][7])))
+        self.send(3, f, 's', [text], 1)
+
+    def signal(self, path, iface, member, sig, body):
+        self.send(4, [(1, ('o', path)), (2, ('s', iface)), (3, ('s', member))], sig, body, 1)
+
+
+class Keyring:
+    def __init__(self):
+        self.path = store_path()
+        self.items = {}
+        self.next = 1
+        self.sessions = set()
+        self.nsess = 0
+        try:
+            d = json.load(open(self.path))
+            for k, v in d.get('items', {}).items():
+                v['secret'] = base64.b64decode(v['secret']); self.items[int(k)] = v
+            self.next = d.get('next', max(self.items, default=0) + 1)
+        except (OSError, ValueError):
+            pass
+        self.created = int(time.time())
+
+    def save(self):
+        d = {'next': self.next, 'items': {str(k): dict(v, secret=base64.b64encode(v['secret']).decode()) for k, v in self.items.items()}}
+        tmp = self.path + '.tmp'
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f: json.dump(d, f)
+        os.replace(tmp, self.path)
+
+    def ipath(self, i): return CPATH + '/' + str(i)
+
+    def search(self, attrs):
+        return [self.ipath(i) for i, v in sorted(self.items.items()) if all(v['attributes'].get(k) == x for k, x in attrs.items())]
+
+    def item_of(self, path):
+        for base in (CPATH + '/', APATH + '/'):
+            if path.startswith(base):
+                try: i = int(path[len(base):])
+                except ValueError: return None
+                return i if i in self.items else None
+        return None
+
+    def secret(self, i, session):
+        v = self.items[i]
+        return (session, b'', v['secret'], v.get('content_type', 'text/plain'))
+
+    def item_props(self, i):
+        v = self.items[i]
+        return {'Attributes': ('a{ss}', v['attributes']), 'Label': ('s', v['label']), 'Locked': ('b', False), 'Created': ('t', v['created']), 'Modified': ('t', v['modified'])}
+
+    def coll_props(self):
+        return {'Items': ('ao', [self.ipath(i) for i in sorted(self.items)]), 'Label': ('s', 'Login'), 'Locked': ('b', False), 'Created': ('t', self.created), 'Modified': ('t', self.created)}
+
+    def svc_props(self):
+        return {'Collections': ('ao', [CPATH])}
+
+INTRO = '<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd"><node>%s</node>'
+
+def handle(bus, kr, m):
+    f = m['fields']; path = f.get(1, ''); iface = f.get(2, ''); member = f.get(3, ''); a = m['body']
+    no_reply = m['flags'] & 1
+    def ok(sig='', body=()):
+        if not no_reply: bus.reply(m, sig, list(body))
+    if iface == 'org.freedesktop.DBus.Peer' or member in ('Ping', 'GetMachineId') and not iface:
+        if member == 'Ping': return ok()
+        if member == 'GetMachineId':
+            mid = '0' * 32
+            for p in ('/etc/machine-id', '/var/lib/dbus/machine-id'):
+                try: mid = open(p).read().strip(); break
+                except OSError: pass
+            return ok('s', [mid])
+    if iface == 'org.freedesktop.DBus.Introspectable' or member == 'Introspect' and not iface:
+        kids = ''
+        if path == '/': kids = '<node name="org"/>'
+        elif path == SPATH: kids = '<interface name="%s"/><node name="collection"/><node name="aliases"/>' % SI
+        elif path in (CPATH, APATH): kids = '<interface name="%s"/>' % CI + ''.join('<node name="%d"/>' % i for i in sorted(kr.items))
+        return ok('s', [INTRO % kids])
+    is_coll = path in (CPATH, APATH)
+    item = kr.item_of(path)
+    if iface == PI:
+        if path == SPATH: props = kr.svc_props()
+        elif is_coll: props = kr.coll_props()
+        elif item is not None: props = kr.item_props(item)
+        else: return bus.error(m, 'org.freedesktop.DBus.Error.UnknownObject', 'No such object: ' + path)
+        if member == 'GetAll': return ok('a{sv}', [props])
+        if member == 'Get':
+            if a[1] in props: return ok('v', [props[a[1]]])
+            return bus.error(m, 'org.freedesktop.DBus.Error.UnknownProperty', 'No such property: ' + a[1])
+        if member == 'Set':
+            if item is not None and a[1] == 'Label': kr.items[item]['label'] = unvar(a[2]); kr.save(); return ok()
+            if item is not None and a[1] == 'Attributes': kr.items[item]['attributes'] = dict(unvar(a[2])); kr.save(); return ok()
+            return ok()
+    if path == SPATH and (iface in (SI, '')):
+        if member == 'OpenSession':
+            if a[0] != 'plain': return bus.error(m, 'org.freedesktop.DBus.Error.NotSupported', 'Only the plain algorithm is supported')
+            kr.nsess += 1; sp = SPATH + '/session/' + str(kr.nsess); kr.sessions.add(sp)
+            return ok('vo', [('s', ''), sp])
+        if member == 'SearchItems':
+            return ok('aoao', [kr.search(a[0]), []])
+        if member in ('Unlock', 'Lock'):
+            return ok('aoo', [a[0] if member == 'Unlock' else [], '/'])
+        if member == 'GetSecrets':
+            out = {}
+            for p in a[0]:
+                i = kr.item_of(p)
+                if i is not None: out[p] = kr.secret(i, a[1])
+            return ok('a{o(oayays)}', [out])
+        if member == 'ReadAlias':
+            return ok('o', [CPATH if a[0] in ('default', 'login') else '/'])
+        if member == 'SetAlias':
+            return ok()
+        if member == 'CreateCollection':
+            return ok('oo', [CPATH, '/'])
+    if is_coll and iface in (CI, ''):
+        if member == 'SearchItems':
+            return ok('ao', [kr.search(a[0])])
+        if member == 'CreateItem':
+            props, sec, replace = a
+            attrs = dict(unvar(props.get('org.freedesktop.Secret.Item.Attributes', ('a{ss}', {}))))
+            label = unvar(props.get('org.freedesktop.Secret.Item.Label', ('s', '')))
+            now = int(time.time()); target = None
+            if replace:
+                for i, v in kr.items.items():
+                    if v['attributes'] == attrs: target = i; break
+            if target is None:
+                target = kr.next; kr.next += 1
+                kr.items[target] = {'attributes': attrs, 'label': label, 'created': now, 'modified': now, 'secret': b'', 'content_type': 'text/plain'}
+                created = True
+            else:
+                created = False
+            v = kr.items[target]; v['label'] = label; v['modified'] = now; v['secret'] = bytes(sec[2]); v['content_type'] = sec[3] or 'text/plain'
+            kr.save()
+            ok('oo', [kr.ipath(target), '/'])
+            bus.signal(CPATH, CI, 'ItemCreated' if created else 'ItemChanged', 'o', [kr.ipath(target)])
+            return
+        if member == 'Delete':
+            return ok('o', ['/'])
+    if item is not None and iface in (II, ''):
+        if member == 'GetSecret': return ok('(oayays)', [kr.secret(item, a[0])])
+        if member == 'SetSecret':
+            kr.items[item]['secret'] = bytes(a[0][2]); kr.items[item]['modified'] = int(time.time()); kr.save(); return ok()
+        if member == 'Delete':
+            p = kr.ipath(item); del kr.items[item]; kr.save(); ok('o', ['/']); bus.signal(CPATH, CI, 'ItemDeleted', 'o', [p]); return
+    if path.startswith(SPATH + '/session/') and member == 'Close':
+        kr.sessions.discard(path); return ok()
+    if m['type'] == 1 and not no_reply:
+        bus.error(m, 'org.freedesktop.DBus.Error.UnknownMethod', 'No such method %s.%s on %s' % (iface, member, path))
+
+def main():
+    if '--version' in sys.argv: print('nvx-keyring 1'); return
+    bus = Bus()
+    kr = Keyring()
+    while True:
+        m = bus.recv()
+        if m['type'] == 1:
+            try: handle(bus, kr, m)
+            except Exception as e:
+                if not m['flags'] & 1: bus.error(m, 'org.freedesktop.DBus.Error.Failed', str(e))
+
+if __name__ == '__main__':
+    main()

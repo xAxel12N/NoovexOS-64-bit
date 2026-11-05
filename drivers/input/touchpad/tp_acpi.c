@@ -78,3 +78,20 @@ int tpa_hid(const char* dev,char* out){
     else if(o.type==AT_INT){ u32 v=(u32)o.i; u32 sw=((v&0xFF)<<24)|((v&0xFF00)<<8)|((v>>8)&0xFF00)|(v>>24); static const char H[]="0123456789ABCDEF";
         out[0]=(char)('@'+((sw>>26)&0x1F)); out[1]=(char)('@'+((sw>>21)&0x1F)); out[2]=(char)('@'+((sw>>16)&0x1F)); for(int k=0;k<4;k++)out[3+k]=H[(sw>>(12-4*k))&0xF]; out[7]=0; r=0; }
     aobj_free(&o); return r; }
+int tpa_sta(const char* dev){ anode* d=tpa_node(dev); if(!d)return -1; return aml_sta(d); }
+int tpa_ini(const char* dev){ anode* d=tpa_node(dev); if(!d)return -1; anode* m=aml_child(d,"_INI"); if(!m)return 1; aobj o; tpa_zero(&o); int r=tpa_eval(m,0,0,&o); aobj_free(&o); return r?-2:0; }
+int tpa_ctrl(const char* ctrl,tpa_ctl* c){
+    c->adr_ok=0; c->adr=0; c->mem=0; c->found=0;
+    anode* d=tpa_node(ctrl); if(!d)return -1; c->found=1; tpa_power_on(ctrl);
+    anode* a=aml_child(d,"_ADR"); if(a){ u64 v=0; if(!aml_eval_int(a,&v)){ c->adr=(u32)v; c->adr_ok=1; } }
+    anode* cr=aml_child(d,"_CRS"); if(cr){ aobj o; tpa_zero(&o); if(!tpa_eval(cr,0,0,&o)&&o.type==AT_BUF&&o.p){ const u8* b=o.p; u32 n=o.len, i=0;
+            while(i<n&&!c->mem){ u8 t=b[i]; if(t==0x79)break;
+                if(t&0x80){ if(i+3>n)break; u32 L=(u32)b[i+1]|((u32)b[i+2]<<8); const u8* e=b+i; if(i+3+L>n)break;
+                    if(t==0x86&&L>=9)c->mem=(u64)e[4]|((u64)e[5]<<8)|((u64)e[6]<<16)|((u64)e[7]<<24);
+                    else if(t==0x87&&L>=23&&e[3]==0){ u64 v=0; for(int k=0;k<4;k++)v|=(u64)e[10+k]<<(8*k); c->mem=v; }
+                    else if(t==0x8A&&L>=43&&e[3]==0){ u64 v=0; for(int k=0;k<8;k++)v|=(u64)e[14+k]<<(8*k); c->mem=v; }
+                    i+=3+L; }
+                else i+=1+(t&7); } }
+        aobj_free(&o); }
+    return 0; }
+

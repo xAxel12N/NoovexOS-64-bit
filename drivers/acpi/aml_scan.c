@@ -2,13 +2,14 @@
 #include "include/nvx/drivers/video/fb/framebuffer.h"
 #include "include/nvx/core/power.h"
 #include "include/nvx/drivers/acpi/aml_scan.h"
+#include "include/nvx/mem/heap.h"
 
 #define AMLT_MAX 33
 
-amlnode g_amln[AMLN_MAX]; static int g_amln_n=0;
+amlnode* g_amln; static int g_amln_n=0;
 static const u8* g_amlt[AMLT_MAX]; static u32 g_amll[AMLT_MAX]; int g_amlt_n=0;
 
-amldev g_amld[AMLD_MAX]; int g_amld_n=0;
+amldev* g_amld; int g_amld_n=0; int g_aml_full=0;
 static int aml_segch(u8 c,int first){ return (c>='A'&&c<='Z')||c=='_'||(!first&&c>='0'&&c<='9'); }
 static int aml_pkglen(const u8* p,u32 avail,u32* len){ if(!avail)return 0; u8 b0=p[0]; int n=b0>>6; if((u32)n+1>avail)return 0;
     if(!n){ *len=b0&0x3Fu; return 1; } if(b0&0x30)return 0; u32 v=b0&0x0Fu; for(int i=0;i<n;i++)v|=(u32)p[1+i]<<(4+8*i); *len=v; return n+1; }
@@ -40,13 +41,14 @@ static void aml_walk_table(int ti){
         while(sp>0&&i>=g_amln[stack[sp-1]].e)sp--;
         u32 lim=sp?g_amln[stack[sp-1]].e:n;
         int ol=0, dev=0; if(b[i]==0x5B&&i+1<n&&b[i+1]==0x82){ ol=2; dev=1; } else if(b[i]==0x10)ol=1;
+        if(ol&&g_amln_n>=AMLN_MAX)g_aml_full|=1;
         if(ol&&g_amln_n<AMLN_MAX){ u32 pl=0; int pb=aml_pkglen(b+i+ol,lim-(i+ol>lim?lim:i+ol),&pl);
             if(pb&&pl>(u32)pb&&i+ol+pl<=lim){ char nm[72]; int nb=aml_namestr(b+i+ol+pb,i+ol+pl-(i+ol+pb),nm,72);
                 if(nb>0&&nm[0]){ amlnode* N=&g_amln[g_amln_n]; N->tbl=ti; N->op=i; N->s=i+ol+(u32)pb+(u32)nb; N->e=i+ol+pl; N->parent=sp?stack[sp-1]:-1; N->dev=dev;
                     aml_join(sp?g_amln[stack[sp-1]].path:"\\",nm,N->path,72);
                     if(sp<48)stack[sp++]=g_amln_n; g_amln_n++; i=N->s; continue; } } }
         i++; } }
-static int aml_in_child(int k,u32 pos){ for(int c=k+1;c<g_amln_n;c++){ if(g_amln[c].tbl!=g_amln[k].tbl)break; if(g_amln[c].op>=g_amln[k].e)break; if(g_amln[c].dev&&pos>=g_amln[c].op&&pos<g_amln[c].e){ int p=g_amln[c].parent; while(p>=0&&p!=k)p=g_amln[p].parent; if(p==k)return (int)(g_amln[c].e-pos); } } return 0; }
+static int aml_in_child(int k,u32 pos){ for(int c=k+1;c<g_amln_n;c++){ if(g_amln[c].tbl!=g_amln[k].tbl)break; if(g_amln[c].op>=g_amln[k].e||g_amln[c].op>pos)break; if(g_amln[c].dev&&pos>=g_amln[c].op&&pos<g_amln[c].e){ int p=g_amln[c].parent; while(p>=0&&p!=k)p=g_amln[p].parent; if(p==k)return (int)(g_amln[c].e-pos); } } return 0; }
 static void aml_eisa(u32 id,char* o){ u8 b0=(u8)id, b1=(u8)(id>>8), b2=(u8)(id>>16), b3=(u8)(id>>24); u16 w=(u16)((b0<<8)|b1); static const char* H="0123456789ABCDEF";
     o[0]=(char)(((w>>10)&0x1F)+0x40); o[1]=(char)(((w>>5)&0x1F)+0x40); o[2]=(char)((w&0x1F)+0x40); o[3]=H[b2>>4]; o[4]=H[b2&15]; o[5]=H[b3>>4]; o[6]=H[b3&15]; o[7]=0; }
 static int aml_int(const u8* p,u32 avail,u64* v){ if(!avail)return 0; switch(p[0]){ case 0x00: *v=0; return 1; case 0x01: *v=1; return 1; case 0xFF: *v=~0ULL; return 1;
@@ -55,7 +57,7 @@ static int aml_int(const u8* p,u32 avail,u64* v){ if(!avail)return 0; switch(p[0
     case 0x0E: if(avail<9)return 0; *v=0; for(int i=0;i<8;i++)*v|=(u64)p[1+i]<<(8*i); return 9; } return 0; }
 static void aml_copy_src(const u8* p,u32 avail,char* out){ int o=0; for(u32 i=0;i<avail&&p[i]&&o<71;i++){ u8 c=p[i]; if(c<0x20||c>0x7E){ o=0; break; } out[o++]=(char)c; } out[o]=0; }
 static void aml_scan_dev(int k){
-    if(g_amld_n>=AMLD_MAX)return; amldev* D=&g_amld[g_amld_n]; for(u32 i=0;i<sizeof(*D);i++)((u8*)D)[i]=0; D->node=k;
+    if(g_amld_n>=AMLD_MAX){ g_aml_full|=2; return; } amldev* D=&g_amld[g_amld_n]; for(u32 i=0;i<sizeof(*D);i++)((u8*)D)[i]=0; D->node=k;
     const u8* b=g_amlt[g_amln[k].tbl]; u32 s=g_amln[k].s, e=g_amln[k].e;
     static const u8 P1[]={'P','N','P','0','C','5','0',0}, P2[]={'A','C','P','I','0','C','5','0',0}, P3[]={0x0C,0x41,0xD0,0x0C,0x50};
     for(u32 j=s;j<e;){
@@ -76,7 +78,8 @@ static void aml_scan_dev(int k){
         j++; }
     g_amld_n++; }
 void aml_scan_tables(void){
-    g_amln_n=0; g_amld_n=0;
+    g_amln_n=0; g_amld_n=0; g_aml_full=0;
+    if(!g_amln)g_amln=(amlnode*)kmalloc(sizeof(amlnode)*AMLN_MAX); if(!g_amld)g_amld=(amldev*)kmalloc(sizeof(amldev)*AMLD_MAX); if(!g_amln||!g_amld)return;
     for(int t=0;t<g_amlt_n;t++)aml_walk_table(t);
     for(int k=0;k<g_amln_n;k++) if(g_amln[k].dev)aml_scan_dev(k); }
 int aml_find_dev(const char* path){

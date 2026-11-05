@@ -12,6 +12,9 @@
 #include "include/nvx/net/wifi/wpa2.h"
 #include "include/nvx/drivers/net/wifi/rtw_sec.h"
 #include "include/nvx/net/wifi/wifi_netdev.h"
+#include "include/nvx/net/wifi/wpa3.h"
+#include "include/nvx/net/wifi/eap.h"
+#include "include/nvx/lib/crypto/nvxcrypto.h"
 /* ===== hardware security CAM (WPA2 key install), ported from rtw88 sec.c ===== */
 
 #define SEC_CMD_REG    0x670u
@@ -28,7 +31,7 @@ static void wpa_gtk_extract(const u8* eap,int el){
     g_gtk_state=0; g_gtk_len=0;
     int flen=4+((eap[2]<<8)|eap[3]); if(flen>el)flen=el; if(flen<99){ g_gtk_state=2; return; }
     static u8 cp[512]; if(flen>512){ g_gtk_state=2; return; } for(int i=0;i<flen;i++)cp[i]=eap[i]; for(int i=81;i<97;i++)cp[i]=0;
-    u8 mic[20]; hmac_sha1(g_ptk,16,cp,flen,mic); for(int i=0;i<16;i++) if(mic[i]!=eap[81+i]){ g_gtk_state=4; return; }
+    u8 mic[32]; wpa_mic(cp,flen,mic); for(int i=0;i<16;i++) if(mic[i]!=eap[81+i]){ g_gtk_state=4; return; }
     u16 ki=(u16)((eap[5]<<8)|eap[6]); int kdl=(eap[97]<<8)|eap[98]; if(kdl<=0||99+kdl>flen){ g_gtk_state=2; return; }
     static u8 kd[512]; int n=kdl;
     if(ki&(1u<<12)){ n=aes_key_unwrap(&g_ptk[16],eap+99,kdl,kd); if(n<0){ g_gtk_state=3; return; } }
@@ -70,25 +73,99 @@ static void rtw_sec_enable_engine(u32 m){
     cfg|=(1u<<0)|(1u<<1)|(1u<<6)|(1u<<7);    /* default-key search: TX/RX uni+bc use DK */
     rtw_w16(m,SEC_CONFIG,cfg);
 }
+void ui_pump(void);
+static u64 g_wpa_replay=0; static u32 g_wpa_mmio=0; static u8 g_wpa_bssid[6], g_wpa_mac[6];
+int g_wifi_rekeys=0, g_wifi_ptk_rekey=0;
+int wnd_send_eapol(const u8* eap,int el);
+static u64 wpa_rc(const u8* eap){ u64 r=0; for(int i=0;i<8;i++)r=(r<<8)|eap[9+i]; return r; }
+static u8 g_m4[128]; static int g_m4len=0, g_m4mp=0;
+int wpa_rx_eapol_p(const u8* eap,int el,int prot);
+int wpa_rx_eapol(const u8* eap,int el){ return wpa_rx_eapol_p(eap,el,1); }
+int wpa_rx_eapol_p(const u8* eap,int el,int prot){
+    if(el<99||eap[1]!=3||eap[4]!=2)return 0;
+    u16 ki=(u16)((eap[5]<<8)|eap[6]); u64 rc=wpa_rc(eap);
+    if(rc<=g_wpa_replay&&g_wpa_replay)return 1;
+    if((ki&(1u<<3))&&(ki&(1u<<8))&&(ki&(1u<<6))&&g_m4len&&el<=512){ static u8 cp[512]; int flen=4+((eap[2]<<8)|eap[3]); if(flen>el||flen<99)return 1; for(int i=0;i<flen;i++)cp[i]=eap[i]; for(int i=81;i<97;i++)cp[i]=0; u8 mc[32]; wpa_mic(cp,flen,mc); for(int i=0;i<16;i++) if(mc[i]!=eap[81+i])return 1;
+        g_wpa_replay=rc; for(int i=0;i<8;i++)g_m4[9+i]=eap[9+i]; for(int i=0;i<16;i++)g_m4[g_m4mp+i]=0; wpa_mic(g_m4,g_m4len,mc); for(int i=0;i<16;i++)g_m4[g_m4mp+i]=mc[i]; if(g_wpa_mmio)rtw_tx_data_eapol(g_wpa_mmio,g_wpa_bssid,g_wpa_mac,g_m4,g_m4len); return 1; }
+    if(!prot)return 1;
+    if(ki&(1u<<3)){ g_wifi_ptk_rekey=1; return 1; }
+    if(!(ki&(1u<<8))||!(ki&(1u<<7)))return 1;
+    wpa_gtk_extract(eap,el); if(g_gtk_state!=1)return 1;
+    g_wpa_replay=rc;
+    if(g_gtk_keyid>0&&g_gtk_keyid<4&&g_wpa_mmio)rtw_sec_write_cam(g_wpa_mmio,g_gtk_keyid,g_gtk_keyid,4,1,g_wpa_bssid,g_gtk);
+    wnd_set_gtk(g_gtk,g_gtk_keyid);
+    u8 m2[100]; int ml=0; m2[ml++]=0x01; m2[ml++]=0x03; int lp=ml; m2[ml++]=0; m2[ml++]=0; m2[ml++]=0x02;
+    u16 k2=(u16)((1u<<8)|(1u<<9)|(ki&7u)); m2[ml++]=(u8)(k2>>8); m2[ml++]=(u8)k2; m2[ml++]=0; m2[ml++]=0;
+    for(int i=0;i<8;i++)m2[ml++]=eap[9+i]; for(int i=0;i<32+16+8+8;i++)m2[ml++]=0;
+    int mp=ml; for(int i=0;i<16;i++)m2[ml++]=0; m2[ml++]=0; m2[ml++]=0;
+    int b=ml-4; m2[lp]=(u8)(b>>8); m2[lp+1]=(u8)b;
+    u8 mic[32]; wpa_mic(m2,ml,mic); for(int i=0;i<16;i++)m2[mp+i]=mic[i];
+    wnd_send_eapol(m2,ml); g_wifi_rekeys++; return 1; }
+static u32 eap_m; static const u8* eap_bssid; static const u8* eap_mac;
+static int eap_tx(void* c,const u8* e,int n){ (void)c; static u8 b[1600]; if(n>1500)return -1; b[0]=1; b[1]=0; b[2]=(u8)(n>>8); b[3]=(u8)n; for(int i=0;i<n;i++)b[4+i]=e[i]; rtw_tx_data_eapol(eap_m,eap_bssid,eap_mac,b,4+n); return n; }
+static int eap_rx(void* c,u8* o,int cap){ (void)c; static u8 b[1700];
+    for(int t=0;t<6;t++){ int n=rtw_rx_wait_eapol(eap_m,eap_bssid,b,(int)sizeof(b),3000); if(n<4)return -1;
+        if(b[1]==3){ int k=n<512?n:512; for(int i=0;i<k;i++)g_eap_stash[i]=b[i]; g_eap_stashlen=k; o[0]=3; o[1]=0; o[2]=0; o[3]=4; return 4; }
+        if(b[1]!=0)continue; int L=(b[2]<<8)|b[3]; if(L>n-4)L=n-4; if(L>cap)L=cap; for(int i=0;i<L;i++)o[i]=b[4+i]; return L; }
+    return -1; }
+static const char* g_eap_user=0; static const char* g_eap_pass=0; static int g_eap_on=0;
+int wifi_eap_join(u32 m,const scan_ap* ap,const char* ssid,const char* user,const char* pass){ g_eap_user=user; g_eap_pass=pass; g_eap_on=1; int r=rtw_wpa2_join(m,ap,ssid,pass); g_eap_on=0; return r; }
+int g_wifi_prefer_sae=0;
+static int rtw_sae_auth(u32 m,const scan_ap* ap,const u8* mac,const char* pass){
+    static sae_ctx sc; if(sae_commit(&sc,mac,ap->bssid,pass)<0)return 2;
+    u8 f[320]; int fl; u8 body[400]; int blen=0; u8 tok[128]; int tl=0;
+    int sdone=0;
+    for(int round=0;round<3;round++){
+        fl=0; f[fl++]=0xB0; f[fl++]=0; f[fl++]=0; f[fl++]=0; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i]; for(int i=0;i<6;i++)f[fl++]=mac[i]; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
+        f[fl++]=(u8)(g_seq<<4); f[fl++]=(u8)(g_seq>>4); g_seq++;
+        f[fl++]=3; f[fl++]=0; f[fl++]=1; f[fl++]=0; f[fl++]=0; f[fl++]=0; f[fl++]=19; f[fl++]=0;
+        for(int i=0;i<tl;i++)f[fl++]=tok[i]; for(int i=0;i<32;i++)f[fl++]=sc.scalar[i]; for(int i=0;i<64;i++)f[fl++]=sc.elem[1+i];
+        rtw_tx_mgmt(m,f,fl);
+        int got=0; for(int w=0;w<4&&!got;w++){ if(!rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,600))continue; if(blen>=6&&body[0]==3&&body[2]==1)got=1; }
+        if(!got)return 1;
+        int st=body[4]|(body[5]<<8);
+        if(st==76&&blen>8){ tl=blen-8; if(tl>128)tl=128; for(int i=0;i<tl;i++)tok[i]=body[8+i]; continue; }
+        if(st!=0)return 2;
+        if(blen<8+96||(body[6]|(body[7]<<8))!=19)return 2;
+        if(sae_process_commit(&sc,body+8,body+40)<0)return 2;
+        sdone=1; break; }
+    if(!sdone)return 1;
+    u8 cf[32]; sae_confirm(&sc,1,cf);
+    fl=0; f[fl++]=0xB0; f[fl++]=0; f[fl++]=0; f[fl++]=0; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i]; for(int i=0;i<6;i++)f[fl++]=mac[i]; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
+    f[fl++]=(u8)(g_seq<<4); f[fl++]=(u8)(g_seq>>4); g_seq++;
+    f[fl++]=3; f[fl++]=0; f[fl++]=2; f[fl++]=0; f[fl++]=0; f[fl++]=0; f[fl++]=1; f[fl++]=0; for(int i=0;i<32;i++)f[fl++]=cf[i];
+    rtw_tx_mgmt(m,f,fl);
+    int got=0; for(int w=0;w<4&&!got;w++){ if(!rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,600))continue; if(blen>=6&&body[0]==3&&body[2]==2)got=1; }
+    if(!got)return 6; if((body[4]|(body[5]<<8))!=0||blen<8+32)return 6;
+    if(sae_check_confirm(&sc,(u16)(body[6]|(body[7]<<8)),body+8)<0)return 6;
+    for(int i=0;i<32;i++)g_pmk[i]=sc.pmk[i];
+    for(int i=0;i<(int)sizeof(sc);i++)((u8*)&sc)[i]=0; return 0; }
 int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
     u8 mac[6]; for(int i=0;i<6;i++)mac[i]=rtw_r8(m,0x0610+i);
     { int z=1; for(int i=0;i<6;i++) if(mac[i])z=0; if(z&&rtw_efuse_valid){ for(int i=0;i<6;i++){mac[i]=rtw_logmap[0xD0+i]; rtw_w8(m,0x0610+i,mac[i]);} } }
-    /* PMK = PBKDF2(pass, ssid, 4096, 32) */
-    int slen=0; while(ssid[slen])slen++; int plen2=0; while(pass[plen2])plen2++;
-    pbkdf2_sha1((const u8*)pass,plen2,(const u8*)ssid,slen,4096,g_pmk,32);
+    if(ap->sec==2&&ap->grp&&ap->grp!=4)return 9;
+    int sae=!g_eap_on&&(ap->akm&AKM_SAE)&&(!(ap->akm&AKM_PSK)||g_wifi_prefer_sae);
+    g_wpa_akm=g_eap_on?1:sae?8:(!(ap->akm&AKM_PSK)&&(ap->akm&AKM_PSK256))?6:2; g_wpa_mfp=sae||(ap->pmf&2);
+    int slen=0; while(ssid[slen]&&slen<32)slen++; int plen2=0; while(pass[plen2]&&plen2<64)plen2++;
+    int rawpsk=0; if(plen2==64&&!sae&&!g_eap_on){ rawpsk=1; for(int i=0;i<64;i++){ char c=pass[i]; if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')||(c>='A'&&c<='F')))rawpsk=0; } if(rawpsk)for(int i=0;i<32;i++){ int a=pass[2*i],b=pass[2*i+1]; a=a<='9'?a-'0':(a|32)-'a'+10; b=b<='9'?b-'0':(b|32)-'a'+10; g_pmk[i]=(u8)(a*16+b); } }
+    if(!sae&&!g_eap_on&&!rawpsk){ static u8 ch[32], cpmk[32]; static int cok=0; u8 h[32]; { u8 t[100]; int n=0; for(int i=0;i<slen;i++)t[n++]=(u8)ssid[i]; t[n++]=0; for(int i=0;i<plen2;i++)t[n++]=(u8)pass[i]; sha256_hash(t,n,h); for(int i=0;i<n;i++)t[i]=0; }
+        int hit=cok; for(int i=0;i<32&&hit;i++) if(ch[i]!=h[i])hit=0;
+        if(hit){ for(int i=0;i<32;i++)g_pmk[i]=cpmk[i]; }
+        else { pbkdf2_sha1((const u8*)pass,plen2,(const u8*)ssid,slen,4096,g_pmk,32); for(int i=0;i<32;i++){ ch[i]=h[i]; cpmk[i]=g_pmk[i]; } cok=1; } }
     for(int i=0;i<6;i++)rtw_w8(m,0x0618+i,ap->bssid[i]);
     u32 nt=rtw_r32(m,0x0100); nt=(nt&~0x30000u)|(2u<<16); rtw_w32(m,0x0100,nt);
     rtw_set_channel_2g(m,ap->ch?ap->ch:6);
     rtw_rx_ring_up(m); g_eap_stashlen=0;
     u8 f[256]; int fl; u8 body[256]; int blen=0;
-    /* AUTH (open) */
+    if(sae){ int r=rtw_sae_auth(m,ap,mac,pass); if(r)return r; }
+    else {
     fl=0; f[fl++]=0xB0;f[fl++]=0x00;f[fl++]=0;f[fl++]=0;
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i]; for(int i=0;i<6;i++)f[fl++]=mac[i]; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     f[fl++]=(u8)(g_seq<<4);f[fl++]=(u8)(g_seq>>4);g_seq++;
     f[fl++]=0;f[fl++]=0; f[fl++]=1;f[fl++]=0; f[fl++]=0;f[fl++]=0;
     rtw_tx_mgmt(m,f,fl);
     if(!rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,900)) return 1;
-    if(blen>=6 && (body[4]|(body[5]<<8))!=0) return 2;
+    if(blen>=6 && (body[4]|(body[5]<<8))!=0) return 2; }
     /* ASSOC with RSN IE */
     fl=0; f[fl++]=0x00;f[fl++]=0x00;f[fl++]=0;f[fl++]=0;
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i]; for(int i=0;i<6;i++)f[fl++]=mac[i]; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
@@ -96,11 +173,12 @@ int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
     f[fl++]=0x31;f[fl++]=0x00;   /* capability: ESS + Privacy + short preamble */
     f[fl++]=0x0A;f[fl++]=0x00;
     f[fl++]=0; f[fl++]=(u8)slen; for(int i=0;i<slen;i++)f[fl++]=(u8)ssid[i];
-    f[fl++]=1; f[fl++]=8; f[fl++]=0x82;f[fl++]=0x84;f[fl++]=0x8B;f[fl++]=0x96;f[fl++]=0x0C;f[fl++]=0x12;f[fl++]=0x18;f[fl++]=0x24;
-    { u8 rsn[32]; int rl=wpa_rsn_ie(rsn); for(int i=0;i<rl;i++)f[fl++]=rsn[i]; }
+    { u8 rsn[32]; int rl=wpa_rsn_ie(rsn); fl+=rtw_assoc_ies(f+fl,ap); for(int i=0;i<rl;i++)f[fl++]=rsn[i]; }
     rtw_tx_mgmt(m,f,fl);
     if(!rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,900)) return 3;
+    if(blen>=4 && (body[2]|(body[3]<<8))==30){ for(int w=0;w<3;w++){ rtw_delay_us(200000); ui_pump(); } rtw_tx_mgmt(m,f,fl); if(!rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,900)) return 3; }
     if(blen>=4 && (body[2]|(body[3]<<8))!=0) return 4;
+    if(g_eap_on){ eap_m=m; eap_bssid=ap->bssid; eap_mac=mac; u8 msk[64]; g_eap_stashlen=0; int er=eap_peap_run(eap_tx,eap_rx,0,g_eap_user,g_eap_pass,msk); if(er<0)return er==-1?1:er==-3?4:er==-4?8:er==-12?10:7; for(int i=0;i<32;i++)g_pmk[i]=msk[i]; for(int i=0;i<64;i++)msk[i]=0; }
     /* ---- 4-way handshake ---- */
     u8 eap[512];
     int el=rtw_rx_wait_eapol(m,ap->bssid,eap,512,1500);   /* msg 1: ANonce */
@@ -111,14 +189,14 @@ int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
     u8 anonce[32]; for(int i=0;i<32;i++)anonce[i]=kf[4+1+2+2+8+i];   /* nonce at 802.1X+ (1+2+2+8) */
     /* our SNonce (derive from tsc/rand) */
     u8 snonce[32]; csprng_bytes(snonce,32);
-    wpa_derive_ptk(g_pmk,ap->bssid,mac,anonce,snonce,g_ptk);
+    wpa_derive_ptk_akm(g_pmk,ap->bssid,mac,anonce,snonce,g_ptk);
     /* build msg 2: copy key_info (clear install/ack, set MIC+pairwise), our SNonce, RSN IE, MIC=HMAC-SHA1(KCK,frame) */
     u8 m2[128]; int i,ml=0;
     m2[ml++]=0x01; m2[ml++]=0x03;                     /* 802.1X ver=1 type=3(key) */
     int lenpos=ml; m2[ml++]=0; m2[ml++]=0;            /* length filled later */
     m2[ml++]=0x02;                                    /* desc type: RSN */
     u16 ki;
-    ki = (1u<<3)|(1u<<8)|2u;   /* pairwise|MIC|keyver2(CCMP) */
+    ki = (u16)((1u<<3)|(1u<<8)|(u32)wpa_key_ver());
     m2[ml++]=(u8)(ki>>8); m2[ml++]=(u8)ki;
     m2[ml++]=0x00; m2[ml++]=0x00;                     /* key length 0 in msg2 (spec) */
     for(i=0;i<8;i++)m2[ml++]=kf[4+1+2+2+i];           /* replay counter = echo msg1 */
@@ -131,33 +209,43 @@ int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
     m2[ml++]=(u8)(rl>>8); m2[ml++]=(u8)rl;            /* key data length */
     for(i=0;i<rl;i++)m2[ml++]=rsn[i];                 /* key data = our RSN IE */
     int body2=ml-4; m2[lenpos]=(u8)(body2>>8); m2[lenpos+1]=(u8)body2;
-    u8 mic[20]; hmac_sha1(g_ptk,16,m2,ml,mic);        /* KCK=ptk[0..15] */
+    u8 mic[32]; wpa_mic(m2,ml,mic);
     for(i=0;i<16;i++)m2[micpos+i]=mic[i];
     rtw_tx_data_eapol(m,ap->bssid,mac,m2,ml);
     /* msg 3 from AP (GTK) */
-    el=rtw_rx_wait_eapol(m,ap->bssid,eap,512,1500);
-    if(el<95) return 6;
+    for(int tries=0;;tries++){
+        el=rtw_rx_wait_eapol(m,ap->bssid,eap,512,1500);
+        if(el<99) return 6;
+        u16 k3=(u16)((eap[5]<<8)|eap[6]);
+        if(!(k3&(1u<<8))&&(k3&(1u<<7))&&(k3&(1u<<3))&&tries<3){ { int nw=0; for(i=0;i<32;i++) if(eap[17+i]!=anonce[i])nw=1; if(nw){ for(i=0;i<32;i++)anonce[i]=eap[17+i]; wpa_derive_ptk_akm(g_pmk,ap->bssid,mac,anonce,snonce,g_ptk); } } for(i=0;i<8;i++)m2[9+i]=eap[9+i]; for(i=0;i<16;i++)m2[micpos+i]=0; wpa_mic(m2,ml,mic); for(i=0;i<16;i++)m2[micpos+i]=mic[i]; rtw_tx_data_eapol(m,ap->bssid,mac,m2,ml); continue; }
+        if((k3&((1u<<8)|(1u<<7)|(1u<<6)|(1u<<9)))!=((1u<<8)|(1u<<7)|(1u<<6)|(1u<<9))) return 6;
+        { int same=1; for(i=0;i<32;i++) if(eap[17+i]!=anonce[i])same=0; if(!same) return 6; }
+        break; }
     wpa_gtk_extract(eap,el);
+    if(g_gtk_state==4) return 6;
+    if(g_gtk_state==2){ int flen=4+((eap[2]<<8)|eap[3]); if(flen>el||flen<99) return 6; }
+    g_wpa_replay=wpa_rc(eap); g_wpa_mmio=m; for(int q=0;q<6;q++){ g_wpa_bssid[q]=ap->bssid[q]; g_wpa_mac[q]=mac[q]; }
     /* msg 4 ack: key_info pairwise|MIC|secure, no key data */
     u8 m4[128]; ml=0;
     m4[ml++]=0x01;m4[ml++]=0x03; int lp=ml; m4[ml++]=0;m4[ml++]=0;
     m4[ml++]=0x02;
-    u16 ki4=(1u<<3)|(1u<<8)|(1u<<9)|2u;               /* pairwise|MIC|secure|keyver2 */
+    u16 ki4=(u16)((1u<<3)|(1u<<8)|(1u<<9)|(u32)wpa_key_ver());
     m4[ml++]=(u8)(ki4>>8);m4[ml++]=(u8)ki4;
-    m4[ml++]=0x00;m4[ml++]=0x10;
+    m4[ml++]=0x00;m4[ml++]=0x00;
     for(i=0;i<8;i++)m4[ml++]=eap[4+1+2+2+i];          /* replay = echo msg3 */
     for(i=0;i<32;i++)m4[ml++]=0;                      /* nonce 0 */
     for(i=0;i<16;i++)m4[ml++]=0; for(i=0;i<8;i++)m4[ml++]=0; for(i=0;i<8;i++)m4[ml++]=0;
     int mp=ml; for(i=0;i<16;i++)m4[ml++]=0;
     m4[ml++]=0;m4[ml++]=0;                            /* key data len 0 */
     int b4=ml-4; m4[lp]=(u8)(b4>>8); m4[lp+1]=(u8)b4;
-    hmac_sha1(g_ptk,16,m4,ml,mic); for(i=0;i<16;i++)m4[mp+i]=mic[i];
+    wpa_mic(m4,ml,mic); for(i=0;i<16;i++)m4[mp+i]=mic[i];
     rtw_tx_data_eapol(m,ap->bssid,mac,m4,ml);
+    for(i=0;i<ml;i++)g_m4[i]=m4[i]; g_m4len=ml; g_m4mp=mp;
     /* install the pairwise temporal key (TK = ptk[32..47]) into the hw security CAM (CCMP=4) */
     rtw_sec_enable_engine(m);
     rtw_sec_write_cam(m, 0 /*cam idx*/, 0 /*keyidx*/, 4 /*AES/CCMP*/, 0 /*pairwise*/, ap->bssid, &g_ptk[32]);
     if(g_gtk_state==1){ if(g_gtk_keyid>0&&g_gtk_keyid<4) rtw_sec_write_cam(m, g_gtk_keyid, g_gtk_keyid, 4, 1, ap->bssid, g_gtk); else g_gtk_state=6; }
-    wnd_setup(m,ap->bssid,mac,&g_ptk[32],0);
+    wnd_setup(m,ap->bssid,mac,&g_ptk[32],g_wifi_assoc_qos);
     if(g_gtk_state==1) wnd_set_gtk(g_gtk,g_gtk_keyid);
     g_wpa_ok=1;
     return 0;   /* handshake complete - keys derived AND installed in hw */
@@ -172,6 +260,22 @@ int rtw_h2c_send(u32 m,int box,u32 w0,u32 w1){
     rtw_w32(m,boxreg,w0);
     return 0;
 }
+int g_wifi_ra=1, g_wifi_rssi=-127; static int g_ra_on=0, g_ra_rateid=8, g_h2c_box=0; static u32 g_ra_mask=0xF;
+static int rtw_h2c(u32 m,u32 w0,u32 w1){ int r=rtw_h2c_send(m,g_h2c_box,w0,w1); if(r==0)g_h2c_box=(g_h2c_box+1)&3; return r; }
+int rtw_h2c_cmd(u32 m,u32 w0,u32 w1){ return rtw_h2c(m,w0,w1); }
+void rtw_ra_rssi(u32 m,int rssi){ if(!g_ra_on)return; int v=rssi+100; if(v<0)v=0; if(v>100)v=100; rtw_h2c(m,0x42u|((u32)v<<24),0); }
+void rtw_ra_connect(u32 m,int ht,const u8* rates,int nr){
+    static const u8 RV[12]={2,4,11,22,12,18,24,36,48,72,96,108}; u32 mask=0;
+    for(int i=0;i<nr;i++){ u8 v=rates[i]&0x7F; for(int k=0;k<12;k++) if(RV[k]==v)mask|=1u<<k; }
+    if(ht)mask|=0xFFu<<12; if(g_wifi_band5)mask&=~0xFu; if(!mask)mask=g_wifi_band5?0xFF0u:0xFFFu;
+    int rid=g_wifi_band5?(ht?5:7):(ht?3:((mask&0xFF0u)?6:8));
+    if(rtw_h2c(m,0x01u|(1u<<8),0)<0||rtw_h2c(m,0x40u|((u32)rid<<16)|(1u<<21)|((ht&2)?(1u<<23):0)|(1u<<30),mask)<0){ g_ra_on=0; return; }
+    g_ra_on=g_wifi_ra; g_ra_rateid=rid; g_ra_mask=mask; }
+void rtw_ra_disconnect(u32 m){ if(g_ra_on)rtw_h2c(m,0x01u,0); g_ra_on=0; }
+void rtw_txdesc_rate(u8* pkt,int mgmt){
+    u32 w1=*(volatile u32*)(pkt+4); w1&=~((0x1Fu<<16)|0xFFu);
+    if(mgmt||!g_ra_on){ w1|=(u32)(g_wifi_band5?7u:8u)<<16; *(volatile u32*)(pkt+4)=w1; *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10); *(volatile u32*)(pkt+16)=g_wifi_band5?0x04u:0x00u; return; }
+    w1|=(u32)g_ra_rateid<<16; *(volatile u32*)(pkt+4)=w1; *(volatile u32*)(pkt+12)=0; *(volatile u32*)(pkt+16)=g_wifi_band5?0x04u:0x02u; }
 void rtw_phy_power_on(u32 m){
     u8 v=rtw_r8(m,0x0002);
     v|=(u8)(1u<<6); rtw_w8(m,0x0002,v);
@@ -245,7 +349,7 @@ int rtw_apply_built(u32 m,const rtw_bent* t,int n,const char* lbl,int verify){
         int wasdelay=rtw_apply_one(m,off,sz,val);
         if(wasdelay){ delays++; continue; }
         if(sz==5){ rfw++; continue; }
-        for(volatile int d=0;d<200;d++) io_wait();
+        rtw_delay_us(50);
         if(verify){ u32 rb=rtw_rdsz(m,off,sz);
             if(rb!=val){ mism++;
                 if(mism<=8){ tcol(rgb(230,160,60));

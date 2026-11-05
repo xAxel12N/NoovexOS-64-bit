@@ -4,16 +4,19 @@
 enum { SK_TAG, SK_UNIV, SK_ID, SK_CLASS, SK_ATTR, SK_PSEUDO };
 enum { PS_HOVER = 1, PS_FOCUS, PS_ACTIVE, PS_FIRST, PS_LAST, PS_ONLY, PS_NTH, PS_NTHLAST, PS_NTHTYPE, PS_NTHLASTTYPE, PS_FIRSTTYPE, PS_LASTTYPE, PS_ONLYTYPE,
        PS_EMPTY, PS_ROOT, PS_LINK, PS_CHECKED, PS_DISABLED, PS_ENABLED, PS_NOT, PS_IS, PS_HAS, PS_FOCUSWITHIN, PS_PLACEHOLDER, PS_REQUIRED, PS_OPTIONAL,
-       PS_TRUE, PS_FALSE, PS_OPEN, PS_HOST, PS_SLOTTED };
+       PS_TRUE, PS_FALSE, PS_OPEN, PS_HOST, PS_SLOTTED, PS_POPOPEN, PS_MODAL };
 enum { AO_EXISTS = 1, AO_EQ, AO_WORD, AO_DASH, AO_PREFIX, AO_SUFFIX, AO_SUB };
 
 typedef struct csel csel;
 typedef struct { unsigned char kind, op, ci; char* name; char* val; int tag; csel** sub; int nsub; int a, b; } ssel;
 typedef struct { ssel* s; int ns; char comb; } compound;
-struct csel { compound* c; int nc; int spec; int pseudo; unsigned short ah[4]; unsigned char nah, ahdone, shk; };
+const char* css_prop_initial(const char* name);
+void css_prop_register(const char* name, const char* init);
+int css_layer_rank(const char* name);
+struct csel { compound* c; int nc; int spec; int pseudo; unsigned short ah[4]; unsigned char nah, ahdone, shk, rel; };
 
 typedef struct { short prop; unsigned char imp; char* name; char* val; } decl;
-struct rule { csel** sel; int nsel; decl* d; int nd; int order; const char* media; int origin; int mgen; int mok; const char* scope; };
+struct rule { csel** sel; int nsel; decl* d; int nd; int order; const char* media; int origin; int mgen; int mok; const char* scope; const char* cq; const char* layer; int lrank; };
 typedef struct { rule* r; int spec; } ment;
 
 #define PROPS(X) \
@@ -43,7 +46,7 @@ typedef struct { rule* r; int spec; } ment;
  X(GRIDAUTOFLOW,"grid-auto-flow") X(GRIDAUTOROWS,"grid-auto-rows") X(GRIDAUTOCOLUMNS,"grid-auto-columns") X(GRIDCOLUMN,"grid-column") X(GRIDROW,"grid-row") \
  X(GCS,"grid-column-start") X(GCE,"grid-column-end") X(GRS,"grid-row-start") X(GRE,"grid-row-end") X(GRIDAREA,"grid-area") X(GTA,"grid-template-areas") X(GRID,"grid") \
  X(BOXSHADOW,"box-shadow") X(TEXTSHADOW,"text-shadow") X(TRANSFORM,"transform") X(CONTENT,"content") X(BORDERSPACING,"border-spacing") X(FONT,"font") \
- X(CARETCOLOR,"caret-color") X(ACCENTCOLOR,"accent-color") X(TRANSLATE,"translate") X(SCALE,"scale") X(ROTATE,"rotate") X(ASPECTRATIO,"aspect-ratio") \
+ X(CARETCOLOR,"caret-color") X(ACCENTCOLOR,"accent-color") X(TRANSLATE,"translate") X(SCALE,"scale") X(ROTATE,"rotate") X(ASPECTRATIO,"aspect-ratio") X(CONTAINERTYPE,"container-type") X(CONTAINERNAME,"container-name") X(CONTAINER,"container") \
  X(MARGININLINE,"margin-inline") X(MARGINBLOCK,"margin-block") X(PADDINGINLINE,"padding-inline") X(PADDINGBLOCK,"padding-block") \
  X(MIS,"margin-inline-start") X(MIE,"margin-inline-end") X(MBS,"margin-block-start") X(MBE,"margin-block-end") \
  X(PIS,"padding-inline-start") X(PIE,"padding-inline-end") X(PBS,"padding-block-start") X(PBE,"padding-block-end") \
@@ -52,7 +55,10 @@ typedef struct { rule* r; int spec; } ment;
  X(TEXTALIGNLAST,"text-align-last") X(FILL,"fill") X(STROKE,"stroke") X(WEBKITLINECLAMP,"-webkit-line-clamp") X(USERSELECT,"user-select") X(APPEARANCE,"appearance") X(CLIP,"clip") X(CLIPPATH,"clip-path") X(BGCLIP,"background-clip") X(TEXTFILL,"text-fill-color") \
  X(SRC,"src") X(UNICODERANGE,"unicode-range") X(TRANSFORMORIGIN,"transform-origin") X(ANIMATION,"animation") X(ANIMNAME,"animation-name") X(ANIMDUR,"animation-duration") X(ANIMDELAY,"animation-delay") X(ANIMITER,"animation-iteration-count") X(ANIMDIR,"animation-direction") X(ANIMFILL,"animation-fill-mode") X(ANIMTIMING,"animation-timing-function") X(ANIMPLAY,"animation-play-state") \
  X(TRANSITION,"transition") X(TRANSPROP,"transition-property") X(TRANSDUR,"transition-duration") X(TRANSDELAY,"transition-delay") X(TRANSTIMING,"transition-timing-function") \
- X(BORDERINLINE,"border-inline") X(BORDERBLOCK,"border-block") X(BORDERBLOCKEND,"border-block-end") X(BORDERBLOCKSTART,"border-block-start") X(BORDERINLINESTART,"border-inline-start") X(BORDERINLINEEND,"border-inline-end")
+ X(BORDERINLINE,"border-inline") X(BORDERBLOCK,"border-block") X(BORDERBLOCKEND,"border-block-end") X(BORDERBLOCKSTART,"border-block-start") X(BORDERINLINESTART,"border-inline-start") X(BORDERINLINEEND,"border-inline-end") \
+ X(SCROLLSNAPTYPE,"scroll-snap-type") X(SCROLLSNAPALIGN,"scroll-snap-align") X(SCROLLSNAPSTOP,"scroll-snap-stop") \
+ X(PERSPECTIVE,"perspective") X(PERSPORIGIN,"perspective-origin") X(BACKFACE,"backface-visibility") X(TSTYLE,"transform-style") \
+ X(FILTER,"filter")
 
 #define PX(a, b) P_##a,
 enum { PROPS(PX) P_NPROPS, P_CUSTOM = 1000 };

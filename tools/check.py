@@ -74,8 +74,18 @@ def kmissing(code, tmpl=''):
             out.append('static ' + re.sub(r'\s*=[^,;]*', '', vn[n][7:].strip()))
     return '\n'.join(out) + '\n'
 
+def kexpand(t):
+    out = []
+    for l in t.split('\n'):
+        m = re.match(r'^#include "([^"]+_parts/[^"]+\.c)"\s*$', l)
+        if m:
+            x = kexpand(open(os.path.join(KDIR, m.group(1)), errors='ignore').read())
+            out.append(x[:-1] if x.endswith('\n') else x)
+        else:
+            out.append(l)
+    return '\n'.join(out)
 def kread(path, hdr=True):
-    t = open(path, errors='ignore').read()
+    t = kexpand(open(path, errors='ignore').read())
     rel = os.path.relpath(path, KDIR)
     if rel.startswith('..') or not rel.endswith('.c'): return t
     t = re.sub(r'(?m)^#include "include/nvx/[^"]+"\n', '', t)
@@ -229,7 +239,7 @@ def fixed_regions_in_bss():
     pat = re.compile(r'(\(\s*(?:u8|u16|u32|u64|int|char|unsigned char|void)\s*\*\s*\)\s*\(?\s*0x0*([0-9A-Fa-f]{6,8})|#define\s+\w+\s+\(?\s*0x0*([0-9A-Fa-f]{6,8})(?:ULL|UL|u|U)?\b)')
     hits = []
     for root, _, files in kwalk():
-        if any(x in root for x in ('/ntfs', '/musl', '/sqlite', '/zlib', '/bzip2', '/xz', '/zstd', '/ffmpeg', '/quickjs', '/build')) or os.sep + 'usr' in root or '/wifi' in root or root.endswith(os.sep + 'doom'): continue
+        if any(x in root for x in ('/ntfs', '/musl', '/sqlite', '/zlib', '/bzip2', '/xz', '/zstd', '/ffmpeg', '/quickjs', '/build', '/tinycc', '/vim', '/git', '/curl', '/mbedtls', '/dropbear', '/ncurses', '/less', '/netsurf', '/mlibc')) or os.sep + 'usr' in root or '/wifi' in root or root.endswith(os.sep + 'doom'): continue
         for f in files:
             if not f.endswith(('.c', '.h')): continue
             path = os.path.join(root, f); t = open(path, errors='ignore').read()
@@ -286,6 +296,7 @@ def g_static():
     record('static', f'kernel compiles with zero strict warnings ({len(ws)})', rc == 0 and not ws, ws[0][:200] if ws else '')
     fr, be = fixed_regions_in_bss(); record('static', f'no hard-coded memory regions inside kernel .bss (ends {be:#x})', not fr, ', '.join(fr[:6]))
     ub = unbounded_hw_loops(); record('static', 'no unbounded hardware polling loops (hang on missing hardware)', not ub, ', '.join(ub[:6]))
+    rc, out = sh([sys.executable, os.path.join(KDIR, 'tools/nvxport.py'), 'check'], cwd=KDIR); record('static', 'ports and distro profiles are valid (' + (out.strip().splitlines() or [''])[-1] + ')', rc == 0, out[-300:])
     x = kread(os.path.join(KDIR, 'drivers/usb/xhci.c'))
     mx = int(re.search(r'#define XHID_MAX (\d+)', x).group(1)); hm = re.search(r'XHID_BASE\(r\)\s+\(DMW\(0x([0-9A-Fa-f]+)u\) \+ \(u32\)\(r\)\*0x([0-9A-Fa-f]+)u\)', x)
     base, stride = int(hm.group(1), 16), int(hm.group(2), 16)
@@ -316,6 +327,21 @@ def g_boot(iso):
     m = re.search(r'(\d+) of (\d+) checks passed', out)
     record('boot', f'emulate.py: {m.group(0) if m else "did not finish"}', rc == 0, out[-300:])
 
+def g_uvc(work):
+    head('Camera (UVC) and microphone (USB Audio 1 and 2) parsing, generated from xhci.c')
+    d = os.path.join(TESTS, 'uvc'); c = os.path.join(work, 'uvc_t.c'); b = os.path.join(work, 'uvc_t')
+    xf = os.path.join(work, 'xhci_full.c'); open(xf, 'w').write(kread(os.path.join(KDIR, 'drivers/usb/xhci.c'), False))
+    rc, out = sh(['python3', os.path.join(d, 'gen.py'), xf, c, os.path.join(d, 'main.c')])
+    if not record('usb', 'camera/microphone test builds against the current driver', rc == 0 and sh(['gcc', '-O1', '-w', '-o', b, c])[0] == 0, out[-300:]): return
+    rc, out = sh([b])
+    n = out.count(' ok\n'); record('usb', f'cameras: 2 streams, IR + colour, UYVY/I420/YV12/grey, bulk; mics: 24-bit, USB Audio 2 ({n} checks)', rc == 0 and n >= 20, out[-400:])
+def g_wifi(work):
+    head('Wi-Fi security: WPA3 (SAE), AES-CMAC, PEAP/MSCHAPv2, P-256 (from the kernel sources)')
+    b = os.path.join(work, 'wifi_t')
+    rc, out = sh(['gcc', '-O1', '-w', '-I', KDIR, '-o', b, os.path.join(TESTS, 'wifi', 'crypto.c')])
+    if not record('wifi', 'Wi-Fi crypto test builds against the current sources', rc == 0, out[-300:]): return
+    rc, out = sh([b])
+    n = out.count('PASS '); record('wifi', f'SAE = IEEE 802.11 Annex J.10, CMAC = RFC 4493, MSCHAPv2 = RFC 2759, MD4, DES ({n} checks)', rc == 0 and n >= 30, out[-400:])
 def g_usb(work):
     head('USB keyboard/mouse driver (generated from xhci.c)')
     s = kread(os.path.join(KDIR, 'drivers/usb/xhci.c'))
@@ -628,6 +654,16 @@ def g_timers(work):
     n = len([l for l in out.splitlines() if l.strip().endswith(' ok') or l.strip().endswith('FAIL')])
     record('timers', f'HPET/PIT/CPUID calibration, wrap, x2APIC, one-shot + periodic APIC timer, MADT ({n} checks)', rc == 0 and 'ALL PASS' in out, '; '.join(fails[:3]) or out[-300:])
 
+def g_cookies(work):
+    head('Cookie jar (real cookies.c on the host): Chrome-size cookies, per-site cap, SameSite, save and reload')
+    exe = os.path.join(work, 'ck_t')
+    rc, out = sh(['gcc', '-O1', '-w', '-I', KDIR] + SAN + ['-o', exe, os.path.join(TESTS, 'cookies', 'ck_t.c')])
+    if not record('cookies', 'cookie test builds against the current cookie jar', rc == 0, out[:400]): return
+    rc, out = sh([exe], timeout=120); fails = [l.strip() for l in out.splitlines() if l.startswith('FAIL')]
+    for l in fails: print('    ' + l)
+    n = len([l for l in out.splitlines() if l.startswith('ok ') or l.startswith('FAIL')])
+    record('cookies', f'4096-byte cookies, 16 KB header, 180 per site, 3000 total, reload ({n} checks)', rc == 0 and 'COOKIES all ok' in out, '; '.join(fails[:3]) or out[-300:])
+
 def g_linux(work):
     head('Linux system-call layer + musl libc (real kernel code run on the host, guest syscalls trapped with seccomp)')
     T = os.path.join(TESTS, 'linux'); B = os.path.join(KDIR, 'build'); M = os.path.join(B, 'musl')
@@ -635,7 +671,7 @@ def g_linux(work):
     need = [os.path.join(M, 'lib', 'libc.a'), os.path.join(B, 'user', 'musltest.elf'), os.path.join(B, 'user', 'mhello.elf')]
     if not record('linux', 'musl libc and musl programs are built (build.sh)', all(os.path.exists(x) for x in need) and blobs, 'run check.py --build first'): return
     k = os.path.join(work, 'lk')
-    shutil.copytree(KDIR, k, ignore=lambda d, names: [n for n in names if (d == KDIR and n in ('build', 'boot', 'tools', 'docs', '.git')) or (os.path.basename(d) == 'third_party' and n in ('musl', 'doom', 'lua', 'ffmpeg', 'src'))])
+    shutil.copytree(KDIR, k, ignore=lambda d, names: [n for n in names if (d == KDIR and n in ('build', 'boot', 'tools', 'docs', '.git')) or (os.path.basename(d) == 'third_party' and n in ('tinycc', 'vim', 'git', 'curl', 'mbedtls', 'dropbear', 'ncurses', 'less', 'netsurf', 'fonts', 'musl', 'doom', 'lua', 'ffmpeg', 'src'))])
     shutil.copy(os.path.join(T, 'cpu_host.h'), os.path.join(k, 'arch', 'x86_64', 'cpu', 'cpu.h'))
     shutil.copy(os.path.join(T, 'io_host.h'), os.path.join(k, 'arch', 'x86_64', 'cpu', 'io.h'))
     shutil.copy(os.path.join(T, 'hk_glue.c'), os.path.join(k, 'hk_glue.c'))
@@ -676,7 +712,7 @@ def g_fs(work):
     head('NVX4 file system (real kernel code on the host, simulated disk with power cuts)')
     T = os.path.join(TESTS, 'fs'); L = os.path.join(TESTS, 'linux')
     k = os.path.join(work, 'fk')
-    shutil.copytree(KDIR, k, ignore=lambda d, names: [n for n in names if (d == KDIR and n in ('build', 'boot', 'tools', 'docs', '.git')) or (os.path.basename(d) == 'third_party' and n in ('musl', 'doom', 'lua', 'sqlite', 'xz', 'bzip2', 'zlib', 'ffmpeg', 'src'))])
+    shutil.copytree(KDIR, k, ignore=lambda d, names: [n for n in names if (d == KDIR and n in ('build', 'boot', 'tools', 'docs', '.git')) or (os.path.basename(d) == 'third_party' and n in ('tinycc', 'vim', 'git', 'curl', 'mbedtls', 'dropbear', 'ncurses', 'less', 'netsurf', 'fonts', 'musl', 'doom', 'lua', 'sqlite', 'xz', 'bzip2', 'zlib', 'ffmpeg', 'src'))])
     shutil.copy(os.path.join(L, 'cpu_host.h'), os.path.join(k, 'arch', 'x86_64', 'cpu', 'cpu.h'))
     shutil.copy(os.path.join(L, 'io_host.h'), os.path.join(k, 'arch', 'x86_64', 'cpu', 'io.h'))
     shutil.copy(os.path.join(T, 'fs_glue.c'), os.path.join(k, 'fs_glue.c'))
@@ -697,6 +733,34 @@ def g_fs(work):
     n = len([l for l in out.splitlines() if l.startswith('  ') and l.rstrip().endswith(' ok')])
     bad = [l.strip() for l in out.splitlines() if 'FAIL' in l]
     record('fs', f'NVX4: format, persistence, Unix semantics, power cuts and old-format conversion ({n} checks)', rc == 0 and 'ALL PASS' in out, '; '.join(bad[:3]) or out[-400:])
+
+def g_accounts(work):
+    head('Accounts: passwd, group and shadow, SHA-512 crypt, setup, login and access (real kernel code on the host)')
+    T = os.path.join(TESTS, 'accounts'); L = os.path.join(TESTS, 'linux')
+    k = os.path.join(work, 'ak')
+    shutil.copytree(KDIR, k, ignore=lambda d, names: [n for n in names if (d == KDIR and n in ('build', 'boot', 'tools', 'docs', '.git')) or (os.path.basename(d) == 'third_party' and n in ('tinycc', 'vim', 'git', 'curl', 'mbedtls', 'dropbear', 'ncurses', 'less', 'netsurf', 'fonts', 'musl', 'doom', 'lua', 'ffmpeg', 'src'))])
+    shutil.copy(os.path.join(L, 'cpu_host.h'), os.path.join(k, 'arch', 'x86_64', 'cpu', 'cpu.h'))
+    shutil.copy(os.path.join(L, 'io_host.h'), os.path.join(k, 'arch', 'x86_64', 'cpu', 'io.h'))
+    shutil.copy(os.path.join(TESTS, 'fs', 'fs_glue.c'), os.path.join(k, 'fs_glue.c'))
+    shutil.copy(os.path.join(T, 'ac_glue.c'), os.path.join(k, 'ac_glue.c'))
+    ren = []
+    for n in ('malloc', 'free', 'calloc', 'realloc', 'memchr', 'memcmp', 'memcpy', 'memmove', 'memset', 'strcat', 'strchr', 'strcmp', 'strcpy', 'strlen', 'strncmp', 'strncpy', 'strrchr', 'strstr', 'abs', 'atoi', 'panic'):
+        ren.append(f'-D{n}=kh_{n}')
+    fo = os.path.join(work, 'ak.o')
+    rc, out = sh(['gcc', '-m64', '-O1', '-ffreestanding', '-fno-pie', '-fno-stack-protector', '-fno-asynchronous-unwind-tables', '-mno-red-zone', '-mno-mmx', '-mno-sse', '-mno-sse2',
+                  '-mcmodel=small', '-DNOOVEX64', '-w', '-I.'] + ren + ['-c', 'ac_glue.c', '-o', fo], cwd=k, timeout=900)
+    shutil.rmtree(k, ignore_errors=True)
+    if not record('accounts', 'kernel compiles as a host object for the account tests', rc == 0, out[:400]): return
+    exe = os.path.join(work, 'acharness'); ho = os.path.join(work, 'act.o')
+    rc, out = sh(['gcc', '-O1', '-c', os.path.join(T, 'act.c'), '-o', ho])
+    if rc == 0: rc, out = sh(['gcc', '-no-pie', '-o', exe, ho, fo, '-Wl,--unresolved-symbols=ignore-all', '-z', 'noexecstack'])
+    if not record('accounts', 'account harness links', rc == 0, out[:400]): return
+    rc, out = sh([exe], timeout=300)
+    for l in out.splitlines():
+        if l.startswith('  ') and (l.rstrip().endswith(' ok') or 'FAIL' in l): print('  ' + l.strip()[:160])
+    n = len([l for l in out.splitlines() if l.startswith('  ') and l.rstrip().endswith(' ok')])
+    bad = [l.strip() for l in out.splitlines() if 'FAIL' in l]
+    record('accounts', f'users, groups, SHA-512 passwords, setup, login, access, old-install migration ({n} checks)', rc == 0 and 'ALL PASS' in out, '; '.join(bad[:3]) or out[-400:])
 
 def g_nvidia(work):
     head('NVIDIA Turing GSP driver (nvflcn.c, nvmem.c, nvgsp.c) against a simulated TU116')
@@ -774,6 +838,12 @@ def g_qemu(iso):
         m = re.search(r'dyntest: done (\d+) passed, (\d+) failed', serial())
         for l in sorted(set(re.findall(r'dyntest: FAIL[^\n]*', serial()))): print('  ' + l[:150])
         record('qemu', f'dyntest: dynamic linker, shared libc, dlopen ({m.group(0) if m else "no result"})', bool(m) and m.group(2) == '0', serial()[-300:])
+        typ(s, 'nvx-abitest >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 180 and not re.search(r'\d+ of \d+ ABI checks passed', serial()): time.sleep(1)
+        m = re.search(r'(\d+) of (\d+) ABI checks passed', serial())
+        for l in sorted(set(re.findall(r'FAIL [a-z][^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'nvx-abitest: inotify, signalfd, waitid, flock/fcntl locks, timer_create, preadv, sendmmsg, getdents ({m.group(0) if m else "no result"})', bool(m) and m.group(1) == m.group(2), serial()[-300:])
         typ(s, 'smp off\n')
         record('qemu', 'smp off parks the other cores', wait_for('smp: secondary cores parked', 60), serial()[-300:])
         s.close()
@@ -806,6 +876,137 @@ def g_tls(work):
         if l.startswith(('ok', 'FAIL')): print('  ' + l[:150])
     n = len([l for l in out.splitlines() if l.startswith('ok')])
     record('tls', f'generated chains, host names, dates and CertificateVerify ({n} checks)', rc == 0 and 'ALL PASS' in out, out[-400:])
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
+    from cryptography.hazmat.primitives import serialization as _ser
+    bad = 0
+    for _ in range(8):
+        k = _ec.generate_private_key(_ec.SECP256R1()); d = k.private_numbers().private_value.to_bytes(32, 'big')
+        pub = k.public_key().public_bytes(_ser.Encoding.X962, _ser.PublicFormat.UncompressedPoint)
+        q = _ec.generate_private_key(_ec.SECP256R1()); qp = q.public_key().public_bytes(_ser.Encoding.X962, _ser.PublicFormat.UncompressedPoint)
+        if sh([exe, 'ecdh', d.hex()])[1].strip() != pub.hex(): bad += 1
+        if sh([exe, 'ecdh', d.hex(), qp.hex()])[1].strip() != k.exchange(_ec.ECDH(), q.public_key()).hex(): bad += 1
+    off = sh([exe, 'ecdh', '01' * 32, '04' + '00' * 64])[1].strip()
+    record('tls', 'P-256 key exchange matches the cryptography module and rejects off-curve points', bad == 0 and off == 'ERR', f'bad {bad} off {off}')
+    if shutil.which('openssl'):
+        ck = os.path.join(work, 'hk'); os.makedirs(ck, exist_ok=True)
+        sh(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost', '-days', '2', '-keyout', os.path.join(ck, 'k.pem'), '-out', os.path.join(ck, 'c.pem')])
+        sh(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost', '-days', '2', '-keyout', os.path.join(ck, 'rk.pem'), '-out', os.path.join(ck, 'rc.pem')])
+        open(os.path.join(ck, 'big'), 'wb').write(bytes(((i*7+(i>>8))&0xFF) for i in range(300000)))
+        port = 20443 + random.randint(0, 400) * 8; want = big_sha(); import hashlib
+        cases = (
+            (['-tls1_3', '-groups', 'X25519'], 'c', 'TLS 1.3 with X25519'),
+            (['-tls1_3', '-groups', 'P-256'], 'c', 'TLS 1.3 with P-256 after a HelloRetryRequest'),
+            (['-tls1_3', '-sigalgs', 'rsa_pss_rsae_sha256'], 'rc', 'TLS 1.3 with an RSA certificate'),
+            (['-tls1_2', '-cipher', 'ECDHE-ECDSA-AES128-GCM-SHA256'], 'c', 'TLS 1.2 ECDHE-ECDSA-AES128-GCM'),
+            (['-tls1_2', '-cipher', 'ECDHE-ECDSA-CHACHA20-POLY1305', '-groups', 'P-256'], 'c', 'TLS 1.2 ECDHE-ECDSA-CHACHA20 with P-256'),
+            (['-tls1_2', '-cipher', 'ECDHE-RSA-AES128-GCM-SHA256', '-sigalgs', 'RSA+SHA256'], 'rc', 'TLS 1.2 ECDHE-RSA-AES128-GCM (PKCS#1)'),
+            (['-tls1_2', '-cipher', 'ECDHE-RSA-CHACHA20-POLY1305'], 'rc', 'TLS 1.2 ECDHE-RSA-CHACHA20 (PSS)'),
+        )
+        for k, (args, cert, label) in enumerate(cases):
+            pn = port + k
+            kf = 'k.pem' if cert == 'c' else 'rk.pem'
+            srv = subprocess.Popen(['openssl', 's_server', '-accept', str(pn), '-cert', cert + '.pem', '-key', kf] + args + ['-WWW'], cwd=ck, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                time.sleep(1); ob = os.path.join(ck, 'o.bin')
+                if os.path.exists(ob): os.unlink(ob)
+                rc, out = sh([exe, 'get', 'localhost', str(pn), '/big', ob, os.path.join(ck, cert + '.pem')])
+                body = open(ob, 'rb').read() if os.path.exists(ob) else b''
+                record('tls', f'{label}: certificate verified, 300 KB body intact', rc == 0 and 'connect 0' in out and 'certificate verified' in out and hashlib.sha256(body[-300000:]).hexdigest() == want, out[-300:])
+            finally:
+                srv.kill(); srv.wait()
+        import socket, threading
+        def flipper(lsock, rport, idx):
+            def pipe(a, b, mod):
+                buf = b''; n = 0
+                try:
+                    while True:
+                        d = a.recv(65536)
+                        if not d: break
+                        if not mod: b.sendall(d); continue
+                        buf += d
+                        while len(buf) >= 5 and len(buf) >= 5 + (buf[3] << 8 | buf[4]):
+                            L = 5 + (buf[3] << 8 | buf[4]); r = bytearray(buf[:L]); buf = buf[L:]
+                            if n == idx: r[L - 1] ^= 1
+                            n += 1; b.sendall(bytes(r))
+                except OSError: pass
+                try: b.shutdown(socket.SHUT_WR)
+                except OSError: pass
+            try:
+                c, _ = lsock.accept()
+            except OSError: return
+            u = socket.create_connection(('127.0.0.1', rport))
+            threading.Thread(target=pipe, args=(c, u, False), daemon=True).start()
+            pipe(u, c, True)
+        pn = port + len(cases)
+        srv = subprocess.Popen(['openssl', 's_server', '-accept', str(pn), '-cert', 'c.pem', '-key', 'k.pem', '-tls1_2', '-cipher', 'ECDHE-ECDSA-AES128-GCM-SHA256', '-WWW'], cwd=ck, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ls = socket.socket(); ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); ls.bind(('127.0.0.1', pn + 1)); ls.listen(1); ls.settimeout(20)
+        try:
+            time.sleep(1); th = threading.Thread(target=flipper, args=(ls, pn, 2), daemon=True); th.start()
+            rc, out = sh([exe, 'get', 'localhost', str(pn + 1), '/big', os.path.join(ck, 'o2.bin'), os.path.join(ck, 'c.pem')])
+            record('tls', 'TLS 1.2: a changed ServerKeyExchange signature is refused', 'connect -14' in out, out[-300:])
+        finally:
+            ls.close(); srv.kill(); srv.wait()
+        pn = port + len(cases) + 2
+        srv = subprocess.Popen(['openssl', 's_server', '-accept', str(pn), '-cert', 'c.pem', '-key', 'k.pem', '-tls1_3', '-WWW'], cwd=ck, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ls = socket.socket(); ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); ls.bind(('127.0.0.1', pn + 1)); ls.listen(1); ls.settimeout(20)
+        seen = {}
+        def capture():
+            try: c, _ = ls.accept()
+            except OSError: return
+            u = socket.create_connection(('127.0.0.1', pn)); d = b''
+            while len(d) < 5 or len(d) < 5 + (d[3] << 8 | d[4]):
+                x = c.recv(65536)
+                if not x: break
+                d += x
+            seen['ch'] = d; u.sendall(d)
+            def back():
+                try:
+                    while True:
+                        y = u.recv(65536)
+                        if not y: break
+                        c.sendall(y)
+                except OSError: pass
+                try: c.shutdown(socket.SHUT_WR)
+                except OSError: pass
+            threading.Thread(target=back, daemon=True).start()
+            try:
+                while True:
+                    y = c.recv(65536)
+                    if not y: break
+                    u.sendall(y)
+            except OSError: pass
+        try:
+            time.sleep(1); th = threading.Thread(target=capture, daemon=True); th.start()
+            rc, out = sh([exe, 'get', 'localhost', str(pn + 1), '/big', os.path.join(ck, 'o3.bin'), os.path.join(ck, 'c.pem')])
+            ok = False; detail = out[-200:]
+            ch = seen.get('ch', b'')
+            if len(ch) > 80:
+                b = ch[5:]; o = 4 + 2 + 32; sl = b[o]; sid = b[o + 1:o + 1 + sl]; o += 1 + sl; cl = b[o] << 8 | b[o + 1]; o += 2 + cl; o += 1 + b[o]; el = b[o] << 8 | b[o + 1]; o += 2; e = o + el; ks = None
+                while o + 4 <= e:
+                    t = b[o] << 8 | b[o + 1]; l = b[o + 2] << 8 | b[o + 3]; o += 4
+                    if t == 0x33: ks = b[o + 6:o + 6 + 32]
+                    o += l
+                from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+                from cryptography.hazmat.primitives import serialization as _s2
+                if ks and len(sid) == 32:
+                    pub = X25519PrivateKey.from_private_bytes(bytes(sid)).public_key().public_bytes(_s2.Encoding.Raw, _s2.PublicFormat.Raw)
+                    ok = pub != bytes(ks) and 'connect 0' in out; detail = 'session id gives the key share' if pub == bytes(ks) else out[-200:]
+            record('tls', 'the ClientHello session ID does not reveal the key exchange secret', ok, detail)
+        finally:
+            ls.close(); srv.kill(); srv.wait()
+        pn = port + len(cases) + 4
+        srv = subprocess.Popen(['openssl', 's_server', '-accept', str(pn), '-cert', 'c.pem', '-key', 'k.pem', '-tls1_3'], cwd=ck, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            time.sleep(1); ob = os.path.join(ck, 'ku.bin')
+            cl = subprocess.Popen([exe, 'get', 'localhost', str(pn), '/', ob, os.path.join(ck, 'c.pem')], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            time.sleep(1.5)
+            for line in (b'before-update\n', b'K\n', b'after-update\n', b'Q\n'):
+                srv.stdin.write(line); srv.stdin.flush(); time.sleep(0.5)
+            out = cl.communicate(timeout=20)[0]
+            body = open(ob, 'rb').read() if os.path.exists(ob) else b''
+            record('tls', 'TLS 1.3 KeyUpdate from the server (with update requested) keeps the connection working', b'before-update' in body and b'after-update' in body, out[-200:] + repr(body[-80:]))
+        finally:
+            srv.kill(); srv.wait()
 
 def big_sha():
     import hashlib
@@ -989,7 +1190,7 @@ def main():
     ap.add_argument('--iso', help='image to test (default: the one built with --build, else tools/out/check.iso)')
     ap.add_argument('--quick', action='store_true', help='smaller random test sizes')
     ap.add_argument('--sanitize', action='store_true', help='run driver tests under ASan+UBSan and libc/tool tests with UBSan traps')
-    ap.add_argument('--only', help='comma list: build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,linux,fs,nvidia,tls,fetch,qemu,net,drivers,analyze,libc,coreutils')
+    ap.add_argument('--only', help='comma list: build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,cookies,linux,fs,accounts,nvidia,tls,fetch,qemu,net,drivers,analyze,libc,coreutils')
     a = ap.parse_args()
     if a.sanitize:
         SAN[:] = ['-fsanitize=address,undefined', '-fno-sanitize-recover=undefined', '-fno-omit-frame-pointer', '-g']
@@ -1006,7 +1207,8 @@ def main():
         if want('boot'):
             if os.path.exists(iso): g_boot(iso)
             else: record('boot', f'image {iso} exists (use --build or --iso)', False)
-        if want('usb'): g_usb(work); g_xhci_init(work)
+        if want('usb'): g_usb(work); g_xhci_init(work); g_uvc(work)
+        if want('wifi'): g_wifi(work)
         if want('acpi'): g_acpi(work)
         if want('gpu'): g_gpu(work)
         if want('nvme'): g_nvme(work)
@@ -1014,8 +1216,10 @@ def main():
         if want('memory'): g_memory(work)
         if want('aml'): g_aml(work)
         if want('timers'): g_timers(work)
+        if want('cookies'): g_cookies(work)
         if want('linux'): g_linux(work)
         if want('fs'): g_fs(work)
+        if want('accounts'): g_accounts(work)
         if want('nvidia'): g_nvidia(work)
         if want('tls'): g_tls(work)
         if want('fetch'): g_fetch(work)

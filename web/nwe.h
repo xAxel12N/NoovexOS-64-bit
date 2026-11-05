@@ -42,11 +42,11 @@ void sb_putu8(sbuf* b, int cp);
 char* sb_str(sbuf* b);
 
 int u8dec(const char* s, int n, int* cp);
-int lc(int c);
-int ieq(const char* a, const char* b);
+static inline int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+static inline int ieq(const char* a, const char* b) { while (*a && *b) { if (*a != *b && lc((unsigned char)*a) != lc((unsigned char)*b)) return 0; a++; b++; } return *a == *b; }
 int ieqn(const char* a, const char* b, int n);
 int istarts(const char* s, const char* p);
-int is_ws(int c);
+static inline int is_ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 float parse_float(const char* s, const char** end);
 void url_resolve(const char* base, const char* rel, char* out, int cap);
 void url_origin(const char* url, char* out, int cap);
@@ -101,17 +101,18 @@ typedef struct node {
     void* idecl;
     unsigned flags;
     char* value;
-    int vlen, vcap, caret;
+    int vlen, vcap, caret, sela;
     int checked, selidx, dirtyval;
     struct nimg* img;
-    float scrolly;
+    float scrolly, scrollx;
     int media;
     unsigned agen;
+    unsigned selgen;
     struct node* shadow;
     struct node* host;
 } node;
 
-enum { NF_HOVER = 1, NF_FOCUS = 2, NF_ACTIVE = 4, NF_SCRIPTDONE = 8, NF_OPEN = 16, NF_DISABLED = 32, NF_SELOPEN = 64, NF_INLINEDIRTY = 128 };
+enum { NF_HOVER = 1, NF_FOCUS = 2, NF_ACTIVE = 4, NF_SCRIPTDONE = 8, NF_OPEN = 16, NF_DISABLED = 32, NF_SELOPEN = 64, NF_INLINEDIRTY = 128, NF_SVG = 256, NF_NOTRANS = 512, NF_PARSERINS = 1024 };
 
 node* node_new(int type);
 node* elem_new(const char* name);
@@ -149,7 +150,7 @@ enum { WS_NORMAL, WS_NOWRAP, WS_PRE, WS_PREWRAP, WS_PRELINE };
 enum { TA_LEFT, TA_RIGHT, TA_CENTER, TA_JUSTIFY, TA_START, TA_END };
 enum { VA_BASELINE, VA_MIDDLE, VA_TOP, VA_BOTTOM, VA_SUB, VA_SUPER, VA_TEXTTOP, VA_TEXTBOTTOM };
 enum { BS_NONE, BS_SOLID, BS_DASHED, BS_DOTTED, BS_DOUBLE, BS_GROOVE, BS_RIDGE, BS_INSET, BS_OUTSET, BS_HIDDEN };
-enum { LS_NONE, LS_DISC, LS_CIRCLE, LS_SQUARE, LS_DECIMAL, LS_LALPHA, LS_UALPHA, LS_LROMAN, LS_UROMAN };
+enum { LS_NONE, LS_DISC, LS_CIRCLE, LS_SQUARE, LS_DECIMAL, LS_LALPHA, LS_UALPHA, LS_LROMAN, LS_UROMAN, LS_DCLOSED, LS_DOPEN };
 enum { FD_ROW, FD_ROWREV, FD_COL, FD_COLREV };
 enum { AL_AUTO, AL_START, AL_END, AL_CENTER, AL_STRETCH, AL_BASELINE, AL_BETWEEN, AL_AROUND, AL_EVENLY, AL_NORMAL };
 
@@ -168,8 +169,8 @@ typedef struct bgimg {
 } bgimg;
 
 typedef struct cvar { char* name; char* val; struct cvar* next; } cvar;
-enum { TF_TRANSLATE, TF_SCALE, TF_ROTATE, TF_SKEW, TF_MATRIX };
-typedef struct tfn { unsigned char t; float v[6]; L l[2]; } tfn;
+enum { TF_TRANSLATE, TF_SCALE, TF_ROTATE, TF_SKEW, TF_MATRIX, TF_ROTX, TF_ROTY, TF_PERSPF, TF_ROT3D, TF_M3D };
+typedef struct tfn { unsigned char t; float v[16]; L l[2]; } tfn;
 typedef struct tfunc { unsigned char k; int steps; float p[4]; } tfunc;
 typedef struct animspec { char* name; float dur, delay, iter; unsigned char dir, fill, paused; tfunc tf; } animspec;
 typedef struct transspec { short prop; float dur, delay; tfunc tf; } transspec;
@@ -188,6 +189,9 @@ typedef struct style {
     float border[4], radius[4], owidth, ooffset;
     int zindex, zauto, order;
     float aspect;
+    unsigned char ctype;
+    unsigned char snaptype, snapstrict, snapalign, snapstop;
+    const char* cname;
     unsigned fill, stroke;
     float strokew;
     int hasfill, hasstroke, hasstrokew;
@@ -208,10 +212,18 @@ typedef struct style {
     tfn* tf;
     unsigned char ntf, hasmatrix, nanim, ntrans, tfcap;
     L tox, toy;
+    float persp;
+    L pox, poy;
+    unsigned char bfhide, p3d;
+    unsigned char nflt, flt_t[8], flowroot;
+    float flt_v[8];
+    char* fltsrc;
     animspec* anims;
     transspec* trans;
 } style;
 void tf_matrix(style* s, float w, float h, float* m);
+void tf_matrix4(style* s, float w, float h, float* M);
+int tf_is3d(style* s);
 int tf_has_linear(style* s);
 
 typedef struct frag {
@@ -248,6 +260,7 @@ typedef struct box {
     int ptlen;
     int marker;
     float contenth;
+    float lcbw, lcbh;
     float mte, mbe;
     int inl, bfcroot, lindex, haslines;
     float firstbase;
@@ -302,12 +315,18 @@ extern node* g_ce_node;
 extern int g_ce_off;
 node* edit_host(node* n);
 void js_ce_call(const char* fn, node* a, int b);
+extern nwe_perf g_nwe_perf;
 extern box* g_root;
 extern float g_doch, g_docw;
 void box_rect(node* n, float* x, float* y, float* w, float* h);
+void box_rect_s(node* n, float* x, float* y, float* w, float* h, int scrolled);
+float box_scroll_w(box* b);
 box* box_of(node* n);
 
 void paint_all(unsigned* fb, int stride, int fbw, int fbh, int vx, int vy, int vw, int vh, float scroll);
+int sel_listbox_rows(node* n);
+int sel_items(node* n, node** out, int cap);
+float sel_item_h(style* s);
 void fill_rect_a(unsigned* fb, int stride, int cx0, int cy0, int cx1, int cy1, float x, float y, float w, float h, unsigned col);
 
 typedef struct listener { char* type; void* fn; int capture, once; struct listener* next; } listener;
@@ -320,9 +339,10 @@ int js_eval_expr(const char* src, char* out, int cap);
 void js_fire_load(void);
 
 typedef struct {
-    char url[1024];
-    char base[1024];
+    char url[4096];
+    char base[4096];
     char origin[256];
+    int sandbox;
     float vw, vh, scroll;
     int dirty_style, dirty_layout, dirty_paint;
     node* doc;
@@ -332,7 +352,7 @@ typedef struct {
     int parsing;
     sbuf wbuf;
     int nav_pending;
-    char nav[1024];
+    char nav[4096];
     char navmethod[8];
     char* navbody;
     int navblen;
@@ -350,6 +370,8 @@ extern nwe_doc G;
 
 void eng_navigate(const char* url, const char* method, const char* body, int blen);
 void eng_invalidate(int what);
+void eng_style_node(node* n);
+void eng_chain_dirty(node* a, node* b);
 char* eng_fetch_text(const char* url, int* len);
 void eng_form_submit(node* form, node* submitter);
 void eng_scroll_to(float y);

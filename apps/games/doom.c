@@ -74,7 +74,7 @@ void DG_DrawFrame(void){ if(!DG_ScreenBuffer) return;
 static void doom_init(void){
     dsh_set_output(doom_out); dsh_set_exit(doom_exit_cb);
     if(!g_doom_heap){ g_doom_heap=kmalloc(24u*1024u*1024u); if(!g_doom_heap){ g_doom_state=3; return; } dsh_set_heap(g_doom_heap); }
-    extern u8 _binary_doom1_wad_start[], _binary_doom1_wad_end[];
+    extern u8 _binary_doom1_wad_xz_start[], _binary_doom1_wad_xz_end[];
     u32 modaddr=*(volatile u32*)0x5010ULL, modsize=*(volatile u32*)0x5018ULL;
     static const char* cand[5]={"DOOM2.WAD","DOOM.WAD","FREEDOOM.WAD","FREEDOO1.WAD","DOOM1.WAD"};
     static const char* inm[5]={"doom2.wad","doom.wad","freedoom2.wad","freedoom1.wad","doom1.wad"};
@@ -82,7 +82,7 @@ static void doom_init(void){
     if(!g_doom_wad) g_doom_wad=(u8*)kmalloc(DOOM_WAD_CAP);
     if(g_doom_wad) for(int i=0;i<4;i++){ int n=fat_read_file(cand[i],g_doom_wad,DOOM_WAD_CAP); if(n>1000000){ doom_wadlen=n; nm=inm[i]; g_doom_src=cand[i]; break; } }
     if(doom_wadlen<=0 && modaddr && modsize>1000000u){ if(g_doom_wad)kfree(g_doom_wad); g_doom_wad=(u8*)(u64)modaddr; doom_wadlen=(long)modsize; g_doom_src="boot disk"; }
-    if(doom_wadlen<=0){ long el=(long)(_binary_doom1_wad_end-_binary_doom1_wad_start); if(el>1000000){ if(g_doom_wad)kfree(g_doom_wad); g_doom_wad=_binary_doom1_wad_start; doom_wadlen=el; g_doom_src="built in"; } }
+    if(doom_wadlen<=0 && g_doom_wad){ extern long xzk_decode_into(const u8*,long,u8*,long); long el=xzk_decode_into(_binary_doom1_wad_xz_start,(long)(_binary_doom1_wad_xz_end-_binary_doom1_wad_xz_start),g_doom_wad,DOOM_WAD_CAP); if(el>1000000){ doom_wadlen=el; g_doom_src="built in"; } }
     if(doom_wadlen<=0){ g_doom_state=3; return; }
     dsh_set_file(nm,g_doom_wad,doom_wadlen);
     static char* argv[]={(char*)"doom",(char*)"-iwad",(char*)"doom1.wad",0}; argv[2]=(char*)nm;

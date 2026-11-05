@@ -96,7 +96,7 @@ static int acpi_region_pci(anode* rg,int* b,int* d,int* f){
     if(acpi_pci_loc(n,b,d,f,0)||*d<0)return -1; return 0; }
 static int acpi_rd(u8 sp,u64 a,int w,u64* v,anode* rg){
     *v=0;
-    if(sp==0){ if(a+(u64)w>0x100000000ULL||a<0x1000)return -1;
+    if(sp==0){ extern int early_remap_moved(u64,u64); if(a+(u64)w>0x100000000ULL||a<0x1000||early_remap_moved(a&~0x1FFFFFULL,(a&~0x1FFFFFULL)+1))return -1;
         *v=acpi_mem_rd(a,w); return 0; }
     if(sp==1){ if(a>0xFFFF)return -1; u16 p=(u16)a; if(w==1)*v=inb(p); else if(w==2)*v=inw(p); else if(w==4)*v=inl(p); else *v=(u64)inl(p)|((u64)inl((u16)(p+4))<<32); return 0; }
     if(sp==2){ int b,d,f; if(acpi_region_pci(rg,&b,&d,&f))return -1; u32 off=(u32)a;
@@ -105,7 +105,7 @@ static int acpi_rd(u8 sp,u64 a,int w,u64* v,anode* rg){
     if(sp==5){ if(a>0xFF)return -1; if(a<0x80){ outb(0x70,(u8)a); *v=inb(0x71); } else { outb(0x72,(u8)a); *v=inb(0x73); } return 0; }
     return -1; }
 static int acpi_wr(u8 sp,u64 a,int w,u64 v,anode* rg){
-    if(sp==0){ if(a+(u64)w>0x100000000ULL||a<0x1000)return -1;
+    if(sp==0){ extern int early_remap_moved(u64,u64); if(a+(u64)w>0x100000000ULL||a<0x1000||early_remap_moved(a&~0x1FFFFFULL,(a&~0x1FFFFFULL)+1)||early_remap_moved((a+(u64)w-1)&~0x1FFFFFULL,((a+(u64)w-1)&~0x1FFFFFULL)+1)){ g_acpi_memblock++; return -1; }
         return acpi_mem_wr(a,w,v); }
     if(sp==1){ if(a>0xFFFF)return -1; u16 p=(u16)a; if(w==1)outb(p,(u8)v); else if(w==2)outw(p,(u16)v); else if(w==4)outl(p,(u32)v); else { outl(p,(u32)v); outl((u16)(p+4),(u32)(v>>32)); } return 0; }
     if(sp==2){ int b,d,f; if(acpi_region_pci(rg,&b,&d,&f))return -1; u32 off=(u32)a;
@@ -202,8 +202,27 @@ static void bl_setup(void){
     if(g_bl.cur<0){ int p=bl_pwm_get(); g_bl.cur=p>=0?p:100; }
     g_bl.mode=g_bl.out?(g_bl.pwm_kind?3:1):2; g_bl.ok=1; }
 static int g_acb_dirty;
+anode* g_lid; anode* g_pbtn_dev; anode* g_sbtn_dev; int g_lid_open=-1; static u64 g_lid_t, g_pbn_t;
+void (*g_acpi_lid_cb)(int open);
+static void lid_check(void){
+    if(!g_lid)return; anode* m=aml_child(g_lid,"_LID"); u64 v=0; if(!m||aml_eval_int(m,&v))return;
+    int o=v?1:0; if(o==g_lid_open)return; int first=g_lid_open<0; g_lid_open=o;
+    { extern void klog(const char*); klog(o?"acpi: lid opened":"acpi: lid closed"); }
+    if(!first&&g_acpi_lid_cb)g_acpi_lid_cb(o); }
+int g_acpi_have_s1(void){ return g_acpi.ok&&g_acpi.have_s1&&g_acpi.pm1a_cnt&&g_acpi.pm1a_evt&&!g_acpi.hwred; }
+static int g_bl_saved=-1;
+void bl_screen(int on){
+    if(!g_bl.ok)return;
+    if(!on){ if(g_bl_saved<0)g_bl_saved=g_bl.cur;
+        if(g_bl.out){ aobj a,r; a.type=AT_NONE; a.p=0; a.e=0; a.own=0; aobj_int(&a,(u64)g_bl.lv[0]); aml_eval(aml_child(g_bl.out,"_BCM"),&a,1,&r); aobj_free(&r); aobj_free(&a); }
+        if(g_bl.pwm_kind&&g_bl.pwm_max){ if(g_bl.pwm_kind==1)bl_wr(0xC8258,0); else if(g_bl.pwm_kind==2)bl_wr(0xC8254,bl_rd(0xC8254)&0xFFFF0000u); else bl_wr(0x48254,bl_rd(0x48254)&0xFFFF0000u); }
+        return; }
+    if(g_bl_saved>=0){ int v=g_bl_saved; g_bl_saved=-1; bl_set(v<g_bl.minlv?g_bl.minlv:v); } }
 static void acpi_on_notify(anode* n,u32 v){
     g_acs.notifies++;
+    if(g_lid&&n==g_lid){ lid_check(); return; }
+    if(g_pbtn_dev&&n==g_pbtn_dev){ if((v==0x80||v==0x02)&&g_ticks-g_pbn_t>100){ g_pbn_t=g_ticks; if(g_acpi_pwrbtn_cb)g_acpi_pwrbtn_cb(); } return; }
+    if(g_sbtn_dev&&n==g_sbtn_dev){ if(v==0x80&&g_ticks-g_pbn_t>100){ g_pbn_t=g_ticks; extern void pm_sleep_button(void); pm_sleep_button(); } return; }
     for(int i=0;i<g_acb_n;i++) if(n==g_acb[i].dev){ g_acb_dirty|=v==0x81?3:1; return; }
     if(n==g_acad){ g_acb_dirty|=1; return; }
     if(g_bl.ok&&(n==g_bl.out||n==g_bl.bus)){ if(v==0x86||v==0x87){ bl_step(v==0x86?1:-1); { extern void osd_show(int,int,const char*); extern void klog_key(u32); klog_key(0x30000u|v); osd_show(2,g_bl.cur<0?0:g_bl.cur,"Brightness"); } return; } if(v==0x85){ bl_step(1); { extern void osd_show(int,int,const char*); osd_show(2,g_bl.cur<0?0:g_bl.cur,"Brightness"); } return; } if(v==0x80||v==0x82){ extern void hk_push(int); hk_push(15); return; } if(v==0x88||v==0x89||v==0x8A)return; }
@@ -220,7 +239,9 @@ void acpi_poll(void){
     for(int k=0;k<8;k++){ u8 q; if(!aec_query(&q))break; acpi_ec_event(q); }
     if(g_acpi.pm1a_evt&&g_acs.acpi_mode&&!g_acpi.hwred){ u16 st=inw((u16)g_acpi.pm1a_evt); if(st!=0xFFFF&&(st&0x100)){ outw((u16)g_acpi.pm1a_evt,0x100); if(g_ticks-g_acs.pwrbtn_t>100){ g_acs.pwrbtn_t=g_ticks; if(g_acpi_pwrbtn_cb)g_acpi_pwrbtn_cb(); } } }
     acpi_drain_notify();
-    if(g_acb_n&&g_ticks-g_acb_t>=500){ g_acb_t=g_ticks; acpi_battery_update(0); } g_aml_hard_deadline=0; }
+    if(g_acb_n&&g_ticks-g_acb_t>=500){ g_acb_t=g_ticks; acpi_battery_update(0); { extern void pm_battery_tick(void); pm_battery_tick(); } }
+    if(g_lid&&g_ticks-g_lid_t>=50){ g_lid_t=g_ticks; lid_check(); }
+    g_aml_hard_deadline=0; }
 static u8* g_acpi_copies[24]; static int g_acpi_ncopies;
 static int acpi_load_one(const u8* t){
     u32 len=acpi_r32(t+4); if(len<=36)return 0; u8* c=(u8*)kmalloc(len); if(!c)return -1; for(u32 i=0;i<len;i++)c[i]=t[i]; if(g_acpi_ncopies<24)g_acpi_copies[g_acpi_ncopies++]=c;
@@ -239,15 +260,18 @@ void acpi_aml_init(void){
     for(int i=0;i<16;i++){ const u8* s=acpi_find_table("SSDT",i); if(!s)break; acpi_load_one(s); }
     if(!g_acpi.hwred&&g_acpi.pm1a_cnt&&g_acpi.smi_cmd&&g_acpi.acpi_en){ acpi_enable_mode(); }
     g_acs.acpi_mode=g_acpi.hwred||(g_acpi.pm1a_cnt&&(inw((u16)g_acpi.pm1a_cnt)&1));
-    if(g_acpi.pm1a_evt&&!g_acpi.hwred)outw((u16)g_acpi.pm1a_evt,0x100);
+    if(g_acpi.pm1a_evt&&!g_acpi.hwred){ outw((u16)g_acpi.pm1a_evt,0x100); u16 en=(u16)(g_acpi.pm1a_evt+(g_acpi.pm1_evt_len?g_acpi.pm1_evt_len/2:2)); u16 ev=inw(en); if(ev!=0xFFFF)outw(en,(u16)(ev|0x100)); }
     aml_run_reg(g_aroot,0,(1u<<0)|(1u<<1)|(1u<<2));
     aec_setup(); if(g_aec.ok){ aml_run_reg(g_aroot,0,1u<<3); g_acs.ec_reg=1; }
     aml_run_ini(g_aroot,0);
     anode* d2[4]; int nb=aml_find_devices(g_aroot,"PNP0C0A",d2,2,0,0); g_acb_n=0; for(int i=0;i<nb;i++){ acbat* b=&g_acb[g_acb_n++]; for(u32 k=0;k<sizeof *b;k++)((u8*)b)[k]=0; b->dev=d2[i]; }
     anode* ad[2]; g_acad=aml_find_devices(g_aroot,"ACPI0003",ad,1,0,0)?ad[0]:0;
+    { anode* x[2]; g_lid=aml_find_devices(g_aroot,"PNP0C0D",x,1,0,0)?x[0]:0; g_pbtn_dev=aml_find_devices(g_aroot,"PNP0C0C",x,1,0,0)?x[0]:0; g_sbtn_dev=aml_find_devices(g_aroot,"PNP0C0E",x,1,0,0)?x[0]:0; }
     g_acs.up=1; { extern int g_aml_ok; g_aml_ok=1; } acpi_battery_update(1); g_acb_t=g_ticks; bl_setup(); acpi_drain_notify();
     g_acs.ms=(u32)((acpi_now_ns()-tns0)/1000000ULL); (void)t0; g_aml_hard_deadline=0;
     int k=0; const char* e=g_aml_lasterr; while(e[k]&&k<63){ g_acs.errs[k]=e[k]; k++; } g_acs.errs[k]=0;
     klog(g_acb_n?"acpi: AML up, battery found":"acpi: AML up, no battery");
-    if(g_bl.ok)klog(g_bl.mode==2?"acpi: backlight via Intel PWM":"acpi: backlight via ACPI _BCM"); }
-void acpi_power_button(void){ klog("acpi: power button pressed, shutting down"); power_off(); }
+    if(g_bl.ok)klog(g_bl.mode==2?"acpi: backlight via Intel PWM":"acpi: backlight via ACPI _BCM");
+    if(g_lid){ g_lid_t=g_ticks; lid_check(); klog("acpi: lid switch found"); }
+    if(g_pbtn_dev)klog("acpi: power button device found"); }
+void acpi_power_button(void){ klog("acpi: power button pressed"); extern void pm_power_button(void); pm_power_button(); }

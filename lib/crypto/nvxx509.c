@@ -195,6 +195,41 @@ static int ecdsa_verify(ec_curve* c,const u8* pt,int ptlen,const u8* hash,int hl
     return bn_cmp(x,r,L)?-1:0;
 }
 
+static void ec_sel(ecp* r,const ecp* a,u32 m,int L){ for(int k=0;k<L;k++){ r->x[k]^=m&(r->x[k]^a->x[k]); r->y[k]^=m&(r->y[k]^a->y[k]); r->z[k]^=m&(r->z[k]^a->z[k]); } }
+static int ec_on_curve(ec_curve* c,const u32* xm,const u32* ym){
+    u32 t[12],t2[12],x3[12]; fe_mul(c,t,ym,ym); fe_mul(c,t2,xm,xm); fe_mul(c,t2,t2,xm);
+    fe_add(c,x3,xm,xm); fe_add(c,x3,x3,xm); fe_sub(c,t2,t2,x3); fe_add(c,t2,t2,c->bm);
+    return bn_cmp(t,t2,c->L)==0;
+}
+int x509_p256_ecdh(const u8 priv[32],const u8* peer,int plen,u8* out){
+    ec_curve* c=&g_p256; ec_setup(c); int L=c->L, n=c->bytes;
+    u32 k[12],one[12],px[12],py[12]; bn_set(one,1,L);
+    if(bn_from_be(k,L,priv,32)||bn_zero(k,L)||bn_cmp(k,c->mn.n,L)>=0)return -1;
+    ecp P,R,T;
+    if(peer){
+        if(plen!=1+2*n||peer[0]!=4)return -1;
+        if(bn_from_be(px,L,peer+1,n)||bn_from_be(py,L,peer+1+n,n))return -1;
+        if(bn_cmp(px,c->mp.n,L)>=0||bn_cmp(py,c->mp.n,L)>=0)return -1;
+        mont_to(&c->mp,P.x,px); mont_to(&c->mp,P.y,py);
+        if(!ec_on_curve(c,P.x,P.y))return -1;
+    } else { bn_copy(P.x,c->gxm,L); bn_copy(P.y,c->gym,L); }
+    mont_to(&c->mp,P.z,one);
+    for(int i=0;i<L;i++){ R.x[i]=0; R.y[i]=0; R.z[i]=0; }
+    for(int b=L*32-1;b>=0;b--){
+        ec_dbl(c,&R,&R); ec_add(c,&T,&R,&P);
+        u32 m=0u-((k[b/32]>>(b%32))&1); ec_sel(&R,&T,m,L);
+    }
+    if(bn_zero(R.z,L))return -1;
+    u32 zn[12],zi[12],t[12],zz[12],x[12],y[12];
+    mont_from(&c->mp,zn,R.z); mont_pow(&c->mp,zi,zn,c->pm2b,n);
+    mont_to(&c->mp,t,zi); fe_mul(c,zz,t,t); fe_mul(c,x,R.x,zz); fe_mul(c,zz,zz,t); fe_mul(c,y,R.y,zz);
+    mont_from(&c->mp,t,x); mont_from(&c->mp,zz,y);
+    if(peer){ bn_to_be(out,32,t,L); }
+    else { out[0]=4; bn_to_be(out+1,32,t,L); bn_to_be(out+33,32,zz,L); }
+    for(int i=0;i<L;i++){ k[i]=0; R.x[i]=0; R.y[i]=0; R.z[i]=0; T.x[i]=0; T.y[i]=0; T.z[i]=0; }
+    return 0;
+}
+
 typedef struct { const u8* p; const u8* end; } der_cur;
 static int der_get(der_cur* c,int* tag,const u8** v,int* len){
     if(c->p>=c->end||c->end-c->p<2)return -1;
@@ -416,8 +451,51 @@ int x509_add_anchor_der(const u8* d,int len){
     g_x509_extra[g_x509_nextra].spki=x.spki; g_x509_extra[g_x509_nextra].spkilen=x.spkilen; g_x509_nextra++;
     return 0;
 }
+int x509_leaf_sig12(const u8* leaf,int len,int scheme,const u8* data,int dlen,const u8* sig,int siglen){
+    x509_cert x; if(x509_parse(leaf,len,&x))return -1;
+    int alg=scheme==0x0401?XS_RSA256:scheme==0x0501?XS_RSA384:scheme==0x0601?XS_RSA512:scheme==0x0403?XS_EC256:scheme==0x0503?XS_EC384:scheme==0x0603?XS_EC512:0;
+    if(alg)return x509_verify_with(alg,data,dlen,sig,siglen,x.spki,x.spkilen);
+    if(scheme==0x0804||scheme==0x0805||scheme==0x0806){
+        x509_key k; if(x509_parse_spki(x.spki,x.spkilen,&k)||k.type!=XK_RSA)return -1;
+        int hid=scheme==0x0804?XH_SHA256:scheme==0x0805?XH_SHA384:XH_SHA512; u8 h[64]; xh_hash(hid,data,dlen,h);
+        return rsa_pss_verify(k.n,k.nlen,k.e,k.elen,hid,h,sig,siglen); }
+    return -1;
+}
 int x509_leaf_cv(const u8* leaf,int len,int scheme,const u8* sig,int siglen,const u8* thash){
     x509_cert x; if(x509_parse(leaf,len,&x))return -1;
     return tls13_verify_cv(x.spki,x.spkilen,scheme,sig,siglen,thash,32);
 }
 const char* x509_reason(void){ return g_x509_why; }
+
+static int p256_load(ec_curve* c,const u8* pt,ecp* P){ int L=c->L; u32 px[12],py[12],one[12]; bn_set(one,1,L);
+    if(pt[0]!=4||bn_from_be(px,L,pt+1,32)||bn_from_be(py,L,pt+33,32))return -1; if(bn_cmp(px,c->mp.n,L)>=0||bn_cmp(py,c->mp.n,L)>=0)return -1;
+    mont_to(&c->mp,P->x,px); mont_to(&c->mp,P->y,py); if(!ec_on_curve(c,P->x,P->y))return -1; mont_to(&c->mp,P->z,one); return 0; }
+static int p256_store(ec_curve* c,const ecp* R,u8* out){ int L=c->L, n=c->bytes; if(bn_zero(R->z,L))return -1;
+    u32 zn[12],zi[12],t[12],zz[12],x[12],y[12]; mont_from(&c->mp,zn,R->z); mont_pow(&c->mp,zi,zn,c->pm2b,n);
+    mont_to(&c->mp,t,zi); fe_mul(c,zz,t,t); fe_mul(c,x,R->x,zz); fe_mul(c,zz,zz,t); fe_mul(c,y,R->y,zz);
+    mont_from(&c->mp,t,x); mont_from(&c->mp,zz,y); out[0]=4; bn_to_be(out+1,32,t,L); bn_to_be(out+33,32,zz,L); return 0; }
+int p256_mul(const u8 k32[32],const u8* pt,u8 out[65]){
+    ec_curve* c=&g_p256; ec_setup(c); int L=c->L; u32 k[12],one[12]; bn_set(one,1,L);
+    if(bn_from_be(k,L,k32,32)||bn_zero(k,L))return -1; if(bn_cmp(k,c->mn.n,L)>=0)bn_sub(k,k,c->mn.n,L);
+    ecp P,R,T; if(pt){ if(p256_load(c,pt,&P))return -1; } else { bn_copy(P.x,c->gxm,L); bn_copy(P.y,c->gym,L); mont_to(&c->mp,P.z,one); }
+    for(int i=0;i<L;i++){ R.x[i]=0; R.y[i]=0; R.z[i]=0; }
+    for(int b=L*32-1;b>=0;b--){ ec_dbl(c,&R,&R); ec_add(c,&T,&R,&P); u32 m=0u-((k[b/32]>>(b%32))&1); ec_sel(&R,&T,m,L); }
+    int r=p256_store(c,&R,out); for(int i=0;i<L;i++)k[i]=0; return r; }
+int p256_add(const u8 a[65],const u8 b[65],u8 out[65]){
+    ec_curve* c=&g_p256; ec_setup(c); ecp A,B,R; if(p256_load(c,a,&A)||p256_load(c,b,&B))return -1;
+    int same=1; for(int i=1;i<65;i++) if(a[i]!=b[i])same=0;
+    if(same)ec_dbl(c,&R,&A); else ec_add(c,&R,&A,&B); return p256_store(c,&R,out); }
+void p256_neg(u8 pt[65]){ ec_curve* c=&g_p256; ec_setup(c); u32 y[12],r[12]; bn_from_be(y,8,pt+33,32); if(bn_zero(y,8))return; bn_sub(r,c->mp.n,y,8); bn_to_be(pt+33,32,r,8); }
+int p256_y_from_x(const u8 x32[32],u8 y32[32]){
+    ec_curve* c=&g_p256; ec_setup(c); int L=c->L; u32 x[12],xm[12],t[12],t2[12],x3[12],v[12],y[12],ym[12],chk[12];
+    if(bn_from_be(x,L,x32,32)||bn_cmp(x,c->mp.n,L)>=0)return 0; mont_to(&c->mp,xm,x);
+    fe_mul(c,t2,xm,xm); fe_mul(c,t2,t2,xm); fe_add(c,x3,xm,xm); fe_add(c,x3,x3,xm); fe_sub(c,t2,t2,x3); fe_add(c,t2,t2,c->bm); mont_from(&c->mp,v,t2);
+    u8 e[32]; hex2b(c->p,e,32); { int carry=1; for(int i=31;i>=0&&carry;i--){ int s=e[i]+carry; e[i]=(u8)s; carry=s>>8; } } for(int i=31;i>0;i--)e[i]=(u8)((e[i]>>2)|(e[i-1]<<6)); e[0]>>=2;
+    mont_pow(&c->mp,y,v,e,32); mont_to(&c->mp,ym,y); fe_mul(c,t,ym,ym); mont_from(&c->mp,chk,t);
+    if(bn_cmp(chk,v,L))return 0; bn_to_be(y32,32,y,L); return 1; }
+void p256_modn_add(const u8 a[32],const u8 b[32],u8 out[32]){ ec_curve* c=&g_p256; ec_setup(c); u32 x[12],y[12],r[12];
+    bn_from_be(x,8,a,32); bn_from_be(y,8,b,32); if(bn_cmp(x,c->mn.n,8)>=0)bn_sub(x,x,c->mn.n,8); if(bn_cmp(y,c->mn.n,8)>=0)bn_sub(y,y,c->mn.n,8);
+    u32 cy=bn_add(r,x,y,8); if(cy||bn_cmp(r,c->mn.n,8)>=0)bn_sub(r,r,c->mn.n,8); bn_to_be(out,32,r,8); }
+void p256_modn(u8 a[32]){ ec_curve* c=&g_p256; ec_setup(c); u32 x[12]; bn_from_be(x,8,a,32); while(bn_cmp(x,c->mn.n,8)>=0)bn_sub(x,x,c->mn.n,8); bn_to_be(a,32,x,8); }
+void p256_prime(u8 out[32]){ hex2b(g_p256.p,out,32); }
+void p256_order(u8 out[32]){ hex2b(g_p256.n,out,32); }

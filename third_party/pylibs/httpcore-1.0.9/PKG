@@ -1,0 +1,4 @@
+Name: httpcore
+Version: 1.0.9
+Requires-Dist: certifi
+Requires-Dist: h11>=0.16

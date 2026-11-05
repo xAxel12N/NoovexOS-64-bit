@@ -12,5 +12,6 @@ int tar_walk(const u8* t,long n,void(*cb)(const char*,unsigned,const u8*,long,in
 void pkg_print_cb(const char* name,unsigned mode,const u8* data,long len,int isdir,void* ctx);
 int pkg_open(const u8* file,long n,const u8** tar,long* tarlen);
 int pkg_install(const u8* file,long n,int extract);
+u8* net_get_url(const char* url,long* outlen,long hint,const char** err);
 
 #endif

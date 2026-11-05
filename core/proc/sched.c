@@ -151,7 +151,7 @@ int do_fork(struct sysregs* r){
             for(int i2=0;i2<512;i2++){ if(!(ppd[i2]&1))continue; u64* ppt=(u64*)(ppd[i2]&~0xFFFULL);
                 for(int i1=0;i1<512;i1++){ if(!(ppt[i1]&1))continue;
                     u64 v=((u64)8<<39)|((u64)i3<<30)|((u64)i2<<21)|((u64)i1<<12);
-                    u64 srcpa=ppt[i1]&~0xFFFULL, f=pframe_alloc(); if(!f) return -1;
+                    u64 srcpa=ppt[i1]&0x000FFFFFFFFFF000ULL, f=pframe_alloc(); if(!f) return -1;
                     u8* d=(u8*)f; u8* sp=(u8*)srcpa; for(int b=0;b<4096;b++)d[b]=sp[b];
                     vm_map(child,v,f,0x7ULL); } } } }
     /* child resumes at the parent's user RIP/RSP (iret frame is above the 15 saved regs) */

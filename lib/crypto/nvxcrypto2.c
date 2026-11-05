@@ -32,7 +32,6 @@ static const u64 K512[80]={
 
 static u64 ror64(u64 v,int n){ return (v>>n)|(v<<(64-n)); }
 
-typedef struct { u64 h[8]; u64 len; u8 buf[128]; int n; } sha512_ctx;
 
 static void sha512_compress(sha512_ctx* c,const u8* p){
     u64 w[80];
@@ -52,7 +51,7 @@ static void sha512_compress(sha512_ctx* c,const u8* p){
     }
     c->h[0]+=a;c->h[1]+=b;c->h[2]+=cc;c->h[3]+=d;c->h[4]+=e;c->h[5]+=f;c->h[6]+=g;c->h[7]+=h;
 }
-static void sha512_init(sha512_ctx* c){
+void sha512_init(sha512_ctx* c){
     c->h[0]=0x6a09e667f3bcc908ULL;c->h[1]=0xbb67ae8584caa73bULL;c->h[2]=0x3c6ef372fe94f82bULL;c->h[3]=0xa54ff53a5f1d36f1ULL;
     c->h[4]=0x510e527fade682d1ULL;c->h[5]=0x9b05688c2b3e6c1fULL;c->h[6]=0x1f83d9abfb41bd6bULL;c->h[7]=0x5be0cd19137e2179ULL;
     c->len=0;c->n=0;
@@ -62,12 +61,12 @@ static void sha384_init(sha512_ctx* c){
     c->h[4]=0x67332667ffc00b31ULL;c->h[5]=0x8eb44a8768581511ULL;c->h[6]=0xdb0c2e0d64f98fa7ULL;c->h[7]=0x47b5481dbefa4fa4ULL;
     c->len=0;c->n=0;
 }
-static void sha512_update(sha512_ctx* c,const u8* d,u64 len){
+void sha512_update(sha512_ctx* c,const u8* d,u64 len){
     c->len+=len;
     while(len){ int take=128-c->n; if((u64)take>len)take=(int)len; for(int i=0;i<take;i++)c->buf[c->n+i]=d[i];
         c->n+=take; d+=take; len-=take; if(c->n==128){ sha512_compress(c,c->buf); c->n=0; } }
 }
-static void sha512_final(sha512_ctx* c,u8* out,int outlen){
+void sha512_final(sha512_ctx* c,u8* out,int outlen){
     u64 bits=c->len*8;
     u8 pad=0x80; sha512_update(c,&pad,1);
     u8 z=0; while(c->n!=112) sha512_update(c,&z,1);

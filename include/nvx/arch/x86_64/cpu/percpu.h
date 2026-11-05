@@ -25,8 +25,8 @@ struct pcpu {
     struct tss64 tss __attribute__((aligned(16)));
     u64 gdt[7];
     struct { u16 limit; u64 base; } __attribute__((packed)) gdtp;
-    u8 kstack[16384] __attribute__((aligned(16)));
-    u8 jkstack[16384] __attribute__((aligned(16)));
+    u8 kstack[32768] __attribute__((aligned(16)));
+    u8 jkstack[32768] __attribute__((aligned(16)));
     u8 ist_nmi[4096] __attribute__((aligned(16)));
     u8 ist_df[8192] __attribute__((aligned(16)));
 };

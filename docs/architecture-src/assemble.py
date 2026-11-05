@@ -3,7 +3,7 @@ D = os.path.dirname(os.path.abspath(__file__))
 PARTS = ['01-overview-build.md', '02-boot-signatures.md', '03-memory.md', '04-cpu-smp.md', '05-processes.md',
          '06-linux-porting.md', '07-filesystems.md', '08-storage-installer.md', '09-network.md', '10-devices.md',
          '11-desktop-shell.md', '12-testing-debugging.md', '13-web-engine.md']
-VERSION = '9.83'
+VERSION = '10.60'
 
 def slug(text, seen):
     t = re.sub(r'`', '', text).strip().lower()
@@ -43,7 +43,7 @@ This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating
 | Area | What is there | Part |
 |---|---|---|
 | Boot | BIOS loader (myboot) and UEFI loader, hybrid ISO/USB image, SHA-256 build signature that stops the boot if the kernel was modified | [2](#part-2-boot-chain-kernel-entry-and-kernel-signatures) |
-| Kernel | 146 separately compiled C and C++ units with interface headers under `include/nvx/`, a 77 MB flat image (100 MB limit) with compressed programs, the web engine, glibc, GNU tools and CPython 3.13, identity-mapped kernel, demand paging and copy-on-write for programs | [1](#part-1-overview-source-layout-and-build-system), [3](#part-3-memory) |
+| Kernel | 153 separately compiled C and C++ units with interface headers under `include/nvx/`, a 77 MB flat image (100 MB limit) with compressed programs, the web engine, glibc, GNU tools and CPython 3.13, identity-mapped kernel, demand paging and copy-on-write for programs | [1](#part-1-overview-source-layout-and-build-system), [3](#part-3-memory) |
 | CPU | Up to 16 cores with per-CPU state, a ticket big kernel lock, IPIs for rescheduling, TLB shootdown and halt; cores start automatically | [4](#part-4-cpu-interrupts-timers-and-multi-core) |
 | Programs | 256 processes and threads, futexes, signals, timers, job control, pipes; native `int 0x80` ABI and a Linux `syscall` ABI that runs static and dynamic musl programs (SQLite, gzip, xz, zstd, the kilo editor, the `fetch` HTTPS client) | [5](#part-5-processes-scheduling-signals-and-the-native-system-call-abi), [6](#part-6-linux-compatibility-libc-and-porting-applications) |
 | Files | NVX4 (extents, two checksummed metadata copies, safe against power cuts), FAT, NTFS via ntfs-3g, Unix permissions | [7](#part-7-file-systems) |

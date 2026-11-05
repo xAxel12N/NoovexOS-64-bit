@@ -50,12 +50,15 @@ void nvv_reserve(u64 lo,u64 hi){
         if(l2==a){ g_nvvf[i].a=h2; g_nvvf[i].s=e-h2; continue; }
         if(h2==e){ g_nvvf[i].s=l2-a; continue; }
         g_nvvf[i].s=l2-a; vf_add(h2,e-h2); } }
-u64 nvv_alloc(u64 size,u64 align){
+static u64 nvv_alloc_f(u64 size,u64 align,int fill);
+u64 nvv_alloc(u64 size,u64 align){ return nvv_alloc_f(size,align,1); }
+u64 nvv_alloc_raw(u64 size,u64 align){ return nvv_alloc_f(size,align,0); }
+static u64 nvv_alloc_f(u64 size,u64 align,int fill){
     if(!size||g_nvu>=1024)return 0; if(align<0x1000)align=0x1000; size=al_up(size,0x1000);
     for(int i=0;i<g_nvf;i++){ u64 a=al_up(g_nvvf[i].a,align), e=g_nvvf[i].a+g_nvvf[i].s; if(a+size>e)continue;
         u64 fa=g_nvvf[i].a; g_nvvf[i].a=a+size; g_nvvf[i].s=e-(a+size); if(!g_nvvf[i].s){ for(int k=i;k<g_nvf-1;k++)g_nvvf[k]=g_nvvf[k+1]; g_nvf--; }
         if(a>fa)vf_add(fa,a-fa);
-        g_nvvu[g_nvu].a=a; g_nvvu[g_nvu].s=size; g_nvu++; nvp_fill(a,size,0); return a; }
+        g_nvvu[g_nvu].a=a; g_nvvu[g_nvu].s=size; g_nvu++; if(fill)nvp_fill(a,size,0); return a; }
     return 0; }
 void nvv_free(u64 addr){ for(int i=0;i<g_nvu;i++) if(g_nvvu[i].a==addr){ u64 s=g_nvvu[i].s; g_nvvu[i]=g_nvvu[g_nvu-1]; g_nvu--; vf_add(addr,s); return; } }
 u64 nvv_free_bytes(void){ u64 t=0; for(int i=0;i<g_nvf;i++)t+=g_nvvf[i].s; return t; }
@@ -68,12 +71,20 @@ static u64 tbl_get(u64 slot,int dual_small){
     u64 e=nvp_rd64(slot+(dual_small?8:0)); if(((e>>1)&3)==1)return pde_addr(e);
     u64 t=nvv_alloc(0x1000,0x1000); if(!t)return 0; nvp_wr64(slot+(dual_small?8:0),pde_vram(t)); return t; }
 int nvm_vmm_new(nvvmm* m,u64 limit){ m->ok=0; m->limit=limit; m->pd3=nvv_alloc(0x1000,0x1000); if(!m->pd3)return 0; m->ok=1; return 1; }
+static u64 spt_find(nvvmm* m,u64 v,int make){
+    u64 slot=m->pd3+((v>>47)&3)*8; u64 e=nvp_rd64(slot); if(((e>>1)&3)!=1&&!make)return 0;
+    u64 pd2=tbl_get(slot,0); if(!pd2)return 0; slot=pd2+((v>>38)&511)*8; e=nvp_rd64(slot); if(((e>>1)&3)!=1&&!make)return 0;
+    u64 pd1=tbl_get(slot,0); if(!pd1)return 0; slot=pd1+((v>>29)&511)*8; e=nvp_rd64(slot); if(((e>>1)&3)!=1&&!make)return 0;
+    u64 pd0=tbl_get(slot,0); if(!pd0)return 0; slot=pd0+((v>>21)&255)*16; e=nvp_rd64(slot+8); if(((e>>1)&3)!=1&&!make)return 0;
+    return tbl_get(slot,1); }
+int nvm_unmap(nvvmm* m,u64 va,u64 len){
+    u64 spt=0, reg=~0ULL;
+    for(u64 o=0;o<len;o+=0x1000){ u64 v=va+o; if((v>>21)!=reg){ reg=v>>21; spt=spt_find(m,v,0); } if(spt)nvp_wr64(spt+((v>>12)&511)*8,0); }
+    return 1; }
 int nvm_map(nvvmm* m,u64 va,u64 pa,u64 len,int sysmem,int priv,int ro){
+    u64 spt=0, reg=~0ULL;
     for(u64 o=0;o<len;o+=0x1000){ u64 v=va+o;
-        u64 pd2=tbl_get(m->pd3+((v>>47)&3)*8,0); if(!pd2)return 0;
-        u64 pd1=tbl_get(pd2+((v>>38)&511)*8,0); if(!pd1)return 0;
-        u64 pd0=tbl_get(pd1+((v>>29)&511)*8,0); if(!pd0)return 0;
-        u64 spt=tbl_get(pd0+((v>>21)&255)*16,1); if(!spt)return 0;
+        if((v>>21)!=reg){ reg=v>>21; spt=spt_find(m,v,1); } if(!spt)return 0;
         u64 p=pa+o; u64 pte=(p>>4)|1ULL|((u64)(sysmem?2:0)<<1)|((u64)(sysmem?1:0)<<3)|((u64)(priv?1:0)<<5)|((u64)(ro?1:0)<<6);
         nvp_wr64(spt+((v>>12)&511)*8,pte); }
     return 1; }

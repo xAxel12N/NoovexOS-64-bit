@@ -51,7 +51,7 @@ static void vm_apply(u32 x,u32 y,int l,int r,int m,int wheel){
     int tx=(int)((u64)x*W/65536u), ty=(int)((u64)y*H/65536u);
     if(tx!=g_vm_lx||ty!=g_vm_ly){ u64 f=cpu_irq_save(); int cx=mx+mouse_dx, cy=my-mouse_dy; mouse_dx+=tx-cx; mouse_dy-=ty-cy; mouse_evt=1; if(f&0x200)cpu_irq_on(); g_vm_lx=tx; g_vm_ly=ty; g_vmm_events++; }
     int bb=(l?1:0)|(r?2:0)|(m?4:0); if(bb!=g_vm_lb&&l>=0){ in_buttons(l,r,m); g_vm_lb=bb; }
-    if(wheel)in_scroll(wheel,0); }
+    if(wheel)in_scroll(-wheel,0); }
 
 static void vmw_poll(void){
     for(int guard=0;guard<16;guard++){

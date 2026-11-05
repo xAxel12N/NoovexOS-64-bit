@@ -105,22 +105,25 @@ static void ih_process(tpdev* t,const u8* b,int n){
         int l=tp_bits(p,pl,L->mbtn[0]), r=tp_bits(p,pl,L->mbtn[1]), m=tp_bits(p,pl,L->mbtn[2]);
         in_rel(tp_bits(p,pl,L->mx),tp_bits(p,pl,L->my)); in_buttons(l,r,m); in_scroll(tp_bits(p,pl,L->mw),0); t->frames++; } }
 void igp_sample(void); void igp_learn(int rep); int igp_ready(void); int igp_asserted(void);
+void (*g_tp_amd_sample)(void); void (*g_tp_amd_learn)(int); int (*g_tp_amd_ready)(void); int (*g_tp_amd_asserted)(void); int (*g_tp_amd_setup)(u64,int,int);
+static int ih_amdg_ready(void){ return g_tp_amd_ready&&g_tp_amd_ready(); }
 static int ih_gpio_asserted(tpdev* t){ u32 v=*(volatile u32*)(t->gpio_base+(u64)t->pin*4u); int lvl=(v>>16)&1; return t->active_low?!lvl:lvl; }
 void tp_poll(void){
     tpdev* t=&g_tp; if(!t->ok)return;
     { extern int g_lap_tp_off; if(g_lap_tp_off)return; }
     if(t->eng.pulse){ tpout o; tpe_frame(&t->eng,t->cont,0,t->btn,ih_ms(),&o); ih_apply(t,&o); }
     { u64 now=g_ticks; if(!t->rate_t0)t->rate_t0=now; if(now-t->rate_t0>=100){ t->rate=t->rate_cnt*100u/(u32)(now-t->rate_t0); t->rate_cnt=0; t->rate_t0=now; } }
-    int pin=t->gpio_ok||igp_ready();
+    int pin=t->gpio_ok||igp_ready()||ih_amdg_ready();
     for(int round=0;round<6;round++){
         int lrn=0;
         if(t->gpio_ok){ if(!ih_gpio_asserted(t))return; }
         else if(igp_ready()){ if(!igp_asserted())return; }
-        else { if(round==0){ if(g_ticks==t->last_tick)return; t->last_tick=g_ticks; igp_sample(); lrn=1; } else if(round>=4)return; }
+        else if(ih_amdg_ready()){ if(!g_tp_amd_asserted())return; }
+        else { if(round==0){ if(g_ticks==t->last_tick)return; t->last_tick=g_ticks; igp_sample(); if(g_tp_amd_sample)g_tp_amd_sample(); lrn=1; } else if(round>=4)return; }
         int n=t->d.maxin; if(n>512)n=512;
         if(ih_read_input(t,t->buf,n))return; t->reads++;
         int len=t->buf[0]|(t->buf[1]<<8);
-        if(lrn)igp_learn(len>2&&len<=n);
+        if(lrn){ igp_learn(len>2&&len<=n); if(g_tp_amd_learn)g_tp_amd_learn(len>2&&len<=n); }
         if(len<=2){ t->empty++; if(!pin)return; continue; }
         if(!pin&&len==t->lastn){ int same=1; for(int i=0;i<len&&i<n;i++) if(t->buf[i]!=t->last[i]){ same=0; break; } if(same){ t->dup++; return; } }
         if(len<=n){ for(int i=0;i<len;i++)t->last[i]=t->buf[i]; t->lastn=len; }

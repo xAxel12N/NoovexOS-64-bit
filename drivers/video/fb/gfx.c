@@ -15,6 +15,7 @@ int g_lay_abort_win=-1, g_lay_abort_why=0, g_lay_abort_k=0;
 u32 g_lay_full=0, g_lay_part=0, g_lay_same=0, g_lay_abort=0, g_blur_hit=0, g_blur_miss=0, g_shd_fast=0, g_shd_slow=0;
 static u32 f_lay_full=0, f_lay_part=0, f_lay_same=0, f_lay_abort=0, f_blur_hit=0, f_blur_miss=0, f_shd_fast=0, f_shd_slow=0; static u64 f_w0=0, f_p0=0; static u32 f_s0=0, f_acc0=0;
 volatile int g_gfx_run=0;
+gfx_alloc_fn g_gfx_alloc_gpu=0; int g_gfx_nomem=0;
 static int gs_tmp=0, gs_tmp2=0, gs_stc=0, gs_stm=0, gs_mc=0, snap_fail=0, lay_fail=0, own_scene=0; static u32 *p_bg=0, *p_nc=0;
 static gfx_alloc_fn g_alloc=0;
 static u32 *p_tmp=0, *p_stc=0, *p_stm=0, *p_mc=0;
@@ -184,7 +185,7 @@ static void glass_rec(int x,int y,int w,int h,int r,int it){ layer* L=&LY[g_cur_
 int gfx_layer_of(int i){ if(i<0||i>=NL)return 0; return LY[i].sid; }
 static int lay_get(int i){
     if(i<0||i>=NL)return 0; if(LY[i].sid)return LY[i].sid; if(!g_alloc||lay_fail)return 0;
-    u32* px=0; int s=g_alloc(W,H,SW,&px); if(s<=0){ lay_fail=1; return 0; } LY[i].sid=s; LY[i].px=px; LY[i].valid=0; LY[i].bx0=LY[i].by0=0; LY[i].bx1=LY[i].by1=0;
+    u32* px=0; int s=g_alloc(W,H,SW,&px); if(s<=0){ lay_fail=1; g_gfx_nomem=1; return 0; } LY[i].sid=s; LY[i].px=px; LY[i].valid=0; LY[i].bx0=LY[i].by0=0; LY[i].bx1=LY[i].by1=0;
     gq_fill(s,0,0,(int)W,(int)H,GQ_EMPTY); g_gfx_layers++; g_gfx_layer_mb=(u32)((u64)g_gfx_layers*SW*H*4>>20); return s; }
 static int live_app(int i){ return i==W_GPU3D||i==W_QUAKE||i==W_CAMERA||i==W_BENCH||i==W_RECORDER||i==W_VIDEO||i==W_DOOM||i==W_SNAKE||i==W_FLAPPY||i==W_CLOCK||i==W_SYSMON||i==W_XDISP; }
 #define ANIM_MS 160
@@ -196,7 +197,7 @@ void gfx_wall_light(void){
     if(!gs_light&&!light_fail&&g_alloc){ u32* p; gs_light=g_alloc(512,512,512,&p); if(gs_light<=0){ gs_light=0; light_fail=1; return; }
         for(int j=0;j<512;j++)for(int i=0;i<512;i++){ int dx=i-256, dy=j-256; u32 d2=(u32)(dx*dx+dy*dy); u32 v=d2>=65536u?0u:(u32)((65536u-d2)>>8); p[(u64)j*512+i]=(v*v)>>8; } gq_bump(gs_light); }
     if(!gs_light)return; int x,y; light_step=light_pos(&x,&y); gq_mask(g_rt,x-256,y-256,512,512,0xFFF2DC,44,gs_light,0,0); }
-int gfx_anim_active(void){ if(g_gfx==GFX_OFF||!g_gfx_fx)return 0; if(g_wall_light){ int x,y; if(light_pos(&x,&y)!=light_step)return 1; } for(int i=0;i<NL;i++) if(LY[i].anim||LY[i].ghost||LY[i].sanim)return 1; return 0; }
+int gfx_anim_active(void){ if(g_gfx==GFX_OFF||!g_gfx_fx)return 0; if(g_wall_light){ extern u64 g_last_input_t; extern volatile u64 g_ticks; if(g_ticks-g_last_input_t>=150){ int x,y; if(light_pos(&x,&y)!=light_step)return 1; } } for(int i=0;i<NL;i++) if(LY[i].anim||LY[i].ghost||LY[i].sanim)return 1; return 0; }
 void gfx_win_event(int i,int kind){
     if(g_gfx==GFX_OFF||!g_gfx_fx||i<0||i>=NL)return; layer* L=&LY[i];
     if(kind==3){ L->wheel=1; return; }
@@ -214,7 +215,7 @@ static void composite(int i,int x,int y,int w,int h,int alpha,int yoff){
         for(int q=0;q<nglass;q++){ short* g=L->G[q]; k=(k^((u64)(u16)g[0]|((u64)(u16)g[1]<<16)|((u64)(u16)g[2]<<32)|((u64)(u16)g[3]<<48)))*0x100000001B3ULL; k=(k^((u64)(u16)g[4]|((u64)(u16)g[5]<<16)|((u64)(u32)ox<<32)))*0x100000001B3ULL; }
         k=(k^(u64)(u32)oy)*0x100000001B3ULL;
         int cpu_touched=(g_scene_acc!=f_acc0);
-        if(!L->bc&&g_alloc&&blur_caches<4){ u32* bp; int bs=g_alloc(W,H,SW,&bp); if(bs>0){ L->bc=bs; blur_caches++; } else blur_caches=4; }
+        if(!L->bc&&g_alloc&&blur_caches<4){ u32* bp; int bs=(g_gfx_alloc_gpu?g_gfx_alloc_gpu:g_alloc)(W,H,SW,&bp); if(bs>0){ L->bc=bs; blur_caches++; } else blur_caches=4; }
         int hit=(L->bc>0&&L->bvalid&&L->bkey==k&&!cpu_touched); int sv=g_rt; g_rt=gs_scene;
         if(hit){ f_blur_hit++; for(int q=0;q<nglass;q++){ short* g=L->G[q]; copy_round(gs_scene,g[0]+ox,g[1]+oy,g[2],g[3],g[4],15,L->bc,g[0]+ox,g[1]+oy,256,0); } if(th) copy_round(gs_scene,x,Y,w,th,r,3,L->bc,x,Y,256,0); }
         else { f_blur_miss++; for(int q=0;q<nglass;q++){ short* g=L->G[q]; blur_m(g[0]+ox,g[1]+oy,g[2],g[3],g[4],15,g[5],L->bc); } if(th) blur_m(x,Y,w,th,r,3,1,L->bc); L->bkey=k; L->bvalid=(L->bc>0&&!cpu_touched); }
@@ -243,7 +244,7 @@ void gfx_window(int i){
     if(!moving||g_resize==i){
         int cx0=imin(L->bx0,x)-64, cy0=imin(L->by0,y)-64, cx1=imax(L->bx1,x+w)+64, cy1=imax(L->by1,y+h)+64; if(!L->valid){ cx0=0; cy0=0; cx1=(int)W; cy1=(int)H; }
         int snapped=0, cur_o=scroll_o(L);
-        if(L->wheel&&L->sset&&L->valid&&g_gfx_fx){ if(!gs_snap&&g_alloc&&!snap_fail){ u32* sp; gs_snap=g_alloc(W,H,SW,&sp); if(gs_snap<=0){ gs_snap=0; snap_fail=1; } }
+        if(L->wheel&&L->sset&&L->valid&&g_gfx_fx){ if(!gs_snap&&g_alloc&&!snap_fail){ u32* sp; gs_snap=(g_gfx_alloc_gpu?g_gfx_alloc_gpu:g_alloc)(W,H,SW,&sp); if(gs_snap<=0){ gs_snap=0; snap_fail=1; } }
             if(gs_snap){ gq_copy(gs_snap,L->sx,L->sy,L->sw,L->sh,s,L->sx,L->sy,256,0); snapped=1; } }
         L->wheel=0;
         if(!L->opA&&!L->opB&&!opbuf_fail){ L->opA=kmalloc((unsigned long)OPMAX*(unsigned long)gq_op_size()); L->opB=kmalloc((unsigned long)OPMAX*(unsigned long)gq_op_size()); if(!L->opA||!L->opB){ opbuf_fail=1; L->opA=L->opB=0; } L->nold=-1; }
@@ -302,14 +303,15 @@ static void drop_all(void){ gq_srec_invalidate();
     for(int i=0;i<NL;i++){ if(LY[i].sid>0)gq_surf_free(LY[i].sid); if(LY[i].bc>0)gq_surf_free(LY[i].bc); LY[i].sid=0; LY[i].bc=0; LY[i].bvalid=0; LY[i].nold=-1; LY[i].px=0; LY[i].valid=0; LY[i].anim=0; LY[i].ghost=0; LY[i].sanim=0; }
     blur_caches=0; shd_n=0; p_shd=0;
     if(own_scene&&gs_scene>0)gq_surf_free(gs_scene); gs_scene=0; own_scene=0; g_snap_owner=-1; p_bg=p_nc=0; mc_n=0; mc_x=mc_y=mc_h=0; st_x=st_y=st_h=0; }
+void gfx_forget(void){ drop_all(); }
 int gfx_start(int mode,gfx_alloc_fn al,u32* scene_px,int scene_sid){
     if(mode==GFX_OFF){ gfx_stop("turned off"); return 0; }
     if(W>MAXW||H>MAXH){ wcp(g_gfx_why,"screen larger than the drawing buffers"); return -1; }
     if(al!=g_alloc||W!=g_mw||H!=g_mh||SW!=g_ms)drop_all();
-    g_mw=W; g_mh=H; g_ms=SW; g_alloc=al; snap_fail=0; lay_fail=0; g_gq_mode=(mode==GFX_GPU)?GQM_GPU:GQM_CPU; gq_set_pre(pre_op);
+    g_mw=W; g_mh=H; g_ms=SW; g_alloc=al; snap_fail=0; lay_fail=0; g_gfx_nomem=0; g_gq_mode=(mode==GFX_GPU)?GQM_GPU:GQM_CPU; gq_set_pre(pre_op);
     if(!gs_bg){ gs_bg=al(W,H,SW,&p_bg); if(gs_bg<=0){ gs_bg=0; return sfail("out of memory for the wallpaper buffer"); } }
     if(!gs_nc){ gs_nc=al(W,H,SW,&p_nc); if(gs_nc<=0){ gs_nc=0; return sfail("out of memory for the cursor buffer"); } }
-    if(gs_tmp<=0)gs_tmp=al(W,H,SW,&p_tmp); if(gs_tmp2<=0)gs_tmp2=al(W,H,SW,&p_tmp);
+    { gfx_alloc_fn ag=g_gfx_alloc_gpu?g_gfx_alloc_gpu:al; if(gs_tmp<=0)gs_tmp=ag(W,H,SW,&p_tmp); if(gs_tmp2<=0)gs_tmp2=ag(W,H,SW,&p_tmp); }
     if(gs_stm<=0)gs_stm=al(W,H,SW,&p_stm); if(gs_stc<=0)gs_stc=al(W,H,SW,&p_stc); if(gs_mc<=0)gs_mc=al(1024,1024,1024,&p_mc);
     if(gs_tmp<=0||gs_tmp2<=0||gs_stm<=0||gs_stc<=0||gs_mc<=0)return sfail("out of memory for GPU work buffers");
     if(gs_shd<=0){ gs_shd=al(W,H,SW,&p_shd); if(gs_shd<=0){ gs_shd=0; p_shd=0; } else { shd_n=0; shd_init(); } }

@@ -11,6 +11,9 @@
 #define NVME_IOCQ DMW(0x1B3000u)
 #define NVME_ID   DMW(0x1B4000u)
 #define NVME_BUF  DMW(0x1B5000u)
+#define NVME_PRPL DMW(0x1B6000u)
+#define NVME_BIG  DMW(0x1B8000u)
+#define NVME_BIGP 16u
 static volatile u8* nvme_regs=0; int nvme_ok=0; static u32 nvme_sectors=0, nvme_dstrd=0, nvme_nsid=1, nvme_q=64, nvme_to=10000000;
 static u32 nasq_t=0, nacq_h=0, nacq_p=1, niosq_t=0, niocq_h=0, niocq_p=1, nvme_cid=1;
 int nvme_bad=0, nvme_lasterr=0;
@@ -40,6 +43,17 @@ static int nvme_cmd(u8 op,u32 slba,u32 buf){
     return nvme_wait(NVME_IOCQ,&niocq_h,&niocq_p,1,cid);
 }
 static int nvme_io(u8 op,u32 slba,u32 buf){ return nvme_cmd(op,slba,buf); }
+static u32 nvme_maxpg=1; u32 g_nvme_cmds=0, g_nvme_multi=0;
+static int nvme_cmdn(u8 op,u32 slba,u32 nblk,u32 bytes){
+    if(nvme_bad){ nvme_bad=0; if(!nvme_init())return -1; }
+    u32 pages=(bytes+4095u)/4096u; u32 prp2=0;
+    if(pages==2)prp2=NVME_BIG+4096u;
+    else if(pages>2){ volatile u64* l=(volatile u64*)(u64)NVME_PRPL; for(u32 k=1;k<pages;k++)l[k-1]=(u64)(NVME_BIG+k*4096u); prp2=NVME_PRPL; }
+    volatile u32* e=(volatile u32*)((u64)NVME_IOSQ+(u64)niosq_t*64); for(int i=0;i<16;i++)e[i]=0;
+    u16 cid=nvme_next_cid(); e[0]=op|((u32)cid<<16); e[1]=nvme_nsid; e[6]=NVME_BIG; e[7]=0; e[8]=prp2; e[9]=0;
+    e[10]=slba; e[11]=0; e[12]=(nblk-1u)&0xFFFFu;
+    niosq_t=(niosq_t+1)%nvme_q; nvme_db(1,0,niosq_t); g_nvme_cmds++; if(nblk>1)g_nvme_multi++;
+    return nvme_wait(NVME_IOCQ,&niocq_h,&niocq_p,1,cid); }
 static u32 nvme_ratio=1; static u32 nvme_cblk=0xFFFFFFFFu; u32 g_nvme_bsz=512;
 static int nvme_load(u32 blk){ if(blk==nvme_cblk)return 0; nvme_cblk=0xFFFFFFFFu; if(nvme_io(0x02,blk,NVME_BUF))return -1; nvme_cblk=blk; return 0; }
 static int nvme_read1(u32 lba,u8* out){ if(!nvme_ok)return -1; u32 blk=lba/nvme_ratio, off=(lba%nvme_ratio)*512;
@@ -48,7 +62,14 @@ static int nvme_write1(u32 lba,const u8* in){ if(!nvme_ok)return -1; u32 blk=lba
     if(nvme_ratio>1){ if(nvme_load(blk))return -1; } else nvme_cblk=0xFFFFFFFFu;
     volatile u8* d=(volatile u8*)(u64)NVME_BUF+off; for(int i=0;i<512;i++)d[i]=in[i];
     if(nvme_io(0x01,blk,NVME_BUF)){ nvme_cblk=0xFFFFFFFFu; return -1; } if(nvme_ratio>1)nvme_cblk=blk; return 0; }
-static int nvme_read(u32 lba,int cnt,u8* out){ for(int i=0;i<cnt;i++) if(nvme_read1(lba+i,out+i*512))return -1; return 0; }
+static int nvme_read(u32 lba,int cnt,u8* out){
+    if(!nvme_ok)return -1; u32 r=nvme_ratio, maxb=nvme_maxpg*4096u/(r*512u); if(!maxb)maxb=1;
+    while(cnt>0){
+        if(lba%r==0&&(u32)cnt>=r&&nvme_maxpg>0){ u32 nb=(u32)cnt/r; if(nb>maxb)nb=maxb; u32 bytes=nb*r*512u;
+            if(nvme_cmdn(0x02,lba/r,nb,bytes)!=0){ nvme_cblk=0xFFFFFFFFu; goto one; }
+            volatile u8* s=(volatile u8*)(u64)NVME_BIG; for(u32 i=0;i<bytes;i++)out[i]=s[i]; lba+=nb*r; out+=bytes; cnt-=(int)(nb*r); continue; }
+      one: if(nvme_read1(lba,out))return -1; lba++; out+=512; cnt--; }
+    return 0; }
 static int nvme_flush(void){ if(!nvme_ok)return -1; return nvme_cmd(0x00,0,0)?-1:0; }
 int nvme_found=0, nvme_failstage=0;
 static int nvme_ident_ns(u32 ns,unsigned long long* nsze,u32* bsz,int* meta){
@@ -131,6 +152,7 @@ static int nvme_init(void){
     { unsigned long long sec512=nsze*(bsz/512); nvme_sectors=(sec512>0xFFFFFFFFULL)?0xFFFFFFFFu:(u32)sec512; }
     if(nvme_admin(0x05,0,NVME_IOCQ,0,((nvme_q-1u)<<16)|1u,0x1)!=0){ nvme_failstage=9; return 0; }
     if(nvme_admin(0x01,0,NVME_IOSQ,0,((nvme_q-1u)<<16)|1u,(1u<<16)|0x1)!=0){ nvme_failstage=10; return 0; }
+    nvme_maxpg=1; if(nvme_admin(0x06,0,NVME_ID,0,1,0)==0){ u8 mdts=*(volatile u8*)((u64)NVME_ID+77); u32 mps=4096u<<((u32)((cap>>48)&0xF)); u32 mp=mdts?((1u<<(mdts<16?mdts:16))*mps/4096u):NVME_BIGP; nvme_maxpg=mp>NVME_BIGP?NVME_BIGP:mp?mp:1u; }
     nvme_nsid=ns; nvme_ok=1; return 1;
 }
 /* ---- generic disk layer: routes to IDE / AHCI / NVMe ---- */
@@ -163,7 +185,10 @@ static void gdisk_write_through(u32 lba){ bc_invalidate(lba,1); }   /* call afte
 int gdisk_flush(void){ if(g_dktype==DK_NVME)return nvme_flush(); if(g_dktype==DK_AHCI)return ahci_flush(); if(g_dktype==DK_VIRTIO)return virtio_blk_flush(); return 0; }
 int gdisk_write(u32 lba,const u8* buf){ if(g_dktype==DK_IDE)return ata_write(lba,buf); if(g_dktype==DK_AHCI)return ahci_write1(lba,buf); if(g_dktype==DK_NVME)return nvme_write1(lba,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_write(lba,1,buf); return -1; }
 static int nvme_writen(u32 lba,int cnt,const u8* in){
+    u32 r=nvme_ratio, maxb=nvme_maxpg*4096u/(r*512u); if(!maxb)maxb=1;
     while(cnt>0){
+        if(nvme_ok&&lba%r==0&&(u32)cnt>=r){ u32 nb=(u32)cnt/r; if(nb>maxb)nb=maxb; u32 bytes=nb*r*512u; volatile u8* d=(volatile u8*)(u64)NVME_BIG; for(u32 i=0;i<bytes;i++)d[i]=in[i];
+            nvme_cblk=0xFFFFFFFFu; if(nvme_cmdn(0x01,lba/r,nb,bytes)==0){ lba+=nb*r; in+=bytes; cnt-=(int)(nb*r); continue; } }
         if(nvme_ratio>1&&lba%nvme_ratio==0&&(u32)cnt>=nvme_ratio){ u32 blk=lba/nvme_ratio; volatile u8* d=(volatile u8*)(u64)NVME_BUF; for(u32 i=0;i<nvme_ratio*512u;i++)d[i]=in[i];
             nvme_cblk=0xFFFFFFFFu; if(nvme_io(0x01,blk,NVME_BUF))return -1; nvme_cblk=blk; lba+=nvme_ratio; in+=nvme_ratio*512u; cnt-=(int)nvme_ratio; continue; }
         if(nvme_write1(lba,in))return -1; lba++; in+=512; cnt--; }

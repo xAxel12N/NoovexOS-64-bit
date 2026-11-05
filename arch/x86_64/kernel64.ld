@@ -9,11 +9,15 @@ SECTIONS {
     *(.text.entry)
     *(.text .text.* .text.unlikely)
   }
+  __text_end = .;
   .rodata : { *(.rodata .rodata.*) }
   . = ALIGN(8);
   .init_array : { __init_array_start = .; KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP(*(.init_array .ctors)) __init_array_end = .; }
   . = ALIGN(16);
   __immutable_end = .;
+  .blob   : { *(.blobdata) }
+  . = ALIGN(16);
+  __blob_end = .;
   .data   : { *(.data .data.*) }
   . = ALIGN(16);
   __file_end = .;

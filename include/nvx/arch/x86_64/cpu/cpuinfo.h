@@ -7,6 +7,8 @@ extern char g_brand[52];
 extern int g_lma;
 
 void get_brand(void);
+int cpuinfo_linux(char* out,int cap);
+int cpuinfo_has(const char* flag);
 
 static inline void cpuid(u32 lf,u32*a,u32*b,u32*c,u32*d){ __asm__ volatile("cpuid":"=a"(*a),"=b"(*b),"=c"(*c),"=d"(*d):"a"(lf),"c"(0)); }
 

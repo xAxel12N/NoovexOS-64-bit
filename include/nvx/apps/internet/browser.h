@@ -9,16 +9,18 @@
 #define WM_W 448
 #define WM_H 184
 
-extern u8 jpeg_scratch[10u*1024u*1024u];
+u8* jpeg_scratch_buf(void);
+int jpeg_scratch_cap(void);
+#define jpeg_scratch (jpeg_scratch_buf())
 extern u8* g_png_raw;
 extern int g_png_raw_sz;
 extern int g_page;
-extern char g_url[2048];
+extern char g_url[4096];
 extern int g_urllen , g_urlfocus;
 extern int web_nl , web_scroll;
-extern char backstk[16][2048];
+extern char backstk[16][4096];
 extern int backn;
-extern char g_cururl[2048];
+extern char g_cururl[4096];
 extern int g_httplen , g_bodyoff , g_dln;
 extern const unsigned char wall_cobalt_jpg[13153];
 extern const int wall_cobalt_jpg_len;

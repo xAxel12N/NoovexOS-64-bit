@@ -1,0 +1,8 @@
+name=python-data
+version=1.0
+summary=numpy and pandas for Python 3.13 (with OpenBLAS)
+kind=python
+needs=python-pip
+packages=six python-dateutil numpy pandas
+license=BSD-3-Clause (numpy, pandas), Apache-2.0 and BSD (dateutil), MIT (six)
+source=manylinux wheels (glibc 2.17+), from the build machine or PyPI

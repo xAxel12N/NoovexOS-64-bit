@@ -46,17 +46,74 @@ static int map_cp(int* facep, int cp) {
     int fb = face >= nwe_nfaces ? 0 : (face == 1 || face == 3 || face == 5 || face == 8) ? 1 : 0;
     if (fb != face) { g = gfind(fb, cp); if (g >= 0) { *facep = fb; return g; } }
     if (fb == 1) { g = gfind(0, cp); if (g >= 0) { *facep = 0; return g; } }
+    if (cp >= 0x2190 && nwk_emoji_has(cp)) return -3;
     return gfind(face, '?');
+}
+static inline unsigned blend(unsigned dst, unsigned col, int a);
+typedef struct { int cp; unsigned* px; int w, h; } emo;
+static emo g_emo[96];
+static int g_nemo;
+void emoji_reset(void) { g_nemo = 0; }
+static void emoji_draw(unsigned* fb, int stride, int cx0, int cy0, int cx1, int cy1, int cp, float x, int by, float size, int ca, float adv) {
+    emo* e = 0;
+    for (int i = 0; i < g_nemo; i++) if (g_emo[i].cp == cp) { e = &g_emo[i]; break; }
+    if (!e) {
+        unsigned* a = 0; int w = 0, h = 0;
+        if (nwk_emoji(cp, &a, &w, &h) != 0 || !a || w <= 0 || h <= 0 || w > 256 || h > 256) return;
+        int slot = g_nemo < 96 ? g_nemo++ : (int)((unsigned)cp % 96u);
+        e = &g_emo[slot];
+        int sv = pool_suspend();
+        e->px = nalloc((size_t)w * (size_t)h * 4);
+        pool_resume(sv);
+        memcpy(e->px, a, (size_t)w * (size_t)h * 4);
+        nwk_free(a);
+        e->cp = cp; e->w = w; e->h = h;
+    }
+    float D = size * 1.15f;
+    if (D < 4) return;
+    float left = x + (adv - D) / 2, top = by - size * 0.92f;
+    int x0 = (int)floorf(left), y0 = (int)floorf(top), x1 = (int)ceilf(left + D), y1 = (int)ceilf(top + D);
+    for (int py = y0; py < y1; py++) {
+        if (py < cy0 || py >= cy1) continue;
+        unsigned* row = fb + (size_t)py * (size_t)stride;
+        float sy = ((py + 0.5f) - top) / D * e->h - 0.5f;
+        int iy = (int)floorf(sy); float fy = sy - iy;
+        for (int px = x0; px < x1; px++) {
+            if (px < cx0 || px >= cx1) continue;
+            float sx = ((px + 0.5f) - left) / D * e->w - 0.5f;
+            int ix = (int)floorf(sx); float fx = sx - ix;
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int q = 0; q < 4; q++) {
+                int xx = ix + (q & 1), yy = iy + (q >> 1);
+                if (xx < 0) xx = 0; if (yy < 0) yy = 0; if (xx >= e->w) xx = e->w - 1; if (yy >= e->h) yy = e->h - 1;
+                unsigned c = e->px[yy * e->w + xx];
+                float wgt = ((q & 1) ? fx : 1 - fx) * ((q >> 1) ? fy : 1 - fy);
+                float al = (float)(c >> 24) * wgt;
+                acc[0] += al; acc[1] += ((c >> 16) & 255) * al; acc[2] += ((c >> 8) & 255) * al; acc[3] += (c & 255) * al;
+            }
+            if (acc[0] < 1) continue;
+            unsigned col = ((unsigned)(acc[1] / acc[0]) << 16) | ((unsigned)(acc[2] / acc[0]) << 8) | (unsigned)(acc[3] / acc[0]);
+            int a = (int)acc[0];
+            if (a > 255) a = 255;
+            if (ca < 255) a = a * ca / 255;
+            row[px] = a >= 255 ? col : blend(row[px], col | 0xFF000000u, a);
+        }
+    }
 }
 
 void font_metrics(int face, float size, fontm* m) {
     const nwe_facerec* f = nwe_face(face);
+    if (!(size > 0)) size = 0;
+    if (size > 100000) size = 100000;
     float sc = size / (float)f->upm;
     m->face = face;
     m->size = size;
-    m->ascent = (int)ceilf(f->asc * sc);
-    m->descent = (int)ceilf(f->desc * sc);
-    m->lineh = (int)ceilf((f->asc + f->desc + f->gap) * sc);
+    float fa = f->asc * sc, fd = f->desc * sc;
+    int ra = (int)roundf(fa), rd = (int)roundf(fd);
+    m->lineh = ra + rd + (int)roundf(f->gap * sc);
+    if (rd < fd && ra >= 1) { rd++; ra--; }
+    m->ascent = ra;
+    m->descent = rd;
     m->xh = size * 0.52f;
 }
 
@@ -65,6 +122,7 @@ float font_adv(int face, float size, int cp) {
     int g = map_cp(&face, cp);
     const nwe_facerec* f = nwe_face(face);
     if (g == -2) return 0;
+    if (g == -3) return size * 1.2f;
     if (g < 0) return size * 0.5f;
     return f->g[g].adv * size / (float)f->upm;
 }
@@ -252,6 +310,7 @@ void font_draw(unsigned* fb, int stride, int cx0, int cy0, int cx1, int cy1, int
         if (k <= 0) break;
         i += k;
         float adv = font_adv(face, size, cp);
+        if (cp >= 0x2190) { int fcx = face; if (map_cp(&fcx, cp) == -3) { emoji_draw(fb, stride, cx0, cy0, cx1, cy1, cp, x, by, size, ca, adv); x += adv + ls; if (x > cx1 + 4) break; continue; } }
         if (cp != ' ' && cp != '\t' && cp != 0xA0) {
             gent* g = glyph(face, size, cp);
             if (g->a) {

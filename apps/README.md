@@ -6,7 +6,7 @@ Built-in desktop apps, by category.
 |---|---|
 | `system/` | Task Manager, Settings, Logs, Benchmark, File Explorer, classic Files |
 | `office/` | Writer, Editor, Calculator |
-| `internet/` | Browser, the web-engine glue, ChatGPT |
+| `internet/` | Browser and the web-engine glue |
 | `media/` | Video Player, Voice Recorder, Camera |
 | `games/` | DOOM, Quake |
 | `accessories/` | Clock, Calendar, Snake, Flappy Bird, Paint, neofetch |

@@ -19,7 +19,7 @@ typedef struct EFI_GOP { EFI_STATUS (EFIAPI *QueryMode)(struct EFI_GOP*,u32,UINT
 typedef struct EFI_FILE { u64 Revision;
     EFI_STATUS (EFIAPI *Open)(struct EFI_FILE*,struct EFI_FILE**,u16*,u64,u64);
     EFI_STATUS (EFIAPI *Close)(struct EFI_FILE*); void* Delete;
-    EFI_STATUS (EFIAPI *Read)(struct EFI_FILE*,UINTN*,void*); void* Write; void* GetPosition; void* SetPosition;
+    EFI_STATUS (EFIAPI *Read)(struct EFI_FILE*,UINTN*,void*); EFI_STATUS (EFIAPI *Write)(struct EFI_FILE*,UINTN*,void*); void* GetPosition; EFI_STATUS (EFIAPI *SetPosition)(struct EFI_FILE*,u64);
     EFI_STATUS (EFIAPI *GetInfo)(struct EFI_FILE*,EFI_GUID*,UINTN*,void*); } EFI_FILE;
 typedef struct EFI_SFS { u64 Revision; EFI_STATUS (EFIAPI *OpenVolume)(struct EFI_SFS*,EFI_FILE**); } EFI_SFS;
 typedef struct { u32 Revision; EFI_HANDLE ParentHandle; void* SystemTable; EFI_HANDLE DeviceHandle; void* FilePath; void* Reserved; u32 LoadOptionsSize; void* LoadOptions; void* ImageBase; u64 ImageSize; } EFI_LOADED_IMAGE;
@@ -73,7 +73,8 @@ u64 g_pt;
 #else
 static u64 g_pt;
 #endif
-static int in_kernel_area(u64 a,u64 n){ static const u64 R[5][2]={{0x5000,0x8000},{0x100000,0x6500000},{0x9800000,0x9C80000},{0x10000000,0x18000000},{0x18000000,0x19000000}}; for(int i=0;i<5;i++) if(a<R[i][1]&&a+n>R[i][0])return 1; return 0; }
+static int in_kernel_area(u64 a,u64 n){ static const u64 R[6][2]={{0x5000,0x8000},{0x100000,0x6500000},{0x9800000,0x9C80000},{0x10000000,0x18000000},{0x18000000,0x19000000},{0x20000000,0x30000000}}; for(int i=0;i<6;i++) if(a<R[i][1]&&a+n>R[i][0])return 1; return 0; }
+static u64 alloc_low(UINTN pages){ for(int t=0;t<24;t++){ u64 a=0xFFFFF000ULL; if(BS->AllocatePages(1,2,pages,&a)||!a)return 0; if(!in_kernel_area(a,(u64)pages*4096))return a; } return 0; }
 static u64 alloc_safe(UINTN pages){ for(int t=0;t<24;t++){ u64 a=0; if(BS->AllocatePages(0,2,pages,&a)||!a)return 0; if(!in_kernel_area(a,(u64)pages*4096))return a; } return 0; }
 static int build_tables(u64 fb){
     u64 t=alloc_safe(36); if(!t)return 0; u64* m=(u64*)t; for(int i=0;i<36*512;i++)m[i]=0;
@@ -122,6 +123,22 @@ static EFI_STATUS fail(const char* what,EFI_STATUS st){
     return st?st:EFI_LOAD_ERROR;
 }
 static int usable_after_exit(u32 t){ return t==1||t==2||t==3||t==4||t==7; }
+typedef struct { u32 magic, n; struct { u64 s, len, off; } r[16]; } fw_save;
+static fw_save* g_fws; static u64 g_fws_cap;
+static int fws_type(u32 t){ return t==5||t==6||t==9||t==10; }
+static int fws_plan(EFI_MEMORY_DESCRIPTOR* mmap,UINTN msz,UINTN dsz,const u64 (*R)[2],int nr,fw_save* out,u64 cap){
+    int n=0; u64 off=(sizeof(fw_save)+15)&~15ULL;
+    for(UINTN o=0;o<msz&&n<16;o+=dsz){ EFI_MEMORY_DESCRIPTOR* d=(EFI_MEMORY_DESCRIPTOR*)((u8*)mmap+o); u32 t=d->Type;
+#ifdef NVX_TEST_RSV
+        if(d->PhysicalStart<=0x10000000ULL&&d->PhysicalStart+d->NumberOfPages*4096>=0x11800000ULL)t=10;
+#endif
+        if(!fws_type(t))continue; u64 s=d->PhysicalStart, e=s+d->NumberOfPages*4096;
+#ifdef NVX_TEST_RSV
+        if(t==10&&!fws_type(d->Type)){ s=0x10000000ULL; e=0x10400000ULL; }
+#endif
+        for(int r=0;r<nr&&n<16;r++){ u64 a=s>R[r][0]?s:R[r][0], b=e<R[r][1]?e:R[r][1]; if(a>=b)continue; if(off+(b-a)>cap)return n;
+            if(out){ out->r[n].s=a; out->r[n].len=b-a; out->r[n].off=off; } off=(off+(b-a)+15)&~15ULL; n++; } }
+    return n; }
 #define MM_MAX 170
 static u8 g_mmsum[8+MM_MAX*24];
 static void mm_summarize(EFI_MEMORY_DESCRIPTOR* mmap,UINTN msz,UINTN dsz){
@@ -130,14 +147,51 @@ static void mm_summarize(EFI_MEMORY_DESCRIPTOR* mmap,UINTN msz,UINTN dsz){
         int merged=0; for(u32 i=0;i<n;i++){ u64* ps=(u64*)(e+i*24); u64* pe=(u64*)(e+i*24+8); u32* pt=(u32*)(e+i*24+16); if(*pt!=t)continue; if(*pe==s){ *pe=en; merged=1; break; } if(*ps==en){ *ps=s; merged=1; break; } }
         if(merged)continue; if(n>=MM_MAX){ over=1; continue; }
         *(u64*)(e+n*24)=s; *(u64*)(e+n*24+8)=en; *(u32*)(e+n*24+16)=t; *(u32*)(e+n*24+20)=0; n++; }
+#ifdef NVX_TEST_RSV
+    if(n<MM_MAX){ *(u64*)(e+n*24)=0x10000000ULL; *(u64*)(e+n*24+8)=0x11800000ULL; *(u32*)(e+n*24+16)=0; *(u32*)(e+n*24+20)=0; n++; }
+#endif
     *(u32*)g_mmsum=0x4D58564Eu; *(u32*)(g_mmsum+4)=n|(over<<31); }
 static const char* memtype(u32 t){ switch(t){ case 0: return "reserved"; case 5: return "runtime code"; case 6: return "runtime data"; case 8: return "unusable"; case 9: return "ACPI tables"; case 10: return "ACPI NVS"; case 11: return "MMIO"; case 12: return "MMIO port"; case 13: return "PAL code"; case 14: return "persistent"; default: return "other"; } }
+static int upd_put(EFI_FILE* f,const char* st){
+    u8 b[4]; for(int i=0;i<4;i++)b[i]=(u8)st[i];
+    if(f->SetPosition(f,0))return -1;
+    UINTN n=4; if(f->Write(f,&n,b)||n!=4)return -1;
+    if(f->SetPosition(f,0))return -1;
+    u8 c[4]; n=4; if(f->Read(f,&n,c)||n!=4)return -1;
+    for(int i=0;i<4;i++) if(c[i]!=b[i])return -1;
+    return 0;
+}
+static int same4(const u8* a,const char* b){ for(int i=0;i<4;i++) if(a[i]!=(u8)b[i])return 0; return 1; }
+static int upd_state(EFI_FILE* root){
+    static u16 pu[]={'\\','b','o','o','t','\\','u','p','d','a','t','e','.','t','x','t',0};
+    EFI_FILE* f=0;
+    if(root->Open(root,&f,pu,3,0)||!f){ f=0; if(root->Open(root,&f,pu,1,0)||!f)return 0; }
+    u8 b[4]; UINTN n=4; int r=1;
+    if(f->Read(f,&n,b)||n!=4){ f->Close(f); return 0; }
+    if(same4(b,"TRY0")||same4(b,"TRY1")){
+        if(upd_put(f,b[3]=='0'?"TRY1":"TRY2")==0){ print(b[3]=='0'?"  starting the new version (try 1 of 2)\n":"  starting the new version (try 2 of 2)\n"); r=1; }
+        else { print("  cannot record the start attempt, starting the previous version\n"); r=2; }
+    } else if(same4(b,"TRY2")){ upd_put(f,"FAIL"); print("  the new version did not start twice, starting the previous version\n"); r=2; }
+    else if(same4(b,"FAIL")||same4(b,"SWAP")||same4(b,"OLD ")){ print("  starting the previous version\n"); r=2; }
+    f->Close(f);
+    return r;
+}
+static int want_prev(EFI_FILE* root,u16* pold){
+    EFI_FILE* f=0; if(root->Open(root,&f,pold,1,0)||!f)return 0; f->Close(f);
+    if(!ST->ConIn)return 0;
+    print("  press P to start the previous version\n");
+    EFI_INPUT_KEY k; for(int i=0;i<8;i++){ if(ST->ConIn->ReadKeyStroke(ST->ConIn,&k)==0&&(k.UnicodeChar=='p'||k.UnicodeChar=='P'))return 1; BS->Stall(75000); }
+    return 0;
+}
 static EFI_FILE* open_kernel(EFI_FILE* root,const char** which){
     static u16 p1[]={'\\','K','E','R','N','E','L','6','4','.','B','I','N',0};
     static u16 p2[]={'\\','b','o','o','t','\\','k','e','r','n','e','l','6','4','.','b','i','n',0};
-    EFI_FILE* f=0;
-    if(root->Open(root,&f,p1,1,0)==0&&f){ *which="\\KERNEL64.BIN"; return f; }
-    f=0; if(root->Open(root,&f,p2,1,0)==0&&f){ *which="\\boot\\kernel64.bin"; return f; }
+    static u16 p3[]={'\\','b','o','o','t','\\','k','e','r','n','e','l','6','4','.','o','l','d',0};
+    u16* ps[3]; ps[0]=p1; ps[1]=p2; ps[2]=p3;
+    int st=upd_state(root);
+    if(st!=2&&want_prev(root,p3)){ print("  previous version chosen\n"); st=2; }
+    int ord[3]; if(st==2){ ord[0]=2; ord[1]=1; ord[2]=0; } else if(st==1){ ord[0]=1; ord[1]=0; ord[2]=2; } else { ord[0]=0; ord[1]=1; ord[2]=2; }
+    for(int i=0;i<3;i++){ EFI_FILE* f=0; if(root->Open(root,&f,ps[ord[i]],1,0)==0&&f){ *which=ord[i]==0?"\\KERNEL64.BIN":ord[i]==1?"\\boot\\kernel64.bin":"\\boot\\kernel64.old"; if(i>0&&st)print("  kernel file missing, using the next one\n"); return f; } }
     return 0;
 }
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
@@ -150,7 +204,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
     if(!fs){ print("  boot device has no file system, searching other disks\n"); st=BS->LocateProtocol(&SFS_GUID,0,(void**)&fs); if(st||!fs)return fail("no readable FAT volume found",st); }
     EFI_FILE* root=0; st=fs->OpenVolume(fs,&root); if(st||!root)return fail("cannot open the boot volume",st);
     const char* which=0; EFI_FILE* kf=open_kernel(root,&which);
-    if(!kf)return fail("kernel not found (looked for \\KERNEL64.BIN and \\boot\\kernel64.bin)",EFI_NOT_FOUND);
+    if(!kf)return fail("kernel not found (looked for \\KERNEL64.BIN, \\boot\\kernel64.bin and \\boot\\kernel64.old)",EFI_NOT_FOUND);
     u64 fsize=0; { u8 ib[512]; UINTN isz=sizeof ib; if(kf->GetInfo(kf,&FINFO_GUID,&isz,ib)==0)fsize=*(u64*)(ib+8); }
     if(fsize==0)fsize=KERNEL_MAX;
     if(fsize>KERNEL_MAX){ kf->Close(kf); return fail("kernel file is too large",EFI_LOAD_ERROR); }
@@ -163,6 +217,15 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
     print("  kernel: "); print(which); print(", "); printnum(total/1024,10); print(" KB\n");
     u64 uentry=0, kbss=0; { u8* k=(u8*)kbuf; for(u64 i=0;i+128<=total;i++) if(k[i]=='N'&&k[i+1]=='V'&&k[i+2]=='X'&&k[i+3]=='6'&&k[i+4]=='4'&&k[i+5]=='S'&&k[i+6]=='I'&&k[i+7]=='G'){ uentry=*(u64*)(k+i+8+16+4+4+32+16); kbss=*(u64*)(k+i+120); break; } }
     if(kbss<0x10000000||kbss>0x18000000)kbss=0x18000000;
+    u64 srbuf=0, srlen=0;
+    { u32 want=*(u32*)((u8*)kbuf+20), crc=*(u32*)((u8*)kbuf+16);
+      if(want&&want<=0x10000000u){ static u16 sp[]={'\\','s','y','s','r','o','o','t','\\','0','0','0','0','0','0','0','0','.','B','I','N',0};
+          for(int i=0;i<8;i++){ u32 v=(crc>>((7-i)*4))&15u; sp[9+i]=(u16)(v<10?'0'+v:'A'+v-10); }
+          EFI_FILE* sf=0; int ok=0;
+          if(root->Open(root,&sf,sp,1,0)==0&&sf){ srbuf=alloc_low((UINTN)((want+4095)/4096));
+              if(srbuf){ u64 t=0; for(;;){ UINTN chunk=1024*1024; if(t+chunk>want)chunk=(UINTN)(want-t); if(!chunk)break; if(sf->Read(sf,&chunk,(u8*)srbuf+t)||!chunk)break; t+=chunk; } if(t==want){ srlen=want; ok=1; } }
+              sf->Close(sf); }
+          if(ok){ print("  Linux files: "); printnum(srlen/1024,10); print(" KB\n"); } else print("  Linux files not found on the boot disk\n"); } }
     if(!uentry||uentry<KERNEL_PHYS||uentry>=KERNEL_PHYS+total)return fail("this file is not a NoovexOS 64 kernel (no UEFI entry point)",EFI_LOAD_ERROR);
     EFI_GOP* gop=0;
     if(BS->HandleProtocol(ST->ConsoleOutHandle,&GOP_GUID,(void**)&gop)||!gop){ gop=0; st=BS->LocateProtocol(&GOP_GUID,0,(void**)&gop); if(st||!gop)return fail("no graphics output (GOP) available",st); }
@@ -190,16 +253,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
     if(!cur)cur=0x100000;
     u32 ram_mb=(u32)(cur>>20);
     print("  memory: "); printnum(ram_mb,10); print(" MB usable for the kernel heap and page pool\n");
-    { const u64 R[5][2]={{0x5000,0x8000},{KERNEL_PHYS,KERNEL_PHYS+total},{0x9800000,0x9C80000},{0x10000000,kbss},{0x18000000,0x19000000}}; int warned=0;
+    { const u64 R[6][2]={{0x5000,0x8000},{KERNEL_PHYS,KERNEL_PHYS+total},{0x9800000,0x9C80000},{0x10000000,kbss},{0x18000000,0x19000000},{srbuf,srbuf+srlen}}; int warned=0;
       for(UINTN o=0;o<msz;o+=dsz){ EFI_MEMORY_DESCRIPTOR* d=(EFI_MEMORY_DESCRIPTOR*)((u8*)mmap+o); if(usable_after_exit(d->Type))continue; u64 s=d->PhysicalStart, e=s+d->NumberOfPages*4096;
-          for(int r=0;r<5;r++) if(s<R[r][1]&&e>R[r][0]){ if(warned<4){ print("  warning: firmware "); print(memtype(d->Type)); print(" memory at "); printnum(s,16); print(" overlaps a kernel area\n"); } warned++; break; } }
+          for(int r=0;r<6;r++) if(s<R[r][1]&&e>R[r][0]){ if(warned<4){ print("  warning: firmware "); print(memtype(d->Type)); print(" memory at "); printnum(s,16); print(s>=0x9800000?" overlaps a kernel area (the kernel moves that part)\n":" overlaps a kernel area\n"); } warned++; break; } }
       if(rsdp&&rsdp>=0x10000000&&rsdp<kbss){ print("  warning: ACPI tables lie inside the kernel's memory; power off may not work\n"); warned++; }
       if(warned){ print("  continuing in 5 seconds...\n"); BS->Stall(5000000); } }
     if(li&&li->ImageBase){ u64 ib=(u64)li->ImageBase, ie=ib+li->ImageSize; if(ib<KERNEL_PHYS+total&&ie>KERNEL_PHYS)return fail("the loader itself sits where the kernel must go",EFI_LOAD_ERROR); if(ib<0x8000&&ie>0x5000)return fail("the loader itself sits where the boot information must go",EFI_LOAD_ERROR); }
     { u8 probe; u64 sp=(u64)&probe; if(sp>=KERNEL_PHYS&&sp<KERNEL_PHYS+total+0x10000)return fail("the firmware stack sits where the kernel must go",EFI_LOAD_ERROR); }
     u8 blk[64]; for(int i=0;i<64;i++)blk[i]=0;
     *(u64*)(blk+0)=gop->Mode->FrameBufferBase; *(u32*)(blk+8)=mi->PixelsPerScanLine*4; *(u16*)(blk+12)=(u16)mi->HorizontalResolution; *(u16*)(blk+14)=(u16)mi->VerticalResolution;
-    blk[32]=32; blk[33]=(u8)rgbfb; *(u32*)(blk+40)=ram_mb; *(u32*)(blk+44)=0x49464555u;
+    blk[32]=32; blk[33]=(u8)rgbfb; *(u32*)(blk+40)=ram_mb; *(u32*)(blk+44)=0x49464555u; *(u64*)(blk+48)=srlen?srbuf:0;
     u8 mbi[136]; for(int i=0;i<136;i++)mbi[i]=0;
     *(u64*)(mbi+88)=gop->Mode->FrameBufferBase; *(u32*)(mbi+96)=mi->PixelsPerScanLine*4; *(u32*)(mbi+100)=mi->HorizontalResolution; *(u32*)(mbi+104)=mi->VerticalResolution; mbi[108]=32;
     *(u64*)(mbi+120)=rsdp; *(u32*)(mbi+128)=rsdp?0x50445352u:0;
@@ -222,6 +285,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
         } } }
 #endif
     *(u32*)(edblk+4)=ndisp;
+    { const u64 FR[4][2]={{KERNEL_PHYS,KERNEL_PHYS+total},{0x9800000,0x9E00000},{0x0E000000,0x10000000},{0x10000000,kbss}};
+      if(fws_plan(mmap,msz,dsz,FR,4,0,0x800000)>0){ g_fws_cap=0x800000; g_fws=(fw_save*)alloc_low((UINTN)(g_fws_cap/4096)); if(g_fws){ for(u64 i=0;i<sizeof(fw_save);i++)((u8*)g_fws)[i]=0; *(u64*)(blk+56)=(u64)g_fws; } } }
     print("  starting the kernel...\n");
     int tries=0;
     for(;;){ msz=mcap; st=BS->GetMemoryMap(&msz,mmap,&mkey,&dsz,&dver); if(st==0){ st=BS->ExitBootServices(image,mkey); if(st==0)break; } if(++tries>=8)return fail("the firmware refused to hand over the machine (ExitBootServices)",st); }
@@ -233,6 +298,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
     quiet_dma();
 #endif
     mark(fbb,fpitch,fh,0,0x00E03030u);
+    if(g_fws){ const u64 FR[4][2]={{KERNEL_PHYS,KERNEL_PHYS+total},{0x9800000,0x9E00000},{0x0E000000,0x10000000},{0x10000000,kbss}};
+        int n=fws_plan(mmap,msz,dsz,FR,4,g_fws,g_fws_cap);
+#ifdef NVX_TEST_RSV
+        for(u64 a=0x10000000ULL;a<0x10400000ULL;a+=4)*(volatile u32*)PHYS(a)=(u32)(a^0x5A5A1234u);
+#endif
+        for(int i=0;i<n;i++) kcopy((u8*)g_fws+g_fws->r[i].off,PHYS(g_fws->r[i].s),g_fws->r[i].len);
+        g_fws->n=(u32)n; g_fws->magic=0x5358564Eu; }
     kcopy(PHYS(KERNEL_PHYS),(u8*)kbuf,total);
     kcopy(PHYS(0x5000),blk,64); kcopy(PHYS(0x5040),edblk,sizeof edblk); kcopy(PHYS(0x6000),mbi,136); kcopy(PHYS(0x7000),g_mmsum,sizeof(g_mmsum));
     mark(fbb,fpitch,fh,1,0x00FF9020u);

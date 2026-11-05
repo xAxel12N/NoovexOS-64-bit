@@ -69,22 +69,18 @@ static int ux_lookup_nofollow(const char* p,int* isdir){
     return -1;
 }
 
-int ux_is_admin(int uid){
-    if(uid==0||uid==1000)return 1;
-    char me[32]; if(!ux_uid_name(uid,me,32))return 0;
-    int isd=0; int k=ux_lookup("/etc/group",&isd,1); if(k<0||isd)return 0;
-    const char* s=fsd(k); const char* e=s+FS[k].len;
-    while(s<e){ const char* l=s; while(s<e&&*s!='\n')s++; const char* le=s; if(s<e)s++;
-        if(le-l<6||l[0]!='a'||l[1]!='d'||l[2]!='m'||l[3]!='i'||l[4]!='n'||l[5]!=':')continue;
-        int col=0; const char* m=l; while(m<le&&col<3){ if(*m==':')col++; m++; }
-        while(m<le){ const char* a=m; while(m<le&&*m!=',')m++; int L=(int)(m-a), i=0; while(i<L&&me[i]&&a[i]==me[i])i++; if(i==L&&!me[i])return 1; if(m<le)m++; } }
-    return 0;
-}
-int ux_lookup(const char* p,int* isdir,int follow){
+int ux_is_admin(int uid){ extern int acct_is_admin(int); return acct_is_admin(uid); }
+static int ux_lookup_ex(const char* p,int* isdir,int follow,char* last,int cap);
+int ux_lookup(const char* p,int* isdir,int follow){ return ux_lookup_ex(p,isdir,follow,0,0); }
+int ux_resolve_links(const char* p,char* out,int cap){ int isd=0; if(!p||p[0]!='/'||!out||cap<2)return -1; out[0]=0; int k=ux_lookup_ex(p,&isd,1,out,cap); if(k>=0||out[0]!='/')return -1; int same=1; for(int i=0;;i++){ if(out[i]!=p[i]){ same=0; break; } if(!p[i])break; } return same?-1:0; }
+static int ux_lookup_ex(const char* p,int* isdir,int follow,char* last,int cap){
     char cur[192]; int n=0; while(p[n]&&n<191){ cur[n]=p[n]; n++; } if(p[n])return -1; cur[n]=0;
     for(int hop=0;hop<8;hop++){
-        int k=ux_lookup_nofollow(cur,isdir); if(k<0||*isdir)return k;
+        int k=ux_lookup_nofollow(cur,isdir);
+        if(k<0&&last&&cap>0){ int i=0; for(;cur[i]&&i<cap-1;i++)last[i]=cur[i]; last[i]=0; }
+        if(k<0||*isdir)return k;
         if(!follow||(FS[k].mode&0170000u)!=S_IFLNK)return k;
+        if(last&&!ux_dir_ok(FS[k].dir,1)){ last[0]=0; return -1; }
         char t[192]; if(FS[k].len>191)return -1; int tl=FS[k].len; const char* sd=fsd(k); for(int i=0;i<tl;i++)t[i]=sd[i]; t[tl]=0;
         if(t[0]=='/'){ for(int i=0;i<=tl;i++)cur[i]=t[i]; }
         else { char dp[192]; dt_path(FS[k].dir,dp); int o=0; for(int i=0;dp[i];i++){ if(o>=190)return -1; cur[o++]=dp[i]; } if(o>1)cur[o++]='/'; for(int i=0;t[i];i++){ if(o>=191)return -1; cur[o++]=t[i]; } cur[o]=0; }
@@ -185,20 +181,36 @@ int ux_perm_ok(int k,int want){
     if(g_uid==0)return 1;
     unsigned m=FS[k].mode;
     if(FS[k].uid==g_uid) return (m & (want<<6)) ? 1 : 0;
+    if(FS[k].gid==g_gid) return (m & (want<<3)) ? 1 : 0;
     return (m & want) ? 1 : 0;
 }
 int perm_file(int k,int want){ return ux_perm_ok(k,want); }
+int ux_dir_ok(int d,int want){
+    if(g_uid==0)return 1;
+    if(d<0||d>=DN_MAX||!DT[d].used)return 0;
+    int n=d, first=1, guard=0;
+    while(n>=0&&guard++<DN_MAX){
+        unsigned m=DT[n].mode?DT[n].mode:0040755u; int w=first?want:1;
+        int bits=(DT[n].uid==g_uid)?(int)((m>>6)&7u):(DT[n].gid==g_gid)?(int)((m>>3)&7u):(int)(m&7u);
+        if((bits&w)!=w)return 0;
+        if(n==0)break;
+        n=DT[n].parent; first=0;
+    }
+    return 1;
+}
 int perm_dir(int d){
     if(d<0||d>=DN_MAX||!DT[d].used)return 0;
-    if(g_uid==0||DT[d].uid==g_uid)return 1;
-    if((DT[d].mode?DT[d].mode:0040755u)&0002)return 1;
-    return ux_is_admin(g_uid);
+    if(g_uid==0)return 1;
+    unsigned dm=DT[d].mode?DT[d].mode:0040755u;
+    if(DT[d].uid==g_uid)return (dm&0200u)?1:0;
+    if(DT[d].gid==g_gid)return (dm&0020u)?1:0;
+    return (dm&0002u)?1:0;
 }
 int ux_links_in(int d){ int n=0; for(int i=0;i<NLINKS;i++) if(g_lk[i].used&&g_lk[i].dir==d)n++; return n; }
 int fs_is_open(int k){ for(int i=0;i<VMAXOPEN;i++) if(g_vf[i].used&&g_vf[i].dev==0&&g_vf[i].fs_idx==k)return 1; return 0; }
 void fs_newslot(int k){
     if(k<0||k>=FS_N)return; fs_free(k); u32 t=ux_now();
-    FS[k].name[0]=0; FS[k].len=0; FS[k].used=0; FS[k].folder=0; FS[k].dir=1; FS[k].mode=0100644u; FS[k].uid=g_uid; FS[k].gid=g_gid; FS[k].nlink=1;
+    FS[k].name[0]=0; FS[k].len=0; FS[k].used=0; FS[k].folder=0; { extern int g_home_dir; FS[k].dir=(g_home_dir>0&&g_home_dir<DN_MAX&&DT[g_home_dir].used)?g_home_dir:1; } FS[k].mode=0100644u; FS[k].uid=g_uid; FS[k].gid=g_gid; FS[k].nlink=1;
     FS[k].mtime=FS[k].ctime=FS[k].atime=t; g_fs_dirty[k]=0;
 }
 int pd_touch(int k){ int d=FS[k].dir; if(d>=0&&d<DN_MAX&&DT[d].used){ DT[d].mtime=DT[d].ctime=ux_now(); } return 0; }
@@ -237,26 +249,33 @@ int ux_rename_link(const char* from,const char* to){
     for(int i=0;i<DN_MAX;i++) if(DT[i].used&&DT[i].parent==nd&&seq(DT[i].name,nb))return -1;
     for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==nd&&seq(FS[k].name,nb)){ if(k==g_lk[li].ino)return -1; if(!ux_perm_ok(k,2))return -1; fs_drop_name(k); }
     for(int i=0;i<NLINKS;i++) if(i!=li&&g_lk[i].used&&g_lk[i].dir==nd&&seq(g_lk[i].name,nb)){ if(!ux_perm_ok(g_lk[i].ino,2))return -1; int k=g_lk[i].ino; g_lk[i].used=0; FS[k].nlink=ux_link_count(k); }
+    if(!perm_dir(nd)||!ux_can_unlink(d,g_lk[li].ino))return -1;
     g_lk[li].dir=nd; int q=0; while(nb[q]&&q<51){ g_lk[li].name[q]=nb[q]; q++; } g_lk[li].name[q]=0;
     nvx3_flush_meta(); return 0;
 }
 static char* pc_(char* o,const char* x){ while(*x)*o++=*x++; *o=0; return o; }
 static char* pn_(char* o,long v){ char t[24]; int n=0; if(!v)t[n++]='0'; while(v){t[n++]='0'+v%10;v/=10;} while(n)*o++=t[--n]; *o=0; return o; }
 int proc_gen(const char* p,char* out,int cap){ (void)cap;
-    if(seq((char*)p,"/proc/cpuinfo")){ char* o=out; o=pc_(o,"processor\t: 0\nvendor_id\t: NoovexOS\nmodel name\t: x86-64 CPU\nflags\t\t: fpu tsc msr pae cpuid\n"); return (int)(o-out); }
+    if(seq((char*)p,"/proc/cpuinfo")){ extern int cpuinfo_linux(char*,int); return cpuinfo_linux(out,cap); }
+    if(seq((char*)p,"/proc/sys/fs/inotify/max_user_watches")){ char* o=out; o=pc_(o,"65536\n"); return (int)(o-out); }
+    if(seq((char*)p,"/proc/sys/fs/inotify/max_user_instances")){ char* o=out; o=pc_(o,"128\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/version")){ char* o=out; o=pc_(o,"NoovexOS 64 (x86-64)\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/hostname")){ char* o=out; o=pc_(o,g_hostname); o=pc_(o,"\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/uptime")){ extern volatile u64 g_ticks; char* o=out; o=pn_(o,(long)(g_ticks/100)); o=pc_(o,".00 0.00\n"); return (int)(o-out); }
-    if(seq((char*)p,"/proc/meminfo")){ extern u32 g_ram_mb; char* o=out;
-        o=pc_(o,"MemTotal:       "); o=pn_(o,(long)g_ram_mb*1024); o=pc_(o," kB\n");
-        o=pc_(o,"MemFree:        "); o=pn_(o,(long)g_ram_mb*1024*3/4); o=pc_(o," kB\n");
-        o=pc_(o,"MemAvailable:   "); o=pn_(o,(long)g_ram_mb*1024*3/4); o=pc_(o," kB\n"); return (int)(o-out); }
+    if(seq((char*)p,"/proc/meminfo")){ extern void mem_summary(u64*,u64*,u64*); u64 mt,mu,mh; mem_summary(&mt,&mu,&mh); char* o=out;
+        o=pc_(o,"MemTotal:       "); o=pn_(o,(long)mt); o=pc_(o," kB\n");
+        o=pc_(o,"MemFree:        "); o=pn_(o,(long)(mt-mu)); o=pc_(o," kB\n");
+        o=pc_(o,"MemAvailable:   "); o=pn_(o,(long)(mt-mu)); o=pc_(o," kB\n");
+        o=pc_(o,"Buffers:        0 kB\nCached:         0 kB\nSwapCached:     0 kB\n");
+        o=pc_(o,"SwapTotal:      0 kB\nSwapFree:       0 kB\n");
+        o=pc_(o,"KernelHeap:     "); o=pn_(o,(long)mh); o=pc_(o," kB\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/filesystems")){ char* o=out; o=pc_(o,"nodev\tproc\nnodev\tsysfs\n\tnvxfs\n\tramfs\n\tvfat\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/loadavg")){ char* o=out; o=pc_(o,"0.00 0.00 0.00 1/"); { int n=0; for(int i=0;i<FS_N;i++)if(FS[i].used)n++; o=pn_(o,n); } o=pc_(o," 1\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/mounts")){ char* o=out;
         o=pc_(o,"nvxfs / nvxfs rw 0 0\n");
         o=pc_(o,"proc /proc proc rw 0 0\n");
         o=pc_(o,"sysfs /sys sysfs rw 0 0\n");
+        o=pc_(o,"tmpfs /dev/shm tmpfs rw 0 0\n");
         if(g_usb_mounted) o=pc_(o,"/dev/usb /mnt/usb vfat rw 0 0\n");
         return (int)(o-out); }
     if(seq((char*)p,"/proc/self/status")||seq((char*)p,"/proc/self")){ char* o=out;
@@ -268,7 +287,7 @@ int proc_gen(const char* p,char* out,int cap){ (void)cap;
     if(seq((char*)p,"/dev/console")||seq((char*)p,"/dev/tty")){ char* o=out; o=pc_(o,"console\n"); return (int)(o-out); }
     /* ---- SysFS ---- */
     if(seq((char*)p,"/sys/kernel/ostype")){ char* o=out; o=pc_(o,"NoovexOS\n"); return (int)(o-out); }
-    if(seq((char*)p,"/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"9.83\n"); return (int)(o-out); }
+    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"10.60\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/hostname")){ char* o=out; o=pc_(o,g_hostname); o=pc_(o,"\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/arch")){ char* o=out; o=pc_(o,"x86_64\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/devices/system/cpu/online")){ extern volatile int g_cores_online; char* o=out; int n=g_smp_on?g_cores_online:1; if(n<=1)o=pc_(o,"0\n"); else { o=pc_(o,"0-"); o=pn_(o,n-1); o=pc_(o,"\n"); } return (int)(o-out); }
@@ -296,6 +315,17 @@ static int ux_mkfile(int dir,const char* nm,const char* body,unsigned mode){
         FS[k].used=1; FS[k].dir=dir; FS[k].folder=0; FS[k].mode=mode; FS[k].uid=0; FS[k].gid=0; FS[k].nlink=1; ux_touch(k,1); FS[k].atime=FS[k].mtime; if(disk_ok)nvx3_sync(k); return k; }
     return -1;
 }
+int ux_write_text(const char* path,const char* body,int len,unsigned mode){
+    dt_init(); int d; char bn[64]; if(!path||path[0]!='/'||k_split(path,&d,bn)<0||!bn[0]||d<0)return -1;
+    int k=-1; for(int i=0;i<FS_N;i++) if(FS[i].used&&FS[i].dir==d&&seq(FS[i].name,bn)){ k=i; break; }
+    if(k<0){ for(int i=0;i<FS_N;i++) if(!FS[i].used){ k=i; break; } if(k<0)return -1;
+        fs_newslot(k); int q=0; while(bn[q]&&q<63){ FS[k].name[q]=bn[q]; q++; } FS[k].name[q]=0;
+        if(fs_set(k,body,len))return -1;
+        FS[k].used=1; FS[k].dir=d; FS[k].folder=0; FS[k].mode=mode?mode:0100644u; FS[k].uid=0; FS[k].gid=0; FS[k].nlink=1; ux_touch(k,1); FS[k].atime=FS[k].mtime; }
+    else { if(fs_set(k,body,len))return -1; if(mode)FS[k].mode=mode; ux_touch(k,1); }
+    if(disk_ok)nvx3_sync(k);
+    return k;
+}
 static int ux_pw_field(const char* line,int idx,char* out,int cap){ int f=0,o=0; for(int i=0;line[i]&&line[i]!='\n';i++){ if(line[i]==':'){ f++; continue; } if(f==idx&&o<cap-1)out[o++]=line[i]; } out[o]=0; return f>=idx; }
 int ux_uid_name(int uid,char* out,int cap){ char buf[1024]; int n=ux_read_file("/etc/passwd",buf,sizeof(buf)); if(n<=0)return 0;
     for(char* l=buf;*l;){ char u[16]; ux_pw_field(l,2,u,16); int v=0; for(int i=0;u[i];i++)v=v*10+(u[i]-'0'); if(u[0]&&v==uid){ ux_pw_field(l,0,out,cap); return 1; } while(*l&&*l!='\n')l++; if(*l)l++; }
@@ -310,13 +340,14 @@ static int ux_rewrite_names(const char* path,const char* from,const char* to,int
             if(m){ for(const char* t=to;*t&&o<4000;t++)out[o++]=*t; for(const char* x=l+fl;x<le&&o<4000;x++)out[o++]=*x; ch=1; }
             else for(const char* x=l;x<le&&o<4000;x++)out[o++]=*x;
         } else {
-            int col=0; const char* x=l; while(x<le&&col<3){ out[o++]=*x; if(*x==':')col++; x++; }
+            int col=0; const char* x=l; while(x<le&&col<3&&o<4000){ out[o++]=*x; if(*x==':')col++; x++; }
             while(x<le&&o<4000){ const char* a=x; while(x<le&&*x!=',')x++; int L=(int)(x-a), eq=(L==fl); for(int i=0;eq&&i<L;i++) if(a[i]!=from[i])eq=0;
                 if(eq){ for(const char* t=to;*t&&o<4000;t++)out[o++]=*t; ch=1; } else for(const char* y=a;y<x&&o<4000;y++)out[o++]=*y;
-                if(x<le){ out[o++]=','; x++; } }
+                if(x<le){ if(o<4000)out[o++]=','; x++; } }
         }
-        out[o++]='\n'; }
+        if(o<4095)out[o++]='\n'; }
     if(!ch)return 0;
+    if(p<e||o>=4000){ klog("accounts: file too long to rewrite safely - left unchanged"); return 0; }
     if(fs_set(k,out,o))return 0; ux_touch(k,1); if(disk_ok)nvx3_sync(k); return 1;
 }
 static void ux_ensure_account(const char* name){
@@ -332,7 +363,7 @@ static int ux_login_user(const char* name){
     char buf[1024]; int n=ux_read_file("/etc/passwd",buf,sizeof(buf)); if(n<=0)return -1;
     for(char* l=buf;*l;){ char nm[32]; ux_pw_field(l,0,nm,32); if(seq(nm,(char*)name)){ char u[16],g[16],home[64]; ux_pw_field(l,2,u,16); ux_pw_field(l,3,g,16); ux_pw_field(l,5,home,64);
             int uv=0; for(int i=0;u[i];i++)uv=uv*10+(u[i]-'0'); int gv=0; for(int i=0;g[i];i++)gv=gv*10+(g[i]-'0');
-            g_uid=uv; g_gid=gv; int d=dt_resolve_dir(home); if(d>=0)g_dcwd=d; env_set("HOME",home); env_set("USER",nm); return uv; }
+            g_uid=uv; g_gid=gv; int d=dt_resolve_dir(home); if(d>=0)g_dcwd=d; env_set("HOME",home); { extern void acct_set_path(const char*); acct_set_path(home); } env_set("USER",nm); return uv; }
         while(*l&&*l!='\n')l++; if(*l)l++; }
     return -1;
 }
@@ -385,17 +416,22 @@ static void ux_boot_layout(void){
     sysroot_mkdirs();
     dt_save();
 }
+static int ux_peq(const char* a,const char* b){ while(*a&&*a==*b){ a++; b++; } return *a==*b; }
 int ux_stat2(const char* p,u32* o,int follow){
     for(int i=0;i<10;i++)o[i]=0; dt_init();
     int dv=dev_id(p); if(dv){ o[0]=0020666u; o[3]=1; o[5]=20000u+(u32)dv; return 0; }
     int fi=ux_usb_idx(p); if(fi>=0){ o[0]=0100644u; o[3]=1; o[4]=ufs[fi].size; o[5]=21000u+(u32)fi; return 0; }
-    int isd; int k=ux_lookup(p,&isd,follow);
-    if(k<0){ int sx=0; u32 SL=0; u32 h=2166136261u; for(int q=0;p[q];q++)h=(h^(u8)p[q])*16777619u; o[6]=o[7]=o[8]=1760000000u;
+    int isd; char rl[192]; rl[0]=0; int k=ux_lookup_ex(p,&isd,follow,rl,(int)sizeof(rl));
+    if(k>=0){ int pd=isd?DT[k].parent:FS[k].dir; if(pd>=0&&pd<DN_MAX&&!ux_dir_ok(pd,1))return -1; }
+    if(k<0&&follow&&rl[0]=='/'&&p[0]=='/'){ int same=1; for(int i=0;;i++){ if(rl[i]!=p[i]){ same=0; break; } if(!p[i])break; } if(!same)p=rl; }
+    if(k<0){ int sx=0; u32 SL=0; u32 h=sysroot_ino(p,follow); if(!h){ h=2166136261u; for(int q=0;p[q];q++)h=(h^(u8)p[q])*16777619u; } o[6]=o[7]=o[8]=1760000000u;
         if(!follow&&sysroot_islink(p)){ char lb[256]; int ln=sysroot_readlink(p,lb,255); o[0]=0120777u; o[3]=1; o[4]=(u32)(ln>0?ln:0); o[5]=0x10000000u|(h&0x0FFFFFFFu); return 0; }
         if(sysroot_isdir(p)){ o[0]=0040755u; o[3]=2; o[4]=4096; o[5]=0x10000000u|(h&0x0FFFFFFFu); o[9]=1; return 0; }
         if(sysroot_get(p,&SL,&sx)){ o[0]=sx?0100755u:0100644u; o[3]=1; o[4]=SL; o[5]=0x10000000u|(h&0x0FFFFFFFu); return 0; }
         o[6]=o[7]=o[8]=0; }
-    if(k<0){ u32 L; const char* b=p; if(b[0]=='/')b++; if(jc_find_prog(p,&L)&&(p[0]!='/'||(b[0]=='b'&&b[1]=='i'&&b[2]=='n')||(b[0]=='s'&&b[1]=='b')||(b[0]=='u'&&b[1]=='s'&&b[2]=='r'))){ o[0]=0100755u; o[3]=1; o[4]=L; o[5]=22000u; return 0; } return -1; }
+    if(k<0){ u32 L; char ab[192]; int n=0; if(p[0]!='/'){ dt_path_n(g_dcwd,ab,128); while(ab[n])n++; if(n>1)ab[n++]='/'; if(p[0]=='.'&&p[1]=='/')p+=2; } for(int q=0;p[q]&&n<191;q++)ab[n++]=p[q]; ab[n]=0;
+        int d=n; while(d>0&&ab[d-1]!='/')d--; int dl=d>1?d-1:d; ab[dl]=0; int okd=ux_peq(ab,"/bin")||ux_peq(ab,"/sbin")||ux_peq(ab,"/usr/bin")||ux_peq(ab,"/usr/sbin"); ab[dl]='/';
+        if(okd&&jc_find_prog(ab,&L)){ o[0]=0100755u; o[3]=1; o[4]=L; o[5]=22000u; return 0; } return -1; }
     if(isd){ u32 nl=2; for(int i=0;i<DN_MAX;i++) if(DT[i].used&&i!=k&&DT[i].parent==k)nl++; o[0]=DT[k].mode?DT[k].mode:0040755u; o[1]=(u32)DT[k].uid; o[2]=(u32)DT[k].gid; o[3]=nl; o[4]=4096; o[5]=10000u+(u32)k; o[6]=DT[k].mtime; o[7]=DT[k].atime; o[8]=DT[k].ctime; o[9]=1; return 0; }
     o[0]=FS[k].mode?FS[k].mode:0100644u; o[1]=(u32)FS[k].uid; o[2]=(u32)FS[k].gid; o[3]=FS[k].nlink?FS[k].nlink:1; o[4]=(u32)FS[k].len; o[5]=(u32)k+1; o[6]=FS[k].mtime; o[7]=FS[k].atime; o[8]=FS[k].ctime;
     return 0;
@@ -415,11 +451,20 @@ static void jc_start_init(void){
     g_jp[i].pid=1; g_jp[i].tgid=1; g_jp[i].pgid=1; g_jp[i].ppid=0; g_jp[i].uid=0; g_jp[i].gid=0; if(g_next_pid<2)g_next_pid=2;
 }
 static int g_ux_core=0;
+void ux_session_user(const char* user){
+    extern int acct_login_ex(const char*,int); extern int g_logged_in;
+    if(!user||!user[0]||g_logged_in)return;
+    klog2("unix: login ",user);
+    int quiet=seq((char*)user,"root");
+    if(acct_login_ex(user,quiet)<0){ ux_ensure_account(user); if(acct_login_ex(user,quiet)<0)ux_login_user(user); }
+}
+void ux_legacy_account(const char* user){ if(user&&user[0])ux_ensure_account(user); }
 void ux_core_start(const char* user){ if(g_ux_core)return; g_ux_core=1;
     klog("unix: layout"); ux_boot_layout(); klog("unix: load pw"); ux_load_localpw();
-    if(user&&user[0]){ klog2("unix: login ",user); ux_ensure_account(user); ux_login_user(user); } klog("unix: ready"); }
+    { extern void acct_boot(void); klog("unix: accounts"); acct_boot(); }
+    ux_session_user(user); klog("unix: ready"); }
 void ux_desktop_start(const char* user){
     static int done=0; if(done)return; done=1;
-    if(g_ux_core){ if(user&&user[0]){ ux_ensure_account(user); ux_login_user(user); } } else ux_core_start(user);
+    if(g_ux_core)ux_session_user(user); else ux_core_start(user);
     klog("unix: starting init (desktop)"); jc_start_init();
 }

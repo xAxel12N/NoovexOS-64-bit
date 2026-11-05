@@ -43,7 +43,7 @@ static int do_ls(int argc,char** argv){
     return rc;
 }
 static int each_input(int argc,char** argv,int first,void(*fn)(int,const char*)){
-    int any=0; for(int i=first;i<argc;i++){ if(argv[i][0]=='-'&&argv[i][1])continue; any=1; if(!strcmp(argv[i],"-")){ fn(0,"-"); continue; } int fd=open(argv[i],O_RDONLY); if(fd<0){ err(base(argv[0]),argv[i],"No such file or directory"); continue; } fn(fd,argv[i]); close(fd); }
+    int any=0; for(int i=first;i<argc;i++){ if(argv[i][0]=='-'&&argv[i][1])continue; any=1; if(!strcmp(argv[i],"-")){ fn(0,"-"); continue; } int fd=open(argv[i],O_RDONLY); if(fd<0){ struct stat est; err(base(argv[0]),argv[i],stat(argv[i],&est)==0?"Permission denied":"No such file or directory"); continue; } fn(fd,argv[i]); close(fd); }
     if(!any)fn(0,"-"); return rc; }
 static void f_cat(int fd,const char* n){ (void)n; char b[512]; long r; while((r=read(fd,b,sizeof(b)))>0)write(1,b,(size_t)r); }
 static int readline_fd(int fd,char* out,int cap){ static char buf[1024]; static int bl=0,bp=0,lastfd=-1; if(fd!=lastfd){ bl=bp=0; lastfd=fd; } int n=0;
@@ -90,7 +90,12 @@ static int do_stat(int argc,char** argv){ for(int i=1;i<argc;i++){ struct stat s
         char u[20],g[20]; if(!lookup_id("/etc/passwd",(int)st.st_uid,u,20))strcpy(u,"?"); if(!lookup_id("/etc/group",(int)st.st_gid,g,20))strcpy(g,"?");
         printf("  File: %s\n  Size: %lu\tType: %s\n Inode: %lu\tLinks: %u\nAccess: (%04o/%s)  Uid: (%u/%s)  Gid: (%u/%s)\n",argv[i],st.st_size,ty,st.st_ino,st.st_nlink,st.st_mode&07777,m,st.st_uid,u,st.st_gid,g);
         if(st.st_mtime){ time_t t=(time_t)st.st_mtime; printf("Modify: %s\n",ctime(&t)); } } return rc; }
-static int do_id(void){ int u=getuid(),g=getgid(); char un[20],gn[20]; if(!lookup_id("/etc/passwd",u,un,20))strcpy(un,"?"); if(!lookup_id("/etc/group",g,gn,20))strcpy(gn,"?"); printf("uid=%d(%s) gid=%d(%s)\n",u,un,g,gn); return 0; }
+static int mem_in(const char* list,const char* nm){ int L=(int)strlen(nm); const char* p=list; while(*p){ const char* a=p; while(*p&&*p!=',')p++; if(p-a==L&&!strncmp(a,nm,(size_t)L))return 1; if(*p)p++; } return 0; }
+static int do_id(void){ int u=getuid(),g=getgid(); char un[40],gn[40]; if(!lookup_id("/etc/passwd",u,un,40))strcpy(un,"?"); if(!lookup_id("/etc/group",g,gn,40))strcpy(gn,"?"); printf("uid=%d(%s) gid=%d(%s) groups=%d(%s)",u,un,g,gn,g,gn);
+    char buf[4096]; int fd=open("/etc/group",O_RDONLY); long n=fd<0?0:read(fd,buf,sizeof(buf)-1); if(fd>=0)close(fd); if(n<0)n=0; buf[n]=0;
+    for(char* l=buf;*l;){ char* e=l; while(*e&&*e!='\n')e++; char sv=*e; *e=0; char nm[40]="", gs[16]="", mem[512]=""; int fi=0,o=0; for(char* c=l;*c;c++){ if(*c==':'){ fi++; o=0; continue; } if(fi==0&&o<39){ nm[o++]=*c; nm[o]=0; } else if(fi==2&&o<15){ gs[o++]=*c; gs[o]=0; } else if(fi==3&&o<511){ mem[o++]=*c; mem[o]=0; } }
+        int gid=atoi(gs); if(gs[0]&&gid!=g&&mem_in(mem,un))printf(",%d(%s)",gid,nm); *e=sv; l=*e?e+1:e; }
+    printf("\n"); return 0; }
 int coreutils_main(int argc,char** argv);
 int main(int argc,char** argv){
     const char* c=base(argv[0]);
@@ -117,7 +122,7 @@ int main(int argc,char** argv){
     if(!strcmp(c,"hostname")){ if(argc>1){ if(sethostname(argv[1],strlen(argv[1]))<0){ err("hostname",argv[1],"Operation not permitted"); return 1; } int fd=open("/etc/hostname",O_CREAT|O_WRONLY|O_TRUNC); if(fd>=0){ write(fd,argv[1],strlen(argv[1])); write(fd,"\n",1); close(fd); } return 0; } char b[64]; gethostname(b,sizeof(b)); printf("%s\n",b); return 0; }
     if(!strcmp(c,"whoami")){ char u[20]; if(!lookup_id("/etc/passwd",getuid(),u,20))sprintf(u,"%d",getuid()); printf("%s\n",u); return 0; }
     if(!strcmp(c,"id"))return do_id();
-    if(!strcmp(c,"uname")){ char h[64]; gethostname(h,sizeof(h)); char r[32]="?"; int fd=open("/sys/kernel/osrelease",O_RDONLY); if(fd>=0){ int n=(int)read(fd,r,sizeof(r)-1); close(fd); if(n<0)n=0; r[n]=0; for(int i=0;r[i];i++)if(r[i]=='\n'){ r[i]=0; break; } } if(argc>1&&!strcmp(argv[1],"-a"))printf("NoovexOS %s %s nvx64 x86_64\n",h,r); else if(argc>1&&!strcmp(argv[1],"-r"))printf("%s\n",r); else printf("NoovexOS\n"); return 0; }
+    if(!strcmp(c,"uname")){ char h[64]; gethostname(h,sizeof(h)); char r[32]="?"; int fd=open("/proc/sys/kernel/osrelease",O_RDONLY); if(fd<0)fd=open("/sys/kernel/osrelease",O_RDONLY); if(fd>=0){ int n=(int)read(fd,r,sizeof(r)-1); close(fd); if(n<0)n=0; r[n]=0; for(int i=0;r[i];i++)if(r[i]=='\n'){ r[i]=0; break; } } if(argc>1&&!strcmp(argv[1],"-a"))printf("NoovexOS %s %s nvx64 x86_64\n",h,r); else if(argc>1&&!strcmp(argv[1],"-r"))printf("%s\n",r); else printf("NoovexOS\n"); return 0; }
     if(!strcmp(c,"date")){ time_t t=time(0); printf("%s\n",ctime(&t)); return 0; }
     if(!strcmp(c,"sleep")){ if(argc<2)return 1; sleep((unsigned)atoi(argv[1])); return 0; }
     if(!strcmp(c,"mount")){ if(argc<3){ int fd=open("/proc/mounts",O_RDONLY); char b[512]; long n; while(fd>=0&&(n=read(fd,b,sizeof(b)))>0)write(1,b,(size_t)n); if(fd>=0)close(fd); return 0; }

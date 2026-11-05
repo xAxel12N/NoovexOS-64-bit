@@ -47,6 +47,8 @@ static void dt_load_from_disk(void){
     int n=(int)g_nvx.dcount; if(n>NVX_DN_MAX)n=NVX_DN_MAX;
     for(int i=0;i<n;i++){ DT[i].used=g_nvx.d[i].used; DT[i].parent=g_nvx.d[i].parent; DT[i].uid=0; DT[i].gid=0;
         int k=0; while(g_nvx.d[i].name[k]&&k<31){DT[i].name[k]=g_nvx.d[i].name[k];k++;} DT[i].name[k]=0; DT[i].mode=g_nvx.d[i].mode?g_nvx.d[i].mode:0040755u; }
+    for(int i=1;i<DN_MAX;i++) if(DT[i].used){ int p=DT[i].parent; if(p<0||p>=DN_MAX||p==i||!DT[p].used)DT[i].parent=0; }
+    DT[0].parent=-1;
     if(!DT[0].used){ DT[0].used=1; DT[0].name[0]='/'; DT[0].name[1]=0; DT[0].parent=-1; }
     /* set cwd to /home if present, else root */
     if(dt_child(0,"dev")<0)dt_mkdir_at(0,"dev"); { int dvs=dt_child(0,"dev"); if(dvs>=0&&dt_child(dvs,"shm")<0)dt_mkdir_at(dvs,"shm"); } int home=dt_child(0,"home"); g_dcwd=(home>=0)?home:0;
@@ -64,7 +66,7 @@ int dt_child(int parent,const char* name){
     for(int i=0;i<DN_MAX;i++) if(DT[i].used&&DT[i].parent==parent&&seq(DT[i].name,(char*)name))return i;
     return -1;
 }
-int dt_is_tmp(int d){ for(int g=0;g<32&&d>0&&d<DN_MAX&&DT[d].used;g++){ if(DT[d].parent==0)return seq(DT[d].name,"tmp"); d=DT[d].parent; } return 0; }
+int dt_is_tmp(int d){ for(int g=0;g<32&&d>0&&d<DN_MAX&&DT[d].used;g++){ if(DT[d].parent==0)return seq(DT[d].name,"tmp")||seq(DT[d].name,"System"); d=DT[d].parent; } return 0; }
 void dt_load_done(void){
     g_dtree_init=1;
     if(!DT[0].used){ DT[0].used=1; DT[0].name[0]='/'; DT[0].name[1]=0; DT[0].mode=0040755u; }
@@ -115,7 +117,7 @@ int k_unlink(const char* p){
     fs_drop_name(k); return 0;
 }
 static int dt_dir_empty(int d){ for(int i=0;i<DN_MAX;i++) if(DT[i].used&&DT[i].parent==d)return 0; for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==d)return 0; return !ux_links_in(d); }
-int k_is_ancestor(int anc,int node){ while(node>=0){ if(node==anc)return 1; node=DT[node].parent; } return 0; }
+int k_is_ancestor(int anc,int node){ for(int g=0;g<DN_MAX&&node>=0&&node<DN_MAX;g++){ if(node==anc)return 1; node=DT[node].parent; } return 0; }
 int k_rename(const char* from,const char* to){
     dt_init(); if(!from||!to||!from[0]||!to[0])return -1;
     { int r=ux_rename_link(from,to); if(r!=-2)return r; }
@@ -171,17 +173,19 @@ int k_fsync(int fd){ fd_init(); int* T=fdt(); if(fd<0||fd>=FDMAX)return -1; if(T
     return fs_sync(v->fs_idx)<0?-1:0; }
 
 int k_readdir_at(const char* p,int n,char* name,int* type){
-    dt_init(); int d=(p&&p[0])?dt_resolve_dir(p):g_dcwd; if(d<0)return -1; int c=0;
+    dt_init(); int d=(p&&p[0])?dt_resolve_dir(p):g_dcwd; if(d<0)return -1; if(!ux_dir_ok(d,5))return -1; int c=0;
     for(int i=0;i<DN_MAX;i++) if(DT[i].used&&i!=d&&DT[i].parent==d){ if(c==n){ int j=0; while(DT[i].name[j]&&j<63){name[j]=DT[i].name[j];j++;} name[j]=0; if(type)*type=4; return 1; } c++; }
     for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==d){ if(c==n){ int j=0; while(FS[k].name[j]&&j<63){name[j]=FS[k].name[j];j++;} name[j]=0; if(type)*type=((FS[k].mode&0170000u)==0120000u)?10:8; return 1; } c++; }
     return k_readdir_extra(d,n-c,name,type);
 }
 static u64 k_days_from_civil(int y,int m,int d){ y-= m<=2; long era=(y>=0?y:y-399)/400; unsigned yoe=(unsigned)(y-era*400); unsigned doy=(153*(m+(m>2?-3:9))+2)/5+d-1; unsigned doe=yoe*365+yoe/4-yoe/100+doy; return (u64)(era*146097+(long)doe-719468); }
+static u64 g_rt_base=0;
+void k_realtime_set(u64 ms){ g_rt_base=ms-(u64)g_ticks*10ULL; }
 u64 k_realtime_ms(void){
-    u64 base=0;
+    u64 base=g_rt_base;
     if(!base){ int hh,mm,ss,yr,mo,dy; read_clock(&hh,&mm,&ss,&yr,&mo,&dy);
         u64 epoch=k_days_from_civil(yr,mo,dy)*86400ULL+(u64)hh*3600+(u64)mm*60+(u64)ss;
-        base=epoch*1000ULL-(u64)g_ticks*10ULL; }
+        base=epoch*1000ULL-(u64)g_ticks*10ULL; g_rt_base=base; }
     return base+(u64)g_ticks*10ULL;
 }
 /* build the absolute path string of a node into out[] */

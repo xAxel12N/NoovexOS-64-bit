@@ -1,6 +1,6 @@
 #include "kernel64.c"
 u32 fk_disk_secs;
-void fk_heap(void){ percpu_init_bsp(); heap_base=0x10000000ULL; heap_cur=heap_base; heap_top=heap_base+0x40000000ULL; heap_head=0; g_ram_mb=2048; }
+void fk_heap(void){ percpu_init_bsp(); heap_base=0x40000000ULL; heap_cur=heap_base; heap_top=heap_base+0x40000000ULL; heap_head=0; g_ram_mb=2048; }
 static void fk_reset(void){
     for(int i=0;i<VMAXOPEN;i++)g_vf[i].used=0; g_fd_init=0; fd_init();
     for(int k=0;k<FS_N;k++){ fs_free(k); FS[k].used=0; FS[k].len=0; g_fs_dirty[k]=0; }
@@ -59,3 +59,7 @@ int fk_bitmap_check(void){
     return 0;
 }
 void fk_layout(void){ ux_boot_layout(); }
+
+int fk_store_step(const char* name,const void* d,int n,int maxblk,int* steps){ int k=fs_store_nosync(name,(const u8*)d,n,0); if(k<0)return -1; int st=0,r; do{ r=fs_sync_step(k,maxblk); st++; }while(r==0&&st<100000); if(steps)*steps=st; return r; }
+int fk_same_name(const char* name,const void* d,int n){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&seq(FS[k].name,name)){ if(fs_ensure(k))return 0; if(FS[k].len!=n)return 0; return !memcmp(FS[k].data,d,(unsigned long)n); } return 0; }
+int fk_has_name(const char* name){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&seq(FS[k].name,name))return 1; return 0; }

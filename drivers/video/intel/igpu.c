@@ -313,7 +313,7 @@ static void q_start(void){
 static int emu_alloc(u32 w,u32 h,u32 pitch,u32** px){ u64 bytes=(u64)pitch*h*4; u8* raw=(u8*)kmalloc((unsigned long)bytes+4096UL); if(!raw)return -1; u32* p=(u32*)(((u64)raw+4095ULL)&~4095ULL); for(u64 k=0;k<(u64)pitch*h;k++)p[k]=0; *px=p; return gq_surf(p,0,w,h,pitch); }
 int igpu_draw_mode(int mode){
     if(mode==GFX_EMU){ if(g_gfx==GFX_GPU)gfx_stop("switching"); g_gfx_present=0; return gfx_start(GFX_EMU,emu_alloc,0,0); }
-    if(mode==GFX_GPU){ if(!q_ready||!g_rcs_ok)return -1; if(g_gfx==GFX_GPU)return 0; if(g_gfx==GFX_EMU)gfx_stop("switching"); q_start(); return g_gfx==GFX_GPU?0:-1; }
+    if(mode==GFX_GPU){ if(!q_ready||!g_rcs_ok){ extern int nvd_start(void); return nvd_start(); } if(g_gfx==GFX_GPU)return 0; if(g_gfx==GFX_EMU)gfx_stop("switching"); q_start(); return g_gfx==GFX_GPU?0:-1; }
     gfx_stop("turned off by the user"); g_gfx_present=0; return 0; }
 static void rcs_init(void){
     geng* e=&ER; e->step=1;
