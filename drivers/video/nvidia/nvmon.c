@@ -72,3 +72,14 @@ void nvm_decode_head(u32 total,u32 synce,u32 blanke,u32 blanks,u32 pclk,nvm_head
     h->hz=h->active?(u16)(((u64)pclk+(u64)h->htot*h->vtot/2)/((u64)h->htot*h->vtot)):0;
 }
 const char* nvm_proto(u32 p){ switch(p){ case 0: return "LVDS"; case 1: return "HDMI/DVI (TMDS link A)"; case 2: return "HDMI/DVI (TMDS link B)"; case 5: return "DVI dual-link"; case 8: return "DisplayPort (A)"; case 9: return "DisplayPort (B)"; default: return "other"; } }
+static char* nvm_s(char* p,const char* s,char* e){ while(*s&&p<e)*p++=*s++; return p; }
+static char* nvm_u(char* p,u32 v,char* e){ char d[12]; int n=0; do{ d[n++]=(char)('0'+v%10); v/=10; }while(v); while(n&&p<e)*p++=d[--n]; return p; }
+int nvm_screens(char t[][96],int max){
+    if(!nv_probe()||g_nv_boot0==0xFFFFFFFFu||!g_nv_boot0)return -1;
+    u32 hm=nvr32(0x610060); if(hm==0xFFFFFFFFu)return -1; int k=0;
+    for(int h=0;h<4&&k<max;h++){ if(!(hm&(1u<<h)))continue; u32 o=0x8000u+(u32)h*0x400u; nvm_head_t hd; nvm_decode_head(nvr32(0x682064+o),nvr32(0x682068+o),nvr32(0x68206C+o),nvr32(0x682070+o),nvr32(0x68200C+o),&hd);
+        if(!hd.active)continue; char* p=t[k]; char* e=t[k]+94;
+        p=nvm_s(p,"Head ",e); p=nvm_u(p,(u32)h,e); p=nvm_s(p,": ",e); p=nvm_u(p,hd.hact,e); p=nvm_s(p," x ",e); p=nvm_u(p,hd.vact,e); p=nvm_s(p," at ",e); p=nvm_u(p,hd.hz,e); p=nvm_s(p," Hz",e);
+        for(int s=0;s<8;s++){ if(!((hm>>8)&(1u<<s)))continue; u32 ctl=nvr32(0x680300+0x8000u+(u32)s*0x20u); if(ctl!=0xFFFFFFFFu&&(ctl&0xFF)&(1u<<h)){ p=nvm_s(p,", ",e); p=nvm_s(p,nvm_proto((ctl>>8)&0xF),e); break; } }
+        *p=0; k++; }
+    return k; }

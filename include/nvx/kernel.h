@@ -87,7 +87,6 @@
 #include "include/nvx/shell/commands.h"
 #include "include/nvx/apps/office/editor.h"
 #include "include/nvx/apps/office/calculator.h"
-#include "include/nvx/apps/internet/chatgpt.h"
 #include "include/nvx/apps/internet/browser.h"
 #include "include/nvx/apps/system/settings.h"
 #include "include/nvx/apps/system/files_classic.h"

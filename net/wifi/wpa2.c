@@ -8,12 +8,13 @@
 /* ===================== WPA2 4-way handshake ===================== */
 u8 g_ptk[48];      /* KCK(16)|KEK(16)|TK(16) */
 u8 g_pmk[32];
-int g_wpa_ok=0;
+int g_wpa_ok=0, g_wpa_mfp=0;
+extern int g_wpa_akm;
 
 /* send an EAPOL-Key data frame to the AP (802.11 data + LLC/SNAP + EAPOL) */
 void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int elen){
     static u8* pkt=0; if(!pkt)pkt=(u8*)dma_alloc(2048); if(!pkt)return;
-    u8 fr[512]; int fl=0;
+    static u8 fr[1600]; int fl=0; if(elen<0||elen>1500)return;
     fr[fl++]=0x08; fr[fl++]=0x01;                 /* FC: data, ToDS=1 */
     fr[fl++]=0; fr[fl++]=0;                        /* duration */
     for(int i=0;i<6;i++)fr[fl++]=bssid[i];         /* addr1 = BSSID (RA) */
@@ -30,6 +31,7 @@ void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int e
     *(volatile u32*)(pkt+4)=((u32)0u<<8)|((u32)8u<<16);   /* QSEL=BE(0), RATE_ID=B */
     *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10);            /* USE_RATE|DISDATAFB */
     *(volatile u32*)(pkt+16)=0x00u;                       /* 1M */
+    rtw_txdesc_rate(pkt,1);
     *(volatile u32*)(pkt+32)=(1u<<15);                    /* EN_HWSEQ */
     for(int i=0;i<fl;i++)pkt[48+i]=fr[i];
     u32 i=g_beidx % g_benum; u8* bd=g_bering+i*16;
@@ -38,11 +40,12 @@ void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int e
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
     cpu_wmb();
     rtw_w32(m,0x0328,(u32)(u64)g_bering); rtw_w16(m,0x0388,(u16)(g_benum&0x0FFF));
-    g_beidx++; rtw_w16(m,0x03A8,(u16)(g_beidx&0x0FFF));
+    g_beidx=(g_beidx+1)%g_benum; rtw_w16(m,0x03A8,(u16)g_beidx);
 }
 
 /* wait for an EAPOL-Key frame from the AP; returns body (the EAPOL payload) length */
 int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms){
+    if(!g_rxnum||!g_rxbuf)return 0;
     if(g_eap_stashlen>0){ int n=g_eap_stashlen; if(n>maxout)n=maxout; for(int c=0;c<n;c++)out[c]=g_eap_stash[c]; g_eap_stashlen=0; return n; }
     for(int t=0;t<ms*10;t++){
         int wp=rtw_rx_hw_wp(m);
@@ -100,8 +103,8 @@ int wpa_rsn_ie(u8* b){
     b[n++]=0x01;b[n++]=0x00;              /* pairwise count 1 */
     b[n++]=0x00;b[n++]=0x0F;b[n++]=0xAC;b[n++]=0x04;  /* pairwise: CCMP */
     b[n++]=0x01;b[n++]=0x00;              /* akm count 1 */
-    b[n++]=0x00;b[n++]=0x0F;b[n++]=0xAC;b[n++]=0x02;  /* akm: PSK */
-    b[n++]=0x00;b[n++]=0x00;             /* RSN capabilities */
+    b[n++]=0x00;b[n++]=0x0F;b[n++]=0xAC;b[n++]=(u8)g_wpa_akm;
+    b[n++]=(u8)(g_wpa_mfp?0x80:0x00);b[n++]=0x00;
     return n;
 }
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 B=build
-CFLAGS="-m64 -Os -ffreestanding -fno-pie -fno-stack-protector \
+CFLAGS="-m64 -Os -ffreestanding -fno-pie -fstack-protector-strong -mstack-protector-guard=global -fno-omit-frame-pointer \
         -fno-asynchronous-unwind-tables -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
         -mcmodel=small -DNOOVEX64 -Wall -Wextra -I. -Werror=implicit-function-declaration -Werror=int-conversion -Werror=incompatible-pointer-types -Werror=return-type -Werror=shift-negative-value -Werror=empty-body -Werror=duplicated-branches -Werror=logical-op -Wduplicated-branches -Wlogical-op"
 U="usr/src"
@@ -29,13 +29,16 @@ tools/rune build lang/rune/rune_gfx.rn --freestanding --target=x86_64-none -o $B
 
 echo "[3a2] embed RTL8821CE firmware blob"
 ( cd assets/firmware && ld -r -b binary -o ../../$B/rtw_fw.o rtw8821c_fw.bin )
-( cd assets && ld -r -b binary -o ../$B/doom_wad.o doom1.wad )
+( cd assets && ld -r -b binary -o ../$B/doom_wad.o doom1.wad.xz )
 ( cd assets && ld -r -b binary -o ../$B/wpf_data.o wpf_data.bin )
+( cd assets && ld -r -b binary -o ../$B/emoji_data.o emoji32.bin )
 ( cd assets && ld -r -b binary -o ../$B/lq_pak0.o lq_pak0.xz && ld -r -b binary -o ../$B/lq_pak1.o lq_pak1.xz )
 ( cd assets/nvidia && for f in gsp bootloader booter_load booter_unload acr_bl; do ld -r -b binary -o ../../$B/nvfw_$f.o nvfw_$f.xz; done )
+for o in doom_wad lq_pak0 lq_pak1 wpf_data emoji_data nvfw_gsp; do objcopy --rename-section .data=.blobdata,alloc,load,data,contents $B/$o.o; done
 sh third_party/quake/build_quake.sh >/dev/null && mv third_party/quake/quake_blob.o $B/quake_blob.o && rm -rf third_party/quake/obj
 sh apps/graphics/r3d/build_r3d.sh >/dev/null && mv apps/graphics/r3d/r3d_blob.o $B/r3d_blob.o
 echo "[3a3] embed myboot bootloader + boot.cfg (for the disk installer)"
+( cd boot && make build/boot.bin build/stage2.bin >/dev/null ) && cp boot/build/stage2.bin assets/installer/inst_stage2.bin && cp boot/build/boot.bin assets/installer/inst_boot.bin || { echo "BOOT LOADER BUILD FAILED"; exit 1; }
 ( cd assets/installer && ld -r -b binary -o ../../$B/inst_boot.o inst_boot.bin && ld -r -b binary -o ../../$B/inst_stage2.o inst_stage2.bin && ld -r -b binary -o ../../$B/inst_cfg.o inst_boot.cfg )
 echo "[efi] rebuild UEFI bootloader (BOOTX64.EFI) and embed it for the installer"
 ( cd boot/uefi &&   gcc -I. -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -m64 -Os -fno-jump-tables -Werror=implicit-function-declaration -c uefiboot.c -o uefiboot.o &&   gcc -ffreestanding -c dummyreloc.S -o dummyreloc.o &&   ld -nostdlib -znocombreloc -shared -Bsymbolic -T efi.ld uefiboot.o dummyreloc.o -o uefiboot.so 2>/dev/null &&   objcopy -j .text -j .data -j .reloc --target=pei-x86-64 --subsystem=10 uefiboot.so BOOTX64.EFI &&   echo "  BOOTX64.EFI rebuilt" ) || echo "  (EFI build skipped)"
@@ -80,7 +83,7 @@ if [ ! -f $M/lib/libc.a ] || [ ! -f $M/lib/rcrt1.o ]; then
   ( cd $B/musl-obj && CC=gcc ../../third_party/musl/configure --prefix=$M --disable-shared --disable-wrapper CFLAGS="-fPIE -O2" >/dev/null && make -j"$(nproc 2>/dev/null || echo 4)" >/dev/null 2>&1 && make install >/dev/null 2>&1 ) || { echo "MUSL BUILD FAILED"; exit 1; }
 fi
 MCFLAGS="-fPIE -O2 -nostdinc -isystem $M/include -isystem $(gcc -print-file-name=include) -Wall -Wno-unused-result -Wno-format-zero-length"
-for p in mhello musltest smptest nettest featest afutest; do
+for p in mhello musltest smptest nettest featest afutest kfeat; do
   gcc $MCFLAGS -c usr/musl/$p.c -o $B/user/musl_$p.o || { echo "MUSL PROGRAM BUILD FAILED: $p"; exit 1; }
   gcc -static-pie -nostdlib -Wl,--no-dynamic-linker -Wl,-z,noexecstack -o $B/user/$p.elf $M/lib/rcrt1.o $M/lib/crti.o $B/user/musl_$p.o $M/lib/libc.a $(gcc -print-libgcc-file-name) $M/lib/crtn.o || { echo "MUSL PROGRAM LINK FAILED: $p"; exit 1; }
   strip $B/user/$p.elf
@@ -90,9 +93,9 @@ done
 
 echo "[musl-shared] build musl as a shared library (the dynamic linker /lib/ld-musl-x86_64.so.1) and a dynamic test program"
 MS=$(pwd)/$B/musl-sh
-if [ ! -f $MS/lib/libc.so ]; then
+if [ ! -f $MS/lib/libc.so ] || ! grep -qa "/lib:/usr/lib" $MS/lib/libc.so; then
   rm -rf $B/musl-shobj; mkdir -p $B/musl-shobj
-  ( cd $B/musl-shobj && CC=gcc ../../third_party/musl/configure --prefix=$MS --syslibdir=/lib --enable-shared --disable-static --disable-wrapper CFLAGS="-O2" >/dev/null && make -j"$(nproc 2>/dev/null || echo 4)" >/dev/null 2>&1 && make install-libs syslibdir=$MS/lib >/dev/null 2>&1 ) || { echo "MUSL SHARED BUILD FAILED"; exit 1; }
+  ( cd $B/musl-shobj && CC=gcc ../../third_party/musl/configure --prefix=$MS --syslibdir=/lib --enable-shared --disable-static --disable-wrapper CFLAGS="-O2" >/dev/null && make -j"$(nproc 2>/dev/null || echo 4)" libdir=/usr/lib >/dev/null 2>&1 && make install-libs syslibdir=$MS/lib libdir=$MS/lib >/dev/null 2>&1 ) || { echo "MUSL SHARED BUILD FAILED"; exit 1; }
 fi
 cp $MS/lib/libc.so $B/user/libc_so.elf && strip $B/user/libc_so.elf
 embz user_libc_so_bin.o libc_so
@@ -152,16 +155,39 @@ echo "[web] build the Noovex web engine (HTML, CSS, layout, paint) with QuickJS 
 QJ=third_party/quickjs; MSRC=third_party/musl; WB=$B/web; mkdir -p $WB/m
 WEBF="-m64 -O2 -ffreestanding -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone -mcmodel=small -msse -msse2 -mfpmath=sse -w -nostdinc -isystem $M/include -isystem $(gcc -print-file-name=include) -DNDEBUG -D_GNU_SOURCE -I. -I$QJ"
 python3 tools/js2c.py web/prelude.js web/prelude_gen.c nwe_prelude || exit 1
-for f in quickjs libregexp libunicode dtoa; do [ -f $WB/q_$f.o ] || gcc $WEBF -c $QJ/$f.c -o $WB/q_$f.o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
+for f in quickjs libregexp libunicode dtoa; do { [ -f $WB/q_$f.o ] && [ $WB/q_$f.o -nt $QJ/$f.c ] && [ $WB/q_$f.o -nt $QJ/quickjs.h ]; } || gcc $WEBF -c $QJ/$f.c -o $WB/q_$f.o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
 if [ ! -f $WB/libmk.a ]; then
   MF="-m64 -O2 -ffreestanding -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone -mcmodel=small -msse -msse2 -mfpmath=sse -w -nostdinc -std=c99 -D_XOPEN_SOURCE=700 -I$MSRC/arch/x86_64 -I$MSRC/arch/generic -I$B/musl-obj/obj/src/internal -I$MSRC/src/include -I$MSRC/src/internal -I$B/musl-obj/obj/include -I$MSRC/include -isystem $(gcc -print-file-name=include)"
   for f in $MSRC/src/math/*.c; do b=$(basename $f .c); s2=${b%l}; if [ "$s2" != "$b" ] && [ -f $MSRC/src/math/$s2.c ]; then continue; fi; [ -f $MSRC/src/math/x86_64/$b.c ] && f=$MSRC/src/math/x86_64/$b.c; gcc $MF -c $f -o $WB/m/$b.o || { echo "WEB MATH BUILD FAILED: $b"; exit 1; }; done
   ar rcs $WB/libmk.a $WB/m/*.o
 fi
-for f in krt util font fontdata dom cssparse cssstyle layout layout2 paint svg js engine wmedia anim webfont ttf woff2 brotli brotli_tab prelude_gen; do gcc $WEBF -c web/$f.c -o $WB/w_$f.o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
-ld -r -o $B/web_pre.o $WB/w_*.o $WB/q_*.o $WB/libmk.a || exit 1
+DVF="-Ithird_party/dav1d -Ithird_party/dav1d/include -Ithird_party/dav1d/include/dav1d -include third_party/dav1d/config.h"
+for f in cdf cpu ctx data decode dequant_tables getbits intra_edge itx_1d lf_mask lib log mem msac obu pal picture qm ref refmvs scan tables thread_task warpmv wedge; do [ -f $WB/w_dv_$f.o ] && [ $WB/w_dv_$f.o -nt third_party/dav1d/src/$f.c ] || gcc $WEBF $DVF -c third_party/dav1d/src/$f.c -o $WB/w_dv_$f.o || { echo "WEB BUILD FAILED: dav1d $f"; exit 1; }; done
+for b in 8 16; do for f in cdef_apply_tmpl cdef_tmpl fg_apply_tmpl filmgrain_tmpl ipred_prepare_tmpl ipred_tmpl itx_tmpl lf_apply_tmpl loopfilter_tmpl looprestoration_tmpl lr_apply_tmpl mc_tmpl recon_tmpl; do [ -f $WB/w_dv_${f}_$b.o ] && [ $WB/w_dv_${f}_$b.o -nt third_party/dav1d/src/$f.c ] || gcc $WEBF $DVF -DBITDEPTH=$b -c third_party/dav1d/src/$f.c -o $WB/w_dv_${f}_$b.o || { echo "WEB BUILD FAILED: dav1d $f $b"; exit 1; }; done; done
+for f in krt util font fontdata dom cssparse cssstyle layout layout2 paint svg canvas webgl js engine wmedia anim imgx webfont ttf woff2 brotli brotli_tab prelude_gen; do gcc $WEBF -c web/$f.c -o $WB/w_$f.o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
+W3F="-DM3_THREAD_LOCAL= -Dd_m3HasPosixHost=0 -Dd_m3HasTypedRefs=0 -Dd_m3HasStackSwitching=0 -Dd_m3HasSnapshots=0 -Dd_m3HasGasMetering=0 -Dd_m3MaxNativeStack=1572864 -Dd_m3LogOutput=0 -Dd_m3HasThreads=0"
+for f in third_party/wasm3/m3_*.c web/wasm.c; do b=$(basename $f .c); gcc $WEBF $W3F -c $f -o $WB/w_x$b.o || { echo "WEB BUILD FAILED: $b"; exit 1; }; done
+RSLIB=""; rm -f $WB/w_rust_stub.o
+if command -v cargo >/dev/null 2>&1 && sh tools/build_rust.sh $B/rust > $B/rust.log 2>&1; then RSLIB=$B/rust/release/libnvxlayout.a; echo "  rust: nvxlayout (Taffy grid layout) $(stat -c %s $RSLIB) bytes"
+else gcc $WEBF -c web/rust_stub.c -o $WB/w_rust_stub.o || exit 1; echo "  rust: cargo not found or build failed (see build/rust.log), grid layout uses the C code"; fi
+ld -r -o $B/web_pre.o $WB/w_*.o $WB/q_*.o $RSLIB $WB/libmk.a || exit 1
 objcopy --keep-global-symbol=nwe_entry --keep-global-symbol=nwe_fail $B/web_pre.o $B/web_all.o || exit 1
+for K in 2 3 4 5 6; do
+  A=nwk_alloc_arena3; [ $K = 2 ] && A=nwk_alloc_arena2
+  IS=nwk_frame_is2; [ $K = 6 ] && IS=nwk_frame_is_popup
+  objcopy --redefine-sym nwe_entry=nwe${K}_entry --redefine-sym nwe_fail=nwe${K}_fail --redefine-sym nwk_alloc_arena=$A --redefine-sym nwk_ws_close_all=nwk_frame_noop --redefine-sym nwk_frame_reset=nwk_frame_noop2 --redefine-sym nwk_frame_paint=nwk_frame_paint_nested --redefine-sym nwk_frame_post=nwk_frame_post_up$K --redefine-sym nwk_frame_recv=nwk_frame_recv_down$K --redefine-sym nwk_frame_is=$IS --redefine-sym nwk_frame_open=nwk_frame_open2 --redefine-sym nwk_frame_open_doc=nwk_frame_open_doc2 --redefine-sym nwk_frame_info=nwk_frame_info2 --redefine-sym nwk_frame_switch=nwk_frame_switch2 --redefine-sym nwk_pending_set=nwk_pending_set2 --redefine-sym nwk_frame_slot=nwk_frame_slot2 --redefine-sym nwk_popup_open=nwk_popup_open2 --redefine-sym nwk_popup_info=nwk_popup_info2 --redefine-sym nwk_popup_close=nwk_popup_close_self $B/web_pre.o $B/web${K}_pre.o || exit 1
+  objcopy --keep-global-symbol=nwe${K}_entry --keep-global-symbol=nwe${K}_fail $B/web${K}_pre.o $B/web${K}_all.o || exit 1
+  rm -f $B/web${K}_pre.o
+done
 echo "  web engine: $(stat -c %s $B/web_all.o) bytes, needs from kernel: $(nm -u $B/web_all.o | awk '{print $2}' | tr '\n' ' ')"
+python3 tools/js2c.py web/wk_prelude.js web/wk_prelude_gen.c nwe_wkprelude || exit 1
+gcc $WEBF -c web/wk.c -o $WB/k_wk.o || { echo "WEB BUILD FAILED: wk"; exit 1; }
+gcc $WEBF -c web/wk_prelude_gen.c -o $WB/k_wkp.o || exit 1
+ld -r -o $B/wkx_pre.o $WB/k_wk.o $WB/k_wkp.o $WB/q_*.o $WB/w_krt.o $WB/libmk.a || exit 1
+objcopy --redefine-sym nwk_alloc_arena=wk_k_arena --redefine-sym nwk_log=wk_k_log $B/wkx_pre.o $B/wkx_pre2.o || exit 1
+objcopy --keep-global-symbol=wkx_entry --keep-global-symbol=wkx_fail $B/wkx_pre2.o $B/wkx_all.o || exit 1
+rm -f $B/wkx_pre.o $B/wkx_pre2.o
+echo "  worker engine (second core): $(stat -c %s $B/wkx_all.o) bytes, needs: $(nm -u $B/wkx_all.o | awk '{print $2}' | tr '\n' ' ')"
 
 echo "[3b] build Doom engine blob (doomgeneric + FreeDoom libc shim, SSE)"
 ( cd third_party/doom && sh build_doom.sh >/dev/null 2>&1 )
@@ -181,158 +207,73 @@ SR=$B/sysroot-stage; rm -rf $SR; mkdir -p $SR/lib64 $SR/lib $SR/usr/lib $SR/opt/
 if [ -f $B/glibc-root/lib64/libc.so.6 ]; then
   for f in ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libresolv.so.2 libutil.so.1 libanl.so.1 libnss_files.so.2 libnss_dns.so.2 libmvec.so.1; do cp $B/glibc-root/lib64/$f $SR/lib64/ && strip --strip-unneeded $SR/lib64/$f 2>/dev/null; done
   for f in libtinfo.so.6 libselinux.so.1 libpcre2-8.so.0 libz.so.1 libexpat.so.1 libgcc_s.so.1 libcrypt.so.1; do [ -f /lib/x86_64-linux-gnu/$f ] && cp -L /lib/x86_64-linux-gnu/$f $SR/lib64/ && strip --strip-unneeded $SR/lib64/$f 2>/dev/null; done
-  for p in bash ls cat echo uname date sort env id wc head tail uniq tr seq expr sleep grep sed awk find xargs du df stat touch mkdir rm cp mv ln chmod basename dirname cut tee diff cmp readlink md5sum sha256sum base64 printf yes nproc whoami hostname; do f=$(type -P $p); [ -n "$f" ] && cp -L $f $SR/opt/gnu/bin/ && strip $SR/opt/gnu/bin/$p 2>/dev/null; done
+  for p in bash ls cat echo uname date sort env id wc head tail uniq tr seq expr sleep grep sed awk find xargs du df stat touch mkdir rm cp mv ln chmod basename dirname cut tee diff cmp readlink md5sum sha256sum base64 printf yes nproc whoami hostname dd tar gzip sha1sum; do f=""; for d in /usr/bin /bin /usr/local/bin; do if [ -x $d/$p ]; then f=$d/$p; break; fi; done; [ -n "$f" ] && cp -L $f $SR/opt/gnu/bin/ && strip $SR/opt/gnu/bin/$p 2>/dev/null; done
   gcc -O2 -o $SR/opt/gnu/bin/gthreads usr/glibc/gthreads.c -lm -pthread && strip $SR/opt/gnu/bin/gthreads
   gcc -O2 -o $SR/opt/gnu/bin/nvx-mptest usr/glibc/nvx-mptest.c -pthread && strip $SR/opt/gnu/bin/nvx-mptest
+  gcc -O2 -o $SR/opt/gnu/bin/nvx-abitest usr/glibc/nvx-abitest.c && strip $SR/opt/gnu/bin/nvx-abitest
+  gcc -O2 -o $SR/opt/gnu/bin/nvx-sndtest usr/glibc/nvx-sndtest.c -ldl -lm && strip $SR/opt/gnu/bin/nvx-sndtest
+  mkdir -p $SR/usr/lib/nvx && gcc -shared -fPIC -O2 -o $SR/usr/lib/nvx/libnvx-throwlog.so usr/glibc/nvx-throwlog.c -ldl && strip --strip-unneeded $SR/usr/lib/nvx/libnvx-throwlog.so
   for b in $SR/opt/gnu/bin/*; do ldd $b 2>/dev/null | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; }; done; done
   ln -s /lib64 $SR/lib/x86_64-linux-gnu; ln -s /lib64 $SR/usr/lib/x86_64-linux-gnu; ln -s /lib64 $SR/usr/lib64
   printf 'passwd: files\ngroup: files\nhosts: files dns\n' > $SR/etc/nsswitch.conf
   bash tools/build_python.sh $B/python-root && bash tools/build_tcltk.sh $B/tcltk-root $B/python-root && bash tools/stage_python.sh $B/python-root $SR || echo "  (CPython build failed - sysroot without python3)"
   if [ -f $B/tcltk-root/usr/lib/libtk8.6.so ]; then cp -a $B/tcltk-root/usr/lib/libtcl8.6.so $B/tcltk-root/usr/lib/libtk8.6.so $SR/lib64/; strip --strip-unneeded $SR/lib64/libtcl8.6.so $SR/lib64/libtk8.6.so; mkdir -p $SR/usr/lib; cp -a $B/tcltk-root/usr/lib/tcl8.6 $B/tcltk-root/usr/lib/tk8.6 $SR/usr/lib/; rm -rf $SR/usr/lib/tk8.6/demos $SR/usr/lib/tcl8.6/tcltest*; cp $B/tcltk-root/usr/bin/wish8.6 $SR/usr/bin/wish 2>/dev/null && strip $SR/usr/bin/wish; fi
+  bash tools/stage_gcc.sh $SR $B/glibc-root || echo "  (gcc staging failed - sysroot without gcc)"
+  if bash tools/build_mlibc.sh $B/mlibc-root && [ -f $B/mlibc-root/usr/mlibc/lib/libc.so ]; then
+    mkdir -p $SR/usr/mlibc; cp -a $B/mlibc-root/usr/mlibc/. $SR/usr/mlibc/
+    for d in linux asm asm-generic; do ln -sfn /usr/include/$d $SR/usr/mlibc/include/$d; done
+    [ -x $SR/usr/bin/gcc ] && ln -sfn /usr/mlibc/bin/mlibc-gcc $SR/usr/bin/mlibc-gcc
+  else echo "  (mlibc build failed - sysroot without mlibc)"; fi
+  [ -n "$NVX_SR_EXTRA" ] && [ -d "$NVX_SR_EXTRA" ] && cp -a "$NVX_SR_EXTRA"/. $SR/
   mkdir -p $SR/usr/bin $SR/usr/share/X11 $SR/usr/lib/xorg
   for x in Xvfb xkbcomp; do cp -L /usr/bin/$x $SR/usr/bin/ && strip $SR/usr/bin/$x 2>/dev/null; done
   gcc -O2 -o $SR/usr/bin/xdemo usr/x11/xdemo.c -lX11 -lm && strip $SR/usr/bin/xdemo
   gcc -O2 -o $SR/usr/bin/nvx-xinput usr/x11/nvx-xinput.c -lX11 /usr/lib/x86_64-linux-gnu/libXtst.so.6 && strip $SR/usr/bin/nvx-xinput
   gcc -O2 -o $SR/usr/bin/nvxwm usr/x11/nvxwm.c -lX11 && strip $SR/usr/bin/nvxwm
+  GL=/usr/lib/x86_64-linux-gnu; if [ -f $GL/libgtk-3.so.0 ]; then gcc -O2 -o $SR/usr/bin/gtkdemo usr/x11/gtkdemo.c $GL/libgtk-3.so.0 $GL/libgobject-2.0.so.0 $GL/libglib-2.0.so.0 && strip $SR/usr/bin/gtkdemo; mkdir -p $SR/etc/fonts $SR/usr/share/mime; cp -rL /etc/fonts/. $SR/etc/fonts/; for f in mime.cache magic globs globs2 aliases subclasses types icons generic-icons treemagic XMLnamespaces version; do [ -f /usr/share/mime/$f ] && cp /usr/share/mime/$f $SR/usr/share/mime/; done; else echo "  (GTK 3 runtime not found on the build machine - sysroot without gtkdemo)"; fi
   cp -rL /usr/share/X11/xkb $SR/usr/share/X11/xkb; cp /usr/share/X11/XErrorDB $SR/usr/share/X11/ 2>/dev/null; cp /usr/lib/xorg/protocol.txt $SR/usr/lib/xorg/ 2>/dev/null
-  cat > $SR/usr/bin/nvx-firefox <<'NVXFF'
-#!/bin/bash
-rm -f /tmp/ff.done
-export HOME=/root
-export DISPLAY=127.0.0.1:0
-export MOZ_DISABLE_CONTENT_SANDBOX=1
-export MOZ_DISABLE_GMP_SANDBOX=1
-export MOZ_DISABLE_RDD_SANDBOX=1
-export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
-export MOZ_SANDBOX=0
-export LIBGL_ALWAYS_SOFTWARE=1
-export MOZ_WEBRENDER=0
-export MOZ_X11_EGL=0
-export GTK_A11Y=none
-export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/.nvx-no-session-bus
-export MOZ_ACCELERATED=0
-export MOZ_CRASHREPORTER_DISABLE=1
-export NO_AT_BRIDGE=1
-echo "=== nvx-firefox $(date) ===" >> /tmp/ff.log
-if ! command -v firefox-esr >/dev/null 2>&1; then echo "firefox-esr is not installed - run: sudo apt install firefox-esr" >> /tmp/ff.log; echo 127 > /tmp/ff.done; exit 127; fi
-for i in $(seq 150); do [ -e /tmp/Xvfb_screen0 ] && break; sleep 0.2; done
-[ -e /tmp/Xvfb_screen0 ] || echo "X server did not start (see /tmp/Xvfb.log)" >> /tmp/ff.log
-export XDG_CACHE_HOME=/root/.cache
-mkdir -p /root/.cache/fontconfig
-FCS=/root/.cache/nvx-fc-stamp
-if command -v fc-cache >/dev/null 2>&1; then if [ ! -e "$FCS" ] || [ -n "$(find /usr/share/fonts /usr/local/share/fonts /root/.fonts /root/.local/share/fonts -newer "$FCS" 2>/dev/null | head -1)" ]; then echo "updating the font cache (only after fonts change)" >> /tmp/ff.log; fc-cache >/dev/null 2>&1; touch "$FCS"; fi; fi
-P=/root/.nvx-firefox
-mkdir -p "$P"
-L=$(readlink "$P/lock" 2>/dev/null); LP=${L##*+}
-if [ -n "$L" ] && { [ -z "$LP" ] || ! kill -0 "$LP" 2>/dev/null; }; then rm -f "$P/lock" "$P/.parentlock"; echo "removed a stale profile lock" >> /tmp/ff.log; fi
-if [ -e "$P/.nvx-running" ]; then echo "last run did not end cleanly - Firefox will restore the previous session" >> /tmp/ff.log; fi
-touch "$P/.nvx-running"
-MP=0; [ -e "$P/.nvx-multiprocess" ] && MP=1
-cat > /tmp/.nvx-user.js <<'NVXPREFS'
-user_pref("browser.shell.checkDefaultBrowser", false);
-user_pref("browser.aboutwelcome.enabled", false);
-user_pref("browser.startup.homepage_override.mstone", "ignore");
-user_pref("browser.startup.preXulSkeletonUI", false);
-user_pref("browser.newtabpage.enabled", false);
-user_pref("browser.newtabpage.activity-stream.feeds.telemetry", false);
-user_pref("browser.newtabpage.activity-stream.telemetry", false);
-user_pref("browser.sessionstore.resume_from_crash", true);
-user_pref("browser.sessionstore.max_resumed_crashes", 3);
-user_pref("browser.sessionstore.interval", 30000);
-user_pref("browser.sessionstore.restore_on_demand", true);
-user_pref("browser.safebrowsing.malware.enabled", false);
-user_pref("browser.safebrowsing.phishing.enabled", false);
-user_pref("browser.safebrowsing.downloads.enabled", false);
-user_pref("browser.safebrowsing.blockedURIs.enabled", false);
-user_pref("datareporting.policy.dataSubmissionEnabled", false);
-user_pref("datareporting.healthreport.uploadEnabled", false);
-user_pref("toolkit.telemetry.enabled", false);
-user_pref("toolkit.telemetry.unified", false);
-user_pref("toolkit.telemetry.archive.enabled", false);
-user_pref("app.normandy.enabled", false);
-user_pref("app.shield.optoutstudies.enabled", false);
-user_pref("extensions.update.enabled", false);
-user_pref("extensions.pocket.enabled", false);
-user_pref("extensions.getAddons.cache.enabled", false);
-user_pref("identity.fxaccounts.enabled", false);
-user_pref("dom.ipc.processCount", 1);
-user_pref("dom.ipc.processPrelaunch.enabled", false);
-user_pref("fission.autostart", false);
-user_pref("network.dns.disableIPv6", true);
-user_pref("network.prefetch-next", false);
-user_pref("network.predictor.enabled", false);
-user_pref("network.http.speculative-parallel-limit", 0);
-user_pref("general.smoothScroll", false);
-user_pref("toolkit.cosmeticAnimations.enabled", false);
-user_pref("layout.frame_rate", 30);
-user_pref("media.hardware-video-decoding.enabled", false);
-user_pref("browser.tabs.inTitlebar", 0);
-user_pref("browser.startup.blankWindow", false);
-user_pref("browser.startup.page", 0);
-user_pref("browser.cache.disk.enable", true);
-user_pref("browser.cache.disk.capacity", 262144);
-user_pref("browser.cache.disk.smart_size.enabled", false);
-user_pref("browser.places.importBookmarksHTML", false);
-user_pref("extensions.webextensions.remote", false);
-user_pref("network.process.enabled", false);
-user_pref("media.rdd-process.enabled", false);
-user_pref("dom.ipc.forkserver.enable", false);
-user_pref("gfx.webrender.software", true);
-user_pref("toolkit.startup.max_resumed_crashes", -1);
-NVXPREFS
-if [ "$MP" = 1 ]; then sed -i -e 's/"dom.ipc.processCount", 1/"dom.ipc.processCount", 4/' -e 's/"extensions.webextensions.remote", false/"extensions.webextensions.remote", true/' /tmp/.nvx-user.js; echo "multi-process mode: 4 content processes" >> /tmp/ff.log; fi
-cmp -s /tmp/.nvx-user.js "$P/user.js" || cp /tmp/.nvx-user.js "$P/user.js"
-T0=$(date +%s)
-firefox-esr --no-remote --new-instance --profile "$P" >> /tmp/ff.log 2>&1
-R=$?
-echo "Firefox ran for $(( $(date +%s) - T0 )) s, exit code $R" >> /tmp/ff.log
-[ $R -eq 0 ] && rm -f "$P/.nvx-running"
-if [ $R -ne 0 ]; then for f in /usr/lib/firefox-esr/firefox-esr /usr/lib/firefox-esr/libxul.so; do [ -e "$f" ] && /lib64/ld-linux-x86-64.so.2 --list "$f" 2>&1 | grep -i "not found" | sed "s|^|missing library for ${f##*/}: |" >> /tmp/ff.log; done; fi
-echo $R > /tmp/ff.done
-NVXFF
-  chmod 755 $SR/usr/bin/nvx-firefox
-  cat > $SR/usr/bin/nvx-xrun <<'NVXXR'
-#!/bin/bash
-N="$1"; shift
-L=/tmp/$N.log; D=/tmp/$N.done
-rm -f "$D"
-export HOME=/root
-export DISPLAY=127.0.0.1:0
-export GTK_A11Y=none
-export NO_AT_BRIDGE=1
-export GSETTINGS_BACKEND=memory
-export GDK_BACKEND=x11
-export QT_QPA_PLATFORM=xcb
-export LIBGL_ALWAYS_SOFTWARE=1
-export SDL_AUDIODRIVER=dummy
-export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/.nvx-no-session-bus
-export XDG_RUNTIME_DIR=/tmp/xdg-runtime
-mkdir -p "$XDG_RUNTIME_DIR" /root/.config /root/.local/share /root/.cache; chmod 700 "$XDG_RUNTIME_DIR"
-echo "=== $N $(date) ===" >> "$L"
-if ! command -v "$1" >/dev/null 2>&1; then echo "$1 is not installed - run: sudo apt install $N" >> "$L"; echo 127 > "$D"; exit 127; fi
-for i in $(seq 150); do [ -e /tmp/Xvfb_screen0 ] && break; sleep 0.2; done
-[ -e /tmp/Xvfb_screen0 ] || echo "X server did not start (see /tmp/Xvfb.log)" >> "$L"
-B=$(command -v "$1"); /lib64/ld-linux-x86-64.so.2 --list "$B" 2>&1 | grep -i "not found" | sed "s|^|missing library: |" >> "$L"
-export XDG_CACHE_HOME=/root/.cache
-FCS=/root/.cache/nvx-fc-stamp
-if command -v fc-cache >/dev/null 2>&1; then if [ ! -e "$FCS" ] || [ -n "$(find /usr/share/fonts /usr/local/share/fonts /root/.fonts /root/.local/share/fonts -newer "$FCS" 2>/dev/null | head -1)" ]; then fc-cache >/dev/null 2>&1; touch "$FCS"; fi; fi
-"$@" >> "$L" 2>&1
-echo $? > "$D"
-NVXXR
-  chmod 755 $SR/usr/bin/nvx-xrun
+  if [ -x /usr/bin/dbus-daemon ]; then mkdir -p $SR/usr/share/dbus-1/services $SR/usr/share/dbus-1/session.d $SR/etc/dbus-1; cp -L /usr/bin/dbus-daemon $SR/usr/bin/ && strip $SR/usr/bin/dbus-daemon; cp /usr/share/dbus-1/session.conf $SR/usr/share/dbus-1/; printf '[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/usr/bin/nvx-keyring\n' > $SR/usr/share/dbus-1/services/org.freedesktop.secrets.service; printf '[D-BUS Service]\nName=org.freedesktop.Notifications\nExec=/usr/bin/nvx-notify\n' > $SR/usr/share/dbus-1/services/org.freedesktop.Notifications.service; fi
+  if [ -f /usr/lib/x86_64-linux-gnu/libsecret-1.so.0 ]; then cp -L /usr/lib/x86_64-linux-gnu/libsecret-1.so.0 $SR/lib64/ && strip --strip-unneeded $SR/lib64/libsecret-1.so.0; fi
   mkdir -p $SR/var/lib/dbus; echo 6e6f6f7665786f7336340000000000a1 > $SR/etc/machine-id; cp $SR/etc/machine-id $SR/var/lib/dbus/machine-id
-  for b in $SR/usr/bin/Xvfb $SR/usr/bin/xkbcomp $SR/usr/bin/xdemo $SR/usr/bin/nvx-xinput; do ldd $b 2>/dev/null | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; }; done; done
+  if [ -d /usr/share/X11/locale ]; then mkdir -p $SR/usr/share/X11; cp -rL /usr/share/X11/locale $SR/usr/share/X11/; fi
+  if [ -x /usr/bin/update-alternatives ]; then cp -L /usr/bin/update-alternatives $SR/usr/bin/ && strip $SR/usr/bin/update-alternatives; mkdir -p $SR/etc/alternatives $SR/var/lib/dpkg/alternatives; fi
+  if [ -x /usr/bin/findmnt ]; then cp -L /usr/bin/findmnt $SR/usr/bin/ && strip $SR/usr/bin/findmnt; ldd /usr/bin/findmnt | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n; }; done; fi
+  if [ -f /usr/share/alsa/alsa.conf ]; then mkdir -p $SR/usr/share/alsa $SR/etc; cp -rL /usr/share/alsa/alsa.conf /usr/share/alsa/pcm /usr/share/alsa/cards /usr/share/alsa/ctl $SR/usr/share/alsa/ 2>/dev/null; printf 'pcm.!default {\n    type plug\n    slave.pcm "nvxemu"\n}\npcm.nvxemu {\n    type mmap_emul\n    slave.pcm "hw:0,0"\n}\nctl.!default {\n    type hw\n    card 0\n}\n' > $SR/etc/asound.conf; fi
+  CRL=/usr/lib/x86_64-linux-gnu; CRX=""
+  for n in libnss3.so libnssutil3.so libsmime3.so libssl3.so libnspr4.so libplc4.so libplds4.so libsoftokn3.so libfreebl3.so libfreeblpriv3.so libasound.so.2 libcups.so.2 libdrm.so.2 libgbm.so.1 libudev.so.1 libX11-xcb.so.1 libxshmfence.so.1 libXss.so.1 libxkbcommon-x11.so.0 libXtst.so.6 libXi.so.6 libxcb-dri3.so.0 libxcb-randr.so.0 libnotify.so.4 libuuid.so.1 libstdc++.so.6 libatomic.so.1; do
+    if [ -f $CRL/$n ] && [ ! -f $SR/lib64/$n ]; then cp -L $CRL/$n $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; CRX="$CRX $SR/lib64/$n"; fi; done
+  if [ -z "$CRX" ]; then echo "  note: the Chromium/Electron libraries (libnss3, libgbm, libasound, libcups) are not on this build machine; Electron apps will need them from apt"; fi
+  for b in $SR/usr/bin/Xvfb $SR/usr/bin/xkbcomp $SR/usr/bin/xdemo $SR/usr/bin/nvx-xinput $SR/usr/bin/gtkdemo $SR/usr/bin/dbus-daemon $CRX; do ldd $b 2>/dev/null | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; }; done; done
+  echo "[distro] ports from ${NVX_PROFILE:-distro/noovexos.profile} (tools/nvxport.py; see ports/README.md)"
+  python3 tools/nvxport.py stage --profile ${NVX_PROFILE:-distro/noovexos.profile} --root $SR --build $B || exit 1
   R=$SR/usr/share/noovex/repo; mkdir -p $R/pool
   for d in usr/packages/*/; do n=$(basename $d); v=$(awk '/^Version:/{print $2}' $d/DEBIAN/control); a=$(awk '/^Architecture:/{print $2}' $d/DEBIAN/control); dpkg-deb --root-owner-group -Zxz -b $d $R/pool/${n}_${v}_${a}.deb >/dev/null; done
   python3 tools/mkrepo.py $R
   mkdir -p $SR/usr/bin $SR/bin; for t in env bash; do ln -sf /opt/gnu/bin/$t $SR/usr/bin/$t; done; ln -sf /opt/gnu/bin/bash $SR/bin/bash; ln -sf /opt/gnu/bin/bash $SR/bin/sh
 fi
+echo "[ports2] TCC, vim, less, curl, git and ssh (Dropbear) for musl, with ncurses, zlib and mbedTLS (cached in build/ports2)"
+sh tools/build_ports2.sh $B/ports2 > $B/ports2.log 2>&1 && cp -a $B/ports2/root/. $SR/ || { echo "PORTS2 BUILD FAILED (see build/ports2.log)"; exit 1; }
+echo "[netsurf] NetSurf web browser (framebuffer, NoovexOS surface) with libcss, libdom, libhubbub, FreeType, libpng, libjpeg-turbo, expat (cached in build/netsurf)"
+sh tools/build_netsurf.sh $B/netsurf $B/ports2/sys > $B/netsurf.log 2>&1 && cp -a $B/netsurf/root/. $SR/ || { echo "NETSURF BUILD FAILED (see build/netsurf.log)"; exit 1; }
+if command -v cargo >/dev/null 2>&1 && sh tools/build_rust_apps.sh $B/rust-apps > $B/rust-apps.log 2>&1; then mkdir -p $SR/usr/bin; cp $B/rust-apps/x86_64-unknown-linux-gnu/release/rustinfo $SR/usr/bin/rustinfo; cp $B/rust-apps/x86_64-unknown-linux-gnu/release/nvx-mem $SR/usr/bin/nvx-mem; echo "  rust: rustinfo ($(stat -c %s $SR/usr/bin/rustinfo) bytes), nvx-mem ($(stat -c %s $SR/usr/bin/nvx-mem) bytes)"; else echo "  rust: rustinfo skipped (see build/rust-apps.log)"; fi
+if command -v dpkg-query >/dev/null 2>&1; then mkdir -p $SR/usr/share/noovex; for f in $SR/lib64/*; do b=$(basename $f); for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do [ -e $d/$b ] && { echo $d/$b; break; }; done; done | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | tr ',' '\n' | sed 's/ //g' | sort -u | xargs -r dpkg-query -W -f '${Package} ${Version}|${Provides}\n' 2>/dev/null | python3 tools/provided.py > $SR/usr/share/noovex/provided.txt; echo "  provided.txt: $(wc -l < $SR/usr/share/noovex/provided.txt) packages the Linux files already contain"; fi
+echo "[faceid] face engine for Face ID sign-in (dlib, cached in build/faceid)"
+sh tools/build_faceid.sh $B/faceid > $B/faceid.log 2>&1 && cp -a $B/faceid/root/. $SR/ && tail -1 $B/faceid.log || echo "  face engine skipped (see build/faceid.log)"
+mkdir -p $SR/usr/bin $SR/usr/share/applications $SR/usr/share/icons/hicolor/48x48/apps
+for a in writer:Writer:"Word processor (.odt, .docx)":WordProcessor calc:Calc:"Spreadsheet (.ods, .xlsx)":Spreadsheet; do
+  k=${a%%:*}; r=${a#*:}; t=${r%%:*}; r=${r#*:}; c=${r%%:*}; g=${r#*:}
+  printf '[Desktop Entry]\nType=Application\nName=LibreOffice %s\nComment=%s\nExec=nvx-libreoffice --%s %%U\nIcon=libreoffice-%s\nCategories=Office;%s;\n' "$t" "$c" "$k" "$k" "$g" > $SR/usr/share/applications/nvx-libreoffice-$k.desktop
+  [ -f /usr/share/icons/hicolor/48x48/apps/libreoffice-$k.png ] && cp /usr/share/icons/hicolor/48x48/apps/libreoffice-$k.png $SR/usr/share/icons/hicolor/48x48/apps/
+done
+echo "[apps] built-in LibreOffice Writer and Calc (part of the Linux files)"
+rm -f $B/apps.bin $B/apps.hash
+if sh tools/stage_libreoffice.sh $B/apps-stage $SR; then cp -a $B/apps-stage/. $SR/; else rm -f $SR/usr/share/applications/nvx-libreoffice-*.desktop; fi
+rm -rf $B/apps-stage
 python3 tools/mksysroot.py $B/sysroot.bin =$SR
-( cd $B && ld -r -b binary -o sysroot_bin.o sysroot.bin && objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents sysroot_bin.o )
 
 echo "[4/6] link (elf_x86_64, base 0x100000)"
 OBJS="boot64.o isr64.o userspace.o ap_trampoline.o"
-BLOBS="sysroot_bin.o rune_gfx.o rtw_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
+BLOBS="rune_gfx.o rtw_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
 ld -m elf_x86_64 -nostdlib -no-pie -z noexecstack -T arch/x86_64/kernel64.ld \
    -o $B/kernel64.elf $(for o in $OBJS; do printf '%s ' $B/$o; done) $UNITOBJS $MODOBJS $NTFSOBJ $(for o in $BLOBS; do printf '%s ' $B/$o; done)
 
@@ -345,6 +286,44 @@ import struct
 b=bytearray(open('build/kernel64.bin','rb').read())
 assert len(b)<=104857600, f"kernel {len(b)} > 100 MiB (loader limit)"
 struct.pack_into('<I', b, 24, len(b))
+import zlib, os
+_sr=open('build/sysroot.bin','rb').read() if os.path.exists('build/sysroot.bin') else b''
+assert len(_sr)<=0x10000000, f"sysroot {len(_sr)} > 256 MiB (loader area 0x20000000-0x30000000)"
+struct.pack_into('<II', b, 16, zlib.crc32(_sr)&0xffffffff if _sr else 0, len(_sr))
+print(f"  sysroot: {len(_sr)} bytes, crc32 {zlib.crc32(_sr)&0xffffffff:08X}, loaded by the boot loader from /sysroot/{zlib.crc32(_sr)&0xffffffff:08X}.BIN")
+
+# --- function names for crash reports (g_ksyms, magic NVXKSYM1 -> NVXKSYM2) ---
+import subprocess
+try:
+    out=subprocess.check_output(['nm','-n','--defined-only','build/kernel64.elf']).decode()
+    hd=subprocess.check_output(['objdump','-h','build/kernel64.elf']).decode()
+    tlo=thi=0
+    for line in hd.splitlines():
+        c=line.split()
+        if len(c)>=4 and c[1]=='.text': tlo=int(c[3],16); thi=tlo+int(c[2],16)
+    ka=None; seen={}; syms=[]
+    for line in out.splitlines():
+        c=line.split()
+        if len(c)<3: continue
+        a=int(c[0],16); t=c[1]; n=c[2]
+        if n=='g_ksyms': ka=a
+        if t in 'tTwW' and tlo<=a<thi and not n.startswith('.') and a not in seen:
+            seen[a]=1; syms.append((a,n[:48]))
+    cap=393216
+    if ka is None or b[ka-0x100000:ka-0x100000+8]!=b'NVXKSYM1':
+        print("  WARNING: g_ksyms table not found - crash reports will have no function names")
+    else:
+        while True:
+            names=bytearray(); ents=bytearray()
+            for a,n in syms:
+                ents+=struct.pack('<II',a,len(names)); names+=n.encode()+b'\0'
+            blob=bytearray(b'NVXKSYM2')+struct.pack('<IIII',len(syms),24+len(ents),tlo,thi)+ents+names
+            if len(blob)<=cap: break
+            syms=[x for x in syms if not x[1].startswith(('__','.'))][:len(syms)*9//10]
+        o=ka-0x100000; b[o:o+len(blob)]=blob
+        print(f"  function names: {len(syms)} symbols, {len(blob)} of {cap} bytes, text {tlo:#x}-{thi:#x}")
+except Exception as e:
+    print("  WARNING: function name table not written:",e)
 
 # --- stamp the build signature (find NVX64SIG magic, patch epoch/size/sha256) ---
 import time, hashlib

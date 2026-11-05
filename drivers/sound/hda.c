@@ -10,7 +10,7 @@ static int codec=-1, afg, osd, running;
 static u8* pcm; static u64* bdl; static struct sring ring;
 static u8 wtype[MAXW]; static u32 wcaps[MAXW]; static u8 conn[MAXW][16]; static u8 nconn[MAXW];
 static int npaths; static u8 path[4][8]; static u8 plen[4]; static u8 pidx[4][8]; static u8 ppin[4]; static u8 pdev[4];
-static char info[160];
+static char info[640];
 static int isd=-1, irun=0, nin=0, in_adc=-1, in_pin=-1, in_dev=0, in_conn=0; static u8 in_path[8], in_idx[8]; static int in_len=0; static u8* ipcm; static u64* ibdl; static u32 in_rd=0; static char in_name[48];
 static u8 r8(int o){ return R[o]; } static u16 r16(int o){ return *(volatile u16*)(R+o); } static u32 r32(int o){ return *(volatile u32*)(R+o); }
 static void w8(int o,u8 v){ R[o]=v; } static void w16(int o,u16 v){ *(volatile u16*)(R+o)=v; } static void w32(int o,u32 v){ *(volatile u32*)(R+o)=v; }
@@ -61,15 +61,25 @@ static int dfs_in(int nid,int depth,int target,u8* p,u8* idx,int* len){
     if(depth>0&&wtype[nid]!=2&&wtype[nid]!=3)return 0;
     for(int i=0;i<nconn[nid];i++){ idx[depth]=(u8)i; if(dfs_in(conn[nid][i],depth+1,target,p,idx,len))return 1; }
     return 0; }
+static int mj_pin=-1, mj_adc=-1, mj_len=0, bi_pin=-1, bi_adc=-1, bi_len=0, bi_dev=0, bi_conn=0; static u8 mj_path[8], mj_idx[8], bi_path[8], bi_idx[8];
+static void pick_in(void){
+    int jack=0; if(mj_pin>=0){ u32 ps=cmd(mj_pin,0xF09,0); jack=(ps>>31)&1; }
+    const char* t;
+    if(jack){ in_pin=mj_pin; in_adc=mj_adc; in_len=mj_len; in_dev=0xA; in_conn=0; for(int k=0;k<mj_len;k++){ in_path[k]=mj_path[k]; in_idx[k]=mj_idx[k]; } t="Headset microphone (jack)"; }
+    else { in_pin=bi_pin; in_adc=bi_adc; in_len=bi_len; in_dev=bi_dev; in_conn=bi_conn; for(int k=0;k<bi_len;k++){ in_path[k]=bi_path[k]; in_idx[k]=bi_idx[k]; } t=in_dev==0xA?(in_conn==2?"Built-in microphone":"Microphone jack"):"Line in"; }
+    if(in_pin>=0){ char* o=in_name; while(*t)*o++=*t++; *o=0; } }
 static void scan_in(void){
     u32 sub=param(afg,4); int start=(sub>>16)&0xFF, cnt=sub&0xFF; in_adc=-1; in_pin=-1; in_len=0;
-    int best=-1, bscore=-1;
+    int best=-1, bscore=-1; mj_pin=-1;
     for(int n=start;n<start+cnt&&n<MAXW;n++){ if(wtype[n]!=4)continue; u32 pc=param(n,0x0C); if(!(pc&(1u<<5)))continue;
         u32 dc=cmd(n,0xF1C,0); int ct=(dc>>30)&3, dev=(dc>>20)&0xF; if(ct==1)continue;
         int sc=-1; if(dev==0xA&&ct==2)sc=30; else if(dev==0xA)sc=20; else if(dev==0x8)sc=10; if(sc<0)continue;
         for(int a=start;a<start+cnt&&a<MAXW;a++){ if(wtype[a]!=1)continue; if(wcaps[a]&(1u<<9))continue; u8 p[8]={0},ix[8]={0}; int len=0;
-            if(dfs_in(a,0,n,p,ix,&len)){ int s2=sc*10-len; if(s2>bscore){ bscore=s2; best=n; in_adc=a; in_len=len; for(int k=0;k<len;k++){ in_path[k]=p[k]; in_idx[k]=ix[k]; } in_dev=dev; in_conn=ct; } break; } } }
-    in_pin=best;
+            if(dfs_in(a,0,n,p,ix,&len)){ int s2=sc*10-len;
+                if(dev==0xA&&ct!=2&&mj_pin<0&&(pc&(1u<<2))){ mj_pin=n; mj_adc=a; mj_len=len; for(int k=0;k<len;k++){ mj_path[k]=p[k]; mj_idx[k]=ix[k]; } }
+                if(s2>bscore){ bscore=s2; best=n; in_adc=a; in_len=len; for(int k=0;k<len;k++){ in_path[k]=p[k]; in_idx[k]=ix[k]; } in_dev=dev; in_conn=ct; } break; } } }
+    in_pin=best; if(mj_pin==best)mj_pin=-1;
+    bi_pin=in_pin; bi_adc=in_adc; bi_len=in_len; bi_dev=in_dev; bi_conn=in_conn; for(int k=0;k<in_len;k++){ bi_path[k]=in_path[k]; bi_idx[k]=in_idx[k]; }
     if(in_pin>=0){ char* o=in_name; const char* t=in_dev==0xA?(in_conn==2?"Built-in microphone":"Microphone jack"):"Line in"; while(*t)*o++=*t++; *o=0; } }
 static void amp_unmute(int nid,int out,int index){
     u32 c=param(nid,out?0x12:0x0D); if(!c)c=param(afg,out?0x12:0x0D);
@@ -113,7 +123,7 @@ static void route_in(void){
 static u32 ihw(void){ return r32((int)si(0x04)); }
 static int hda_rec_start(void){
     if(irun)return 1; if(isd<0||in_pin<0||!ipcm||!ibdl)return 0;
-    route_in();
+    pick_in(); if(in_pin<0)return 0; route_in();
     w8((int)si(0),1); for(int t=0;t<1000&&!(r8((int)si(0))&1);t++)kapi_delay_us(10);
     w8((int)si(0),0); for(int t=0;t<1000&&(r8((int)si(0))&1);t++)kapi_delay_us(10);
     for(int i=0;i<NBUF;i++){ ibdl[i*2]=kapi_phys(ipcm+i*BSZ); ibdl[i*2+1]=(u64)BSZ; }

@@ -1,0 +1,6 @@
+name=desktop-scripts
+version=1.0
+summary=launchers and D-Bus helpers for Linux desktop apps (nvx-xrun, nvx-firefox, nvx-libreoffice, session bus, keyring, notifications)
+kind=files
+license=same as NoovexOS
+source=written for NoovexOS

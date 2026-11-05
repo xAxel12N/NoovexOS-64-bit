@@ -1,0 +1,9 @@
+name=python-web
+version=1.0
+summary=Python web and network libraries: requests, httpx, urllib3, websockets, flask, bottle
+kind=python
+needs=python-pip
+packages=typing_extensions idna certifi urllib3 charset-normalizer requests sniffio anyio h11 httpcore httpx websockets markupsafe jinja2 itsdangerous blinker click werkzeug flask bottle
+scripts=flask:flask.cli
+license=Apache-2.0, BSD-3-Clause, MIT, MPL-2.0 (see each dist-info)
+source=third_party/pylibs (httpx, httpcore, websockets, bottle from their GitHub tags), the rest from the build machine or PyPI wheels

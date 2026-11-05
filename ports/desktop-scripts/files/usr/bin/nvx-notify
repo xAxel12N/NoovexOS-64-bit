@@ -1,0 +1,65 @@
+#!/usr/bin/python3
+import os, sys, time, importlib.machinery, importlib.util
+
+def load_bus():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in ('/usr/bin/nvx-keyring', os.path.join(here, 'nvx-keyring')):
+        if os.path.exists(p):
+            ld = importlib.machinery.SourceFileLoader('nvxbus', p)
+            spec = importlib.util.spec_from_loader('nvxbus', ld)
+            m = importlib.util.module_from_spec(spec); ld.exec_module(m); return m
+    raise SystemExit('nvx-notify: nvx-keyring not found')
+
+NI = 'org.freedesktop.Notifications'
+NP = '/org/freedesktop/Notifications'
+
+def clean(s):
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == '<':
+            j = s.find('>', i)
+            if j > i: i = j + 1; continue
+        out.append(s[i]); i += 1
+    t = ''.join(out).replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&apos;', "'")
+    return ' '.join(t.split())
+
+def show(title, body):
+    msg = 'nvx-notify:' + clean(title)[:39] + '\x1f' + clean(body)[:71] + '\n'
+    try:
+        fd = os.open('/dev/kmsg', os.O_WRONLY)
+        os.write(fd, msg.encode('ascii', 'replace')); os.close(fd)
+    except OSError:
+        pass
+
+def main():
+    if '--version' in sys.argv: print('nvx-notify 1'); return
+    nb = load_bus(); nb.SERVICE = NI
+    bus = nb.Bus()
+    nid = 0
+    while True:
+        m = bus.recv()
+        if m['type'] != 1: continue
+        f = m['fields']; path = f.get(1, ''); iface = f.get(2, ''); member = f.get(3, ''); a = m['body']; noreply = m['flags'] & 1
+        def ok(sig='', body=()):
+            if not noreply: bus.reply(m, sig, list(body))
+        try:
+            if member == 'Introspect':
+                ok('s', [nb.INTRO % ('<interface name="%s"/>' % NI if path == NP else '<node name="org"/>')]); continue
+            if member == 'Ping': ok(); continue
+            if path == NP and iface in (NI, ''):
+                if member == 'Notify':
+                    app, rid, icon, summary, body = a[0], a[1], a[2], a[3], a[4]
+                    if rid: n = rid
+                    else: nid += 1; n = nid
+                    show(summary or app, body); ok('u', [n]); continue
+                if member == 'CloseNotification':
+                    ok(); bus.signal(NP, NI, 'NotificationClosed', 'uu', [a[0], 3]); continue
+                if member == 'GetCapabilities': ok('as', [['body']]); continue
+                if member == 'GetServerInformation': ok('ssss', ['NoovexOS', 'NoovexOS', '1', '1.2']); continue
+            if not noreply: bus.error(m, 'org.freedesktop.DBus.Error.UnknownMethod', 'No such method %s.%s on %s' % (iface, member, path))
+        except Exception as e:
+            if not noreply: bus.error(m, 'org.freedesktop.DBus.Error.Failed', str(e))
+
+if __name__ == '__main__':
+    main()

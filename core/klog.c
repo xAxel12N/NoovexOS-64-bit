@@ -15,6 +15,8 @@ static void klog_c(char c){
     g_klog_ok=0;
 }
 void klog(const char* s){
+    { extern void crash_logline(const char*) __attribute__((weak)); if(crash_logline)crash_logline(s); }
+    { extern void sysfiles_logline(const char*) __attribute__((weak)); if(sysfiles_logline)sysfiles_logline(s); }
     if(g_klog_hook)g_klog_hook(s);
     if(!g_klog_ok)return;
     char t[24]; int n=0; u64 v=g_ticks; if(!v)t[n++]='0'; while(v){t[n++]=(char)('0'+v%10);v/=10;}

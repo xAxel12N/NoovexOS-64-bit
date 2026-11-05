@@ -13,6 +13,7 @@
 #include "fb.h"
 #include "pit.h"
 #include "term.h"
+#include "string.h"
 
 extern void mb_jump(uint32_t entry, uint32_t mbi);
 extern void enter_long_mode(uint32_t entry_lo, uint32_t entry_hi, uint32_t mbi);
@@ -81,6 +82,58 @@ static void ok_line(const char* msg){
     vga_puts(" ] ");
     vga_puts(msg);
     vga_putc('\n');
+}
+
+
+static const char* K_NEW = "/boot/kernel64.bin";
+static const char* K_OLD = "/boot/kernel64.old";
+static const char* K_ROOT = "/KERNEL64.BIN";
+
+static int path_is(const char* a, const char* b){
+    while(*a && *b){
+        char x = *a++, y = *b++;
+        if(x >= 'A' && x <= 'Z') x = (char)(x + 32);
+        if(y >= 'A' && y <= 'Z') y = (char)(y + 32);
+        if(x != y) return 0;
+    }
+    return *a == *b;
+}
+
+static int upd_set(uint32_t lba, uint8_t* sec, const char* st){
+    for(int i = 0; i < 4; i++) sec[i] = (uint8_t)st[i];
+    if(disk_write(lba, 1, sec) != 0) return -1;
+    static uint8_t chk[512];
+    if(disk_read(lba, 1, chk) != 0) return -1;
+    return memcmp(chk, sec, 4) == 0 ? 0 : -1;
+}
+
+static const char* upd_pick(struct cfg_entry* e){
+    if(!path_is(e->kernel, K_NEW) && !path_is(e->kernel, K_ROOT)) return e->kernel;
+    static uint8_t sec[512];
+    uint32_t lba = 0, sz = 0;
+    if(fat_file_lba("/boot/update.txt", &lba, &sz) != 0 || sz < 4) return e->kernel;
+    if(disk_read(lba, 1, sec) != 0) return e->kernel;
+    const char* use = e->kernel;
+    vga_setcolor(VGA_WHITE, VGA_BLACK);
+    if(!memcmp(sec, "TRY0", 4) || !memcmp(sec, "TRY1", 4)){
+        const char* nx = sec[3] == '0' ? "TRY1" : "TRY2";
+        if(upd_set(lba, sec, nx) == 0){
+            vga_puts(sec[3] == '1' ? "Starting the new version (try 1 of 2)\n" : "Starting the new version (try 2 of 2)\n");
+            use = K_NEW;
+        } else {
+            vga_puts("Cannot record the start attempt, starting the previous version\n");
+            use = K_OLD;
+        }
+    } else if(!memcmp(sec, "TRY2", 4)){
+        upd_set(lba, sec, "FAIL");
+        vga_puts("The new version did not start twice. Starting the previous version.\n");
+        use = K_OLD;
+    } else if(!memcmp(sec, "FAIL", 4) || !memcmp(sec, "SWAP", 4) || !memcmp(sec, "OLD ", 4)){
+        vga_puts("Starting the previous version\n");
+        use = K_OLD;
+    }
+    vga_setcolor(VGA_LGRAY, VGA_BLACK);
+    return use;
 }
 
 static void boot_animation(struct cfg_entry* e, uint32_t ksz, int seconds){
@@ -336,7 +389,22 @@ void stage2_main(void){
 
     uint8_t* scratch = (uint8_t*)0x18000000;
     uint32_t ksz = 0;
-    if(fat_read_file(e->kernel, scratch, 0x6400000, &ksz) != 0) fail("cannot read kernel file");
+    const char* kpath = upd_pick(e);
+    if(fat_read_file(kpath, scratch, 0x6400000, &ksz) != 0 || ksz < 4096){
+        int was_old = path_is(kpath, K_OLD);
+        const char* tryp[3] = { was_old ? K_NEW : K_ROOT, was_old ? K_ROOT : K_OLD, K_NEW };
+        const char* got = 0;
+        for(int i = 0; i < 3 && !got; i++){
+            if(path_is(tryp[i], kpath)) continue;
+            if(fat_read_file(tryp[i], scratch, 0x6400000, &ksz) == 0 && ksz >= 4096) got = tryp[i];
+        }
+        if(!got) fail("cannot read kernel file");
+        { int i = 0; while(got[i] && i < CFG_PATH_LEN - 1){ e->kernel[i] = got[i]; i++; } e->kernel[i] = 0; }
+        vga_puts("Kernel file missing, started ");
+        vga_puts(got);
+        vga_putc('\n');
+    }
+    else if(kpath != e->kernel){ int i = 0; while(kpath[i] && i < CFG_PATH_LEN - 1){ e->kernel[i] = kpath[i]; i++; } e->kernel[i] = 0; }
 
     if(scratch[0] != 0x7F || scratch[1] != 'E' || scratch[2] != 'L' || scratch[3] != 'F'){
         /* flat binary (NoovexOS): show the boot animation, then Multiboot handoff with
@@ -344,6 +412,24 @@ void stage2_main(void){
         boot_animation(e, ksz, cfg.bootlog);
         struct mb_info* mbi = mb_build_info(e->cmdline);
         if(graphics) mb_set_fb(mbi, &g_fb);
+        { uint32_t want = rd32(scratch + 20), crc = rd32(scratch + 16), got = 0;
+          uint32_t dest = 0x20000000u;
+          { const volatile uint32_t* cp = (const volatile uint32_t*)0x0FF0u; const uint8_t* ep = (const uint8_t*)0x1000u; uint32_t n = *cp; if(n > 64) n = 64;
+            int ok512 = 0; uint64_t best = 0;
+            for(uint32_t i = 0; i < n; i++){ const uint8_t* q = ep + i * 24; uint64_t b = *(const uint64_t*)q, l = *(const uint64_t*)(q + 8); uint32_t t = *(const uint32_t*)(q + 16);
+                if(t != 1 || !l) continue; uint64_t e = b + l;
+                if(b <= 0x20000000ull && e >= 0x20000000ull + want) ok512 = 1;
+                uint64_t s = b < 0x20000000ull ? 0x20000000ull : b; s = (s + 0x1FFFFFull) & ~0x1FFFFFull; if(e > 0x100000000ull) e = 0x100000000ull;
+                if(e > s && e - s >= want){ uint64_t a = (e - want) & ~0x1FFFFFull; if(a >= s && a > best) best = a; } }
+#ifdef NVX_TEST_RSV
+            ok512 = 0;
+#endif
+            if(!ok512 && best) dest = (uint32_t)best; }
+          if(want && want <= 0x10000000u){
+              char sp[24] = "/sysroot/00000000.BIN";
+              for(int i = 0; i < 8; i++){ uint32_t v = (crc >> ((7 - i) * 4)) & 15u; sp[9 + i] = (char)(v < 10 ? '0' + v : 'A' + v - 10); }
+              if(fat_read_file(sp, (uint8_t*)dest, 0x10000000, &got) != 0 || got != want) vga_puts("Linux files not found on the boot disk\n");
+          } }
         { uint32_t wsz = 0;
           if(fat_read_file("/doom/DOOM1.WAD", (uint8_t*)0x0E000000, 32u*1024u*1024u, &wsz) == 0 && wsz > 1000000u)
               mb_set_module(mbi, 0x0E000000u, 0x0E000000u + wsz); }

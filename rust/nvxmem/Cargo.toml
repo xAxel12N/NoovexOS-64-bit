@@ -1,0 +1,15 @@
+[package]
+name = "nvx-mem"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "nvx-mem"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+lto = true
+strip = true

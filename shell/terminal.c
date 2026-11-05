@@ -23,9 +23,11 @@ char tline[256]; int tlen=0;
 int g_pwprompt=0; char g_pwssid[33]; int g_pwbyid=0;
 
    /* fwd */
-void term_geom(void){ int sb=g_tstatus?26:0; tcols=(WN[W_TERM].w-2*TPAD-12)/8; if(tcols>TCMAX)tcols=TCMAX; if(tcols<10)tcols=10;
+void term_geom(void){ extern int g_dstyle; if(g_dstyle==1){ tcols=(WN[W_TERM].w-8-16-12)/8; if(tcols>TCMAX)tcols=TCMAX; if(tcols<10)tcols=10; trows=(WN[W_TERM].h-TITLEH-22-16)/TLH; if(trows>TRMAX)trows=TRMAX; if(trows<3)trows=3; return; }
+    int sb=g_tstatus?26:0; tcols=(WN[W_TERM].w-2*TPAD-12)/8; if(tcols>TCMAX)tcols=TCMAX; if(tcols<10)tcols=10;
     trows=(WN[W_TERM].h-TITLEH-2*TPAD-sb+4)/TLH; if(trows>TRMAX)trows=TRMAX; if(trows<3)trows=3; }
 volatile unsigned g_term_gen=0;
+void term_session_reset(void){ extern int g_pwprompt; term_clear(); tsb_n=0; tsb_head=0; tlen=0; tline[0]=0; g_pwprompt=0; }
 void term_clear(void){ g_term_gen++; for(int r=0;r<TRMAX;r++)for(int c=0;c<TCMAX;c++){TCH[r][c]=' ';TCO[r][c]=WHT;TBG[r][c]=0;} tcx=tcy=0; tsb_n=0; tsb_head=0; g_tsb_off=0; }
 void term_scroll_up(void){ for(int c=0;c<TCMAX;c++){ TSB[tsb_head][c]=(c<tcols)?TCH[0][c]:' '; TSBC[tsb_head][c]=TCO[0][c]; } tsb_head=(tsb_head+1)%TSB_N; if(tsb_n<TSB_N)tsb_n++; if(g_tsb_off>0&&g_tsb_off<tsb_n)g_tsb_off++;
     for(int r=1;r<trows;r++)for(int c=0;c<TCMAX;c++){TCH[r-1][c]=TCH[r][c];TCO[r-1][c]=TCO[r][c];TBG[r-1][c]=TBG[r][c];}
@@ -43,13 +45,16 @@ void term_puts(const char*s){ while(*s)term_putc(*s++); }
 void tcol(u32 c){ tcur=c; }
 static char g_shcwd[128]="/home";
 
-void term_prompt(void){ char pb[192]; dt_init(); dt_path(g_dcwd,pb); tcol(GREEN);term_puts(cur_user());term_putc('@');term_puts(g_hostname);tcol(GREY);term_puts(":");tcol(rgb(120,200,255));term_puts(pb);tcol(GREY);term_puts(g_uid==0?"# ":"$ ");tcol(WHT); }
+void term_tilde(const char* in,char* out){ extern char g_home[]; const char* h=g_uid==0?"/root":g_home; int l=0; while(h[l])l++; int m=1; for(int k=0;k<l;k++) if(in[k]!=h[k]){ m=0; break; } if(m&&(in[l]==0||in[l]=='/')){ *out++='~'; in+=l; } while(*in)*out++=*in++; *out=0; }
+void term_prompt(void){ char pb[192]; dt_init(); dt_path(g_dcwd,pb);
+    { extern int g_dstyle; if(g_dstyle==1){ char tb[200]; term_tilde(pb,tb); tcol(rgb(150,222,64)); term_puts(g_hostname); term_putc(':'); term_puts(tb); term_puts(g_uid==0?" # ":" $ "); tcol(WHT); return; } }
+    tcol(GREEN);term_puts(cur_user());term_putc('@');term_puts(g_hostname);tcol(GREY);term_puts(":");tcol(rgb(120,200,255));term_puts(pb);tcol(GREY);term_puts(g_uid==0?"# ":"$ ");tcol(WHT); }
 static const char *LOGO[7]={"##    ##","###   ##","####  ##","## ## ##","##  ####","##   ###","##    ##"};
 static void neofetch(void){
     char info[9][80]; int n=0; char*p;
     p=info[n++];p=scopy(p,"noovex@noovex64");*p=0;
     p=info[n++];p=scopy(p,"---------------");*p=0;
-    p=info[n++];p=scopy(p,"OS: NoovexOS 64 v9.83");*p=0;
+    p=info[n++];p=scopy(p,"OS: NoovexOS 64 v10.60");*p=0;
     p=info[n++];p=scopy(p,"Kernel: x86-64 long mode");*p=0;
     p=info[n++];p=scopy(p,"CPU: ");p=scopy(p,g_brand);*p=0;
     p=info[n++];p=scopy(p,"Display: ");p=udec(p,W);*p++='x';p=udec(p,H);p=scopy(p," @ ");p=udec(p,BPP);p=scopy(p,"bpp");*p=0;

@@ -137,7 +137,7 @@ static void recovery_act(int act){
       case RA_SAFEMODE: g_safemode=1; g_state=ST_SETUP; break;
       case RA_CMDPROMPT: g_safemode=1; g_state=ST_SETUP; g_rec_openterm=1; break;
       case RA_DIAG: g_recmode=1; break;
-      case RA_RESETDISP: FBB=(u8*)(*(volatile u64*)0x5000ULL); PITCHB=*(volatile u32*)0x5008ULL; W=*(volatile u16*)0x500CULL; H=*(volatile u16*)0x500EULL; BPP=*(volatile u8*)0x5020ULL; BYPP=(BPP>=32)?4:3; if(W>MAXW)W=MAXW; if(H>MAXH)H=MAXH; SW=W; break;
+      case RA_RESETDISP: FBB=(u8*)(*(volatile u64*)0x5000ULL); PITCHB=*(volatile u32*)0x5008ULL; W=*(volatile u16*)0x500CULL; H=*(volatile u16*)0x500EULL; BPP=*(volatile u8*)0x5020ULL; BYPP=(BPP>=32)?4:3; if(W>MAXW)W=MAXW; if(H>MAXH)H=MAXH; SW=W; { extern void fb_shadow_invalidate(void); fb_shadow_invalidate(); } break;
       case RA_RESTART: power_reboot(); break;
       case RA_SHUTDOWN: recovery_shutdown(); break;
       case RA_STARTUPREPAIR: g_recmode=2; g_recinfo=0; break;

@@ -29,7 +29,9 @@
 .code32
 .section .text.entry
 .global _start
+.global nvx_kimg_hdr
 _start:
+nvx_kimg_hdr:
     jmp     start32                     /* stage2 lands at offset 0 -> jump over header */
 
     .align 4
@@ -367,6 +369,8 @@ gdt64_ptr64:
 /* --------------------------------------------------------------------------- */
 .section .data
     .align 4096
+.global boot_pt_first
+boot_pt_first:
 pml4:   .fill 4096, 1, 0
 pdpt:   .fill 4096, 1, 0
 pd0:    .fill 4096, 1, 0
@@ -374,6 +378,8 @@ pd1:    .fill 4096, 1, 0
 pd2:    .fill 4096, 1, 0
 pd3:    .fill 4096, 1, 0
 pdfb:   .fill 8192, 1, 0
+.global boot_pt_last
+boot_pt_last:
 .section .bss
 .global boot_pt_end
 boot_pt_end:

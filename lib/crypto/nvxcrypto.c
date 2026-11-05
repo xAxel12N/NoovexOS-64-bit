@@ -253,7 +253,7 @@ int aead_open(const u8 key[32],const u8 nonce[12],const u8*aad,int aadlen,
 /* ===================== X25519 (RFC 7748, tweetnacl-style gf) ===================== */
 typedef i64 gf[16];
 static const gf _121665={0xDB41,1};
-static void car25519(gf o){ for(int i=0;i<16;i++){ o[i]+=(1LL<<16); i64 c=o[i]>>16; o[(i+1)*(i<15?1:0)]+=(i<15)?(c-1):0; if(i==15)o[0]+=38*(c-1); o[i]-=c<<16; } }
+static void car25519(gf o){ for(int i=0;i<16;i++){ o[i]+=(1LL<<16); i64 c=o[i]>>16; o[(i+1)*(i<15?1:0)]+=(i<15)?(c-1):0; if(i==15)o[0]+=38*(c-1); o[i]-=c*65536; } }
 static void sel25519(gf p,gf q,int b){ i64 t,c=~(b-1); for(int i=0;i<16;i++){ t=c&(p[i]^q[i]); p[i]^=t; q[i]^=t; } }
 static void gfA(gf o,const gf a,const gf b){ for(int i=0;i<16;i++)o[i]=a[i]+b[i]; }
 static void gfZ(gf o,const gf a,const gf b){ for(int i=0;i<16;i++)o[i]=a[i]-b[i]; }

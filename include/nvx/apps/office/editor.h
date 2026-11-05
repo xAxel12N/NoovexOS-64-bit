@@ -7,7 +7,7 @@ extern int ed_nl , ed_cx , ed_cy , ed_top , ed_file , ed_dirty;
 extern int eb_save_x,eb_save_y,eb_new_x,eb_new_y,eb_bw ,eb_bh;
 extern int eb_run_x,eb_run_y,eb_conx_x,eb_conx_y;
 extern int ed_con_n , ed_show_con;
-extern char g_clip[1024];
+extern char g_clip[65536];
 extern int g_clip_len;
 
 void editor_run(void);

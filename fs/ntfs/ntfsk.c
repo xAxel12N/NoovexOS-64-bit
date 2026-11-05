@@ -37,6 +37,8 @@ static int nk_wr(unsigned long long lba,int n,const void* buf){
             for(int j=0;j<512;j++)g_nk_blk[off+j]=in[i*512+j]; if(gdisk_write(blk,g_nk_blk))return -1; bc_invalidate(blk,1); } }
     return 0;
 }
+int nk_blk_rd(unsigned long long lba,int n,void* buf){ return nk_rd(lba,n,buf); }
+int nk_blk_wr(unsigned long long lba,int n,const void* buf){ return nk_wr(lba,n,buf); }
 static int nk_is_ntfs(unsigned long long lba){ u8 b[512]; if(nk_rd(lba,1,b))return 0; return b[3]=='N'&&b[4]=='T'&&b[5]=='F'&&b[6]=='S'&&b[7]==' '; }
 static int nk_find(unsigned long long* base,unsigned long long* nsect){
     gdisk_ensure(); if(g_dktype==DK_NONE)return -1;

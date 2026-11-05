@@ -18,3 +18,24 @@ int disk_read(uint32_t lba, uint32_t count, uint8_t* dest){
     }
     return 0;
 }
+
+extern volatile uint8_t bd_op;
+
+int disk_write(uint32_t lba, uint32_t count, const uint8_t* src){
+    while(count){
+        uint32_t chunk = count > DISK_CHUNK ? DISK_CHUNK : count;
+        memcpy((void*)DISK_BOUNCE, src, chunk * 512);
+        int ok = -1;
+        for(int tries = 0; tries < 3; tries++){
+            bd_op = 0x43;
+            int r = bios_disk_read(lba, chunk);
+            bd_op = 0x42;
+            if(r == 0){ ok = 0; break; }
+        }
+        if(ok != 0) return -1;
+        src += chunk * 512;
+        lba += chunk;
+        count -= chunk;
+    }
+    return 0;
+}

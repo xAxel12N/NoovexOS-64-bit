@@ -1,3 +1,4 @@
+#include <time.h>
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -265,11 +266,48 @@ static void t_foreign(void){
     ok=boot(1); int sb=*(u32*)(g_disk+4096ULL*512)==0x3458564Eu;
     rec(ok&&fk_n4()&&sb&&fk_total_bytes()<100000ULL*512,"a NoovexOS data partition is formatted inside its bounds",fk_note());
 }
+int fk_store_step(const char* name,const void* d,int n,int maxblk,int* steps);
+int fk_same_name(const char* name,const void* d,int n);
+int fk_has_name(const char* name);
+int fs_store_nosync(const char* name,const u8* data,int len,int folder);
+int fs_sync_step(int k,int maxblk);
+static void t_step(void){
+    disk_new(256*2048); boot(1);
+    int n=6<<20; u8* b=malloc((size_t)n); fill(b,n,777); int steps=0;
+    int r=fk_store_step("webcache.bin",b,n,32,&steps);
+    boot(0); int ok=fk_same_name("webcache.bin",b,n);
+    char det[96]; snprintf(det,sizeof det,"result=%d steps=%d",r,steps);
+    rec(r==1&&steps>=40&&ok,"6 MB file written to disk in 128 KB steps reads back after remount",det);
+    fill(b,n,778); fk_store_step("webcache.bin",b,n,32,&steps); boot(0);
+    rec(fk_same_name("webcache.bin",b,n),"a second stepwise save replaces the file",0);
+    u8 o[300]; fill(o,300,5); putfile("/home/other.txt",o,300); fk_sync();
+    u8* b2=malloc((size_t)n); fill(b2,n,779);
+    int k=fs_store_nosync("webcache.bin",b2,n,0); int st=0; while(st<20&&fs_sync_step(k,32)==0)st++;
+    g_budget=0; fs_sync_step(k,32);
+    int mounted=boot(0); int oth=same("/home/other.txt",o,300); int has=fk_has_name("webcache.bin");
+    snprintf(det,sizeof det,"mounted=%d other=%d cache=%d",mounted,oth,has);
+    rec(mounted&&oth&&has,"power cut in the middle of a stepwise save: disk mounts, other files intact",det);
+    free(b); free(b2);
+}
+static void t_batch(void){
+    disk_new(2048*2048); boot(1); MN=0; extern int g_fs_batch; static u8 buf[1<<16]; int errs=0;
+    fk_mkdir("/usr"); fk_mkdir("/usr/lib"); fk_mkdir("/usr/lib/pk");
+    struct timespec a,b,c; clock_gettime(CLOCK_MONOTONIC,&a); unsigned long w0=g_wsec;
+    g_fs_batch=1;
+    for(int i=0;i<3000;i++){ char p[96]; snprintf(p,sizeof p,"/usr/lib/pk/f%d.so",i); long n=(long)(rnd()%60000); fill(buf,n,(unsigned)(i+7)); int fd=fk_open(p,O_WRONLY|O_CREAT|O_TRUNC); if(fd<0){ errs++; continue; } fk_write(fd,buf,(int)n); fk_close(fd); m_put(p,buf,n); }
+    unsigned long wb=g_wsec-w0; clock_gettime(CLOCK_MONOTONIC,&b);
+    g_fs_batch=0; fk_sync(); clock_gettime(CLOCK_MONOTONIC,&c);
+    double t1=(b.tv_sec-a.tv_sec)+(b.tv_nsec-a.tv_nsec)/1e9, t2=(c.tv_sec-b.tv_sec)+(c.tv_nsec-b.tv_nsec)/1e9;
+    char d1[160]; snprintf(d1,sizeof d1,"errs=%d sectors-during-batch=%lu unpack=%.2fs commit=%.2fs",errs,wb,t1,t2);
+    printf("    batch: %s\n",d1);
+    rec(errs==0&&wb==0,"apt unpack batch: 3000 files written with no disk writes until the commit",d1);
+    boot(0); char det[256]=""; int bad=m_verify(det);
+    rec(!bad,"apt unpack batch: all 3000 files are intact after a restart",det); }
 int main(void){
     setvbuf(stdout,0,_IOLBF,0);
-    if(mmap((void*)0x10000000ULL,0x40000000ULL,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE|MAP_NORESERVE,-1,0)!=(void*)0x10000000ULL){ printf("heap mmap failed\n"); return 2; }
+    if(mmap((void*)0x40000000ULL,0x40000000ULL,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE|MAP_NORESERVE,-1,0)!=(void*)0x40000000ULL){ printf("heap mmap failed\n"); return 2; }
     fk_heap();
-    t_format(); t_basic(); t_many(); t_big(); t_full(); t_unix(); t_metacopy(); t_crash(); t_migrate3(); t_migrate2(); t_foreign();
+    t_format(); t_basic(); t_many(); t_big(); t_full(); t_unix(); t_metacopy(); t_crash(); t_batch(); t_migrate3(); t_migrate2(); t_foreign(); t_step();
     printf("  (%lu sectors written)\n",g_wsec);
     printf("%s\n",g_fail?"FAILURES":"ALL PASS");
     return g_fail?1:0;

@@ -30,6 +30,7 @@ static u32 port_addr=0xD014+4*0x20; static int writes_elsewhere=0;
 static u32 nvr32(u32 r){ if(r==port_addr){ if(stretch_left>0){ stretch_left--; if(!stretch_left)edge(); } u32 v=reg_val&3; v|=(u32)line_scl()<<4; v|=(u32)line_sda()<<5; return v; } return 0xFFFFFFFFu; }
 static void nvw32(u32 r,u32 v){ if(r!=port_addr){ writes_elsewhere++; return; } reg_val=v; m_scl=v&1; m_sda=(v>>1)&1; edge(); }
 static void nv_udelay(u32 us){ (void)us; }
+static u32 g_nv_boot0=0x168000A1u; static int nv_probe(void){ return 1; }
 #include "NVMON_C"
 static int ok=1; static void chk(const char* w,int c){ printf("  %-64s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
 static void mk_edid(void){ memset(eeprom,0,128); static const u8 h[8]={0,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0}; memcpy(eeprom,h,8);
@@ -75,4 +76,6 @@ int main(void){
     chk("works when the monitor stretches the clock", r==1&&!memcmp(e,eeprom,128));
     slave_present=0; r=nvm_read_edid(4,e); slave_present=1;
     chk("no monitor connected -> clean failure", r==0&&line_scl()&&line_sda());
+    { char t[4][96]; int a1=nvm_screens(t,4); g_nv_boot0=0xFFFFFFFFu; int a2=nvm_screens(t,4); g_nv_boot0=0x168000A1u;
+      chk("screen list for Settings: a display engine that reads 0xFFFFFFFF or a dead card gives -1, not garbage", a1==-1&&a2==-1); }
     printf("%s\n",ok?"ALL PASS":"FAILURES"); return !ok; }

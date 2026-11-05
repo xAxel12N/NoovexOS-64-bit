@@ -4,6 +4,10 @@
 #include <stdint.h>
 typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
 static u64 hp_alloc_run(u32 pages){ (void)pages; return 0; }
+#define SR_SLOT 0x20000000ULL
+static u64 g_test_slot_end;
+static u64 sysroot_slot_end(void){ return g_test_slot_end; }
+static u64 sysroot_slot_base(void){ return SR_SLOT; }
 @@TEST@@
 static void add(u64 s,u64 e,u32 t){ g_mmr[g_mmr_n].s=s; g_mmr[g_mmr_n].e=e; g_mmr[g_mmr_n].t=t; g_mmr_n++; }
 static int ok=1; static void chk(const char* w,int c){ printf("  %-60s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
@@ -28,4 +32,8 @@ int main(void){
   heap_init(3000); chk("heap avoids memory the firmware used before boot (0x18100000)", heap_base==0x18200000ULL&&heap_top==0xC0000000ULL-0x100000ULL&&g_heap_mapped==2);
   chk("firmware-used memory still counts as usable RAM", mm_usable_end(0x100000)==0xC0000000ULL);
   chk("DMA placement skips firmware-used memory", mm_skip_bad(0x18100000,4096,0x18400000)==0x18200000);
+  g_mmr_n=0; add(0,0xC0000000,7); g_test_slot_end=0x2A000000ULL;
+  heap_init(3000); chk("heap starts after the Linux files (0x2A000000)", heap_base==0x2A000000ULL&&heap_top==0xC0000000ULL-0x100000ULL);
+  heap_init(700); chk("too little RAM after the Linux files: heap at 384 MB", heap_base==0x18000000ULL);
+  g_test_slot_end=0;
   printf(ok?"ALL PASS\n":"FAILURES\n"); return !ok; }

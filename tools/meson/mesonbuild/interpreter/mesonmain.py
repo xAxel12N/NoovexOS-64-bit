@@ -1,0 +1,498 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2012-2021 The Meson development team
+# Copyright © 2021-2025 Intel Corporation
+from __future__ import annotations
+
+import copy
+import os
+import typing as T
+
+from .. import mesonlib
+from .. import dependencies
+from .. import build, cmdline
+from .. import mlog
+
+from ..mesonlib import MachineChoice
+from ..options import OptionKey
+from ..programs import Program, ExternalProgram
+from ..interpreter.type_checking import (
+    ENV_METHOD_KW, ENV_SEPARATOR_KW, ENV_PARG, env_convertor,
+)
+from ..interpreterbase import (MesonInterpreterObject, FeatureNew, FeatureDeprecated, FeatureBroken,
+                               noArgsFlattening,
+                               TypedArgs, KwargInfo, InterpreterException, InterpreterObject,
+                               PosArgInfo, VarArgInfo)
+from .decorators import apply_machine_map
+from .primitives import MesonVersionString
+from .type_checking import NATIVE_KW, STR_PARG, LANG_PARG, OBJ_OARG, NoneType
+
+if T.TYPE_CHECKING:
+    from typing_extensions import Literal, TypedDict
+
+    from ..compilers.compilers import Compiler, Language
+    from ..dependencies.base import DependencyObjectKWs
+    from ..interpreterbase import TYPE_kwargs, TYPE_var
+    from ..mesonlib import ExecutableSerialisation
+    from .interpreter import Interpreter
+    from .kwargs import NativeKW
+
+    class FuncOverrideDependency(TypedDict):
+
+        native: mesonlib.MachineChoice
+        static: T.Optional[bool]
+
+    class AddInstallScriptKW(TypedDict):
+
+        skip_if_destdir: bool
+        install_tag: str
+        dry_run: bool
+
+    class AddDevenvKW(TypedDict):
+        method: Literal['set', 'prepend', 'append']
+        separator: str
+
+
+_BUILT_PROG_PARG = PosArgInfo(
+    (str, mesonlib.File, Program),
+    since_values={
+        build.Executable: '0.55.0',
+        Program: '0.55.0',
+        mesonlib.File: '0.57.0',
+    },
+)
+
+_BUILT_PROG_VARG = VarArgInfo(
+    (str, mesonlib.File, Program),
+    since_values={
+        mesonlib.File: '0.55.0',
+        build.BuildTarget: '0.55.0',
+        build.CustomTarget: '0.55.0',
+        build.CustomTargetIndex: '0.55.0',
+        build.Executable: '0.55.0',
+        Program: '0.55.0',
+    },
+)
+
+_ANY_PROG_PARG = PosArgInfo(
+    (str, mesonlib.File, build.Executable, Program),
+    since_values=_BUILT_PROG_PARG.since_values,
+)
+
+
+class MesonMain(MesonInterpreterObject):
+    def __init__(self, build: 'build.Build', interpreter: 'Interpreter'):
+        super().__init__(subproject=interpreter.subproject)
+        self.build = build
+        self.interpreter = interpreter
+
+    def _find_source_script(
+            self, name: str, prog: T.Union[str, mesonlib.File, build.Executable, Program],
+            args: T.List[str], *,
+            allow_built_program: bool = False) -> 'ExecutableSerialisation':
+        largs: T.List[T.Union[str, build.Executable, Program]] = []
+
+        if isinstance(prog, (build.Executable, Program)):
+            if not allow_built_program and not (isinstance(prog, Program) and prog.runnable()):
+                self.interpreter._compiled_exe_error(prog)
+        elif isinstance(prog, (str, mesonlib.File)):
+            prog = self.interpreter.find_program_impl([prog])
+
+        largs.append(prog)
+        largs.extend(args)
+        es = self.interpreter.backend.get_executable_serialisation(largs, verbose=True)
+        es.subproject = self.interpreter.subproject
+        return es
+
+    def _process_script_args(
+            self, name: str, args: T.Sequence[T.Union[
+                str, mesonlib.File, build.BuildTarget, build.CustomTarget,
+                build.CustomTargetIndex, Program,
+            ]]) -> T.List[str]:
+        script_args = []  # T.List[str]
+        for a in args:
+            if isinstance(a, str):
+                script_args.append(a)
+            elif isinstance(a, mesonlib.File):
+                script_args.append(a.rel_to_builddir(self.interpreter.environment.source_dir))
+            elif isinstance(a, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)):
+                script_args.extend([os.path.join(a.get_subdir(), o) for o in a.get_outputs()])
+
+                # This feels really hacky, but I'm not sure how else to fix
+                # this without completely rewriting install script handling.
+                # This is complicated by the fact that the install target
+                # depends on all.
+                a.get_target().build_by_default = True
+            else:
+                script_args.extend(a.get_command())
+        return script_args
+
+    @TypedArgs(
+        'meson.add_install_script',
+        pos_types=[_ANY_PROG_PARG],
+        var_types=VarArgInfo(
+            (str, mesonlib.File, build.BuildTarget, build.CustomTarget, build.CustomTargetIndex, Program),
+            since_values=_BUILT_PROG_VARG.since_values,
+        ),
+        kw_types=[
+            KwargInfo('skip_if_destdir', bool, default=False, since='0.57.0'),
+            KwargInfo('install_tag', (str, NoneType), since='0.60.0'),
+            KwargInfo('dry_run', bool, default=False, since='1.1.0'),
+        ],
+    )
+    @InterpreterObject.method('add_install_script')
+    def add_install_script_method(
+            self,
+            args: T.Tuple[T.Union[str, mesonlib.File, build.Executable, Program], T.List[build.CommandTypes]],
+            kwargs: 'AddInstallScriptKW') -> None:
+        if self.interpreter.current_build_project().for_machine is MachineChoice.BUILD:
+            return
+        script_args = self._process_script_args('add_install_script', args[1])
+        script = self._find_source_script('add_install_script', args[0], script_args, allow_built_program=True)
+        script.skip_if_destdir = kwargs['skip_if_destdir']
+        script.tag = kwargs['install_tag']
+        script.dry_run = kwargs['dry_run']
+        self.build.install_scripts.append(script)
+
+    @TypedArgs(
+        'meson.add_postconf_script',
+        pos_types=[_ANY_PROG_PARG],
+        var_types=_BUILT_PROG_VARG,
+    )
+    @InterpreterObject.method('add_postconf_script')
+    def add_postconf_script_method(
+            self,
+            args: T.Tuple[T.Union[str, mesonlib.File, Program],
+                          T.List[T.Union[str, mesonlib.File, Program]]],
+            kwargs: 'TYPE_kwargs') -> None:
+        if self.interpreter.current_build_project().for_machine is MachineChoice.BUILD:
+            return
+        script_args = self._process_script_args('add_postconf_script', args[1])
+        script = self._find_source_script('add_postconf_script', args[0], script_args)
+        self.build.postconf_scripts.append(script)
+
+    @TypedArgs(
+        'meson.add_dist_script',
+        pos_types=[_BUILT_PROG_PARG],
+        var_types=_BUILT_PROG_VARG.evolve(since='0.49.0'),
+    )
+    @FeatureNew('meson.add_dist_script', '0.48.0')
+    @InterpreterObject.method('add_dist_script')
+    def add_dist_script_method(
+            self,
+            args: T.Tuple[T.Union[str, mesonlib.File, Program],
+                          T.List[T.Union[str, mesonlib.File, Program]]],
+            kwargs: 'TYPE_kwargs') -> None:
+        if self.interpreter.subproject != '':
+            FeatureNew.single_use('Calling "add_dist_script" in a subproject',
+                                  '0.58.0', self.interpreter.subproject, location=self.current_node)
+        script_args = self._process_script_args('add_dist_script', args[1])
+        script = self._find_source_script('add_dist_script', args[0], script_args)
+        self.build.dist_scripts.append(script)
+
+    @TypedArgs('meson.current_source_dir')
+    @InterpreterObject.method('current_source_dir')
+    def current_source_dir_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        src = self.interpreter.environment.source_dir
+        sub = self.interpreter.subdir
+        if sub == '':
+            return src
+        return os.path.join(src, sub)
+
+    @TypedArgs('meson.current_build_dir')
+    @InterpreterObject.method('current_build_dir')
+    def current_build_dir_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        src = self.interpreter.environment.build_dir
+        sub = self.interpreter.subdir
+        if sub == '':
+            return src
+        return os.path.join(src, sub)
+
+    @TypedArgs('meson.backend')
+    @InterpreterObject.method('backend')
+    def backend_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.interpreter.backend.name
+
+    @TypedArgs('meson.source_root')
+    @FeatureDeprecated('meson.source_root', '0.56.0', 'use meson.project_source_root() or meson.global_source_root() instead.')
+    @InterpreterObject.method('source_root')
+    def source_root_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.interpreter.environment.source_dir
+
+    @TypedArgs('meson.build_root')
+    @FeatureDeprecated('meson.build_root', '0.56.0', 'use meson.project_build_root() or meson.global_build_root() instead.')
+    @InterpreterObject.method('build_root')
+    def build_root_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.interpreter.environment.build_dir
+
+    @TypedArgs('meson.project_source_root')
+    @FeatureNew('meson.project_source_root', '0.56.0')
+    @InterpreterObject.method('project_source_root')
+    def project_source_root_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        src = self.interpreter.environment.source_dir
+        sub = self.interpreter.root_subdir
+        if sub == '':
+            return src
+        return os.path.join(src, sub)
+
+    @TypedArgs('meson.project_build_root')
+    @FeatureNew('meson.project_build_root', '0.56.0')
+    @InterpreterObject.method('project_build_root')
+    def project_build_root_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        src = self.interpreter.environment.build_dir
+        sub = self.interpreter.root_subdir
+        if sub == '':
+            return src
+        return os.path.join(src, sub)
+
+    @TypedArgs('meson.global_source_root')
+    @FeatureNew('meson.global_source_root', '0.58.0')
+    @InterpreterObject.method('global_source_root')
+    def global_source_root_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.interpreter.environment.source_dir
+
+    @TypedArgs('meson.global_build_root')
+    @FeatureNew('meson.global_build_root', '0.58.0')
+    @InterpreterObject.method('global_build_root')
+    def global_build_root_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.interpreter.environment.build_dir
+
+    @TypedArgs('meson.has_exe_wrapper')
+    @FeatureDeprecated('meson.has_exe_wrapper', '0.55.0', 'use meson.can_run_host_binaries instead.')
+    @InterpreterObject.method('has_exe_wrapper')
+    def has_exe_wrapper_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        return self.build.environment.can_run_binaries(self.build.machine_map.host)
+
+    @TypedArgs('meson.can_run_host_binaries')
+    @FeatureNew('meson.can_run_host_binaries', '0.55.0')
+    @InterpreterObject.method('can_run_host_binaries')
+    def can_run_host_binaries_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        return self.build.environment.can_run_binaries(self.build.machine_map.host)
+
+    @TypedArgs('meson.is_cross_build')
+    @InterpreterObject.method('is_cross_build')
+    def is_cross_build_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        return self.build.machine_map.host is not self.build.machine_map.build
+
+    @TypedArgs(
+        'meson.get_compiler',
+        pos_types=[LANG_PARG],
+        kw_types=[NATIVE_KW],
+    )
+    @InterpreterObject.method('get_compiler')
+    @apply_machine_map
+    def get_compiler_method(self, args: tuple[Language], kwargs: 'NativeKW') -> 'Compiler':
+        lang = args[0]
+        for_machine = kwargs['native']
+        try:
+            return self.interpreter.compilers[for_machine][lang]
+        except KeyError:
+            try:
+                comp = self.interpreter.coredata.compilers[for_machine][lang]
+            except KeyError:
+                raise InterpreterException(f'Tried to access compiler for language "{lang}", not specified for {for_machine.get_lower_case_name()} machine.')
+
+            FeatureBroken.single_use('Using `meson.get_compiler()` for languages only initialized in another subproject', '1.11.0', self.subproject,
+                                     'This is extremely fragile, as your project likely cannot be used outside of your environment.')
+            return comp
+
+    @TypedArgs('meson.is_unity')
+    @InterpreterObject.method('is_unity')
+    def is_unity_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        optval = self.interpreter.environment.coredata.optstore.get_value_for(OptionKey('unity'))
+        return optval == 'on' or (optval == 'subprojects' and self.interpreter.is_subproject())
+
+    @TypedArgs('meson.is_subproject')
+    @InterpreterObject.method('is_subproject')
+    def is_subproject_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        return self.interpreter.is_subproject()
+
+    @TypedArgs('meson.install_dependency_manifest', pos_types=[STR_PARG])
+    @InterpreterObject.method('install_dependency_manifest')
+    def install_dependency_manifest_method(self, args: T.Tuple[str], kwargs: 'TYPE_kwargs') -> None:
+        self.build.dep_manifest_name = args[0]
+
+    @FeatureNew('meson.override_find_program', '0.46.0')
+    @TypedArgs(
+        'meson.override_find_program',
+        pos_types=[STR_PARG, _ANY_PROG_PARG.evolve(since_values=None)],
+        kw_types=[NATIVE_KW.evolve(since='1.12.0')],
+    )
+    @InterpreterObject.method('override_find_program')
+    @apply_machine_map
+    def override_find_program_method(self, args: T.Tuple[str, T.Union[mesonlib.File, Program, build.Executable]],
+                                     kwargs: NativeKW) -> None:
+        name, exe = args
+        if isinstance(exe, mesonlib.File):
+            abspath = exe.absolute_path(self.interpreter.environment.source_dir,
+                                        self.interpreter.environment.build_dir)
+            if not os.path.exists(abspath):
+                raise InterpreterException(f'Tried to override {name} with a file that does not exist.')
+            prog = ExternalProgram(name, command=[abspath], silent=True)
+            exe = build.LocalProgram(prog, self.interpreter.project_version, file=exe)
+        elif isinstance(exe, build.Executable):
+            exe = build.LocalProgram(exe, self.interpreter.project_version)
+        self.interpreter.add_find_program_override(name, exe, kwargs['native'])
+
+    @TypedArgs(
+        'meson.override_dependency',
+        pos_types=[
+            STR_PARG.evolve(validator=lambda x: 'Argument cannot be an empty string' if not x else None),
+            PosArgInfo(dependencies.Dependency),
+        ],
+        kw_types=[
+            NATIVE_KW,
+            KwargInfo('static', (bool, NoneType), since='0.60.0'),
+        ],
+    )
+    @FeatureNew('meson.override_dependency', '0.54.0')
+    @InterpreterObject.method('override_dependency')
+    @apply_machine_map
+    def override_dependency_method(self, args: T.Tuple[str, dependencies.Dependency], kwargs: 'FuncOverrideDependency') -> None:
+        name, dep = args
+
+        # Make a copy since we're going to mutate.
+        #
+        #   dep = declare_dependency()
+        #   meson.override_dependency('foo', dep)
+        #   meson.override_dependency('foo-1.0', dep)
+        #   dep = dependency('foo')
+        #   dep.name() # == 'foo-1.0'
+        dep = copy.copy(dep)
+        dep.name = name
+
+        optkey = OptionKey('default_library', subproject=self.interpreter.subproject)
+        default_library = self.interpreter.coredata.optstore.get_value_for(optkey)
+        assert isinstance(default_library, str), 'for mypy'
+        static = kwargs['static']
+        if static is None:
+            # We don't know if dep represents a static or shared library, could
+            # be a mix of both. We assume it is following default_library
+            # value.
+            self._override_dependency_impl(name, dep, kwargs, static=None)
+            if default_library == 'static':
+                self._override_dependency_impl(name, dep, kwargs, static=True)
+            elif default_library == 'shared':
+                self._override_dependency_impl(name, dep, kwargs, static=False)
+            else:
+                self._override_dependency_impl(name, dep, kwargs, static=True)
+                self._override_dependency_impl(name, dep, kwargs, static=False)
+        else:
+            # dependency('foo') without specifying static kwarg should find this
+            # override regardless of the static value here. But do not raise error
+            # if it has already been overridden, which would happen when overriding
+            # static and shared separately:
+            # meson.override_dependency('foo', shared_dep, static: false)
+            # meson.override_dependency('foo', static_dep, static: true)
+            # In that case dependency('foo') would return the first override.
+            self._override_dependency_impl(name, dep, kwargs, static=None, permissive=True)
+            self._override_dependency_impl(name, dep, kwargs, static=static)
+
+    def _override_dependency_impl(self, name: str, dep: dependencies.Dependency, kwargs: 'FuncOverrideDependency',
+                                  static: T.Optional[bool], permissive: bool = False) -> None:
+        # We need the cast here as get_dep_identifier works on such a dict,
+        # which FuncOverrideDependency is, but mypy can't figure that out
+        nkwargs: DependencyObjectKWs = kwargs.copy()  # type: ignore[assignment]
+        nkwargs['static'] = static
+        identifier = dependencies.get_dep_identifier(name, nkwargs)
+        for_machine = kwargs['native']
+        override = self.build.dependency_overrides[for_machine].get(identifier)
+        if override:
+            if permissive:
+                return
+            m = 'Tried to override dependency {!r} which has already been resolved or overridden at {}'
+            location = mlog.get_error_location_string(override.node.filename, override.node.lineno)
+            raise InterpreterException(m.format(name, location))
+        self.build.dependency_overrides[for_machine][identifier] = \
+            build.DependencyOverride(dep, self.interpreter.current_node)
+
+    @TypedArgs('meson.project_version')
+    @InterpreterObject.method('project_version')
+    def project_version_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.build.dep_manifest[self.interpreter.active_projectname].version
+
+    @FeatureNew('meson.project_license()', '0.45.0')
+    @TypedArgs('meson.project_license')
+    @InterpreterObject.method('project_license')
+    def project_license_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> T.List[str]:
+        return self.build.dep_manifest[self.interpreter.active_projectname].license
+
+    @FeatureNew('meson.project_license_files()', '1.1.0')
+    @TypedArgs('meson.project_license_files')
+    @InterpreterObject.method('project_license_files')
+    def project_license_files_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.List[mesonlib.File]:
+        return [l[1] for l in self.build.dep_manifest[self.interpreter.active_projectname].license_files]
+
+    @TypedArgs('meson.version')
+    @InterpreterObject.method('version')
+    def version_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> MesonVersionString:
+        return MesonVersionString(self.interpreter.coredata.version)
+
+    @TypedArgs('meson.project_name')
+    @InterpreterObject.method('project_name')
+    def project_name_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        return self.interpreter.active_projectname
+
+    def __get_external_property_impl(self, propname: str, fallback: T.Optional[object], machine: MachineChoice) -> object:
+        """Shared implementation for get_cross_property and get_external_property."""
+        try:
+            return self.interpreter.environment.properties[machine][propname]
+        except KeyError:
+            if fallback is not None:
+                return fallback
+            raise InterpreterException(f'Unknown property for {machine.get_lower_case_name()} machine: {propname}')
+
+    @noArgsFlattening
+    @FeatureDeprecated('meson.get_cross_property', '0.58.0', 'Use meson.get_external_property() instead')
+    @TypedArgs(
+        'meson.get_cross_property',
+        pos_types=[STR_PARG],
+        opt_types=[OBJ_OARG],
+    )
+    @InterpreterObject.method('get_cross_property')
+    def get_cross_property_method(self, args: T.Tuple[str, T.Optional[object]], kwargs: 'TYPE_kwargs') -> object:
+        propname, fallback = args
+        return self.__get_external_property_impl(propname, fallback, MachineChoice.HOST)
+
+    @noArgsFlattening
+    @FeatureNew('meson.get_external_property', '0.54.0')
+    @TypedArgs(
+        'meson.get_external_property',
+        pos_types=[STR_PARG],
+        opt_types=[OBJ_OARG],
+        kw_types=[NATIVE_KW],
+    )
+    @InterpreterObject.method('get_external_property')
+    @apply_machine_map
+    def get_external_property_method(self, args: T.Tuple[str, T.Optional[object]], kwargs: 'NativeKW') -> object:
+        propname, fallback = args
+        return self.__get_external_property_impl(propname, fallback, kwargs['native'])
+
+    @FeatureNew('meson.has_external_property', '0.58.0')
+    @TypedArgs('meson.has_external_property', pos_types=[STR_PARG], kw_types=[NATIVE_KW])
+    @InterpreterObject.method('has_external_property')
+    @apply_machine_map
+    def has_external_property_method(self, args: T.Tuple[str], kwargs: 'NativeKW') -> bool:
+        prop_name = args[0]
+        return prop_name in self.interpreter.environment.properties[kwargs['native']]
+
+    @FeatureNew('add_devenv', '0.58.0')
+    @TypedArgs(
+        'environment',
+        pos_types=[ENV_PARG],
+        kw_types=[ENV_METHOD_KW, ENV_SEPARATOR_KW.evolve(since='0.62.0')],
+    )
+    @InterpreterObject.method('add_devenv')
+    def add_devenv_method(self, args: T.Tuple[T.Union[str, list, dict, mesonlib.EnvironmentVariables]],
+                          kwargs: 'AddDevenvKW') -> None:
+        converted = env_convertor(args[0], kwargs['method'], kwargs['separator'])
+        assert isinstance(converted, mesonlib.EnvironmentVariables)
+        self.build.devenv.append(converted)
+
+    @TypedArgs('meson.build_options')
+    @FeatureNew('meson.build_options', '1.1.0')
+    @InterpreterObject.method('build_options')
+    def build_options_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> str:
+        options = self.interpreter.user_defined_options
+        if options is None:
+            return ''
+        return cmdline.format_cmd_line_options(options)

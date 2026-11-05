@@ -26,6 +26,11 @@ static inline u64 cpu_rdmsr(u32 m){ (void)m; return 0; }
 static inline void cpu_wrmsr(u32 m,u64 v){ (void)m; (void)v; }
 static inline void cpu_set_fsbase(u64 v){ (void)v; }
 static inline void cpu_copy(void* d,const void* s,unsigned long n){ __asm__ volatile("rep movsb":"+D"(d),"+S"(s),"+c"(n)::"memory"); }
+static inline void cpu_fill(void* d,int c,unsigned long n){ __asm__ volatile("rep stosb":"+D"(d),"+c"(n):"a"(c):"memory"); }
+static inline __attribute__((noreturn)) void cpu_run_on(unsigned long long top,void(*fn)(void)){ (void)top; fn(); h_fatal("cpu_run_on"); __builtin_unreachable(); }
 static void* g_host_pcpu;
 static inline void* cpu_percpu(void){ return g_host_pcpu; }
 static inline void cpu_set_percpu(void* p){ g_host_pcpu=p; }
+
+static inline int cpu_rdmsr_safe(unsigned m,unsigned long long* v){ (void)m; *v=0; return -1; }
+static inline int cpu_wrmsr_safe(unsigned m,unsigned long long v){ (void)m; (void)v; return -1; }

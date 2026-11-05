@@ -86,11 +86,8 @@ int u8dec(const char* s, int n, int* cp) {
     *cp = u[0] >= 0xA0 ? u[0] : 0xFFFD;
     return 1;
 }
-int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
-int ieq(const char* a, const char* b) { while (*a && *b) { if (lc((unsigned char)*a) != lc((unsigned char)*b)) return 0; a++; b++; } return *a == *b; }
 int ieqn(const char* a, const char* b, int n) { for (int i = 0; i < n; i++) { if (lc((unsigned char)a[i]) != lc((unsigned char)b[i])) return 0; if (!a[i]) return 1; } return 1; }
 int istarts(const char* s, const char* p) { while (*p) { if (lc((unsigned char)*s) != lc((unsigned char)*p)) return 0; s++; p++; } return 1; }
-int is_ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 
 float parse_float(const char* s, const char** end) {
     const char* p = s;
@@ -122,14 +119,14 @@ static int scheme_len(const char* u) {
 }
 
 static void norm_path(char* path) {
-    char out[2048];
+    static char out[8192];
     int segs[128], ns = 0, o = 0;
     const char* p = path;
     char* q = strchr(path, '?');
     char* h = strchr(path, '#');
     char* tail = q ? q : h;
-    char tailbuf[1024] = "";
-    if (tail) { strncpy(tailbuf, tail, 1023); tailbuf[1023] = 0; *tail = 0; }
+    static char tailbuf[8192]; tailbuf[0] = 0;
+    if (tail) { strncpy(tailbuf, tail, 8191); tailbuf[8191] = 0; *tail = 0; }
     out[o++] = '/';
     while (*p) {
         while (*p == '/') p++;
@@ -151,17 +148,19 @@ static void norm_path(char* path) {
     }
     out[o] = 0;
     int tl = (int)strlen(tailbuf);
-    if (o + tl < 2047) memcpy(out + o, tailbuf, (size_t)tl + 1);
-    strcpy(path, out);
+    if (o + tl < (int)sizeof(out) - 1) memcpy(out + o, tailbuf, (size_t)tl + 1);
+    snprintf(path, 8192, "%s", out);
 }
 
 void url_resolve(const char* base, const char* rel, char* out, int cap) {
-    char buf[2048];
+    static char buf[8192];
+    if (!rel) rel = "";
+    if (!base) base = "about:blank";
     while (*rel == ' ' || *rel == '\t' || *rel == '\n' || *rel == '\r') rel++;
     int rl = (int)strlen(rel);
     while (rl > 0 && (rel[rl - 1] == ' ' || rel[rl - 1] == '\n' || rel[rl - 1] == '\r' || rel[rl - 1] == '\t')) rl--;
-    char r[1800];
-    if (rl > 1799) rl = 1799;
+    static char r[8192];
+    if (rl > 8191) rl = 8191;
     memcpy(r, rel, (size_t)rl);
     r[rl] = 0;
     if (scheme_len(r)) { snprintf(out, (size_t)cap, "%s", r); return; }
@@ -189,7 +188,7 @@ void url_resolve(const char* base, const char* rel, char* out, int cap) {
         snprintf(out, (size_t)cap, "%s%s", buf, r);
         return;
     }
-    char path[2048];
+    static char path[8192];
     if (r[0] == '/') snprintf(path, sizeof(path), "%s", r);
     else {
         const char* bp = pe;

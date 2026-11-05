@@ -43,7 +43,7 @@ const struct nvx_FFILE_t FFILE[]={
   "timeout=2\r\n" "default=0\r\n" "video=1280x720\r\n" "bootlog=4\r\n\r\n"
   "entry=NoovexOS 64\r\n" "kernel=/KERNEL.ELF\r\n" "cmdline=noovexos\r\n"},
  {0,"VERSION.txt",
-  "NoovexOS 64\r\n" "Version 9.83\r\n" "Architecture: x86-64 (long mode)\r\n"
+  "NoovexOS 64\r\n" "Version 10.60\r\n" "Architecture: x86-64 (long mode)\r\n"
   "Bootloader: myboot (BIOS + UEFI)\r\n" "Filesystem: NVXFS (disk) + FAT16/32 (USB)\r\n"
   "Toolchain: gcc -m64 -Os -ffreestanding\r\n" "Built from scratch - no external OS.\r\n"},
  {0,"LICENSE.txt",

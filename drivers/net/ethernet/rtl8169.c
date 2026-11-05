@@ -14,7 +14,7 @@
 #define R_CPCR 0xE0
 #define R_RDSAR 0xE4
 #define R_MTPS 0xEC
-#define NRX 32
+#define NRX 256
 #define NTX 16
 #define BUFSZ 2048
 #define OWN 0x80000000u

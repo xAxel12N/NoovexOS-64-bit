@@ -127,6 +127,21 @@ int pz_inflate_raw(const unsigned char*src,int slen,unsigned char*out,int outcap
     return z.outpos;
 }
 
+int pz_inflate_part(const unsigned char*src,int slen,unsigned char*out,int outcap){
+    pngz z; z.src=src; z.slen=slen; z.spos=0; z.bitbuf=0; z.bitcnt=0; z.out=out; z.outcap=outcap; z.outpos=0;
+    for(;;){
+        int final=pz_getbit(&z); if(final<0)break;
+        int type=pz_getbits(&z,2); if(type<0)break;
+        if(type==0){ z.bitcnt=0; if(z.spos+4>z.slen)break;
+            int len=z.src[z.spos]|(z.src[z.spos+1]<<8); z.spos+=4;
+            for(int i=0;i<len;i++){ if(z.spos>=z.slen||z.outpos>=z.outcap)return z.outpos; z.out[z.outpos++]=z.src[z.spos++]; }
+        } else if(type==1){ if(pz_fixed(&z))break; }
+        else if(type==2){ if(pz_dynamic(&z))break; }
+        else break;
+        if(final)break;
+    }
+    return z.outpos>0?z.outpos:-1;
+}
 static int pz_paeth(int a,int b,int c){ int p=a+b-c,pa=p>a?p-a:a-p,pb=p>b?p-b:b-p,pc=p>c?p-c:c-p; if(pa<=pb&&pa<=pc)return a; if(pb<=pc)return b; return c; }
 
 /* unfilter nrows scanlines of rowstride data bytes each (1 filter byte prefix), in place */

@@ -50,7 +50,8 @@ bd_rm:
     sti
     mov $0x0500, %si
     mov g_boot_drive, %dl
-    mov $0x42, %ah
+    movb bd_op, %ah
+    xor %al, %al
     int $0x13
     setc %bl
     cli
@@ -213,6 +214,10 @@ bf_pm32:
     ret
 
 .section .data
+.global bd_op
+bd_op:
+    .byte 0x42
+    .byte 0, 0, 0
 bd_saved_esp:
     .long 0
 bi_saved_esp:

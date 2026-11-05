@@ -1,0 +1,313 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2013-2014 The Meson development team
+
+from __future__ import annotations
+
+import re
+import typing as T
+
+from . import options
+from . import mesonlib
+from .options import OptionKey
+from . import mparser
+from . import mlog
+from .interpreterbase import FeatureNew, FeatureDeprecated, ContainerTypeInfo, KwargInfo, TypedArgs
+from .interpreter.type_checking import STR_PARG, NoneType, in_set_validator
+
+if T.TYPE_CHECKING:
+    from .interpreterbase import TYPE_var, TYPE_kwargs
+    from .mesonlib import SubProject
+    from typing_extensions import TypeAlias, TypedDict, Literal, NotRequired
+    from .options import OptionStore
+
+    _DEPRECATED_ARGS = T.Union[bool, str, T.Dict[str, str], T.List[str]]
+
+    ParserFuncT: TypeAlias = T.Callable[[tuple[str, str, bool, _DEPRECATED_ARGS], TYPE_kwargs], options.AnyOptionType]
+
+    FuncOptionArgs = TypedDict('FuncOptionArgs', {
+        'type': str,
+        'description': str,
+        'yield': bool,
+        'choices': NotRequired[list[str] | None],
+        'value': object,
+        'min': NotRequired[int | None],
+        'max': NotRequired[int | None],
+        'deprecated': _DEPRECATED_ARGS,
+        })
+
+    class StringArgs(TypedDict):
+        value: str
+
+    class BooleanArgs(TypedDict):
+        value: bool
+
+    class ComboArgs(TypedDict):
+        value: str
+        choices: T.List[str]
+
+    class IntegerArgs(TypedDict):
+        value: int
+        min: T.Optional[int]
+        max: T.Optional[int]
+
+    class StringArrayArgs(TypedDict):
+        value: T.Optional[T.Union[str, T.List[str]]]
+        choices: T.List[str]
+
+    class FeatureArgs(TypedDict):
+        value: Literal['enabled', 'disabled', 'auto']
+        choices: T.List[str]
+
+
+class OptionException(mesonlib.MesonException):
+    pass
+
+
+OPTNAME_REGEX = re.compile('[^a-zA-Z0-9_-]')
+
+
+class OptionInterpreter:
+    def __init__(self, optionstore: 'OptionStore', subproject: 'SubProject') -> None:
+        self.options: options.MutableKeyedOptionDictType = {}
+        self.subproject = subproject
+        self.option_types: dict[str, ParserFuncT] = {
+            'string': self.string_parser,
+            'boolean': self.boolean_parser,
+            'combo': self.combo_parser,
+            'integer': self.integer_parser,
+            'array': self.string_array_parser,
+            'feature': self.feature_parser,
+        }
+        self.optionstore = optionstore
+        self.current_node: mparser.BaseNode = mparser.BaseNode(-1, -1, 'sentinel')
+
+    def process(self, option_file: str) -> None:
+        try:
+            with open(option_file, encoding='utf-8') as f:
+                code = f.read()
+        except UnicodeDecodeError as e:
+            raise mesonlib.MesonException(f'Malformed option file {option_file!r} failed to parse as unicode: {e}')
+        try:
+            ast = mparser.Parser(code, option_file).parse()
+        except mesonlib.MesonException as me:
+            me.file = option_file
+            raise me
+        for cur in ast.lines:
+            try:
+                self.current_node = cur
+                self.evaluate_statement()
+            except mesonlib.MesonException:
+                raise
+            except Exception as e:
+                raise mesonlib.MesonException.from_node(str(e), node=self.current_node)
+
+    def reduce_single(self, arg: mparser.BaseNode) -> 'TYPE_var':
+        self.current_node = arg
+        match arg:
+            case mparser.ParenthesizedNode(inner=inner):
+                return self.reduce_single(inner)
+            case mparser.StringNode(value=value) | mparser.BooleanNode(value=value) | mparser.NumberNode(value=value):
+                return value
+            case mparser.ArrayNode(args=args):
+                return [self.reduce_single(curarg) for curarg in args.arguments]
+            case mparser.DictNode(args=args):
+                d = {}
+                for k, v in arg.args.kwargs.items():
+                    if not isinstance(k, mparser.StringNode):
+                        raise OptionException.from_node(
+                            'Dictionary keys must be a string literal', node=self.current_node)
+                    d[k.value] = self.reduce_single(v)
+                return d
+            case mparser.UMinusNode(value=value):
+                res = self.reduce_single(value)
+                if not isinstance(res, (int, float)):
+                    raise OptionException.from_node(
+                        'Token after "-" is not a number', node=self.current_node)
+                FeatureNew.single_use('negative numbers in meson_options.txt', '0.54.1', self.subproject)
+                return -res
+            case mparser.NotNode(value=value):
+                res = self.reduce_single(value)
+                if not isinstance(res, bool):
+                    raise OptionException.from_node(
+                        'Token after "not" is not a a boolean', node=self.current_node)
+                FeatureNew.single_use('negation ("not") in meson_options.txt', '0.54.1', self.subproject)
+                return not res
+            case mparser.ArithmeticNode(operation=op, left=left, right=right):
+                l = self.reduce_single(left)
+                r = self.reduce_single(right)
+                if not (op == '+' and isinstance(l, str) and isinstance(r, str)):
+                    raise OptionException.from_node(
+                        'Only string concatenation with the "+" operator is allowed', node=self.current_node)
+                FeatureNew.single_use('string concatenation in meson_options.txt', '0.55.0', self.subproject)
+                return l + r
+            case _:
+                raise OptionException.from_node(
+                    'Arguments may only be string, int, bool, or array of those.', node=self.current_node)
+
+    def reduce_arguments(self, args: mparser.ArgumentNode) -> T.Tuple['TYPE_var', 'TYPE_kwargs']:
+        if args.incorrect_order():
+            raise OptionException.from_node(
+                'All keyword arguments must be after positional arguments.', node=self.current_node)
+        reduced_pos = [self.reduce_single(arg) for arg in args.arguments]
+        reduced_kw = {}
+        for key, a in args.kwargs.items():
+            if not isinstance(key, mparser.IdNode):
+                raise OptionException.from_node(
+                    'Keyword argument name is not a string.', node=self.current_node)
+            reduced_kw[key.value] = self.reduce_single(a)
+        return reduced_pos, reduced_kw
+
+    def evaluate_statement(self) -> None:
+        if not isinstance(self.current_node, mparser.FunctionNode):
+            raise OptionException.from_node(
+                'Option file may only contain option definitions', node=self.current_node)
+        func_name = self.current_node.func_name.value
+        if func_name != 'option':
+            raise OptionException.from_node(
+                'Only calls to option() are allowed in option files.', node=self.current_node)
+        (posargs, kwargs) = self.reduce_arguments(self.current_node.args)
+        self.func_option(posargs, kwargs)
+
+    @TypedArgs(
+        'option',
+        pos_types=[
+            STR_PARG.evolve(
+                validator=lambda n: 'option names can only contain letters, numbers, and dashes' if OPTNAME_REGEX.search(n) is not None else None
+            ),
+        ],
+        kw_types=[
+            KwargInfo(
+                'type',
+                str,
+                required=True,
+                validator=in_set_validator({'string', 'boolean', 'integer', 'combo', 'array', 'feature'})
+            ),
+            KwargInfo('description', str, default=''),
+            KwargInfo(
+                'deprecated',
+                (bool, str, ContainerTypeInfo(dict, str), ContainerTypeInfo(list, str)),
+                default=False,
+                since='0.60.0',
+                since_values={str: '0.63.0'},
+            ),
+            KwargInfo('yield', bool, default=options.DEFAULT_YIELDING, since='0.45.0'),
+        ],
+        unknown_kwargs=True,
+    )
+    def func_option(self, args: T.Tuple[str], kwargs: 'FuncOptionArgs') -> None:
+        opt_name = args[0]
+        key = OptionKey.from_string(opt_name).evolve(subproject=self.subproject)
+        if self.optionstore.is_reserved_name(key):
+            raise OptionException.from_node(
+                f'Option name {opt_name} is reserved.', node=self.current_node)
+
+        opt_type = kwargs['type']
+        parser = self.option_types[opt_type]
+        description = kwargs['description'] or opt_name
+
+        # Drop the arguments we've already consumed
+        n_kwargs = T.cast(
+            'TYPE_kwargs',
+            {k: v for k, v in kwargs.items() if k not in {'type', 'description', 'deprecated', 'yield'}})
+
+        opt = parser((opt_name, description, kwargs['yield'], kwargs['deprecated']), n_kwargs)
+        if key in self.options:
+            mlog.deprecation(f'Option {opt_name} already exists.')
+        self.options[key] = opt
+
+    @TypedArgs(
+        'string option',
+        kw_types=[KwargInfo('value', str, default='')],
+        process_posargs=False,
+    )
+    def string_parser(self, args: T.Tuple[str, str, bool, _DEPRECATED_ARGS], kwargs: StringArgs) -> options.UserOption:
+        name, description, yielding, deprecated = args
+        return options.UserStringOption(name, description, kwargs['value'], yielding, deprecated)
+
+    @TypedArgs(
+        'boolean option',
+        kw_types=[
+            KwargInfo(
+                'value',
+                (bool, str),
+                default=True,
+                validator=lambda x: None if isinstance(x, bool) or x in {'true', 'false'} else 'boolean options must have boolean values',
+                deprecated_values={str: ('1.1.0', 'use a boolean, not a string')},
+            ),
+        ],
+        process_posargs=False,
+    )
+    def boolean_parser(self, args: T.Tuple[str, str, bool, _DEPRECATED_ARGS], kwargs: BooleanArgs) -> options.UserOption:
+        name, description, yielding, deprecated = args
+        return options.UserBooleanOption(name, description, kwargs['value'], yielding=yielding, deprecated=deprecated)
+
+    @TypedArgs(
+        'combo option',
+        kw_types=[
+            KwargInfo('value', (str, NoneType)),
+            KwargInfo('choices', ContainerTypeInfo(list, str, allow_empty=False), required=True),
+        ],
+        process_posargs=False,
+    )
+    def combo_parser(self, args: T.Tuple[str, str, bool, _DEPRECATED_ARGS], kwargs: ComboArgs) -> options.UserOption:
+        choices = kwargs['choices']
+        value = kwargs['value']
+        if value is None:
+            value = choices[0]
+        name, description, yielding, deprecated = args
+        return options.UserComboOption(name, description, value, yielding, deprecated, choices=choices)
+
+    @TypedArgs(
+        'integer option',
+        kw_types=[
+            KwargInfo(
+                'value',
+                (int, str),
+                default=True,
+                deprecated_values={str: ('1.1.0', 'use an integer, not a string')},
+                convertor=int,
+            ),
+            KwargInfo('min', (int, NoneType)),
+            KwargInfo('max', (int, NoneType)),
+        ],
+        process_posargs=False,
+    )
+    def integer_parser(self, args: T.Tuple[str, str, bool, _DEPRECATED_ARGS], kwargs: IntegerArgs) -> options.UserOption:
+        name, description, yielding, deprecated = args
+        return options.UserIntegerOption(
+            name, description, kwargs['value'], yielding, deprecated, min_value=kwargs['min'], max_value=kwargs['max'])
+
+    @TypedArgs(
+        'string array option',
+        kw_types=[
+            KwargInfo('value', (ContainerTypeInfo(list, str), str, NoneType)),
+            KwargInfo('choices', ContainerTypeInfo(list, str), default=[]),
+        ],
+        process_posargs=False,
+    )
+    def string_array_parser(self, args: T.Tuple[str, str, bool, _DEPRECATED_ARGS], kwargs: StringArrayArgs) -> options.UserOption:
+        choices = kwargs['choices']
+        value = kwargs['value'] if kwargs['value'] is not None else choices
+        if isinstance(value, str):
+            if value.startswith('['):
+                FeatureDeprecated('String value for array option', '1.3.0').use(self.subproject)
+            else:
+                raise mesonlib.MesonException.from_node(
+                    f'Value does not define an array: {value}', node=self.current_node)
+        name, description, yielding, deprecated = args
+        return options.UserStringArrayOption(
+            name, description, value,
+            choices=choices,
+            yielding=yielding,
+            deprecated=deprecated)
+
+    @TypedArgs(
+        'feature option',
+        kw_types=[
+            KwargInfo('value', str, default='auto', validator=in_set_validator({'auto', 'enabled', 'disabled'})),
+        ],
+        process_posargs=False,
+    )
+    def feature_parser(self, args: T.Tuple[str, str, bool, _DEPRECATED_ARGS], kwargs: FeatureArgs) -> options.UserOption:
+        name, description, yielding, deprecated = args
+        return options.UserFeatureOption(name, description, kwargs['value'], yielding, deprecated)

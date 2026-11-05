@@ -42,6 +42,25 @@ static void draw_frame(Client* c) {
     XSetForeground(d, gc, c_text); XDrawLine(d, c->frame, gc, a.width - TH + 7, 7, a.width - 7, TH - 7); XDrawLine(d, c->frame, gc, a.width - 7, 7, a.width - TH + 7, TH - 7);
 }
 
+static void send_config(Client* c) {
+    XWindowAttributes fa, ca; if (!XGetWindowAttributes(d, c->frame, &fa) || !XGetWindowAttributes(d, c->client, &ca)) return;
+    XEvent e; memset(&e, 0, sizeof e); e.xconfigure.type = ConfigureNotify; e.xconfigure.event = c->client; e.xconfigure.window = c->client;
+    e.xconfigure.x = fa.x + BW; e.xconfigure.y = fa.y + BW + TH; e.xconfigure.width = ca.width; e.xconfigure.height = ca.height; e.xconfigure.border_width = 0; e.xconfigure.above = None; e.xconfigure.override_redirect = False;
+    XSendEvent(d, c->client, False, StructureNotifyMask, &e);
+}
+
+static void fit(int* x, int* y, int* w, int* h) {
+    int sw = DisplayWidth(d, DefaultScreen(d)), sh = DisplayHeight(d, DefaultScreen(d)), mh = sh - TH - 2 * BW - 32;
+    if (*w > sw - 2 * BW) *w = sw - 2 * BW;
+    if (*h > mh) *h = mh;
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
+    if (*x + *w > sw - 2 * BW) *x = sw - 2 * BW - *w;
+    if (*x < 0) *x = 0;
+    if (*y + *h > TH + mh) *y = TH + mh - *h;
+    if (*y < TH) *y = TH;
+}
+
 static void focus(Client* c) {
     if (!c) return;
     Window old = focused; focused = c->client;
@@ -55,10 +74,9 @@ static void manage(Window w) {
     if (by_client(w)) return;
     XWindowAttributes a; if (!XGetWindowAttributes(d, w, &a) || a.override_redirect) return;
     int k = -1; for (int i = 0; i < MAXC; i++) if (!cl[i].used) { k = i; break; } if (k < 0) return;
-    int sw = DisplayWidth(d, DefaultScreen(d)), sh = DisplayHeight(d, DefaultScreen(d));
-    if (a.width > sw - 40 || a.height > sh - TH - 40) { a.width = sw * 3 / 4; a.height = sh * 3 / 4; a.x = (sw - a.width) / 2; a.y = (sh - a.height) / 2; XResizeWindow(d, w, a.width, a.height); }
-    int x = a.x, y = a.y; if (y < TH) y = TH;
-    Window f = XCreateSimpleWindow(d, root, x, y - TH, a.width, a.height + TH, BW, c_border, c_bar_off);
+    int x = a.x, y = a.y, ow = a.width, oh = a.height; fit(&x, &y, &a.width, &a.height);
+    if (a.width != ow || a.height != oh) XResizeWindow(d, w, a.width, a.height);
+    Window f = XCreateSimpleWindow(d, root, x - BW, y - TH - BW, a.width, a.height + TH, BW, c_border, c_bar_off);
     XSelectInput(d, f, SubstructureRedirectMask | SubstructureNotifyMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | ExposureMask);
     XAddToSaveSet(d, w);
     XReparentWindow(d, w, f, 0, TH);
@@ -67,6 +85,7 @@ static void manage(Window w) {
     XMapWindow(d, f); XMapWindow(d, w);
     cl[k].frame = f; cl[k].client = w; cl[k].used = 1;
     focus(&cl[k]);
+    send_config(&cl[k]);
 }
 
 static void unmanage(Client* c, int destroyed) {
@@ -105,13 +124,13 @@ int main(void) {
             XConfigureRequestEvent* q = &e.xconfigurerequest; Client* c = by_client(q->window);
             XWindowChanges ch; ch.x = q->x; ch.y = q->y; ch.width = q->width; ch.height = q->height; ch.border_width = q->border_width; ch.sibling = q->above; ch.stack_mode = q->detail;
             if (c) {
-                int sw = DisplayWidth(d, DefaultScreen(d)), sh = DisplayHeight(d, DefaultScreen(d));
-                if ((q->value_mask & CWWidth) && ch.width > sw - 40) ch.width = sw * 3 / 4;
-                if ((q->value_mask & CWHeight) && ch.height > sh - TH - 40) ch.height = sh * 3 / 4;
-                XWindowChanges fc = ch; fc.y = q->y - TH; fc.height = q->height + TH; fc.border_width = BW;
-                XConfigureWindow(d, c->frame, q->value_mask & (CWX | CWY | CWWidth | CWHeight), &fc);
-                ch.x = 0; ch.y = TH; XConfigureWindow(d, q->window, q->value_mask & (CWWidth | CWHeight), &ch);
-                draw_frame(c);
+                XWindowAttributes fa, ca; XGetWindowAttributes(d, c->frame, &fa); XGetWindowAttributes(d, c->client, &ca);
+                int x = (q->value_mask & CWX) ? q->x : fa.x + BW, y = (q->value_mask & CWY) ? q->y : fa.y + BW + TH;
+                int w = (q->value_mask & CWWidth) ? q->width : ca.width, h = (q->value_mask & CWHeight) ? q->height : ca.height;
+                fit(&x, &y, &w, &h);
+                XMoveResizeWindow(d, c->frame, x - BW, y - TH - BW, w, h + TH);
+                XMoveResizeWindow(d, c->client, 0, TH, w, h);
+                draw_frame(c); send_config(c);
             } else XConfigureWindow(d, q->window, q->value_mask, &ch);
             break; }
         case UnmapNotify: { Client* c = by_client(e.xunmap.window); if (c && e.xunmap.event != root) unmanage(c, 0); break; }
@@ -129,7 +148,7 @@ int main(void) {
             XAllowEvents(d, ReplayPointer, CurrentTime);
             break; }
         case MotionNotify: if (drag_frame) { while (XCheckTypedEvent(d, MotionNotify, &e)) {} XMoveWindow(d, drag_frame, e.xmotion.x_root - drag_dx, e.xmotion.y_root - drag_dy); } break;
-        case ButtonRelease: drag_frame = None; break;
+        case ButtonRelease: if (drag_frame) { Client* c = by_frame(drag_frame); if (c) send_config(c); } drag_frame = None; break;
         }
     }
 }

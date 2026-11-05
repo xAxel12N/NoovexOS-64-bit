@@ -5,7 +5,7 @@ extern char __bss_end[];
 __attribute__((aligned(64), used, section(".sig")))
 volatile const struct nvx_g_buildsig_t g_buildsig = {
     {'N','V','X','6','4','S','I','G'},
-    "9.83",
+    "10.60",
     0, 0,
     {0},
     "NoovexOS build",

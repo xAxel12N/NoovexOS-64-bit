@@ -570,3 +570,7 @@ Coherence relies on these properties in the current design:
 | `smpwork` / `parallel`, `smpsched` | Prime-counting job queue demo and per-core counters (4.12). |
 
 Other places that report the core count: `/proc/cpuinfo` (`fs/vfs/vfs.c`, one entry per online `g_cpu[]`), `/sys/devices/system/cpu/online` (`fs/vfs/unixfs.c`), and Linux `sched_getaffinity` (syscall 204 in `sys/linux/linux.c`). All of them report `g_cores_online` only while `g_smp_on` is set, and 1 otherwise. The user program `usr/musl/smptest.c` (named in the `smp` help line) forks workers, records which CPUs they ran on, and checks results as a stress test.
+
+## 4.17 The web worker engine on CPU 1 (v10.42)
+
+`ap_loop` calls `wk_ap_turn()` (`apps/internet/webwork.c`) after each scheduling round. On CPU 1 only, and only while the browser has workers there, it runs one turn of the worker engine in kernel mode without the big kernel lock, on its own 4 MiB stack, with its own memory arena; it shares nothing with CPU 0 except two lock-free message rings. A turn handles messages for up to 25 ms and then returns, so Linux programs on CPU 1 still get their time slices; a page message wakes CPU 1 with `smp_kick(1)`, and a worker timer is checked at the next tick. An exception inside the worker engine on CPU 1 goes to `wk_fault_redirect`, which is checked before `web_fault_redirect` and only matches while CPU 1 is inside a worker turn. Section 13.64 has the details.

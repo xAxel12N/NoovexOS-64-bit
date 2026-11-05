@@ -10,6 +10,8 @@
 
 typedef struct { u32* px; u64 gfx; u32 w, h, pitch; int used; } gsurf;
 
+typedef struct { u32 k, x, y, w, h; int sdx, sdy, mdx, mdy; u32 c0, c1, a, inv, key, goff; int d, s, m; } gqop_t;
+
 typedef struct {
     u32* ring; u32 ring_cap;
     u32* st; u64 st_g; u32 st_size;
@@ -18,6 +20,7 @@ typedef struct {
     int (*submit)(u32 ndw);
     void (*flush)(const void* p,u64 n);
     u64 (*now)(void);
+    int (*op)(const gqop_t* o,int wait);
 } gqhw;
 
 #define GQM_OFF 0
@@ -50,6 +53,7 @@ void gq_frame_mark(void);
 u32 gq_bl(u32 d,u32 s,u32 a);
 typedef void (*gq_prefn)(int d,int x,int y,int w,int h,int s,int m);
 void gq_set_pre(gq_prefn f);
+extern void (*g_gq_free_hook)(int s);
 extern u32 g_sgen[GQ_MAXS]; extern u64 g_ophash, g_gq_wait_ns; extern int g_hash_d; extern u32 g_gq_submits;
 void gq_set_key(u32 k);
 extern int g_cap_why, g_cap_wk;

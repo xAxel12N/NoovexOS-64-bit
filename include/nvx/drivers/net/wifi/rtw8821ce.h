@@ -3,7 +3,8 @@
 
 #include "include/nvx/base.h"
 
-typedef struct { u8 bssid[6]; char ssid[33]; u8 ch; int seen; u8 sec; } scan_ap;
+typedef struct { u8 bssid[6]; char ssid[33]; u8 ch; int seen; u8 sec; signed char rssi; u8 ht; u8 akm; u8 pmf; u8 wmm; u8 hidden; u64 last; u8 grp; } scan_ap;
+enum { AKM_PSK=1, AKM_SAE=2, AKM_8021X=4, AKM_PSK256=8 };
 
 extern int g_dmem_ck ,g_imem_ck ,g_emem_ck ,g_dmem_sf ,g_dmem_if ,g_imem_sf ,g_imem_if;
 extern int rtw_mac_trx_ok;
@@ -33,6 +34,13 @@ int rtw_fw_download_iddma(u32 m,const u8* fw,long fwsz);
 int rtw_mac_trx_init(u32 m);
 u32 rtw_rf_read_a(u32 m,u32 addr);
 void rtw_set_channel_2g(u32 m,u8 ch);
+void rtw_set_txpwr(u32 m,u8 ch);
+void rtw_txdesc_rate(u8* pkt,int mgmt);
+int rtw_rx_rssi(const u8* base);
+void rtw_ra_connect(u32 m,int ht,const u8* rates,int nrates);
+void rtw_ra_disconnect(u32 m);
+extern int g_wifi_txpwr, g_wifi_band5, g_wifi_ra, g_wifi_rssi;
+extern u8 g_wifi_curch;
 int rtw_rx_enable(u32 m);
 int rtw_rx_ring_up(u32 m);
 int rtw_rx_hw_wp(u32 m);
@@ -42,5 +50,7 @@ int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid);
 int rtw_tx_mgmt(u32 m,const u8* frame,int fl);
 int rtw_rx_wait_mgmt(u32 m,u8 want_fc,const u8* from_bssid,u8* body_out,int* body_len,int ms);
 int rtw_assoc(u32 m,const scan_ap* ap,const char* ssid);
+int rtw_assoc_ies(u8* f,const scan_ap* ap);
+extern int g_wifi_assoc_qos, g_wifi_assoc_ht, g_wifi_ht_enable;
 
 #endif

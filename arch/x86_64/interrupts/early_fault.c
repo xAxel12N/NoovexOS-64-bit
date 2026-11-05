@@ -5,6 +5,7 @@
 extern const u64 early_exc_stubs[32];
 volatile int g_early_step=0;
 static u64 g_eidt[64] __attribute__((section(".data"),aligned(16)))={1};
+u64 early_idt_image(u64* first,u64* bytes){ *first=1; *bytes=sizeof g_eidt; return (u64)g_eidt; }
 static int ef_y=0;
 
 static void ef_px(u64 fb,u32 pitch,int x,int y,u32 c){ *(volatile u32*)(fb+(u64)y*pitch+(u64)x*4)=c; }
@@ -53,6 +54,7 @@ void early_note(const char* title,const char* what,u64 rip,int stage){
     p=b; p=ef_str(p,"Stray interrupts "); p=ef_dec(p,g_stray_n); p=ef_str(p,"  last vector "); if(g_stray_vec>=0)p=ef_dec(p,(u64)g_stray_vec); else p=ef_str(p,"none"); p=ef_str(p,"   I/O APICs "); p=ef_dec(p,(u64)g_ioapic_n); p=ef_str(p,"  lines masked "); p=ef_dec(p,(u64)g_ioapic_masked); p=ef_str(p,"   ticks "); p=ef_dec(p,g_ticks); *p=0; ef_text(b,0x00A0E0FFu); }
 static u64 g_pdtmp[512] __attribute__((section(".data"),aligned(4096)))={0};
 u32 g_remap_n __attribute__((section(".data")))=0; u32 g_remap_bad_first __attribute__((section(".data")))=0; u32 g_remap_fail __attribute__((section(".data")))=0;
+u64 g_remap_pg[80] __attribute__((section(".data")))={0}; u32 g_remap_restored __attribute__((section(".data")))=0;
 u64 g_remap_lo __attribute__((section(".data")))=0, g_remap_hi __attribute__((section(".data")))=0, g_remap_badlo __attribute__((section(".data")))=0, g_remap_badhi __attribute__((section(".data")))=0;
 static int er_map(u64* s,u64* e,u32* t,int max){
     const volatile u8* q=(const volatile u8*)0x7000ULL; u32 mg=*(const volatile u32*)q; int n=0;
@@ -61,15 +63,31 @@ static int er_map(u64* s,u64* e,u32* t,int max){
     return n; }
 static int er_ok(u64 p,u64* s,u64* e,u32* t,int n){ u64 c=p, end=p+0x200000ULL; for(int k=0;k<64&&c<end;k++){ int mv=0; for(int i=0;i<n;i++) if(t[i]&&s[i]<=c&&e[i]>c){ c=e[i]; mv=1; } if(!mv)return 0; } return c>=end; }
 static int er_bad_anywhere(u64 p,u64* s,u64* e,u32* t,int n){ for(int i=0;i<n;i++) if(!t[i]&&s[i]<p+0x200000ULL&&e[i]>p)return 1; return 0; }
+static int er_has_pt(u64 p,const u64* pt,int npt){ for(int i=0;i<npt;i++) if(pt[i]>=p&&pt[i]<p+0x200000ULL)return 1; return 0; }
+static int er_excl(u64 lo,u64 hi,const u64 (*x)[2],int nx){ for(int i=0;i<nx;i++) if(x[i][1]>x[i][0]&&lo<x[i][1]&&hi>x[i][0])return i; return -1; }
+typedef struct { u32 magic, n; struct { u64 s, len, off; } r[16]; } er_save;
+static const er_save* er_saved(void){ if(*(volatile u32*)0x502CULL!=0x49464555u)return 0; u64 a=*(volatile u64*)0x5038ULL; if(!a||(a&7)||a>=0x100000000ULL)return 0; const er_save* sv=(const er_save*)a; if(sv->magic!=0x5358564Eu||sv->n>16)return 0; return sv; }
 void early_remap(void){
-    extern char __bss_end[]; u64 s[64],e[64]; u32 t[64]; int n=er_map(s,e,t,64); if(!n)return;
-    u64 pages[80]; int np=0; u64 R[2][2]={{0x09800000ULL,0x09E00000ULL},{0x0E000000ULL,((u64)__bss_end+0x1FFFFFULL)&~0x1FFFFFULL}};
-    for(int r=0;r<2;r++) for(u64 p=R[r][0];p<R[r][1]&&np<80;p+=0x200000ULL) if(!er_ok(p,s,e,t,n)||er_bad_anywhere(p,s,e,t,n)){ if(!np){ g_remap_badlo=p; } g_remap_badhi=p+0x200000ULL; pages[np++]=p; }
-    if(!np)return;
-    int bi=-1; u64 best=0; for(int i=0;i<n;i++){ if(!t[i]||e[i]<=0x100000000ULL)continue; u64 lo=s[i]<0x100000000ULL?0x100000000ULL:s[i]; lo=(lo+0x1FFFFFULL)&~0x1FFFFFULL; u64 hi=e[i]&~0x1FFFFFULL; if(hi>lo&&hi-lo>best){ best=hi-lo; bi=i; } }
-    if(bi<0||best<(u64)np*0x200000ULL){ g_remap_fail=1; return; }
-    u64 hi=e[bi]&~0x1FFFFFULL, lo=hi-(u64)np*0x200000ULL; if(hi-lo>0x40000000ULL){ g_remap_fail=2; return; }
+    extern char __bss_end[], __text_end[]; u64 s[64],e[64]; u32 t[64]; int n=er_map(s,e,t,64); if(!n)return;
     u64 cr3; __asm__ volatile("mov %%cr3,%0":"=r"(cr3)); u64* pml4=(u64*)(cr3&0x000FFFFFFFFFF000ULL); u64* pdpt=(u64*)(pml4[0]&0x000FFFFFFFFFF000ULL);
+    u64 pt[8]; int npt=0; pt[npt++]=(u64)pml4; pt[npt++]=(u64)pdpt; pt[npt++]=(u64)g_pdtmp; for(int i=0;i<4;i++) if((pdpt[i]&1)&&!(pdpt[i]&0x80))pt[npt++]=pdpt[i]&0x000FFFFFFFFFF000ULL;
+    u64 pages[80]; int np=0; u64 R[3][2]={{0x00200000ULL,(u64)__text_end&~0x1FFFFFULL},{0x09800000ULL,0x09E00000ULL},{0x0E000000ULL,((u64)__bss_end+0x1FFFFFULL)&~0x1FFFFFULL}};
+    for(int r=0;r<3;r++) for(u64 p=R[r][0];p<R[r][1]&&np<80;p+=0x200000ULL) if(!er_ok(p,s,e,t,n)||er_bad_anywhere(p,s,e,t,n)){ if(r==0&&(!er_bad_anywhere(p,s,e,t,n)||er_has_pt(p,pt,npt)))continue; if(!np){ g_remap_badlo=p; } g_remap_badhi=p+0x200000ULL; pages[np++]=p; }
+    if(!np)return;
+    const er_save* sv=er_saved();
+    int bi=-1; u64 best=0; for(int i=0;i<n;i++){ if(!t[i]||e[i]<=0x100000000ULL)continue; u64 lo=s[i]<0x100000000ULL?0x100000000ULL:s[i]; lo=(lo+0x1FFFFFULL)&~0x1FFFFFULL; u64 hi=e[i]&~0x1FFFFFULL; if(hi>lo&&hi-lo>best){ best=hi-lo; bi=i; } }
+    u64 need=(u64)np*0x200000ULL, lo=0, hi=0;
+    if(bi>=0&&best>=need){ hi=e[bi]&~0x1FFFFFULL; lo=hi-need; }
+    else { u64 xb=0, xe=0; if(*(volatile u32*)0x502CULL==0x49464555u){ xb=*(volatile u64*)0x5030ULL&~0x1FFFFFULL; if(xb>=0x100000ULL)xe=xb+0x10200000ULL; else xb=0; }
+        else { for(int i=0;i<n;i++){ if(!t[i])continue; u64 a0=s[i]<0x20000000ULL?0x20000000ULL:s[i]; a0=(a0+0x1FFFFFULL)&~0x1FFFFFULL; u64 a1=e[i]>0x100000000ULL?0x100000000ULL:e[i];
+                for(u64 a=a0;a+0x200000ULL<=a1;a+=0x200000ULL) if(*(volatile const u32*)a==0x3253564Eu&&a>xb)xb=a; } if(xb)xe=xb+0x10200000ULL; }
+        u64 X[2][2]={{xb,xe},{0,0}}; if(sv){ u64 sl=sizeof(er_save); for(u32 i=0;i<sv->n;i++) if(sv->r[i].off+sv->r[i].len>sl)sl=sv->r[i].off+sv->r[i].len; X[1][0]=(u64)sv&~0x1FFFFFULL; X[1][1]=((u64)sv+sl+0x1FFFFFULL)&~0x1FFFFFULL; }
+        for(int i=0;i<n;i++){ if(!t[i]||s[i]>=0x100000000ULL)continue; u64 rs=s[i]<0x30000000ULL?0x30000000ULL:s[i], re=e[i]>0x100000000ULL?0x100000000ULL:e[i];
+            rs=(rs+0x1FFFFFULL)&~0x1FFFFFULL; u64 h=re&~0x1FFFFFULL;
+            for(int g=0;g<4&&h>=rs+need;g++){ int x=er_excl(h-need,h,(const u64 (*)[2])X,2); if(x<0)break; h=X[x][0]; }
+            if(h<rs+need||er_excl(h-need,h,(const u64 (*)[2])X,2)>=0||h<=hi)continue; hi=h; lo=h-need; } }
+    if(!hi){ g_remap_fail=1; return; }
+    if(hi-lo>0x40000000ULL){ g_remap_fail=2; return; }
     u64 save4=pdpt[4]; for(int k=0;k<512;k++)g_pdtmp[k]=0;
     for(int k=0;k<np;k++)g_pdtmp[k]=(lo+(u64)k*0x200000ULL)|0x83ULL;
     pdpt[4]=((u64)g_pdtmp)|3ULL; __asm__ volatile("mov %0,%%cr3"::"r"(cr3):"memory");
@@ -80,8 +98,14 @@ void early_remap(void){
         u64 src=v, dst=0x100000000ULL+(u64)sk*0x200000ULL, cnt=0x200000/8;
         __asm__ volatile("cld\n\trep movsq\n\tmovq %3,(%4)\n\tmovq %5,%%rax\n\tmovq %%rax,%%cr3" : "+S"(src),"+D"(dst),"+c"(cnt) : "r"(nv),"r"(pde),"r"(cr3) : "rax","memory"); }
     __asm__ volatile("mov %0,%%cr3"::"r"(cr3):"memory");
+    if(sv){ for(int k=0;k<np;k++)g_pdtmp[k]=pages[k]|0x83ULL; __asm__ volatile("mov %0,%%cr3"::"r"(cr3):"memory");
+        for(u32 i=0;i<sv->n;i++){ u64 rs=sv->r[i].s, re=rs+sv->r[i].len; const volatile u8* src=(const volatile u8*)((u64)sv+sv->r[i].off);
+            for(int k=0;k<np;k++){ u64 a=rs>pages[k]?rs:pages[k], b=re<pages[k]+0x200000ULL?re:pages[k]+0x200000ULL; if(a>=b)continue;
+                volatile u8* d=(volatile u8*)(0x100000000ULL+(u64)k*0x200000ULL+(a-pages[k])); for(u64 j=0;j<b-a;j++)d[j]=src[a-rs+j]; g_remap_restored+=(u32)(b-a); } } }
     pdpt[4]=save4; __asm__ volatile("mov %0,%%cr3"::"r"(cr3):"memory");
+    for(int k=0;k<np;k++)g_remap_pg[k]=pages[k];
     g_remap_n=(u32)np; g_remap_lo=lo; g_remap_hi=hi; }
+int early_remap_moved(u64 s,u64 e){ for(u32 k=0;k<g_remap_n;k++) if(s>=g_remap_pg[k]&&e<=g_remap_pg[k]+0x200000ULL)return 1; return 0; }
 void early_remap_fix_mm(void){
     if(!g_remap_n)return; extern mmreg g_mmr[]; extern int g_mmr_n;
     for(int i=0;i<g_mmr_n;i++) if(g_mmr[i].s<=g_remap_lo&&g_mmr[i].e>=g_remap_hi){ g_mmr[i].e=g_remap_lo; break; } }

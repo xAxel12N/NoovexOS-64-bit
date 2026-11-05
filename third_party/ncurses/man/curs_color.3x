@@ -1,0 +1,1011 @@
+.\"***************************************************************************
+.\" Copyright 2018-2025,2026 Thomas E. Dickey                                *
+.\" Copyright 1998-2016,2017 Free Software Foundation, Inc.                  *
+.\"                                                                          *
+.\" Permission is hereby granted, free of charge, to any person obtaining a  *
+.\" copy of this software and associated documentation files (the            *
+.\" "Software"), to deal in the Software without restriction, including      *
+.\" without limitation the rights to use, copy, modify, merge, publish,      *
+.\" distribute, distribute with modifications, sublicense, and/or sell       *
+.\" copies of the Software, and to permit persons to whom the Software is    *
+.\" furnished to do so, subject to the following conditions:                 *
+.\"                                                                          *
+.\" The above copyright notice and this permission notice shall be included  *
+.\" in all copies or substantial portions of the Software.                   *
+.\"                                                                          *
+.\" THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS  *
+.\" OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF               *
+.\" MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.   *
+.\" IN NO EVENT SHALL THE ABOVE COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,   *
+.\" DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR    *
+.\" OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR    *
+.\" THE USE OR OTHER DEALINGS IN THE SOFTWARE.                               *
+.\"                                                                          *
+.\" Except as contained in this notice, the name(s) of the above copyright   *
+.\" holders shall not be used in advertising or otherwise to promote the     *
+.\" sale, use or other dealings in this Software without prior written       *
+.\" authorization.                                                           *
+.\"***************************************************************************
+.\"
+.\" $Id: curs_color.3x,v 1.188 2026/09/19 20:59:23 tom Exp $
+.TH curs_color 3X 2026-09-19 "ncurses @NCURSES_MAJOR@.@NCURSES_MINOR@" "Library calls"
+.ie \n(.g \{\
+.ds `` \(lq
+.ds '' \(rq
+.\}
+.el \{\
+.ie t .ds `` ``
+.el   .ds `` ""
+.ie t .ds '' ''
+.el   .ds '' ""
+.\}
+.
+.de bP
+.ie n  .IP \(bu 4
+.el    .IP \(bu 2
+..
+.
+.SH NAME
+\fB\%start_color\fP,
+\fB\%has_colors\fP,
+\fB\%can_change_color\fP,
+\fB\%init_pair\fP,
+\fB\%init_color\fP,
+\fB\%init_extended_pair\fP,
+\fB\%init_extended_color\fP,
+\fB\%color_content\fP,
+\fB\%pair_content\fP,
+\fB\%extended_color_content\fP,
+\fB\%extended_pair_content\fP,
+\fB\%reset_color_pairs\fP,
+\fB\%COLOR_PAIR\fP,
+\fB\%PAIR_NUMBER\fP,
+\fB\%COLORS\fP,
+\fB\%COLOR_PAIRS\fP,
+\fB\%COLOR_BLACK\fP,
+\fB\%COLOR_RED\fP,
+\fB\%COLOR_GREEN\fP,
+\fB\%COLOR_YELLOW\fP,
+\fB\%COLOR_BLUE\fP,
+\fB\%COLOR_MAGENTA\fP,
+\fB\%COLOR_CYAN\fP,
+\fB\%COLOR_WHITE\fP,
+\fB\%A_COLOR\fP \-
+manipulate terminal colors with \fIcurses\fR
+.SH SYNOPSIS
+.nf
+\fB#include <curses.h>
+.PP
+\fI/* variables */
+\fBint COLOR_PAIRS;
+\fBint COLORS;
+.PP
+\fBint start_color(void);
+.PP
+\fBbool has_colors(void);
+\fBbool can_change_color(void);
+.PP
+\fBint init_pair(short \fIpair\fP, short \fIf\fP, short \fIb\fP);
+\fBint init_color(short \fIindex\fP, short \fIr\fP, short \fIg\fP, short \fIb\fP);
+\fI/* extensions */
+\fBint init_extended_pair(int \fIpair\fP, int \fIf\fP, int \fIb\fP);
+\fBint init_extended_color(int \fIindex\fP, int \fIr\fP, int \fIg\fP, int \fIb\fP);
+.PP
+\fBint color_content(short \fIindex\fP, short *\fIr\fP, short *\fIg\fP, short *\fIb\fP);
+\fBint pair_content(short \fIpair\fP, short *\fIf\fP, short *\fIb\fP);
+\fI/* extensions */
+\fBint extended_color_content(int \fIindex\fP, int *\fIr\fP, int *\fIg\fP, int *\fIb\fP);
+\fBint extended_pair_content(int \fIpair\fP, int *\fIf\fP, int *\fIb\fP);
+.PP
+\fI/* extension */
+\fBvoid reset_color_pairs(void);
+.PP
+\fI/* macros */
+\fBint COLOR_PAIR(int \fIn\fP);
+\fBPAIR_NUMBER(int \fIattr\fP);
+\fBCOLOR_BLACK
+\fBCOLOR_RED
+\fBCOLOR_GREEN
+\fBCOLOR_YELLOW
+\fBCOLOR_BLUE
+\fBCOLOR_MAGENTA
+\fBCOLOR_CYAN
+\fBCOLOR_WHITE
+\fBA_COLOR
+.fi
+.SH DESCRIPTION
+.I curses
+supports color rendering on terminals with applicable capabilities.
+Once the library has initialized the terminal,
+.B \%has_colors
+tells an application whether that terminal type has color capability.
+If it does,
+calling
+.B \%start_color
+enables the feature.
+(See section \*(``NOTES\*('' below regarding \fB\%ripoffline\fP(3X).)
+.PP
+When applying colors to a
+.I curses
+window,
+the library manages them in pairs.
+A
+.I "color pair"
+couples a foreground color applied
+to the visible strokes of a glyph
+with a background color for the field in the character cell
+within which the glyph appears.
+Configure at least one color pair to use the color feature.
+.B \%init_pair
+initializes a color pair identifier,
+whose value you select,
+from a pair of
+.I "color indices,"
+foreground and background.
+Each index represents a color.
+X/Open Curses standardizes,
+and a
+.I curses
+library defines,
+a small set of color indices;
+see section \*(``MACROS\*('' below.
+The macro
+.B \%COLOR_PAIR(\fIn\fP)
+converts a pair
+.I n
+thus initialized to the value required to encode it in a
+.I \%chtype
+or
+.IR \%attr_t "."
+Another macro,
+.B \%PAIR_NUMBER(\fIn\fP)
+conversely extracts a color pair identifier
+from variables of those data types.
+.B \%pair_content
+permits discovery of a color pair's current definition.
+.B \%color_content
+extracts the
+red,
+green,
+and blue components of the color using the given index.
+.PP
+.B \%can_change_color
+tells an application whether the terminal type
+permits (re)definition of a color.
+If it does,
+you can call
+.B \%init_color
+to update the specified color index to use
+red,
+green,
+and blue components of your choice.
+.PP
+Subsection \*(``Color Handling\*('' of \fB\%terminfo\fP(5)
+describes the capabilities that terminal types use to manage color.
+.PP
+Passing a
+.I curses
+function
+a color index outside the range
+.B 0
+to
+.BR \%COLORS\-1 ","
+or a color pair identifier outside the range
+.B 0
+to
+.B \%COLOR_PAIRS\-1
+may result in a runtime error.
+.B COLORS
+corresponds to the terminal type's
+.B \%max_colors
+.RB \%( colors )
+capability,
+and
+.B \%COLOR_PAIRS
+to
+.B \%max_pairs
+.RB \%( pairs ).
+.I \%ncurses
+permits specification of a color index of
+.B \-1
+in certain extended functions to select a
+.IR "default color" ";"
+see \fB\%use_default_colors\fP(3X).
+.PP
+Color pair
+.B 0
+is special;
+it denotes \*(``no color\*('',
+meaning the terminal's
+(typically monochrome)
+power-up default fore- and background.
+.PP
+For each screen,
+.I \%ncurses
+maintains a
+.I "color palette"
+that maps color indices into the RGB
+(red,
+green,
+blue)
+color space.
+.SH VARIABLES
+.SS COLORS
+is initialized by \fB\%start_color\fP to the maximum number of colors
+the terminal can support.
+.SS COLOR_PAIRS
+is initialized by \fB\%start_color\fP to the maximum number of color
+pairs the terminal can support.
+Often,
+its value is the product \fB\%COLORS\fP \(mu \fB\%COLORS\fP,
+but this is not always true.
+.bP
+A few terminals use the HLS color space,
+ignoring this rule;
+and
+.bP
+while a terminal type may support many colors,
+a portable
+.I curses
+application is limited
+to the number of distinct color indices and color pair identifiers
+that a
+.I "signed short"
+value can represent.
+.SH FUNCTIONS
+.SS has_colors
+.B \%has_colors
+returns
+.B TRUE
+if the terminal supports colors and
+.B FALSE
+if it does not.
+\fB\%initscr\fP(3X) or \fB\%newterm\fP(3X) must be called first,
+but
+.B \%start_color
+need not be.
+An application might call
+.B \%has_colors
+to inform its decision whether to use color
+or a video attribute like
+.B \%A_BOLD
+to render text.
+.SS start_color
+If your application requires color,
+call
+.B \%start_color
+before any other color manipulation function.
+As a rule,
+do so immediately after
+.BR \%initscr "."
+If the terminal type supports color,
+.BR \%start_color ":"
+.bP
+initializes the two global variables,
+.B \%COLORS
+and
+.BR \%COLOR_PAIRS ","
+described above;
+.bP
+initializes (only) the color pair
+.B 0
+to the terminal type's power-up foreground and background colors
+(but see the
+.I \%ncurses
+extension \fB\%use_default_colors\fP(3X));
+.bP
+initializes the color palette;
+and
+.bP
+selects color pair
+.BR 0 "."
+.\" ...by calling internal functions `set_{fore,back}ground_color()`.
+.PP
+.B \%start_color
+sets up the color palette
+for the eight colors named by the X/Open Curses standard
+(see section \*(``CONSTANTS\*('' above)
+applying weights appropriate to the color space.
+.I curses
+does not attempt to initialize the color palette
+to match a terminal type's power-up configuration.
+.\" Init and reset string capabilities could do so.
+See section \*(``NOTES\*('' below.
+.PP
+Calling
+.B \%start_color
+again after it has returned
+.B OK
+does nothing.
+.SS init_pair
+(Re-)define a color pair with
+.BR \%init_pair ","
+which takes three arguments:
+the color pair identifier to be updated,
+a foreground color index,
+and
+a background color index.
+A portable application restricts these argument values
+to the valid ranges stated above.
+If the application uses
+.IR \%ncurses 's
+default color extension
+(see below),
+the library adjusts the upper limit to allow for extra pairs
+that use a default color in the foreground and/or background.
+.PP
+If a color pair was previously defined,
+.B \%init_pair
+causes a refresh of the entire screen,
+and all occurrences of that color pair change to use its new definition.
+.I \%ncurses
+suppresses this refresh if the color pair's new color indices
+are the same as the old.
+.PP
+.I \%ncurses
+extensions
+allow you to update color pair
+.B 0
+via \fB\%assume_default_colors\fP(3X),
+and to access the terminal's default colors as color index
+.B \-1
+if you first call \fB\%use_default_colors\fP(3X).
+.SS init_extended_pair
+Because
+.B \%init_pair
+uses signed
+.IR short s
+for its parameters,
+its color pair identifiers and color indices
+are limited to 32767 even for terminal types that are much more capable.
+.\" ...not 65535 because the System V terminfo compiled entry format
+.\" foreclosed use of an unsigned type for this purpose and others.
+This
+.I \%ncurses
+extension uses
+.IR int s
+instead,
+expanding their range.
+.SS pair_content
+An application can discover the color index assignments of a color pair
+with
+.BR \%pair_content "."
+Its first argument is the color pair identifier of interest,
+and the remaining two are each a pointer to
+.I short
+that the function populates
+with the foreground and background color indices,
+respectively.
+.SS extended_pair_content
+Because
+.B \%pair_content
+uses signed
+.IR short s
+for its parameters,
+its color pair identifiers and color indices
+are limited to 32767 even for terminal types that are much more capable.
+.\" ...not 65535 because the System V terminfo compiled entry format
+.\" foreclosed use of an unsigned type for this purpose and others.
+This
+.I \%ncurses
+extension uses
+.IR int s
+instead,
+expanding their range.
+.SS reset_color_pairs
+This
+.I \%ncurses
+extension directs the library to discard
+all color pair assignments configured by application calls of
+.B \%init_pair
+and
+.BR \%init_extended_pair "."
+.\" Due to the library's internal design, this has the effect of
+.\" resetting color pair zero, so it still exists and works afterward.
+It furthermore marks the entire screen as requiring refresh;
+an application can thus easily reconfigure its color scheme
+by subsequently initializing as many color pairs as required.
+.SS can_change_color
+.B \%can_change_color
+returns
+.B TRUE
+if the terminal supports colors and can change their mappings,
+and
+.B FALSE
+if it does not.
+.SS init_color
+Change a color's mapping (definition) by supplying this function
+four arguments:
+the color index;
+and
+red,
+green,
+and
+blue
+color channel values in the range 0-1000.
+.PP
+If the color index is in use in a color pair on the screen,
+all occurrences of it change to use its new definition.
+No \fB\%refresh\fP(3X) is necessary.
+.\" The library essentially does `putp(tiparm("initc", idx, r, g, b));`.
+.\" But for the interposition of the higher-level color palette ncurses
+.\" stores in `SCREEN`, `init_color` would be a "lower-level" API, like
+.\" `mvcur()`.
+.SS init_extended_color
+Because
+.B \%init_color
+uses signed
+.IR short s
+for its parameters,
+the maximum value of its color index argument
+is limited to 32767 even for terminal types that are much more capable.
+(The range of valid RGB channel values remains 0-1000.)
+.\" Here the System V terminfo compiled entry format imposes no
+.\" limitation, because these values exist only as parameters to string
+.\" capabilities.  We still say "32767" because that is the smallest
+.\" possible maximum value of a `signed short` in standard C.
+This
+.I \%ncurses
+extension uses
+.IR int s
+instead,
+expanding the range of permissible color indices.
+.PP
+If the color index is in use in a color pair on the screen,
+all occurrences of it change to use its new definition.
+No \fB\%refresh\fP(3X) is necessary.
+.\" The library essentially does `putp(tiparm("initc", idx, r, g, b));`.
+.\" But for the interposition of the higher-level color palette ncurses
+.\" stores in `SCREEN`, `init_extended_color` would be a "lower-level"
+.\" API, like `mvcur()`.
+.SS color_content
+An application can query a color index's location in RGB space
+by calling
+.BR \%color_content .
+The library stores the color channel values
+corresponding to the specified color index
+in the
+.IR red ","
+.IR green ","
+and
+.I blue
+.RI pointer-to- short
+arguments.
+.SS extended_color_content
+Because
+.B \%color_content
+uses signed
+.IR short s
+for its parameters,
+the maximum value of its color index argument
+is limited to 32767 even for terminal types that are much more capable.
+This
+.I \%ncurses
+extension uses
+.IR int s
+instead,
+expanding the range of permissible color indices.
+.SH MACROS
+.\" We do _not_ mention ANSI X3.64 here.  It was initially issued in
+.\" (or at least dated) 1979, and reputedly, was never revised or
+.\" updated prior its withdrawal in 1994.  ANSI X3.64 did not address
+.\" color features.
+.\" See <https://nvlpubs.nist.gov/nistpubs/Legacy/FIPS/fipspub86.pdf>,
+.\" p. H-1 (PDF p. 81).
+ISO\ 6429 and ECMA-48
+define eight standard colors
+(known inaccurately as \*(``ANSI\*('' colors),
+to which X/Open Curses assigns symbolic names as object-like macros
+.BR \%COLOR_BLACK ","
+.BR \%COLOR_RED ","
+.BR \%COLOR_GREEN ","
+.BR \%COLOR_YELLOW ","
+.BR \%COLOR_BLUE ","
+.BR \%COLOR_MAGENTA ","
+.BR \%COLOR_CYAN ","
+and
+.BR \%COLOR_WHITE "."
+.I curses
+assumes that
+.B \%COLOR_BLACK
+is the default background color for all terminals.
+.I \%ncurses
+offers an extension to override that assumption;
+see \fB\%assume_default_colors\fP(3X).
+Some terminals support additional colors that lack standard names.
+.PP
+.B \%A_COLOR
+is a bit mask that,
+when bitwise \*(``and\*(''-ed with a
+.IR \%chtype ","
+extracts its color pair identifier.
+X/Open Curses mandates the provision of two function-like macros.
+They have no application in the wide-character API of
+.IR curses "."
+.SS COLOR_PAIR
+.BI \%COLOR_PAIR( n )
+replaces color pair identifier
+.I n
+with its encoded value appropriate for use in a
+.IR chtype "."
+Such values have a limited,
+implementation-dependent range.
+Non-wide API functions such as \fB\%attrset\fP(3X)
+cannot handle larger color pair identifiers than this.
+A portable application checks that
+.IR n 's
+value is less than
+.I COLOR_PAIRS
+before employing this macro on it.
+If you need to transform a larger color pair identifier,
+you must use the wide API and call,
+for example,
+\fB\%attr_set\fP(3X),
+which passes the color pair identifier
+as a parameter separate from the attributes.
+.SS PAIR_NUMBER
+.BI \%PAIR_NUMBER( n )
+replaces its
+.I chtype
+or
+.I attr_t
+argument
+.I n
+with the color pair identifier encoded within it.
+.\" X/Open Curses Issue 7 explains that terribly; see p. 57 (PDF p. 71).
+.PP
+.B \%COLOR_PAIR()
+and
+.B \%PAIR_NUMBER()
+are inverse operations.
+.SH RETURN VALUE
+.B \%can_change_color
+and
+.B \%has_colors
+return
+.B TRUE
+or
+.BR FALSE "."
+The other functions return
+.B OK
+on success and
+.B ERR
+on failure.
+.PP
+In
+.IR \%ncurses ","
+color manipulation functions returning an
+.I int
+recognize several error conditions.
+.bP
+All return
+.B ERR
+if the screen has not been initialized;
+see \fBinitscr\fP(3X) or \fBnewterm\fP(3X).
+.bP
+All except
+.B \%start_color
+return
+.B ERR
+if
+.B \%start_color
+has not been called,
+or itself returned
+.BR ERR "."
+.bP
+.B \%start_color
+returns
+.B ERR
+if it cannot allocate memory for its color pair table.
+.bP
+.B \%init_color
+returns
+.B ERR
+if the terminal type does not support assignable color values;
+that is,
+if the
+.B \%initialize_color
+.RB ( initc )
+capability is absent from its description.
+.bP
+.B \%init_color
+returns
+.B ERR
+if any of its
+.IR r ","
+.IR g ","
+.I b
+arguments is outside the range 0-1000 inclusive.
+.bP
+.BR \%init_pair ","
+.BR \%init_color ","
+.BR \%init_extended_pair ","
+.BR \%init_extended_color ","
+.BR \%color_content ","
+.BR \%pair_content ","
+.BR \%extended_color_content ","
+and
+.B \%extended_pair_content
+return
+.B ERR
+on attempts to use
+.RS
+.bP
+color identifiers outside the range
+.RB \%0- COLORS \-1
+inclusive,
+the default colors extension notwithstanding,
+or
+.bP
+color pair identifiers outside the range
+.RB \%0- COLOR_PAIRS \-1
+inclusive.
+.RE
+.SH NOTES
+X/Open Curses says nothing about how the standard colors
+are to be configured in a color space.
+.I \%ncurses
+initializes a screen's color palette such that,
+in the RGB color space,
+each channel of the eight standard colors has a value of either
+.B 680
+or
+.BR 0 "."
+If the terminal type supports at least 16 colors,
+this configuration aids an application
+to support a terminal type with only one typeface
+to simulate bold text with \*(``bright\*('' colors.
+With appropriate configuration of the bright color pairs
+by the application,
+increasing nonzero channel values to
+.BR 1000 ","
+this scheme suffices to approximate the 16 colors
+.\" ...that we can think of as a 4-bit RGBI color space...
+of IBM CGA text mode video
+and the power-up configuration of the DEC VT525.
+.\" XXX: What does the following mean?  ncurses does not initialize
+.\" palette entries for colors beyond the standard 8.  See the
+.\" `cga_palette` struct in ncurses/base/lib_color.c.  Who wrote this?
+.\" --GBR
+.\"After the initial eight colors
+.\"(if the terminal supports more than eight colors)
+.\"the components are initialized using the same pattern,
+.\"but with weights of \fB1000\fP.
+SVr4
+.I curses
+instead assigns values of
+.B 1000
+to the nonzero color channel values of the eight standard colors.
+.PP
+Setting a background color via a color pair identifier
+affects only character cells
+that a character write operation explicitly touches.
+To change the background color used
+when parts of a window are blanked by erasing or scrolling operations,
+see \fB\%bkgd\fP(3X)
+(wide-character API users: \fB\%bkgrnd\fP(3X)).
+.PP
+Windows created by \fB\%ripoffline\fP(3X)
+do not inherit color pair configuration applied to
+.IR stdscr ";"
+they must be configured independently.
+.PP
+In
+.IR \%ncurses ","
+.B \%init_pair
+accepts negative foreground and background color arguments
+to support its \fB\%use_default_colors\fP(3X) extension,
+but only after the latter function has been called.
+.PP
+The assumption that
+.B \%COLOR_BLACK
+is the terminal's default background color can be overridden using
+.IR \%ncurses 's
+\fB\%assume_default_colors\fP(3X) extension.
+.PP
+In
+.IR \%ncurses ","
+each pointer passed to
+.B \%color_content
+and
+.B \%pair_content
+can be null,
+in which case the library ignores it,
+permitting the application to disregard unnecessary information.
+.PP
+In
+.IR \%ncurses ","
+each screen has a
+color activation flag,
+color palette,
+color pair table,
+and associated
+.B \%COLORS
+and
+.B \%COLOR_PAIRS
+values;
+.B \%start_color
+affects only the current screen.
+The SVr4
+.I curses
+interface,
+standardized by X/Open Curses,
+was not designed with distinguishable screens clearly in mind;
+historical implementations may use a single shared color palette
+for all screens the library manages.
+.PP
+Several caveats apply to emulation of the CGA/EGA/VGA video
+of IBM PC-compatible machines of the 80486 era and earlier.
+.bP
+.B \%COLOR_YELLOW
+was frequently converted,
+in the analog domain,
+to a shade of brown if the intensity bit was not set.
+.\" https://nerdlypleasures.blogspot.com/2023/03/the-saga-of-color-brown-in-early-years.html
+To get yellow on such devices,
+one would combine
+.B \%COLOR_YELLOW
+with the
+.B \%A_BOLD
+attribute.
+.bP
+The
+.B \%A_BLINK
+attribute should in theory make the background bright.
+This often fails to work,
+and even VGA controllers for which it mostly works,
+such as those from Paradise and compatibles,
+do the wrong thing
+when you try to set a bright \*(``yellow\*('' background \(em
+you get a blinking yellow foreground instead.
+.bP
+Color RGB values are not configurable on these devices
+(in text mode).
+.SS "Why This Color Model?"
+A programmer new to
+.I curses
+may wonder why the library works with pairs of indexed colors
+instead of \*(``direct\*('' foreground and background RGB triples.
+The answer lies in the limited bandwidth between terminals
+and their time-sharing host machines.
+In the 1980s,
+a 9600bps serial link was considered fast.
+That speed typically corresponded to a data rate
+of 960 bytes per second.
+.\" Consider BSD curses's single "standout" attribute occupying the most
+.\" significant bit of a 7-bit ASCII-encoded character cell, and 8N1
+.\" transmission.  (There is always 1 start bit, thus 8N1 -> 10 bits.)
+Using a single-byte character encoding,
+refreshing an 80\(mu24 terminal screen took two full seconds.
+In other words,
+such a terminal refreshing its entire screen contents
+rendered half a frame per second.
+Adding data to each character cell
+necessary for the \*(``direct\*('' color model
+at 8 bits per color channel
+would add 6 bytes to every character cell,
+extending the full-screen refresh time to 14 seconds.
+Even a pair of 8-bit color values would triple the refresh time.
+.PP
+Moreover,
+the vast majority of
+.I curses
+applications do not demand a wide gamut of colors.
+Even a colorful application like the game \fB\%nethack\fP(6)
+renders most of its interface in monochrome by default.
+A text user interface
+employing the \fBform\fP(3X) or \fBmenu\fP(3X) libraries
+often uses fewer than ten distinct colors at any one time.
+Thus,
+small integers suffice both to index individual colors
+and to pair them.
+Typically,
+each color pair is assigned to a type of user interface element,
+like a button or scroll bar control.
+Further,
+in the original SVr3.2
+.I curses
+implementation of color and today still in
+.IR ncurses 's
+non-wide library,
+.I chtype
+affords few bits for encoding of the color pair identifier.
+.PP
+Even in the common modern scenario where a terminal emulator
+runs on the same host as the
+.I curses
+application,
+and available bandwidth is limited only by the speed of the system bus,
+efficient encoding of character cell data aids performance
+by minimizing the copies to and from the kernel's memory space
+by use of the pseudoterminal (pty) system interface.
+For example,
+in the Linux 7.2 kernel,
+the pty buffer size is 4\ KiB,
+ensuring a CPU mode switch every time it fills up.
+.\" https://www.kernel.org/doc/html/v7.2/driver-api/tty/n_tty.html
+Parsimonious data management also reduces memory cache pressure.
+.SH EXTENSIONS
+The functions marked as extensions originated in
+.IR \%ncurses ","
+and are not found in SVr4
+.IR curses ,
+4.4BSD
+.IR curses ,
+or any other previous
+.I curses
+implementation.
+.SH PORTABILITY
+Applications employing
+.I \%ncurses
+extensions should condition their use on the visibility of the
+.B \%NCURSES_VERSION
+preprocessor macro.
+.PP
+X/Open Curses Issue\ 4 describes these functions.
+It specifies no error conditions for them.
+.PP
+.I \%ncurses
+satisfies X/Open Curses's minimum maximums for
+.I \%COLORS
+and
+.IR \%COLOR_PAIRS "."
+.PP
+.I \%ncurses
+does not refresh the screen if
+.B \%init_pair
+is used to no effect on an existing color pair.
+.PP
+X/Open Curses does not specify a limit for the number of color indices
+and color pair identifiers a terminal can support.
+However,
+in its use of
+.I short
+for the parameters,
+it carries over SVr4's implementation detail for the compiled
+.I \%term\%info
+database,
+which uses signed 16-bit numbers.
+.I \%ncurses
+provides extended versions of the functions using
+.I int
+parameters,
+allowing applications to use larger index and pair identifiers.
+.PP
+SVr4
+.I curses
+returns
+.I ERR
+from
+.I \%pair_content
+if its
+.I pair
+argument
+was not initialized using
+.IR \%init_pairs ,
+and from
+.I \%color_content
+if the terminal does not support changing colors.
+.I \%ncurses
+does neither.
+.SH HISTORY
+SVr3.2 (1988) introduced color support to
+.I curses
+with all of the symbols
+in the synopsis above except those marked as extensions.
+It reserved color pair 0 as the terminal's initial,
+\*(``uncolored\*('' state,
+.\" "we assume that color 0 is always a default background.", SVr3.2
+.\" usr/src/lib/libcurses/screen/start_col.c
+and limited the number of possible color pairs to 64,
+because the color pair datum was encoded in six bits of a
+.IR \%chtype "."
+.PP
+SVr4 (1989) made only internal changes,
+such as moving the storage of color state
+from the
+.I SCREEN
+structure
+(pointed to by
+.IR SP )
+to the
+.I \%TERMINAL
+structure
+(pointed to by
+.IR \%cur_term ")."
+.PP
+Other
+.I curses
+implementations impose different limits
+on the number of color indices and color pairs.
+.bP
+.I \%PCCurses
+(1987-1990) provided for only 8 color indices
+(and therefore permitted at most 8\(mu8 = 64 color pairs).
+.bP
+.I \%PDCurses
+(1992-present) initially inherited the 8-color limitation from
+.IR \%PCCurses ","
+but increased it to 256 in version 2.5 (2001),
+and widened its
+.I \%chtype
+from 16 to 32 bits.
+.bP
+X/Open Curses (1992-present)
+specified a new integral type,
+.IR attr_t ","
+storing rendering attributes
+(see \fB\%attr_on\fP(3X))
+and a color pair identifier,
+and a new structure type,
+.IR \%cchar_t ","
+to store a sequence of wide character codes
+separately from the character cell's attributes and color pair,
+allowing an increased range of color pairs.
+The standard specifies
+.I attr_t
+as a
+.IR short ","
+limiting portable values to 15 bits;
+negative values are invalid in System\ V.
+.bP
+.I \%ncurses
+(1992-present),
+in its non-wide-character configuration,
+uses 8 bits of
+.I \%chtype
+for the color pair identifier.
+.IP
+Version 5.3 (2002) introduced a wide-character interface,
+but encoded the color pair identifier with attributes
+in the character type.
+.IP
+Since version 6 (2015),
+.I \%ncurses
+uses a separate
+.I int
+for the color pair identifier in a
+.IR \%cchar_t ","
+adding extension functions to manage the wider type.
+When a color pair identifier fits in 8 bits,
+.I \%ncurses
+permits manipulation of color pair identifiers with functions taking
+.I \%chtype
+arguments,
+even when a
+.I curses
+window uses wide-character cells.
+.bP
+NetBSD
+.I curses
+used 6 bits for the color pair identifier from 2000
+(when it first added color support)
+until 2004.
+At that point,
+NetBSD widened the color pair identifier to use 9 bits.
+As of 2025,
+that size is unchanged.
+.\" http://cvsweb.netbsd.org/bsdweb.cgi/src/lib/libcurses/curses.h?rev=1.133
+.\" indicates a mask of 0x03fe0000.
+Like
+.I \%ncurses
+before version 6,
+the NetBSD color pair identifier is stored in
+the attributes field of
+.IR \%cchar_t ","
+limiting the number of color pairs.
+.PP
+.I \%ncurses
+6.1 (2018) introduced
+.IR \%init_extended_pair ","
+.IR \%init_extended_color ","
+.IR \%extended_pair_content ","
+.IR \%extended_color_content ","
+and
+.IR \%reset_color_pairs "."
+.SH SEE ALSO
+\fB\%curses\fP(3X),
+\fB\%curs_attr\fP(3X),
+\fB\%curs_initscr\fP(3X),
+\fB\%curs_variables\fP(3X),
+\fB\%default_colors\fP(3X)

@@ -20,6 +20,7 @@ static int hr_precise(void){ return 0; } static unsigned long long hr_ns(void){ 
 static void klog(const char* s){ g_ln+=sprintf(g_log+g_ln,"%s|",s); }
 static int nvxntfs_mounted(void){ return 0; } static void nvxntfs_umount(void){}
 static int vf_mounted(void){ return 0; } static void vf_umount(void){}
+int nvgsp_shutdown(void){ return 1; }
 static void fill_rect(int x,int y,int w,int h,u32 c){ (void)x;(void)y;(void)w;(void)h;(void)c; }
 static void dstr(int x,int y,const char* s,u32 c,int z){ (void)x;(void)y;(void)s;(void)c;(void)z; }
 static void blit_all(void){} static unsigned long slen(const char* s){ return strlen(s); }

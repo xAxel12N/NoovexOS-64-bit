@@ -383,7 +383,59 @@ static int calc_atom(const char** pp, const char* e, lctx* c, L* out) {
         *out = r;
         return 1;
     }
+    {
+        static const char* MF[] = { "round(", "mod(", "rem(", "abs(", "sign(", "sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "atan2(", "pow(", "sqrt(", "hypot(", "log(", "exp(", 0 };
+        for (int f = 0; MF[f]; f++) {
+            int fl = (int)strlen(MF[f]);
+            if (!(p + fl < e && ieqn(p, MF[f], fl))) continue;
+            p += fl;
+            int strat = 0;
+            if (f == 0) { while (p < e && is_ws((unsigned char)*p)) p++; static const char* RS[] = { "nearest", "up", "down", "to-zero" }; for (int k = 0; k < 4; k++) { int l = (int)strlen(RS[k]); if (p + l < e && ieqn(p, RS[k], l) && (p[l] == ',' || is_ws((unsigned char)p[l]))) { strat = k; p += l; while (p < e && is_ws((unsigned char)*p)) p++; if (p < e && *p == ',') p++; break; } } }
+            L args[8]; int na = 0;
+            while (p < e && na < 8) {
+                L a;
+                if (!parse_calc(&p, e, c, &a)) return 0;
+                if (a.pct != 0) return 0;
+                args[na++] = a;
+                while (p < e && is_ws((unsigned char)*p)) p++;
+                if (p < e && *p == ',') { p++; continue; }
+                if (p < e && *p == ')') { p++; break; }
+                return 0;
+            }
+            if (na < 1) return 0;
+            *pp = p;
+            float x = args[0].px, y = na > 1 ? args[1].px : 1, v = 0;
+            int unitless = 0;
+            switch (f) {
+            case 0: { if (na < 2) y = 1; if (y == 0) return 0; float q = x / y; float r = strat == 1 ? ceilf(q) : strat == 2 ? floorf(q) : strat == 3 ? truncf(q) : floorf(q + 0.5f); v = r * y; break; }
+            case 1: if (na < 2 || y == 0) return 0; v = x - y * floorf(x / y); break;
+            case 2: if (na < 2 || y == 0) return 0; v = fmodf(x, y); break;
+            case 3: v = fabsf(x); break;
+            case 4: v = x > 0 ? 1 : x < 0 ? -1 : 0; unitless = 1; break;
+            case 5: v = sinf(x); unitless = 1; break;
+            case 6: v = cosf(x); unitless = 1; break;
+            case 7: v = tanf(x); unitless = 1; break;
+            case 8: v = asinf(x) * 57.29578f; unitless = 1; break;
+            case 9: v = acosf(x) * 57.29578f; unitless = 1; break;
+            case 10: v = atanf(x) * 57.29578f; unitless = 1; break;
+            case 11: if (na < 2) return 0; v = atan2f(x, y) * 57.29578f; unitless = 1; break;
+            case 12: if (na < 2) return 0; v = powf(x, y); unitless = 1; break;
+            case 13: v = sqrtf(x); unitless = 1; break;
+            case 14: { float t = 0; for (int i = 0; i < na; i++) t += args[i].px * args[i].px; v = sqrtf(t); break; }
+            case 15: v = na > 1 ? logf(x) / logf(y) : logf(x); unitless = 1; break;
+            case 16: v = expf(x); unitless = 1; break;
+            }
+            *out = LV(v);
+            if (unitless || args[0].k == 99) out->k = 99;
+            return 1;
+        }
+    }
     if (p + 4 < e && ieqn(p, "var(", 4)) return 0;
+    {
+        static const char* KC[] = { "pi", "e", "infinity", "-infinity", 0 };
+        static const float KV[] = { 3.14159265f, 2.71828183f, 1e30f, -1e30f };
+        for (int k = 0; KC[k]; k++) { int l = (int)strlen(KC[k]); if (p + l <= e && ieqn(p, KC[k], l) && (p + l == e || is_ws((unsigned char)p[l]) || p[l] == ')' || p[l] == ',' || p[l] == '*' || p[l] == '/')) { *out = LV(KV[k]); out->k = 99; *pp = p + l; return 1; } }
+    }
     const char* st = p;
     int d = 0;
     while (p < e && !is_ws((unsigned char)*p) && *p != ')' && *p != ',' && !((*p == '*' || *p == '/') && d == 0)) { if (*p == '(') d++; p++; if ((*p == '+' || *p == '-') && p > st && (p[-1] != 'e' && p[-1] != 'E')) { if (!(p[-1] >= 'a' && p[-1] <= 'z') && !(p[-1] == '%')) {} } }
@@ -391,7 +443,12 @@ static int calc_atom(const char** pp, const char* e, lctx* c, L* out) {
     if (!parse_len_tok(st, (int)(p - st), c, out)) {
         const char* q;
         float v = parse_float(st, &q);
-        if (q != p) return 0;
+        if (q != p) {
+            int ul = (int)(p - q); float m = 0;
+            if (ul == 3 && ieqn(q, "deg", 3)) m = 0.01745329f; else if (ul == 3 && ieqn(q, "rad", 3)) m = 1; else if (ul == 4 && ieqn(q, "grad", 4)) m = 0.01570796f; else if (ul == 4 && ieqn(q, "turn", 4)) m = 6.28318531f;
+            if (m == 0 || q == st) return 0;
+            v *= m;
+        }
         *out = LV(v);
         out->k = 99;
     }
@@ -437,9 +494,132 @@ static int parse_calc(const char** pp, const char* e, lctx* c, L* out) {
     }
 }
 
+node* g_cmp_node;
+int g_cq_used;
+typedef struct { node* n; float w, h; } cqrec;
+static cqrec g_cqr[64];
+static int g_ncqr;
+static node* cq_container(node* n, const char* name, int need) {
+    for (node* q = n ? (n->parent ? n->parent : (n->type == NT_FRAG ? n->host : 0)) : 0; q; q = q->parent ? q->parent : (q->type == NT_FRAG ? q->host : 0)) {
+        if (q->type != NT_ELEM || !q->st || !q->st->ctype) continue;
+        if (need == 2 && q->st->ctype != 2) continue;
+        if (name && *name) { const char* cn = q->st->cname; if (!cn) continue; int l = (int)strlen(name); const char* f = strstr(cn, name); if (!f || (f != cn && f[-1] != ' ') || (f[l] && f[l] != ' ')) continue; }
+        return q;
+    }
+    return 0;
+}
+static void cq_size(node* n, const char* name, float* w, float* h) {
+    g_cq_used = 1;
+    node* c = cq_container(n, name, 0);
+    *w = G.vw; *h = G.vh;
+    if (!c) return;
+    if (c->box && c->box->n == c) {
+        box* b = c->box;
+        *w = b->w - b->b[1] - b->b[3] - b->p[1] - b->p[3];
+        *h = b->h - b->b[0] - b->b[2] - b->p[0] - b->p[2];
+    } else if (c->st && c->st->width.k == LK_VAL && c->st->width.pct == 0 && c->st->width.px > 0) *w = c->st->width.px;
+    int k;
+    for (k = 0; k < g_ncqr; k++) if (g_cqr[k].n == c) break;
+    if (k == g_ncqr && g_ncqr < 64) { g_cqr[g_ncqr].n = c; g_ncqr++; }
+    if (k < 64) { g_cqr[k].w = *w; g_cqr[k].h = *h; }
+}
+int css_cq_changed(void) {
+    int ch = 0;
+    for (int k = 0; k < g_ncqr; k++) {
+        node* c = g_cqr[k].n;
+        if (!c || !c->box || c->box->n != c) continue;
+        box* b = c->box;
+        float w = b->w - b->b[1] - b->b[3] - b->p[1] - b->p[3];
+        float h = b->h - b->b[0] - b->b[2] - b->p[0] - b->p[2];
+        if (fabsf(w - g_cqr[k].w) > 0.5f || (c->st && c->st->ctype == 2 && fabsf(h - g_cqr[k].h) > 0.5f)) ch = 1;
+    }
+    return ch;
+}
+void css_cq_reset(void) { g_ncqr = 0; g_cq_used = 0; }
+static int cq_feature(const char* p, const char* e, float w, float h, float fs) {
+    while (p < e && (*p == ' ' || *p == '(')) p++;
+    while (e > p && (e[-1] == ' ' || e[-1] == ')')) e--;
+    char nm[24]; int k = 0;
+    while (p < e && k < 23 && ((*p >= 'a' && *p <= 'z') || *p == '-')) nm[k++] = *p++;
+    nm[k] = 0;
+    while (p < e && *p == ' ') p++;
+    int op = 0;
+    if (p < e && *p == ':') { op = 0; p++; }
+    else if (p + 1 < e && p[0] == '>' && p[1] == '=') { op = 1; p += 2; }
+    else if (p + 1 < e && p[0] == '<' && p[1] == '=') { op = 2; p += 2; }
+    else if (p < e && *p == '>') { op = 3; p++; }
+    else if (p < e && *p == '<') { op = 4; p++; }
+    else return 0;
+    while (p < e && *p == ' ') p++;
+    const char* ue;
+    float v = parse_float(p, &ue);
+    if (ue - p == 0) { if (!strcmp(nm, "orientation")) { int land = w >= h; return (ieqn(p, "landscape", 9) && land) || (ieqn(p, "portrait", 8) && !land); } return 0; }
+    if (ue + 2 <= e && ieqn(ue, "em", 2)) v *= fs; else if (ue + 3 <= e && ieqn(ue, "rem", 3)) v *= g_rootfs;
+    float x;
+    const char* base = nm;
+    int mn = 0, mx = 0;
+    if (!strncmp(base, "min-", 4)) { mn = 1; base += 4; } else if (!strncmp(base, "max-", 4)) { mx = 1; base += 4; }
+    if (!strcmp(base, "width") || !strcmp(base, "inline-size")) x = w;
+    else if (!strcmp(base, "height") || !strcmp(base, "block-size")) x = h;
+    else if (!strcmp(base, "aspect-ratio")) x = h > 0 ? w / h : 0;
+    else return 0;
+    if (mn) return x >= v;
+    if (mx) return x <= v;
+    if (op == 0) return fabsf(x - v) < 0.5f;
+    if (op == 1) return x >= v;
+    if (op == 2) return x <= v;
+    if (op == 3) return x > v;
+    return x < v;
+}
+static int cq_one(const char* c, node* n) {
+    while (*c == ' ') c++;
+    char name[64]; int k = 0;
+    if (*c != '(' && !ieqn(c, "not", 3)) { while (*c && *c != ' ' && *c != '(' && k < 63) name[k++] = *c++; }
+    name[k] = 0;
+    node* ct = cq_container(n, name, 0);
+    float w = G.vw, h = G.vh;
+    if (ct) { float cw, ch; cq_size(n, name, &cw, &ch); w = cw; h = ch; }
+    else { g_cq_used = 1; return 0; }
+    float fs = ct->st ? ct->st->fsize : 16;
+    int result = 1, neg = 0, any = 0, isor = 0;
+    const char* p = c;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        if (ieqn(p, "not", 3) && (p[3] == ' ' || p[3] == '(')) { neg = 1; p += 3; continue; }
+        if (ieqn(p, "and", 3) && p[3] == ' ') { p += 3; continue; }
+        if (ieqn(p, "or", 2) && p[2] == ' ') { isor = 1; p += 2; continue; }
+        if (*p == '(') {
+            int d = 0; const char* q = p;
+            for (; *q; q++) { if (*q == '(') d++; else if (*q == ')') { d--; if (!d) { q++; break; } } }
+            int r = cq_feature(p + 1, q - 1, w, h, fs);
+            if (neg) r = !r;
+            neg = 0;
+            if (!any) result = r; else if (isor) result = result || r; else result = result && r;
+            any = 1; isor = 0;
+            p = q;
+            continue;
+        }
+        p++;
+    }
+    return any ? result : 1;
+}
+int css_cq_match(const char* cond, node* n) {
+    const char* p = cond;
+    while (p) {
+        const char* sep = strchr(p, '\x01');
+        char buf[256];
+        int l = sep ? (int)(sep - p) : (int)strlen(p);
+        if (l > 255) l = 255;
+        memcpy(buf, p, (size_t)l); buf[l] = 0;
+        if (!cq_one(buf, n)) return 0;
+        p = sep ? sep + 1 : 0;
+    }
+    return 1;
+}
 static int parse_len_tok(const char* s, int n, lctx* c, L* out) {
     if (n <= 0) return 0;
-    if ((n > 5 && ieqn(s, "calc(", 5)) || (n > 4 && (ieqn(s, "min(", 4) || ieqn(s, "max(", 4))) || (n > 6 && ieqn(s, "clamp(", 6))) {
+    if ((n > 5 && ieqn(s, "calc(", 5)) || (n > 4 && (ieqn(s, "min(", 4) || ieqn(s, "max(", 4))) || (n > 6 && ieqn(s, "clamp(", 6)) || (n > 6 && ieqn(s, "round(", 6)) || (n > 4 && (ieqn(s, "mod(", 4) || ieqn(s, "rem(", 4) || ieqn(s, "abs(", 4) || ieqn(s, "pow(", 4))) || (n > 6 && ieqn(s, "hypot(", 6))) {
         const char* p = s;
         L r;
         if (!calc_atom(&p, s + n, c, &r)) return 0;
@@ -479,11 +659,11 @@ static int parse_len_tok(const char* s, int n, lctx* c, L* out) {
     else if (!strcmp(u, "mm")) px = v * 96 / 25.4f;
     else if (!strcmp(u, "q")) px = v * 96 / 101.6f;
     else if (!strcmp(u, "ex")) px = v * fs * 0.52f;
-    else if (!strcmp(u, "ch")) px = v * fs * 0.55f;
-    else if (!strcmp(u, "lh")) px = v * fs * 1.15f;
+    else if (!strcmp(u, "ch")) { int fc = c->forfont ? (c->par ? c->par->face : 0) : (c->st ? c->st->face : 0); px = v * font_adv(fc, fs, '0'); }
+    else if (!strcmp(u, "lh")) { style* ls = c->forfont ? c->par : c->st; if (ls && !c->forfont && ls->fsize != fs) ls = 0; float lh = ls ? lineh_of(ls) : 0; if (lh <= 0) { int fc = ls ? ls->face : 0; fontm fm; font_metrics(fc, fs, &fm); lh = (float)fm.lineh; } px = v * lh; }
     else if (!strcmp(u, "rlh")) px = v * g_rootfs * 1.15f;
-    else if (!strcmp(u, "cqw") || !strcmp(u, "cqi")) px = v * G.vw / 100;
-    else if (!strcmp(u, "cqh") || !strcmp(u, "cqb")) px = v * G.vh / 100;
+    else if (!strcmp(u, "cqw") || !strcmp(u, "cqi") || !strcmp(u, "cqmin") || !strcmp(u, "cqmax")) { float cw, ch; cq_size(g_cmp_node, 0, &cw, &ch); float q = !strcmp(u, "cqmin") ? fminf(cw, ch) : !strcmp(u, "cqmax") ? fmaxf(cw, ch) : cw; px = v * q / 100; }
+    else if (!strcmp(u, "cqh") || !strcmp(u, "cqb")) { float cw, ch; cq_size(g_cmp_node, 0, &cw, &ch); px = v * ch / 100; }
     else if (!strcmp(u, "fr")) return 0;
     else if (!strcmp(u, "deg") || !strcmp(u, "s") || !strcmp(u, "ms")) return 0;
     else return 0;
@@ -537,7 +717,7 @@ static char* subst_vars(const char* v, style* st, int depth) {
             for (cvar* cv = st->vars; cv; cv = cv->next) if (!strcmp(cv->name, nm)) { val = cv->val; break; }
             if (val && *val) sb_puts(&b, subst_vars(val, st, depth + 1));
             else if (fb) { char* f = nstrndup(fb, (int)(fbe - fb)); sb_puts(&b, subst_vars(f, st, depth + 1)); }
-            else return 0;
+            else { const char* iv = css_prop_initial(nm); if (iv && *iv) sb_puts(&b, iv); else return 0; }
             p = *r ? r + 1 : r;
             continue;
         }
@@ -920,7 +1100,8 @@ static void set_font_size(style* st, const char* v, lctx* c) {
     c->forfont = 1;
     if (parse_len(v, c, &l, 0)) st->fsize = l.px + l.pct * pf / 100;
     c->forfont = 0;
-    if (st->fsize < 0) st->fsize = 0;
+    if (!(st->fsize >= 0)) st->fsize = 0;
+    if (st->fsize > 10000) st->fsize = 10000;
 }
 static void set_line_height(style* st, const char* v, lctx* c) {
     if (kw(v, "normal")) { st->lhmul = -1; st->lh = -1; return; }
@@ -1057,9 +1238,9 @@ static int parse_transform_list(const char* v, lctx* c, tfn* out, int max) {
         while (*q && d) { if (*q == '(') d++; else if (*q == ')') d--; if (d) q++; }
         char* args = nstrndup(as, (int)(q - as));
         if (*q) q++;
-        tok a[20];
-        int na = split_ws(args, a, 20);
-        tok aa[20];
+        tok a[40];
+        int na = split_ws(args, a, 40);
+        tok aa[40];
         int ai = 0;
         for (int i = 0; i < na; i++) if (!(a[i].n == 1 && a[i].s[0] == ',')) aa[ai++] = a[i];
         tfn* f = &out[n];
@@ -1069,54 +1250,81 @@ static int parse_transform_list(const char* v, lctx* c, tfn* out, int max) {
         int k = fl < 23 ? fl : 23;
         for (int i = 0; i < k; i++) nm[i] = (char)lc((unsigned char)fs[i]);
         nm[k] = 0;
-        if (!strcmp(nm, "translate") || !strcmp(nm, "translate3d")) { f->t = TF_TRANSLATE; f->l[0] = LV(0); f->l[1] = LV(0); if (ai >= 1 && tlen(aa[0], c, &l, 0)) f->l[0] = l; if (ai >= 2 && tlen(aa[1], c, &l, 0)) f->l[1] = l; n++; }
+        if (!strcmp(nm, "translate") || !strcmp(nm, "translate3d")) { f->t = TF_TRANSLATE; f->l[0] = LV(0); f->l[1] = LV(0); if (ai >= 1 && tlen(aa[0], c, &l, 0)) f->l[0] = l; if (ai >= 2 && tlen(aa[1], c, &l, 0)) f->l[1] = l; if (ai >= 3 && tlen(aa[2], c, &l, 0)) f->v[0] = l.px; n++; }
         else if (!strcmp(nm, "translatex")) { f->t = TF_TRANSLATE; f->l[0] = LV(0); f->l[1] = LV(0); if (ai >= 1 && tlen(aa[0], c, &l, 0)) f->l[0] = l; n++; }
         else if (!strcmp(nm, "translatey")) { f->t = TF_TRANSLATE; f->l[0] = LV(0); f->l[1] = LV(0); if (ai >= 1 && tlen(aa[0], c, &l, 0)) f->l[1] = l; n++; }
-        else if (!strcmp(nm, "translatez")) {}
+        else if (!strcmp(nm, "translatez")) { f->t = TF_TRANSLATE; f->l[0] = LV(0); f->l[1] = LV(0); if (ai >= 1 && tlen(aa[0], c, &l, 0)) { f->v[0] = l.px; n++; } }
+        else if (!strcmp(nm, "rotatex")) { f->t = TF_ROTX; if (ai >= 1 && parse_angle(aa[0], &f->v[0])) n++; }
+        else if (!strcmp(nm, "rotatey")) { f->t = TF_ROTY; if (ai >= 1 && parse_angle(aa[0], &f->v[0])) n++; }
+        else if (!strcmp(nm, "perspective")) { f->t = TF_PERSPF; if (ai >= 1 && !tkw(aa[0], "none") && tlen(aa[0], c, &l, 0)) f->v[0] = l.px; n++; }
         else if (!strcmp(nm, "scale") || !strcmp(nm, "scale3d")) { f->t = TF_SCALE; f->v[0] = ai >= 1 ? tok_num(aa[0], 0) : 1; f->v[1] = ai >= 2 ? tok_num(aa[1], 0) : f->v[0]; if (ai >= 1 && aa[0].s[aa[0].n - 1] == '%') { f->v[0] /= 100; f->v[1] = ai >= 2 ? f->v[1] / 100 : f->v[0]; } n++; }
         else if (!strcmp(nm, "scalex")) { f->t = TF_SCALE; f->v[0] = ai >= 1 ? tok_num(aa[0], 0) : 1; f->v[1] = 1; n++; }
         else if (!strcmp(nm, "scaley")) { f->t = TF_SCALE; f->v[0] = 1; f->v[1] = ai >= 1 ? tok_num(aa[0], 0) : 1; n++; }
         else if (!strcmp(nm, "rotate") || !strcmp(nm, "rotatez")) { f->t = TF_ROTATE; if (ai >= 1 && parse_angle(aa[0], &f->v[0])) n++; }
-        else if (!strcmp(nm, "rotate3d")) { f->t = TF_ROTATE; if (ai >= 4 && tok_num(aa[2], 0) != 0 && parse_angle(aa[3], &f->v[0])) { if (tok_num(aa[2], 0) < 0) f->v[0] = -f->v[0]; n++; } }
+        else if (!strcmp(nm, "rotate3d")) { f->t = TF_ROT3D; if (ai >= 4 && parse_angle(aa[3], &f->v[3])) { f->v[0] = tok_num(aa[0], 0); f->v[1] = tok_num(aa[1], 0); f->v[2] = tok_num(aa[2], 0); n++; } }
         else if (!strcmp(nm, "skew")) { f->t = TF_SKEW; if (ai >= 1) parse_angle(aa[0], &f->v[0]); if (ai >= 2) parse_angle(aa[1], &f->v[1]); n++; }
         else if (!strcmp(nm, "skewx")) { f->t = TF_SKEW; if (ai >= 1) parse_angle(aa[0], &f->v[0]); n++; }
         else if (!strcmp(nm, "skewy")) { f->t = TF_SKEW; if (ai >= 1) parse_angle(aa[0], &f->v[1]); n++; }
         else if (!strcmp(nm, "matrix") && ai >= 6) { f->t = TF_MATRIX; for (int i = 0; i < 6; i++) f->v[i] = tok_num(aa[i], 0); n++; }
-        else if (!strcmp(nm, "matrix3d") && ai >= 16) { f->t = TF_MATRIX; f->v[0] = tok_num(aa[0], 0); f->v[1] = tok_num(aa[1], 0); f->v[2] = tok_num(aa[4], 0); f->v[3] = tok_num(aa[5], 0); f->v[4] = tok_num(aa[12], 0); f->v[5] = tok_num(aa[13], 0); n++; }
+        else if (!strcmp(nm, "matrix3d") && ai >= 16) { f->t = TF_M3D; for (int i = 0; i < 16; i++) f->v[i] = tok_num(aa[i], 0); n++; }
     }
     return n;
 }
-static void mmul(float* a, const float* b) {
-    float r[6];
-    r[0] = a[0] * b[0] + a[2] * b[1];
-    r[1] = a[1] * b[0] + a[3] * b[1];
-    r[2] = a[0] * b[2] + a[2] * b[3];
-    r[3] = a[1] * b[2] + a[3] * b[3];
-    r[4] = a[0] * b[4] + a[2] * b[5] + a[4];
-    r[5] = a[1] * b[4] + a[3] * b[5] + a[5];
+static void m4mul(float* a, const float* b) {
+    float r[16];
+    for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) r[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j] + a[i * 4 + 3] * b[12 + j];
     memcpy(a, r, sizeof r);
 }
-void tf_matrix(style* s, float w, float h, float* m) {
-    m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 1; m[4] = 0; m[5] = 0;
+static void m4id(float* m) { for (int i = 0; i < 16; i++) m[i] = (i % 5) == 0 ? 1.0f : 0.0f; }
+void tf_matrix4(style* s, float w, float h, float* M) {
+    m4id(M);
     if (!s) return;
-    float t[6];
-    m[4] = lres(s->tx, w);
-    m[5] = lres(s->ty, h);
-    if (s->rotate != 0) { float cs = cosf(s->rotate), sn = sinf(s->rotate); t[0] = cs; t[1] = sn; t[2] = -sn; t[3] = cs; t[4] = 0; t[5] = 0; mmul(m, t); }
-    if (s->scale != 1) { t[0] = s->scale; t[1] = 0; t[2] = 0; t[3] = s->scale; t[4] = 0; t[5] = 0; mmul(m, t); }
+    float t[16];
+    M[3] = lres(s->tx, w);
+    M[7] = lres(s->ty, h);
+    if (s->rotate != 0) { float cs = cosf(s->rotate), sn = sinf(s->rotate); m4id(t); t[0] = cs; t[1] = -sn; t[4] = sn; t[5] = cs; m4mul(M, t); }
+    if (s->scale != 1) { m4id(t); t[0] = s->scale; t[5] = s->scale; m4mul(M, t); }
     for (int i = 0; i < s->ntf; i++) {
         tfn* f = &s->tf[i];
-        t[0] = 1; t[1] = 0; t[2] = 0; t[3] = 1; t[4] = 0; t[5] = 0;
-        if (f->t == TF_TRANSLATE) { t[4] = lres(f->l[0], w); t[5] = lres(f->l[1], h); }
-        else if (f->t == TF_SCALE) { t[0] = f->v[0]; t[3] = f->v[1]; }
-        else if (f->t == TF_ROTATE) { float cs = cosf(f->v[0]), sn = sinf(f->v[0]); t[0] = cs; t[1] = sn; t[2] = -sn; t[3] = cs; }
-        else if (f->t == TF_SKEW) { t[2] = tanf(f->v[0]); t[1] = tanf(f->v[1]); }
-        else memcpy(t, f->v, sizeof t);
-        mmul(m, t);
+        m4id(t);
+        switch (f->t) {
+        case TF_TRANSLATE: t[3] = lres(f->l[0], w); t[7] = lres(f->l[1], h); t[11] = f->v[0]; break;
+        case TF_SCALE: t[0] = f->v[0]; t[5] = f->v[1]; break;
+        case TF_ROTATE: { float cs = cosf(f->v[0]), sn = sinf(f->v[0]); t[0] = cs; t[1] = -sn; t[4] = sn; t[5] = cs; break; }
+        case TF_SKEW: t[1] = tanf(f->v[0]); t[4] = tanf(f->v[1]); break;
+        case TF_MATRIX: t[0] = f->v[0]; t[4] = f->v[1]; t[1] = f->v[2]; t[5] = f->v[3]; t[3] = f->v[4]; t[7] = f->v[5]; break;
+        case TF_ROTX: { float cs = cosf(f->v[0]), sn = sinf(f->v[0]); t[5] = cs; t[6] = -sn; t[9] = sn; t[10] = cs; break; }
+        case TF_ROTY: { float cs = cosf(f->v[0]), sn = sinf(f->v[0]); t[0] = cs; t[2] = sn; t[8] = -sn; t[10] = cs; break; }
+        case TF_PERSPF: if (f->v[0] > 0) t[14] = -1.0f / f->v[0]; break;
+        case TF_ROT3D: {
+            float x = f->v[0], y = f->v[1], z = f->v[2], L2 = sqrtf(x * x + y * y + z * z);
+            if (L2 <= 0) break;
+            x /= L2; y /= L2; z /= L2;
+            float a = f->v[3], cs = cosf(a), sn = sinf(a), C = 1 - cs;
+            t[0] = cs + x * x * C; t[1] = x * y * C - z * sn; t[2] = x * z * C + y * sn;
+            t[4] = y * x * C + z * sn; t[5] = cs + y * y * C; t[6] = y * z * C - x * sn;
+            t[8] = z * x * C - y * sn; t[9] = z * y * C + x * sn; t[10] = cs + z * z * C;
+            break;
+        }
+        case TF_M3D: for (int r = 0; r < 4; r++) for (int cc = 0; cc < 4; cc++) t[r * 4 + cc] = f->v[cc * 4 + r]; break;
+        }
+        m4mul(M, t);
     }
+}
+int tf_is3d(style* s) {
+    if (!s) return 0;
+    for (int i = 0; i < s->ntf; i++) { int k = s->tf[i].t; if (k == TF_ROTX || k == TF_ROTY || k == TF_PERSPF || k == TF_ROT3D || k == TF_M3D || (k == TF_TRANSLATE && s->tf[i].v[0] != 0)) return 1; }
+    return 0;
+}
+void tf_matrix(style* s, float w, float h, float* m) {
+    float M[16];
+    tf_matrix4(s, w, h, M);
+    m[0] = M[0]; m[1] = M[4]; m[2] = M[1]; m[3] = M[5]; m[4] = M[3]; m[5] = M[7];
+    if (M[15] != 0 && M[15] != 1 && fabsf(M[12]) < 1e-9f && fabsf(M[13]) < 1e-9f) { for (int i = 0; i < 6; i++) m[i] /= M[15]; }
 }
 int tf_has_linear(style* s) {
     if (!s) return 0;
+    if (tf_is3d(s)) return 1;
     if (s->rotate != 0 || s->scale != 1) return 1;
     for (int i = 0; i < s->ntf; i++) if (s->tf[i].t != TF_TRANSLATE) return 1;
     return 0;
@@ -1244,6 +1452,8 @@ static void set_transition(style* st, int p, const char* v) {
     }
 }
 
+static node* g_qnode;
+static int q_depth(void) { int d = 0; for (node* a = g_qnode ? g_qnode->parent : 0; a; a = a->parent) if (a->tag == T_Q) d++; return d; }
 static void apply(int p, const char* v, style* st, style* par, lctx* c) {
     tok t[16];
     int k;
@@ -1261,8 +1471,10 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
     switch (p) {
     case P_DISPLAY: {
         static const char* dn[] = { "none", "inline", "block", "inline-block", "list-item", "flex", "inline-flex", "grid", "inline-grid", "table", "inline-table", "table-row", "table-cell", "table-row-group", "table-header-group", "table-footer-group", "table-caption", "table-column", "table-column-group", "contents" };
+        st->flowroot = 0;
         for (int i = 0; i < 20; i++) if (kw(v, dn[i])) { st->display = (unsigned char)i; return; }
-        if (kw(v, "flow-root") || kw(v, "block flow-root") || kw(v, "flow")) st->display = D_BLOCK;
+        if (kw(v, "flow-root") || kw(v, "block flow-root")) { st->display = D_BLOCK; st->flowroot = 1; }
+        else if (kw(v, "flow")) st->display = D_BLOCK;
         else if (kw(v, "-webkit-box")) st->display = D_BLOCK;
         else if (kw(v, "-ms-flexbox") || kw(v, "-webkit-flex") || kw(v, "block flex")) st->display = D_FLEX;
         else if (kw(v, "-webkit-inline-box") || kw(v, "inline-flexbox") || kw(v, "inline flex")) st->display = D_IFLEX;
@@ -1315,6 +1527,8 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
             if (tkw(t[i], "lower-latin")) st->lstype = LS_LALPHA;
             if (tkw(t[i], "upper-latin")) st->lstype = LS_UALPHA;
             if (tkw(t[i], "decimal-leading-zero")) st->lstype = LS_DECIMAL;
+            if (tkw(t[i], "disclosure-closed")) st->lstype = LS_DCLOSED;
+            if (tkw(t[i], "disclosure-open")) st->lstype = LS_DOPEN;
             if (tkw(t[i], "inside")) st->lspos = 1;
             if (tkw(t[i], "outside")) st->lspos = 0;
             if (t[i].n > 4 && ieqn(t[i].s, "url(", 4) && k == 1) st->lstype = LS_DISC;
@@ -1333,6 +1547,9 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
     case P_BORDERCOLLAPSE: st->bcollapse = kw(v, "collapse"); return;
     case P_WORDBREAK: case P_OVERFLOWWRAP: case P_WORDWRAP: st->wbreak = kw(v, "break-all") || kw(v, "break-word") || kw(v, "anywhere"); return;
     case P_POINTEREVENTS: st->pevents = kw(v, "none"); return;
+    case P_SCROLLSNAPTYPE: { const char* q = v; while (*q == ' ') q++; if (istarts(q, "none")) { st->snaptype = 0; st->snapstrict = 0; return; } st->snaptype = istarts(q, "x") || istarts(q, "inline") ? 1 : istarts(q, "both") ? 3 : istarts(q, "y") || istarts(q, "block") ? 2 : 0; st->snapstrict = strstr(q, "mandatory") ? 1 : 0; return; }
+    case P_SCROLLSNAPALIGN: { const char* q = v; while (*q == ' ') q++; const char* sp = strchr(q, ' '); const char* b2 = sp ? sp + 1 : q; while (*b2 == ' ') b2++; st->snapalign = istarts(b2, "start") ? 1 : istarts(b2, "center") ? 2 : istarts(b2, "end") ? 3 : 0; return; }
+    case P_SCROLLSNAPSTOP: st->snapstop = kw(v, "always"); return;
     case P_TEXTOVERFLOW: st->tover = kw(v, "ellipsis"); return;
     case P_CLIP: {
         const char* r = strstr(v, "rect(");
@@ -1485,6 +1702,37 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
     case P_INSETBLOCK: { k = split_ws(v, t, 2); L a, b; if (k >= 1 && tlen(t[0], c, &a, 1)) { b = a; if (k >= 2) tlen(t[1], c, &b, 1); st->inset[0] = a; st->inset[2] = b; } return; }
     case P_ZINDEX: if (kw(v, "auto")) st->zauto = 1; else { st->zauto = 0; st->zindex = atoi(v); } return;
     case P_OPACITY: { const char* e; float o = parse_float(v, &e); if (*e == '%') o /= 100; st->opacity = o < 0 ? 0 : o > 1 ? 1 : o; return; }
+    case P_FILTER: {
+        st->nflt = 0; st->fltsrc = 0;
+        if (kw(v, "none") || kw(v, "initial") || kw(v, "unset")) return;
+        static const char* FN[] = { "blur(", "brightness(", "contrast(", "grayscale(", "invert(", "opacity(", "saturate(", "sepia(", "hue-rotate(", "drop-shadow(", 0 };
+        const char* q = v; int n = 0;
+        while (*q && n < 8) {
+            while (is_ws((unsigned char)*q)) q++;
+            if (!*q) break;
+            int f = -1, fl = 0;
+            for (int i = 0; FN[i]; i++) { int l = (int)strlen(FN[i]); if (ieqn(q, FN[i], l)) { f = i; fl = l; break; } }
+            if (f < 0) { st->nflt = 0; return; }
+            q += fl;
+            const char* a0 = q; int d = 1;
+            while (*q && d) { if (*q == '(') d++; else if (*q == ')') { d--; if (!d) break; } q++; }
+            float val = f == 0 ? 0 : 1;
+            while (a0 < q && is_ws((unsigned char)*a0)) a0++;
+            if (a0 < q) {
+                const char* e; float x = parse_float(a0, &e);
+                if (e != a0) {
+                    if (*e == '%') x /= 100;
+                    else if (f == 8) { if (ieqn(e, "turn", 4)) x *= 360; else if (ieqn(e, "rad", 3)) x *= 57.29578f; else if (ieqn(e, "grad", 4)) x *= 0.9f; }
+                    else if (f == 0 && (ieqn(e, "em", 2) || ieqn(e, "rem", 3))) x *= ieqn(e, "rem", 3) ? g_rootfs : c->fs;
+                    val = x;
+                }
+            }
+            if (f != 9) { st->flt_t[n] = (unsigned char)f; st->flt_v[n] = val; n++; }
+            if (*q == ')') q++;
+        }
+        st->nflt = (unsigned char)n; st->fltsrc = nstrdup(v);
+        return;
+    }
     case P_FLEX: {
         if (kw(v, "none")) { st->grow = 0; st->shrink = 0; st->basis = LA(); return; }
         if (kw(v, "auto")) { st->grow = 1; st->shrink = 1; st->basis = LA(); return; }
@@ -1605,6 +1853,25 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
     }
     case P_SCALE: st->scale = kw(v, "none") ? 1 : parse_float(v, 0); if (strchr(v, '%')) st->scale /= 100; return;
     case P_ROTATE: { st->rotate = 0; if (kw(v, "none")) return; k = split_ws(v, t, 4); if (k >= 1) parse_angle(t[k - 1], &st->rotate); return; }
+    case P_PERSPECTIVE: { st->persp = 0; if (kw(v, "none")) return; k = split_ws(v, t, 2); L l; if (k >= 1 && tlen(t[0], c, &l, 0) && l.px > 0) st->persp = l.px; return; }
+    case P_BACKFACE: st->bfhide = kw(v, "hidden") ? 1 : 0; return;
+    case P_TSTYLE: st->p3d = kw(v, "preserve-3d") ? 1 : 0; return;
+    case P_PERSPORIGIN: {
+        k = split_ws(v, t, 3);
+        for (int i = 0; i < k && i < 2; i++) {
+            L o = LV(0);
+            int vert = 0;
+            if (tkw(t[i], "left")) { o.pct = 0; }
+            else if (tkw(t[i], "right")) { o.pct = 100; }
+            else if (tkw(t[i], "top")) { o.pct = 0; vert = 1; }
+            else if (tkw(t[i], "bottom")) { o.pct = 100; vert = 1; }
+            else if (tkw(t[i], "center")) { o.pct = 50; vert = i; }
+            else if (!tlen(t[i], c, &o, 0)) continue;
+            else vert = i;
+            if (vert) st->poy = o; else st->pox = o;
+        }
+        return;
+    }
     case P_TRANSFORMORIGIN: {
         k = split_ws(v, t, 3);
         for (int i = 0; i < k && i < 2; i++) {
@@ -1658,8 +1925,8 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
                 sb_puts(&b, "\x02");
                 continue;
             }
-            if (istarts(q, "open-quote")) { sb_putu8(&b, 0x201C); q += 10; continue; }
-            if (istarts(q, "close-quote")) { sb_putu8(&b, 0x201D); q += 11; continue; }
+            if (istarts(q, "open-quote")) { sb_putu8(&b, q_depth() & 1 ? 0x2018 : 0x201C); q += 10; continue; }
+            if (istarts(q, "close-quote")) { sb_putu8(&b, q_depth() & 1 ? 0x2019 : 0x201D); q += 11; continue; }
             if (istarts(q, "counter(") || istarts(q, "counters(") || istarts(q, "url(")) { while (*q && *q != ')') q++; if (*q) q++; continue; }
             q++;
         }
@@ -1669,9 +1936,15 @@ static void apply(int p, const char* v, style* st, style* par, lctx* c) {
     case P_BORDERSPACING: { k = split_ws(v, t, 2); if (k >= 1 && tlen(t[0], c, &l, 0)) { st->bspacingx = st->bspacingy = l.px; if (k >= 2 && tlen(t[1], c, &l, 0)) st->bspacingy = l.px; } return; }
     case P_CARETCOLOR: css_parse_color(v, (int)strlen(v), &st->caretcol); return;
     case P_ACCENTCOLOR: css_parse_color(v, (int)strlen(v), &st->accent); return;
+    case P_CONTAINERTYPE: { st->ctype = ieq(v, "inline-size") ? 1 : ieq(v, "size") ? 2 : 0; return; }
+    case P_CONTAINERNAME: { st->cname = ieq(v, "none") ? 0 : nstrdup(v); return; }
+    case P_CONTAINER: { const char* sl = strchr(v, '/'); if (sl) { const char* t = sl + 1; while (*t == ' ') t++; st->ctype = ieqn(t, "inline-size", 11) ? 1 : ieqn(t, "size", 4) ? 2 : 0; int l = (int)(sl - v); while (l > 0 && v[l - 1] == ' ') l--; st->cname = nstrndup(v, l); } else { st->cname = ieq(v, "none") ? 0 : nstrdup(v); st->ctype = 0; } return; }
     case P_ASPECTRATIO: {
         const char* e;
+        while (*v == ' ') v++;
+        if (ieqn(v, "auto", 4)) { v += 4; while (*v == ' ') v++; if (!*v) { st->aspect = 0; return; } }
         float a = parse_float(v, &e);
+        if (e == v) return;
         while (*e == ' ') e++;
         if (*e == '/') { e++; float b = parse_float(e, 0); if (b > 0) a /= b; }
         if (a > 0) st->aspect = a;
@@ -1692,7 +1965,7 @@ static void apply_from(int p, style* st, style* s) {
     case P_FONTFAMILY: st->ffamily = s->ffamily; return;
     case P_FONT: st->fsize = s->fsize; st->fweight = s->fweight; st->fstyle = s->fstyle; st->ffamily = s->ffamily; st->lh = s->lh; st->lhmul = s->lhmul; return;
     case P_LINEHEIGHT: st->lh = s->lh; st->lhmul = s->lhmul; return;
-    case P_DISPLAY: st->display = s->display; return;
+    case P_DISPLAY: st->display = s->display; st->flowroot = s->flowroot; return;
     case P_POSITION: st->position = s->position; return;
     case P_BACKGROUND: case P_BACKGROUNDCOLOR: st->bgcolor = s->bgcolor; if (p == P_BACKGROUND) st->bg = s->bg; return;
     case P_BACKGROUNDIMAGE: st->bg = s->bg; return;
@@ -1714,6 +1987,7 @@ static void apply_from(int p, style* st, style* s) {
     case P_BORDERRADIUS: for (int i = 0; i < 4; i++) st->radius[i] = s->radius[i]; return;
     case P_TOP: case P_RIGHT: case P_BOTTOM: case P_LEFT: st->inset[p - P_TOP] = s->inset[p - P_TOP]; return;
     case P_OPACITY: st->opacity = s->opacity; return;
+    case P_FILTER: st->nflt = s->nflt; for (int i = 0; i < 8; i++) { st->flt_t[i] = s->flt_t[i]; st->flt_v[i] = s->flt_v[i]; } st->fltsrc = s->fltsrc; return;
     case P_TEXTDECORATION: case P_TEXTDECORATIONLINE: st->tdec = s->tdec; return;
     case P_TEXTTRANSFORM: st->ttrans = s->ttrans; return;
     case P_CURSOR: st->cursor = s->cursor; return;
@@ -1752,6 +2026,8 @@ static void init_initial(void) {
     s->scale = 1;
     s->tox = LV(0); s->tox.pct = 50;
     s->toy = LV(0); s->toy.pct = 50;
+    s->pox = LV(0); s->pox.pct = 50;
+    s->poy = LV(0); s->poy.pct = 50;
     s->justify = AL_NORMAL;
     s->alignitems = AL_NORMAL;
     s->alignself = AL_AUTO;
@@ -1812,11 +2088,12 @@ static void inherit(style* st, style* par) {
     st->hasstrokew = par->hasstrokew;
 }
 
-typedef struct { decl* d; int lvl, spec, order, idx; } cent;
+typedef struct { decl* d; int lvl, spec, order, idx, lyr; } cent;
 static int cent_cmp(const void* a, const void* b) {
     const cent* x = a;
     const cent* y = b;
     if (x->lvl != y->lvl) return x->lvl - y->lvl;
+    if (x->lyr != y->lyr) return x->lyr - y->lyr;
     if (x->spec != y->spec) return x->spec - y->spec;
     if (x->order != y->order) return x->order - y->order;
     return x->idx - y->idx;
@@ -1880,14 +2157,6 @@ static int pres_decls(node* n, decl* out, int cap) {
     if (n->tag == T_OL && (v = attr_get(n, "type"))) ADD(P_LISTSTYLETYPE, !strcmp(v, "a") ? "lower-alpha" : !strcmp(v, "A") ? "upper-alpha" : !strcmp(v, "i") ? "lower-roman" : !strcmp(v, "I") ? "upper-roman" : "decimal");
     if (n->tag == T_UL && (v = attr_get(n, "type"))) ADD(P_LISTSTYLETYPE, v);
     if (attr_get(n, "hidden") && !ieq(attr_get(n, "hidden"), "until-found")) ADD(P_DISPLAY, "none");
-    if ((n->tag == T_INPUT || n->tag == T_TEXTAREA || n->tag == T_SELECT) && (v = attr_get(n, "size")) && n->tag == T_INPUT) { char* s = nalloc(32); snprintf(s, 32, "%dpx", (int)(atoi(v) * 7.4f + 6)); if (atoi(v) > 0) ADD(P_WIDTH, s); }
-    if (n->tag == T_TEXTAREA) {
-        int cols = attr_get(n, "cols") ? atoi(attr_get(n, "cols")) : 20, rows = attr_get(n, "rows") ? atoi(attr_get(n, "rows")) : 2;
-        if (cols < 1) cols = 20;
-        if (rows < 1) rows = 2;
-        char* s = nalloc(32); snprintf(s, 32, "%dpx", (int)(cols * 7.3f + 8)); ADD(P_WIDTH, s);
-        char* h = nalloc(32); snprintf(h, 32, "%dpx", rows * 16 + 6); ADD(P_HEIGHT, h);
-    }
     #undef ADD
     return k;
 }
@@ -1925,6 +2194,8 @@ static void resolve_area(style* st, style* par) {
     }
 }
 static style* compute(node* n, style* par, int pseudo) {
+    g_qnode = n;
+    g_cmp_node = n;
     static ment M[1024];
     static cent C[4096];
     int nm = css_gather(n, M, 1024, pseudo);
@@ -1932,19 +2203,19 @@ static style* compute(node* n, style* par, int pseudo) {
     int nc = 0;
     decl pres[48];
     int np = pseudo ? 0 : pres_decls(n, pres, 48);
-    for (int i = 0; i < np && nc < 4096; i++) { C[nc].d = &pres[i]; C[nc].lvl = 1; C[nc].spec = 0; C[nc].order = 0; C[nc].idx = i; nc++; }
+    for (int i = 0; i < np && nc < 4096; i++) { C[nc].d = &pres[i]; C[nc].lvl = 1; C[nc].spec = 0; C[nc].order = 0; C[nc].idx = i; C[nc].lyr = 0; nc++; }
     for (int i = 0; i < nm; i++) {
         rule* r = M[i].r;
         for (int j = 0; j < r->nd && nc < 4096; j++) {
             decl* d = &r->d[j];
             int lvl = r->origin == 0 ? (d->imp ? 6 : 0) : (d->imp ? 4 : 2);
-            C[nc].d = d; C[nc].lvl = lvl; C[nc].spec = M[i].spec; C[nc].order = r->order; C[nc].idx = j; nc++;
+            C[nc].d = d; C[nc].lvl = lvl; C[nc].spec = M[i].spec; C[nc].order = r->order; C[nc].idx = j; C[nc].lyr = d->imp ? -r->lrank : r->lrank; nc++;
         }
     }
     if (!pseudo) {
         int ni;
         decl* id = inline_decls(n, &ni);
-        for (int j = 0; j < ni && nc < 4096; j++) { C[nc].d = &id[j]; C[nc].lvl = id[j].imp ? 5 : 3; C[nc].spec = 0; C[nc].order = 0; C[nc].idx = j; nc++; }
+        for (int j = 0; j < ni && nc < 4096; j++) { C[nc].d = &id[j]; C[nc].lvl = id[j].imp ? 5 : 3; C[nc].spec = 0; C[nc].order = 0; C[nc].idx = j; C[nc].lyr = 0; nc++; }
     }
     msort(C, nc, sizeof(cent), cent_cmp);
     style* st = nalloc(sizeof(style));
@@ -2021,6 +2292,7 @@ static style* compute(node* n, style* par, int pseudo) {
         if (st->colspan > 100) st->colspan = 100;
         if (st->rowspan < 1) st->rowspan = 1;
     }
+    if (!pseudo && n->parent && n->parent->tag == T_DETAILS && n->tag != T_SUMMARY && !attr_get(n->parent, "open")) st->display = D_NONE;
     if (pseudo && !st->content) return 0;
     return st;
 }
@@ -2075,12 +2347,127 @@ static void style_tree(node* n, style* par) {
             style_tree(c, c->st);
             css_anc_pop(c);
         } else {
-            for (node* d = c->first; d; d = d->next) { d->st = 0; if (d->type == NT_ELEM) d->st = 0; }
+            { extern void unstyle_tree(node*); for (node* d = c->first; d; d = d->next) unstyle_tree(d); if (c->shadow) unstyle_tree(c->shadow); }
         }
     }
 }
 
+static int strs_eq(const char* a, const char* b) { if (a == b) return 1; if (!a || !b) return 0; return !strcmp(a, b); }
+static int leq(const L* a, const L* b) { return a->px == b->px && a->pct == b->pct && a->lo == b->lo && a->hi == b->hi && a->k == b->k; }
+static int geq(const gtrack* a, const gtrack* b, int n) { for (int i = 0; i < n; i++) if (a[i].k != b[i].k || a[i].v != b[i].v || a[i].minv != b[i].minv || a[i].mink != b[i].mink) return 0; return 1; }
+static int lay_eq(style* a, style* b) {
+#define F(x) if (a->x != b->x) return 0;
+#define FL(x) if (!leq(&a->x, &b->x)) return 0;
+    F(display) F(position) F(flt) F(clear) F(boxsizing) F(ovx) F(ovy) F(ws) F(talign) F(ttrans) F(fstyle) F(ffam) F(lstype) F(lspos) F(valign) F(bcollapse) F(wbreak) F(tover)
+    F(flexdir) F(flexwrap) F(justify) F(alignitems) F(alignself) F(aligncontent) F(justifyitems) F(justifyself) F(gautoflow)
+    for (int i = 0; i < 4; i++) { F(bstyle[i]) F(border[i]) FL(margin[i]) FL(padding[i]) FL(inset[i]) }
+    F(fweight) F(face) F(fsize) F(lh) F(lhmul) F(lspace) F(wspace) F(tindent)
+    FL(width) FL(height) FL(minw) FL(minh) FL(maxw) FL(maxh) FL(basis) FL(gcolgap) FL(growgap)
+    F(zindex) F(zauto) F(order) F(aspect) F(clipall) F(bgcliptext) F(lineclamp) F(grow) F(shrink) F(valignpx) F(hasvalignpx) F(colspan) F(rowspan)
+    F(ngcols) F(ngrows) F(gcs) F(gce) F(grs) F(gre) F(gautocols) F(bspacingx) F(bspacingy) F(nanim) F(ntrans) F(hastransform) F(objfit)
+    if ((a->opacity < 1) != (b->opacity < 1)) return 0;
+    if ((a->visibility == 0) != (b->visibility == 0) && 0) return 0;
+    if (!geq(&a->gautorow, &b->gautorow, 1)) return 0;
+    if (!strs_eq(a->content, b->content) || !strs_eq(a->areas, b->areas) || !strs_eq(a->gta, b->gta) || !strs_eq(a->ffamily, b->ffamily)) return 0;
+    if (a->ngcols && !geq(a->gcols, b->gcols, a->ngcols)) return 0;
+    if (a->ngrows && !geq(a->grows, b->grows, a->ngrows)) return 0;
+#undef F
+#undef FL
+    return 1;
+}
+static int g_need_lay, g_part_elems, g_full_elems;
+static void restyle_children(node* n, style* par);
+static style* merge_st(style* old, style* nw, int* need) {
+    if (old && nw) { if (!lay_eq(old, nw)) *need = 1; *old = *nw; return old; }
+    if (old || nw) *need = 1;
+    return nw;
+}
+static void restyle_one(node* c, style* par) {
+    nwe_check_stop();
+    g_part_elems++;
+    style* old = c->st;
+    int wasnone = !old || old->display == D_NONE;
+    style* ns = compute(c, par, 0);
+    if (old && old != par) c->st = merge_st(old, ns, &g_need_lay); else { c->st = ns; g_need_lay = 1; }
+    style* ob = c->st_before, *oa = c->st_after;
+    if (c->st->display != D_NONE) {
+        style* sb = compute(c, c->st, 1);
+        style* sa = compute(c, c->st, 2);
+        if (c->tag == T_SVG || c->tag == T_SCRIPT || c->tag == T_STYLE || c->tag == T_TEMPLATE) sb = sa = 0;
+        c->st_before = merge_st(ob, sb, &g_need_lay);
+        c->st_after = merge_st(oa, sa, &g_need_lay);
+        if (wasnone) g_need_lay = 1;
+        css_anc_push(c);
+        if (c->shadow) { c->shadow->st = c->st; restyle_children(c->shadow, c->st); }
+        restyle_children(c, c->st);
+        css_anc_pop(c);
+    } else {
+        if (!wasnone) g_need_lay = 1;
+        c->st_before = c->st_after = 0;
+        { extern void unstyle_tree(node*); for (node* d = c->first; d; d = d->next) unstyle_tree(d); if (c->shadow) unstyle_tree(c->shadow); }
+    }
+}
+static void restyle_children(node* n, style* par) {
+    style* par0 = par;
+    for (node* c = n->first; c; c = c->next) {
+        if (n->shadow) par = slot_parent(n, c, par0);
+        if (c->type != NT_ELEM) { if (c->st != par) { c->st = par; g_need_lay = 1; } continue; }
+        restyle_one(c, par);
+    }
+}
+static int anc_chain(node* n, node** out, int cap) {
+    int k = 0;
+    for (node* q = n; q; ) { if (k >= cap) return -1; out[k++] = q; if (q->parent) q = q->parent; else if (q->type == NT_FRAG && q->host) q = q->host; else break; }
+    return k;
+}
+int style_partial(node** roots, int nr) {
+    extern int g_css_has, css_needs_rebuild(void);
+    if (!g_init_ready || css_needs_rebuild() || g_css_has || nr <= 0) return -1;
+    if (g_full_elems > 0 && g_part_elems > g_full_elems * 3 + 2000) return -1;
+    for (int i = 0; i < nr; i++) {
+        node* r = roots[i];
+        if (!r || r->type != NT_ELEM || !r->parent) return -1;
+        node* ch[1024];
+        int k = anc_chain(r, ch, 1024);
+        if (k < 0 || ch[k - 1] != G.doc) return -1;
+        for (int j = 1; j < k; j++) if (ch[j]->type == NT_ELEM && (!ch[j]->st || ch[j]->st->display == D_NONE)) { roots[i] = 0; break; }
+        if (!roots[i]) continue;
+        if (r->parent->type == NT_ELEM && !r->parent->st) return -1;
+    }
+    int sv = g_pool;
+    g_pool = 1;
+    g_need_lay = 0;
+    g_css_mgen++;
+    extern void anim_before_style(node* root);
+    extern void anim_after_style_part(node* root);
+    for (int i = 0; i < nr; i++) {
+        node* r = roots[i];
+        if (!r) continue;
+        node* ch[1024];
+        int k = anc_chain(r, ch, 1024);
+        anim_before_style(r);
+        css_anc_reset();
+        extern int g_anc_on;
+        g_anc_on = 1;
+        for (int j = k - 1; j >= 1; j--) if (ch[j]->type == NT_ELEM) css_anc_push(ch[j]);
+        node* p = r->parent;
+        style* par = p->type == NT_ELEM ? p->st : (p->type == NT_FRAG && p->host ? p->host->st : 0);
+        if (!par) { node* b = G.doc; (void)b; par = anon_style(0, D_BLOCK); }
+        if (p->type == NT_ELEM && p->shadow) par = slot_parent(p, r, par);
+        restyle_one(r, par);
+        g_anc_on = 0;
+        anim_after_style_part(r);
+    }
+    g_pool = sv;
+    return g_need_lay;
+}
+void style_all_in(node* root, float vw, float vh);
 void style_all(node* root, float vw, float vh) {
+    unsigned long long t0 = nwk_us();
+    style_all_in(root, vw, vh);
+    g_nwe_perf.style_us += nwk_us() - t0;
+}
+void style_all_in(node* root, float vw, float vh) {
     (void)vw;
     (void)vh;
     if (!g_init_ready) init_initial();
@@ -2090,6 +2477,7 @@ void style_all(node* root, float vw, float vh) {
     extern void anim_before_style(node* root);
     extern void anim_after_style(node* root);
     anim_before_style(root);
+    css_cq_reset();
     pool_reset(1);
     g_pool = 1;
     style* base = nalloc(sizeof(style));
@@ -2097,7 +2485,9 @@ void style_all(node* root, float vw, float vh) {
     base->display = D_BLOCK;
     g_css_mgen++;
     css_anc_reset();
+    g_part_elems = 0;
     { extern int g_anc_on; g_anc_on = 1; style_tree(root, base); g_anc_on = 0; }
+    { int cnt = 0; node* st2[4096]; int sp = 0; st2[sp++] = root; while (sp) { node* x = st2[--sp]; if (x->type == NT_ELEM) cnt++; for (node* c = x->first; c && sp < 4096; c = c->next) st2[sp++] = c; } g_full_elems = cnt; }
     anim_after_style(root);
     g_pool = sv;
 }
@@ -2150,11 +2540,45 @@ void css_decl_apply_inline(node* n, const char* prop, const char* val) {
 static void fmt_color(unsigned c, char* out, int cap) {
     unsigned a = c >> 24;
     if (a == 255) snprintf(out, (size_t)cap, "rgb(%u, %u, %u)", (c >> 16) & 255, (c >> 8) & 255, c & 255);
-    else { int ai = (int)(a * 1000 / 255); snprintf(out, (size_t)cap, "rgba(%u, %u, %u, %d.%03d)", (c >> 16) & 255, (c >> 8) & 255, c & 255, ai / 1000, ai % 1000); }
+    else {
+        int a2 = (int)((a * 100 + 127) / 255), ai;
+        if ((a2 * 255 + 50) / 100 == (int)a) ai = a2 * 10; else ai = (int)((a * 1000 + 127) / 255);
+        char fr[8]; snprintf(fr, sizeof fr, "%03d", ai % 1000); int l = 3; while (l > 1 && fr[l - 1] == '0') l--; fr[l] = 0;
+        if (ai >= 1000) snprintf(out, (size_t)cap, "rgb(%u, %u, %u)", (c >> 16) & 255, (c >> 8) & 255, c & 255);
+        else if (ai == 0) snprintf(out, (size_t)cap, "rgba(%u, %u, %u, 0)", (c >> 16) & 255, (c >> 8) & 255, c & 255);
+        else snprintf(out, (size_t)cap, "rgba(%u, %u, %u, 0.%s)", (c >> 16) & 255, (c >> 8) & 255, c & 255, fr);
+    }
 }
 static void fmt_px(float v, char* out, int cap) {
-    if (v == (int)v) snprintf(out, (size_t)cap, "%dpx", (int)v);
-    else snprintf(out, (size_t)cap, "%.2fpx", (double)v);
+    if (v == (int)v) { snprintf(out, (size_t)cap, "%dpx", (int)v); return; }
+    char t[48]; snprintf(t, sizeof t, "%.2f", (double)v); int l = (int)strlen(t); while (l > 0 && t[l - 1] == '0') l--; if (l > 0 && t[l - 1] == '.') l--; t[l] = 0;
+    snprintf(out, (size_t)cap, "%spx", t);
+}
+static int css_cascaded(node* n, int pid, char* out, int cap) {
+    static ment M2[1024];
+    node* sq = g_qnode; node* sc = g_cmp_node;
+    g_qnode = n; g_cmp_node = n;
+    int nm = css_gather(n, M2, 1024, 0);
+    g_qnode = sq; g_cmp_node = sc;
+    cent best; int have = 0;
+    for (int i = 0; i < nm; i++) {
+        rule* r = M2[i].r;
+        for (int j = 0; j < r->nd; j++) {
+            decl* d = &r->d[j];
+            if (d->prop != pid || d->name) continue;
+            cent c; c.d = d; c.lvl = r->origin == 0 ? (d->imp ? 6 : 0) : (d->imp ? 4 : 2); c.spec = M2[i].spec; c.order = r->order; c.idx = j; c.lyr = d->imp ? -r->lrank : r->lrank;
+            if (!have || cent_cmp(&c, &best) > 0) { best = c; have = 1; }
+        }
+    }
+    int ni; decl* id = inline_decls(n, &ni);
+    for (int j = 0; j < ni; j++) { if (id[j].prop != pid || id[j].name) continue; cent c; c.d = &id[j]; c.lvl = id[j].imp ? 5 : 3; c.spec = 0; c.order = 0; c.idx = j; c.lyr = 0; if (!have || cent_cmp(&c, &best) > 0) { best = c; have = 1; } }
+    if (!have || !best.d->val) return 0;
+    char* v = n->st ? subst_vars(best.d->val, n->st, 0) : best.d->val;
+    if (!v) return 0;
+    const char* q; float f = parse_float(v, &q);
+    if (q != v && n->st && (ieq(q, "em") || ieq(q, "rem"))) { fmt_px(f * (ieq(q, "em") ? n->st->fsize : g_rootfs), out, cap); return 1; }
+    snprintf(out, (size_t)cap, "%s", v);
+    return 1;
 }
 void css_computed_get(node* n, const char* prop, char* out, int cap) {
     out[0] = 0;
@@ -2169,7 +2593,7 @@ void css_computed_get(node* n, const char* prop, char* out, int cap) {
     static const char* pn[] = { "static", "relative", "absolute", "fixed", "sticky" };
     float x, y, w, h;
     switch (p) {
-    case P_DISPLAY: snprintf(out, (size_t)cap, "%s", dn[s->display]); return;
+    case P_DISPLAY: snprintf(out, (size_t)cap, "%s", s->flowroot && s->display == D_BLOCK ? "flow-root" : dn[s->display]); return;
     case P_POSITION: snprintf(out, (size_t)cap, "%s", pn[s->position]); return;
     case P_COLOR: fmt_color(s->color, out, cap); return;
     case P_BACKGROUNDCOLOR: fmt_color(s->bgcolor, out, cap); return;
@@ -2179,6 +2603,8 @@ void css_computed_get(node* n, const char* prop, char* out, int cap) {
     case P_FONTFAMILY: snprintf(out, (size_t)cap, "%s", s->ffamily ? s->ffamily : "sans-serif"); return;
     case P_VISIBILITY: snprintf(out, (size_t)cap, "%s", s->visibility ? "hidden" : "visible"); return;
     case P_OPACITY: snprintf(out, (size_t)cap, "%g", (double)s->opacity); return;
+    case P_BTLR: case P_BTRR: case P_BBRR: case P_BBLR: fmt_px(s->radius[p - P_BTLR], out, cap); return;
+    case P_FILTER: snprintf(out, (size_t)cap, "%s", s->fltsrc && s->nflt ? s->fltsrc : "none"); return;
     case P_FLOAT: snprintf(out, (size_t)cap, "%s", s->flt == FL_LEFT ? "left" : s->flt == FL_RIGHT ? "right" : "none"); return;
     case P_ZINDEX: if (s->zauto) snprintf(out, (size_t)cap, "auto"); else snprintf(out, (size_t)cap, "%d", s->zindex); return;
     case P_OVERFLOW: case P_OVERFLOWY: { static const char* o[] = { "visible", "hidden", "scroll", "auto", "clip" }; snprintf(out, (size_t)cap, "%s", o[s->ovy]); return; }
@@ -2192,15 +2618,21 @@ void css_computed_get(node* n, const char* prop, char* out, int cap) {
     case P_PT: case P_PR: case P_PB: case P_PL: { box* b = box_of(n); fmt_px(b ? b->p[p - P_PT] : 0, out, cap); return; }
     case P_BTW: case P_BRW: case P_BBW: case P_BLW: fmt_px(s->border[p - P_BTW], out, cap); return;
     case P_TOP: case P_LEFT: case P_RIGHT: case P_BOTTOM: { L l = s->inset[p - P_TOP]; if (l.k == LK_AUTO) snprintf(out, (size_t)cap, "auto"); else fmt_px(l.px, out, cap); return; }
-    case P_TRANSFORM: { if (!s->hastransform) { snprintf(out, (size_t)cap, "none"); return; } float m[6]; tf_matrix(s, n->box ? n->box->w : 0, n->box ? n->box->h : 0, m); snprintf(out, (size_t)cap, "matrix(%g, %g, %g, %g, %g, %g)", m[0], m[1], m[2], m[3], m[4], m[5]); return; }
+    case P_PERSPECTIVE: if (s->persp > 0) fmt_px(s->persp, out, cap); else snprintf(out, (size_t)cap, "none"); return;
+    case P_BACKFACE: snprintf(out, (size_t)cap, "%s", s->bfhide ? "hidden" : "visible"); return;
+    case P_TSTYLE: snprintf(out, (size_t)cap, "%s", s->p3d ? "preserve-3d" : "flat"); return;
+    case P_TRANSFORM: { if (s->hastransform && tf_is3d(s)) { float M[16]; tf_matrix4(s, n->box ? n->box->w : 0, n->box ? n->box->h : 0, M); int flat = 1; { const int zi[] = { 2, 6, 8, 9, 11, 12, 13, 14 }; for (int q = 0; q < 8; q++) if (fabsf(M[zi[q]]) > 1e-7f) flat = 0; if (fabsf(M[10] - 1) > 1e-7f || fabsf(M[15] - 1) > 1e-7f) flat = 0; } if (flat) { snprintf(out, (size_t)cap, "matrix(%g, %g, %g, %g, %g, %g)", M[0], M[4], M[1], M[5], M[3], M[7]); return; } int o = snprintf(out, (size_t)cap, "matrix3d("); for (int i = 0; i < 16 && o < cap; i++) o += snprintf(out + o, (size_t)(cap - o), "%g%s", fabsf(M[(i & 3) * 4 + (i >> 2)]) < 1e-7f ? 0.0 : (double)M[(i & 3) * 4 + (i >> 2)], i < 15 ? ", " : ")"); return; } if (!s->hastransform) { snprintf(out, (size_t)cap, "none"); return; } float m[6]; tf_matrix(s, n->box ? n->box->w : 0, n->box ? n->box->h : 0, m); snprintf(out, (size_t)cap, "matrix(%g, %g, %g, %g, %g, %g)", m[0], m[1], m[2], m[3], m[4], m[5]); return; }
     case P_FLEXDIRECTION: { static const char* f[] = { "row", "row-reverse", "column", "column-reverse" }; snprintf(out, (size_t)cap, "%s", f[s->flexdir]); return; }
     case P_BOXSIZING: snprintf(out, (size_t)cap, "%s", s->boxsizing ? "border-box" : "content-box"); return;
     case P_CURSOR: snprintf(out, (size_t)cap, "%s", s->cursor == 1 ? "pointer" : s->cursor == 2 ? "text" : "auto"); return;
     case P_WHITESPACE: { static const char* t[] = { "normal", "nowrap", "pre", "pre-wrap", "pre-line" }; snprintf(out, (size_t)cap, "%s", t[s->ws]); return; }
     case P_POINTEREVENTS: snprintf(out, (size_t)cap, "%s", s->pevents ? "none" : "auto"); return;
+    case P_SCROLLSNAPTYPE: if (!s->snaptype) snprintf(out, (size_t)cap, "none"); else snprintf(out, (size_t)cap, "%s%s", s->snaptype == 1 ? "x" : s->snaptype == 2 ? "y" : "both", s->snapstrict ? " mandatory" : " proximity"); return;
+    case P_SCROLLSNAPALIGN: snprintf(out, (size_t)cap, "%s", s->snapalign == 1 ? "start" : s->snapalign == 2 ? "center" : s->snapalign == 3 ? "end" : "none"); return;
+    case P_SCROLLSNAPSTOP: snprintf(out, (size_t)cap, "%s", s->snapstop ? "always" : "normal"); return;
     default: break;
     }
-    if (p >= 0) css_prop_get(n, prop, out, cap);
+    if (p >= 0) { css_prop_get(n, prop, out, cap); if (!out[0]) css_cascaded(n, p, out, cap); }
 }
 
 const char css_ua_text[] =
@@ -2208,9 +2640,12 @@ const char css_ua_text[] =
     "li{display:list-item}summary{display:block}"
     "head,script,style,link,meta,title,base,noscript,template,datalist,param,area,map,input[type=hidden],source,track,dialog,[hidden]{display:none}"
     "dialog[open]{display:block;position:absolute;left:0;right:0;margin:auto;border:2px solid;padding:1em;background:white;color:black;width:fit-content}"
+    "dialog[nvx-modal]{position:fixed;top:0;bottom:0;height:fit-content;max-width:calc(100% - 6px - 2em);max-height:calc(100% - 6px - 2em);z-index:2147483646}"
+    "[popover]{position:fixed;left:0;right:0;top:0;width:fit-content;margin:0 auto;border:1px solid;padding:.25em;overflow:auto;color:black;background:white;z-index:2147483647}"
+    "[popover]:not([nvx-popover-open]):not(dialog[open]){display:none}"
     "html{color:#000;font-family:sans-serif;font-size:16px;line-height:normal}"
     "body{margin:8px}"
-    "p,dl,figure,blockquote,pre,fieldset+p{margin-top:1em;margin-bottom:1em}"
+    "p,dl,figure,blockquote,pre{margin-top:1em;margin-bottom:1em}"
     "h1{font-size:2em;margin:.67em 0;font-weight:bold}h2{font-size:1.5em;margin:.83em 0;font-weight:bold}h3{font-size:1.17em;margin:1em 0;font-weight:bold}"
     "h4{margin:1.33em 0;font-weight:bold}h5{font-size:.83em;margin:1.67em 0;font-weight:bold}h6{font-size:.67em;margin:2.33em 0;font-weight:bold}"
     "article h1,aside h1,nav h1,section h1{font-size:1.5em;margin:.83em 0}"
@@ -2224,24 +2659,26 @@ const char css_ua_text[] =
     "small{font-size:smaller}big{font-size:larger}sub{vertical-align:sub;font-size:smaller}sup{vertical-align:super;font-size:smaller}"
     "center{text-align:center}hr{display:block;margin:.5em auto;border-style:inset;border-width:1px;border-color:#c0c0c0 #eeeeee #eeeeee #c0c0c0;color:gray;overflow:hidden}"
     "table{display:table;border-spacing:2px;border-collapse:separate;box-sizing:border-box;text-indent:0}"
+    "ruby{display:inline-flex;flex-direction:column;align-items:center;vertical-align:bottom;text-indent:0}rt{order:-1;display:block;font-size:50%;line-height:1.1;text-align:center;white-space:nowrap}rp{display:none}"
     "caption{display:table-caption;text-align:center}thead{display:table-header-group;vertical-align:middle}tbody{display:table-row-group;vertical-align:middle}"
     "tfoot{display:table-footer-group;vertical-align:middle}col{display:table-column}colgroup{display:table-column-group}"
     "tr{display:table-row;vertical-align:inherit}td,th{display:table-cell;vertical-align:inherit;padding:1px}th{font-weight:bold;text-align:center}"
     "table>tr,thead>tr,tbody>tr,tfoot>tr{vertical-align:middle}td,th{vertical-align:middle}"
     "mark{background-color:yellow;color:black}"
     "img,svg,video,canvas,iframe,object,embed,audio{display:inline-block}audio:not([controls]){display:none}"
-    "iframe{border:2px inset #c0c0c0;width:300px;height:150px}video,canvas,object,embed{width:300px;height:150px}svg:not([width]){width:300px}svg:not([height]){height:150px}"
-    "input,button,select,textarea{display:inline-block;font-family:sans-serif;font-size:13.333px;color:#000;letter-spacing:normal;word-spacing:normal;line-height:normal;text-transform:none;text-indent:0;text-align:start;box-sizing:border-box}"
-    "input,textarea{background:#fff;border:1px solid #767676;border-radius:2px;padding:1px 2px}input{height:21px}"
+    "iframe{border:2px inset #c0c0c0;width:300px;height:150px}video,canvas,object,embed{width:300px;height:150px}svg:not([width]):not([viewBox]){width:300px}svg:not([height]):not([viewBox]){height:150px}"
+    "input,button,select,textarea{display:inline-block;font-family:sans-serif;font-size:13.333px;color:#000;letter-spacing:normal;word-spacing:normal;line-height:normal;text-transform:none;text-indent:0;text-align:start}"
+    "button,select,input[type=submit],input[type=button],input[type=reset],input[type=file],input[type=checkbox],input[type=radio],input[type=range],input[type=color],input[type=image]{box-sizing:border-box}"
+    "input,textarea{background:#fff;border:1px solid #767676;border-radius:2px;padding:2px 3px}"
     "textarea{font-family:monospace;padding:2px;white-space:pre-wrap;vertical-align:text-bottom}"
     "input[type=checkbox],input[type=radio]{width:13px;height:13px;margin:3px 3px 3px 4px;padding:0;border:1px solid #767676;vertical-align:-2px}input[type=radio]{border-radius:50%}"
-    "button,input[type=submit],input[type=button],input[type=reset],input[type=file]{width:auto;height:auto;background:#efefef;border:1px solid #767676;border-radius:3px;padding:1px 6px;text-align:center;cursor:default}"
+    "button,input[type=submit],input[type=button],input[type=reset],input[type=file]{width:auto;height:auto;background:#efefef;border:1px solid #767676;border-radius:3px;padding:2px 7px;text-align:center;cursor:default}"
     "input[type=range]{border:0;background:transparent;width:129px;height:16px;padding:0}input[type=color]{width:50px;height:27px;padding:1px 2px}input[type=image]{width:auto;height:auto;border:0;padding:0}"
-    "select{background:#fff;border:1px solid #767676;border-radius:3px;padding:1px 20px 1px 4px;height:21px}option,optgroup{display:block}select option,select optgroup{display:none}"
-    "fieldset{margin:0 2px;padding:.35em .75em .625em;border:2px groove #c0c0c0;min-width:min-content}legend{padding:0 2px}"
+    "select{background:#fff;border:1px solid #767676;border-radius:3px;padding:1px 20px 1px 4px;height:21px}select[multiple],select[size]{height:auto;padding:1px;overflow:hidden}select[size='1']:not([multiple]),select[size='0']:not([multiple]),select[size='']:not([multiple]){height:21px;padding:1px 20px 1px 4px}option,optgroup{display:block}select option,select optgroup{display:none}"
+    "fieldset{margin:0 2px;padding:.35em .75em .625em;border:2px groove #c0c0c0;min-width:min-content}legend{padding:0 2px;width:fit-content}"
     "progress,meter{display:inline-block;width:160px;height:16px;vertical-align:-.2em}"
     "details>summary:first-of-type{display:list-item;list-style:disclosure-closed inside;cursor:pointer}"
-    "details:not([open])>:not(summary){display:none}"
+    "details:not([open])>:not(summary){display:none}details[open]>summary:first-of-type{list-style-type:disclosure-open}"
     "q::before{content:open-quote}q::after{content:close-quote}"
-    "ruby{display:inline}rt{font-size:50%}rp{display:none}"
+    ""
     "slot{display:contents}";

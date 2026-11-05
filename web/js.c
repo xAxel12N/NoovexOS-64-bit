@@ -1,5 +1,6 @@
 #include "web/nwe.h"
 #include "third_party/quickjs/quickjs.h"
+#include "web/canvas.h"
 
 extern const char nwe_prelude[];
 void eng_node_inserted(node* n);
@@ -11,6 +12,8 @@ static JSContext* ctx;
 static JSClassID node_class;
 static JSValue p_node, p_elem, p_html, p_text, p_comment, p_doc, p_frag, p_svg, p_chardata;
 static JSValue tagproto[T_COUNT];
+static struct { char nm[16]; JSValue p; } tagproto_nm[24];
+static int ntagproto_nm;
 static unsigned long js_deadline;
 static unsigned long g_load_js_ms;
 static int js_inited;
@@ -19,17 +22,85 @@ typedef struct timer { int id; JSValue fn; unsigned long due; int interval, ms, 
 static timer* timers;
 static int ntimers, ctimers, next_tid;
 
-static int interrupt_cb(JSContext* r, void* op) { (void)r; (void)op; if (nwk_busy()) { extern int g_nwe_user_stop; g_nwe_user_stop = 1; return 1; } return js_deadline && nwk_ms() > js_deadline; }
-static void arm(void) { js_deadline = nwk_ms() + 6000; }
+unsigned long nwk_ms_active(void);
+unsigned long long nwk_net_us(void);
+static unsigned long js_clk(void) { return (unsigned long)((long long)nwk_ms_active() - (long long)(nwk_net_us() / 1000ull) + (1ll << 40)); }
+static int interrupt_cb(JSContext* r, void* op) { (void)r; (void)op; if (nwk_busy()) { extern int g_nwe_user_stop; g_nwe_user_stop = 1; return 1; } return js_deadline && js_clk() > js_deadline; }
+static void arm(void) { js_deadline = js_clk() + 60000; }
 
+#define REJ_N 32
+static JSValue g_rej_p[REJ_N];
+static char g_rej_m[REJ_N][600];
+static int g_rej_n;
+static void rej_tracker(JSContext* c, JSValueConst promise, JSValueConst reason, bool is_handled, void* op) {
+    (void)op;
+    if (is_handled) {
+        for (int i = 0; i < g_rej_n; i++) if (JS_VALUE_GET_PTR(g_rej_p[i]) == JS_VALUE_GET_PTR(promise)) { JS_FreeValue(c, g_rej_p[i]); g_rej_p[i] = g_rej_p[g_rej_n - 1]; memcpy(g_rej_m[i], g_rej_m[g_rej_n - 1], sizeof(g_rej_m[0])); g_rej_n--; return; }
+        return;
+    }
+    if (g_rej_n >= REJ_N) return;
+    const char* s = JS_ToCString(c, reason);
+    if (!s) JS_FreeValue(c, JS_GetException(c));
+    JSValue st = JS_IsObject(reason) ? JS_GetPropertyStr(c, reason, "stack") : JS_UNDEFINED;
+    if (JS_IsException(st)) { JS_FreeValue(c, JS_GetException(c)); st = JS_UNDEFINED; }
+    const char* ss = JS_IsString(st) ? JS_ToCString(c, st) : 0;
+    snprintf(g_rej_m[g_rej_n], sizeof(g_rej_m[0]), "Unhandled promise rejection: %s %s", s ? s : "?", ss ? ss : "");
+    g_rej_p[g_rej_n++] = JS_DupValue(c, promise);
+    if (ss) JS_FreeCString(c, ss);
+    if (s) JS_FreeCString(c, s);
+    JS_FreeValue(c, st);
+}
+static void rej_flush(void) {
+    for (int i = 0; i < g_rej_n; i++) { nwk_error(g_rej_m[i]); JS_FreeValue(ctx, g_rej_p[i]); }
+    g_rej_n = 0;
+}
+int g_js_errs;
+static void js_err_snippet(const char* ss) {
+    extern const char* eng_src_get(const char* url, int* len);
+    const char* p = ss;
+    while ((p = strchr(p, '(')) != 0) {
+        p++;
+        const char* e = strchr(p, ')');
+        if (!e) return;
+        const char* c2 = e; while (c2 > p && c2[-1] >= '0' && c2[-1] <= '9') c2--;
+        if (c2 == e || c2 <= p || c2[-1] != ':') { p = e; continue; }
+        const char* c1 = c2 - 1; while (c1 > p && c1[-1] >= '0' && c1[-1] <= '9') c1--;
+        if (c1 == c2 - 1 || c1 <= p || c1[-1] != ':') { p = e; continue; }
+        int line = atoi(c1), col = atoi(c2);
+        char url[4096]; int ul = (int)(c1 - 1 - p); if (ul <= 0 || ul >= (int)sizeof(url)) { p = e; continue; }
+        memcpy(url, p, (size_t)ul); url[ul] = 0;
+        int len = 0; const char* t = eng_src_get(url, &len);
+        if (!t) { p = e; continue; }
+        int ln = 1, i = 0;
+        while (i < len && ln < line) { if (t[i] == '\n') ln++; i++; }
+        if (ln != line) return;
+        int ls = i, le = i; while (le < len && t[le] != '\n') le++;
+        int pos = ls + (col > 0 ? col - 1 : 0); if (pos > le) pos = le;
+        int a = pos - 70 < ls ? ls : pos - 70, b = pos + 90 > le ? le : pos + 90;
+        char out[400]; int o = 0;
+        const char* nm = strrchr(url, '/'); nm = nm && nm[1] ? nm + 1 : url;
+        o += snprintf(out, sizeof(out), "Code at %.60s:%d:%d: ", nm, line, col);
+        if (a > ls) { out[o++] = '.'; out[o++] = '.'; out[o++] = '.'; }
+        for (int k = a; k < b && o < (int)sizeof(out) - 16; k++) { if (k == pos) { memcpy(out + o, " >>", 3); o += 3; } char ch = t[k]; out[o++] = (ch == '\t' || ch == '\r') ? ' ' : ch; }
+        if (b < le) { out[o++] = '.'; out[o++] = '.'; out[o++] = '.'; }
+        out[o] = 0;
+        nwk_error(out);
+        return;
+    }
+}
+static int g_js_oom;
+static unsigned long g_js_gc_t;
 static void report(void) {
+    g_js_errs++;
     JSValue e = JS_GetException(ctx);
     const char* s = JS_ToCString(ctx, e);
+    if (s && strstr(s, "out of memory")) g_js_oom = 1;
     JSValue st = JS_IsObject(e) ? JS_GetPropertyStr(ctx, e, "stack") : JS_UNDEFINED;
     const char* ss = JS_IsUndefined(st) ? 0 : JS_ToCString(ctx, st);
-    char buf[600];
-    snprintf(buf, sizeof(buf), "JS error: %s %s", s ? s : "?", ss ? ss : "");
-    nwk_log(buf);
+    char buf[1200];
+    snprintf(buf, sizeof(buf), "Uncaught %s %s", s ? s : "?", ss ? ss : "");
+    nwk_error(buf);
+    if (ss) js_err_snippet(ss);
     if (ss) JS_FreeCString(ctx, ss);
     if (s) JS_FreeCString(ctx, s);
     JS_FreeValue(ctx, st);
@@ -37,6 +108,7 @@ static void report(void) {
 }
 
 static node* N(JSValueConst v) { return JS_GetOpaque(v, node_class); }
+node* js_node_of(JSValueConst v) { return N(v); }
 static JSValue proto_for(node* n) {
     switch (n->type) {
     case NT_DOC: return p_doc;
@@ -44,8 +116,9 @@ static JSValue proto_for(node* n) {
     case NT_COMMENT: return p_comment;
     case NT_FRAG: return p_frag;
     }
-    if (n->tag >= T_PATH || n->tag == T_SVG) return p_svg;
+    if ((n->flags & NF_SVG) || n->tag >= T_PATH || n->tag == T_SVG) return p_svg;
     if (n->tag > 0 && n->tag < T_COUNT && !JS_IsUndefined(tagproto[n->tag])) return tagproto[n->tag];
+    if (n->name && ntagproto_nm) for (int i = 0; i < ntagproto_nm; i++) if (ieq(n->name, tagproto_nm[i].nm)) return tagproto_nm[i].p;
     return p_html;
 }
 static JSValue wrap(node* n) {
@@ -102,7 +175,42 @@ static char* cstr(JSValueConst v) {
 }
 static char* cstr_or(JSValueConst v, const char* def) { char* r = cstr(v); return r ? r : nstrdup(def); }
 
+void eng_lay_mark(node* n, int isdom);
 static void dirty(void) { G.dirty_style = 1; G.dirty_layout = 1; G.dirty_paint = 1; }
+static int style_only_attr(const char* k) { return ieq(k, "class") || ieq(k, "id") || ieq(k, "style") || istarts(k, "data-") || istarts(k, "aria-") || ieq(k, "title") || ieq(k, "role") || ieq(k, "tabindex") || ieq(k, "hidden") || ieq(k, "open") || ieq(k, "disabled") || ieq(k, "checked") || ieq(k, "slot") || ieq(k, "dir") || ieq(k, "lang"); }
+static int connected(node* n) { for (int g = 0; n && g < 100000; g++) { if (n == G.doc) return 1; if (n->parent) n = n->parent; else if (n->type == NT_FRAG && n->host) n = n->host; else return 0; } return 0; }
+static void dirty_attr(node* n, const char* k) {
+    if (n && G.doc && n->tag != T_STYLE && n->tag != T_LINK && !connected(n)) return;
+    if (!n || n->tag == T_STYLE || n->tag == T_LINK || n->tag == T_HTML || !G.doc) { css_bump(); dirty(); return; }
+    eng_style_node(n);
+    if (!style_only_attr(k)) eng_lay_mark(n, 0);
+    G.dirty_paint = 1;
+}
+static void text_dirty(node* t) {
+    extern int g_css_pos;
+    node* p = t->parent;
+    if (p && G.doc && p->tag != T_STYLE && !connected(p)) return;
+    if (!p || !G.doc || p->tag == T_STYLE || p->tag == T_TITLE) { if (p && p->tag == T_STYLE) css_bump(); dirty(); return; }
+    if (g_css_pos && p->type == NT_ELEM) eng_style_node(p);
+    eng_lay_mark(p, 1);
+    G.dirty_paint = 1;
+}
+static void dirty_tree(node* p, node* child) {
+    extern int g_css_pos, g_css_sib;
+    if (!p || !G.doc) { dirty(); return; }
+    if (p->tag != T_STYLE && !(child && child->type == NT_ELEM && (child->tag == T_STYLE || child->tag == T_LINK)) && !connected(p)) return;
+    if (p->type == NT_FRAG && p->host && p->host->st) { if (child && child->type != NT_ELEM) child->st = 0; eng_style_node(p->host); eng_lay_mark(p->host, 0); G.dirty_paint = 1; return; }
+    if (p->tag == T_STYLE || p->tag == T_HEAD || p->tag == T_HTML || p->type != NT_ELEM) { if (p->tag == T_STYLE) css_bump(); dirty(); return; }
+    if (child && child->type != NT_ELEM && child->parent == p) child->st = p->shadow ? 0 : p->st;
+    if (child && child->type == NT_ELEM && (child->tag == T_STYLE || child->tag == T_LINK)) { css_bump(); dirty(); return; }
+    if (child && child->type != NT_ELEM && !p->st) { dirty(); return; }
+    if (p->shadow && child) { eng_style_node(p); }
+    else if (child && child->type == NT_ELEM && !g_css_pos && !g_css_sib && child->parent == p) eng_style_node(child);
+    else if (p->type == NT_ELEM) { if (g_css_pos || g_css_sib || (child && child->type == NT_ELEM)) eng_style_node(p); }
+    else G.dirty_style = 1;
+    eng_lay_mark(p, 1);
+    G.dirty_paint = 1;
+}
 
 static JSValue node_list(node** a, int n) {
     JSValue arr = JS_NewArray(ctx);
@@ -181,6 +289,7 @@ static void set_value(node* n, const char* v) {
     n->vlen = l;
     n->vcap = l + 1;
     n->caret = l;
+    n->sela = 0;
     n->dirtyval = 1;
     dirty();
 }
@@ -192,11 +301,41 @@ static void js_flush_n(node* n) {
     unsigned long t = nwk_ms();
     if (t - win > 1000) { win = t; spent = 0; }
     int nobox = n && !n->box;
-    if (nobox && G.doc && !(G.dirty_style || G.dirty_layout)) { node* p = n; while (p && p != G.doc) p = p->parent; if (p == G.doc) G.dirty_style = 1; else return; }
+    if (nobox && G.doc && !(G.dirty_style || G.dirty_layout)) { if (n->st || !connected(n)) return; node* q = n->parent; while (q && q->type == NT_ELEM && !q->st) q = q->parent; if (q && q->type == NT_ELEM && q->st && q->st->display == D_NONE) return; eng_style_node(n); G.dirty_layout = 1; }
     if (!(G.dirty_style || G.dirty_layout)) return;
     if (spent > 60) return;
     busy = 1; eng_layout_if_dirty(); busy = 0;
     unsigned long e = nwk_ms(); spent += e - t; last = e;
+}
+typedef struct { sbuf o; int req; int sp; } itx_state;
+static void itx_need(itx_state* s, int k) { if (k > s->req) s->req = k; }
+static void itx_emit(itx_state* s, const char* t, int n, int pre) {
+    for (int i = 0; i < n; i++) {
+        char ch = t[i];
+        if (!pre && (ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r' || ch == '\f')) { if (!s->sp) { if (s->req) continue; sb_putc(&s->o, ' '); s->sp = 1; } continue; }
+        if (s->req) { while (s->o.n > 0 && s->o.s[s->o.n - 1] == ' ') s->o.n--; if (s->o.n > 0) { int have = 0; for (int q = s->o.n - 1; q >= 0 && s->o.s[q] == '\n'; q--) have++; for (int k = have; k < s->req; k++) sb_putc(&s->o, '\n'); } s->req = 0; }
+        sb_putc(&s->o, ch);
+        s->sp = pre ? 0 : 0;
+        if (pre && ch == '\n') s->sp = 1;
+    }
+}
+static void itx_walk(node* n, itx_state* s, int depth) {
+    if (depth > 512) return;
+    for (node* c = n->first; c; c = c->next) {
+        if (c->type == NT_TEXT) { style* st = c->st ? c->st : n->st; int pre = st && st->ws >= WS_PRE; if (st && st->display == D_NONE) continue; if (st && st->visibility) continue; itx_emit(s, c->text ? c->text : "", c->tlen, pre); continue; }
+        if (c->type != NT_ELEM) continue;
+        if (c->tag == T_SCRIPT || c->tag == T_STYLE || c->tag == T_TEMPLATE || c->tag == T_NOSCRIPT || c->tag == T_HEAD) continue;
+        style* st = c->st;
+        if (!st || st->display == D_NONE) continue;
+        if (c->tag == T_BR) { itx_emit(s, "\n", 1, 1); s->sp = 1; continue; }
+        int blk = st->display == D_BLOCK || st->display == D_FLEX || st->display == D_GRID || st->display == D_TABLE || st->display == D_LISTITEM || st->display == D_TCAPTION;
+        int para = c->tag == T_P;
+        int cell = st->display == D_TCELL, row = st->display == D_TROW;
+        if (para) itx_need(s, 2); else if (blk || row) itx_need(s, 1);
+        if (cell && c->prev) { node* q = c->prev; while (q && q->type != NT_ELEM) q = q->prev; if (q) { itx_emit(s, "\t", 1, 1); s->sp = 1; } }
+        itx_walk(c, s, depth + 1);
+        if (para) itx_need(s, 2); else if (blk || row) itx_need(s, 1);
+    }
 }
 static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     (void)c;
@@ -207,7 +346,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
         if (magic == 3 && !v) { if (n->tag == T_INPUT) return jstr("text"); if (n->tag == T_BUTTON) return jstr("submit"); if (n->tag == T_SELECT) return jstr(attr_get(n, "multiple") ? "select-multiple" : "select-one"); if (n->tag == T_TEXTAREA) return jstr("textarea"); }
         if (magic == 3 && v && n->tag == T_INPUT) { char b[32]; int i = 0; for (; v[i] && i < 31; i++) b[i] = (char)lc((unsigned char)v[i]); b[i] = 0; return jstr(b); }
         if (magic == 9 && n->tag == T_FORM) { if (!v) return jstr("get"); char b[16]; int i = 0; for (; v[i] && i < 15; i++) b[i] = (char)lc((unsigned char)v[i]); b[i] = 0; return jstr(b); }
-        if (magic == 8 && n->tag == T_FORM) { char full[1024]; url_resolve(G.base, v ? v : G.url, full, sizeof(full)); return jstr(full); }
+        if (magic == 8 && n->tag == T_FORM) { char full[4096]; url_resolve(G.base, v ? v : G.url, full, sizeof(full)); return jstr(full); }
         if (magic == 27) return JS_NewBool(ctx, v != 0);
         return jstr(v ? v : "");
     }
@@ -220,7 +359,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
         if (n->type == NT_COMMENT) return jstr("#comment");
         if (n->type == NT_DOC) return jstr("#document");
         if (n->type == NT_FRAG) return jstr("#document-fragment");
-        if (n->tag >= T_PATH || n->tag == T_SVG) return jstr(n->name);
+        if ((n->flags & NF_SVG) || n->tag >= T_PATH || n->tag == T_SVG) return jstr(n->name);
         char t[64];
         int i = 0;
         for (; n->name[i] && i < 63; i++) t[i] = (char)((n->name[i] >= 'a' && n->name[i] <= 'z') ? n->name[i] - 32 : n->name[i]);
@@ -230,13 +369,15 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     case G_LOCALNAME: return n->type == NT_ELEM ? jstr(n->name) : JS_NULL;
     case G_TEXTCONTENT: if (n->type == NT_DOC) return JS_NULL; text_content(n, &b); return jstrn(b.s, b.n);
     case G_INNERTEXT: {
-        text_content(n, &b);
-        if (!b.s) return jstr("");
-        sbuf o = { 0, 0, 0 };
-        int sp = 1;
-        for (int i = 0; i < b.n; i++) { char ch = b.s[i]; if (is_ws((unsigned char)ch) && (!n->st || n->st->ws < WS_PRE)) { if (!sp) { sb_putc(&o, ' '); sp = 1; } } else { sb_putc(&o, ch); sp = 0; } }
-        while (o.n > 0 && o.s[o.n - 1] == ' ') o.n--;
-        return jstrn(o.s, o.n);
+        if (G.dirty_style || G.dirty_layout) eng_layout_if_dirty();
+        if (!n->st || n->st->display == D_NONE) { text_content(n, &b); return b.s ? jstrn(b.s, b.n) : jstr(""); }
+        itx_state is = { { 0, 0, 0 }, 0, 1 };
+        itx_walk(n, &is, 0);
+        sbuf* o = &is.o;
+        int st = 0, en = o->n;
+        while (st < en && (o->s[st] == '\n' || o->s[st] == ' ')) st++;
+        while (en > st && (o->s[en - 1] == '\n' || o->s[en - 1] == ' ')) en--;
+        return en > st ? jstrn(o->s + st, en - st) : jstr("");
     }
     case G_INNERHTML: serialize(n, &b, 0); return jstrn(b.s, b.n);
     case G_OUTERHTML: serialize(n, &b, 1); return jstrn(b.s, b.n);
@@ -254,7 +395,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     case G_PARENTEL: return (n->parent && n->parent->type == NT_ELEM) ? wrap(n->parent) : JS_NULL;
     case G_CHILDCOUNT: { int k = 0; for (node* c = n->first; c; c = c->next) if (c->type == NT_ELEM) k++; return JS_NewInt32(ctx, k); }
     case G_OWNERDOC: return n->type == NT_DOC ? JS_NULL : wrap(G.doc);
-    case G_ISCONNECTED: return JS_NewBool(ctx, node_contains(G.doc, n));
+    case G_ISCONNECTED: { node* q = n; while (q) { if (q == G.doc) return JS_TRUE; if (q->parent) q = q->parent; else if (q->type == NT_FRAG && q->host) q = q->host; else break; } return JS_FALSE; }
     case G_VALUE: { const char* v = input_value(n, &b); return jstr(v); }
     case G_CHECKED: return JS_NewBool(ctx, n->checked);
     case G_DEFCHECKED: return JS_NewBool(ctx, attr_get(n, "checked") != 0);
@@ -269,7 +410,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     case G_DRAGGABLE: return JS_NewBool(ctx, attr_get(n, "draggable") && !ieq(attr_get(n, "draggable"), "false"));
     case G_SPELLCHECK: return JS_TRUE;
     case G_CONTENTEDITABLE: { const char* v = attr_get(n, "contenteditable"); return jstr(v ? (*v ? v : "true") : "inherit"); }
-    case G_ISCONTENTEDITABLE: return JS_FALSE;
+    case G_ISCONTENTEDITABLE: { extern node* edit_host(node*); return JS_NewBool(ctx, edit_host(n) != 0); }
     case G_MAXLEN: { const char* v = attr_get(n, "maxlength"); return JS_NewInt32(ctx, v ? atoi(v) : -1); }
     case G_MIN: case G_MAX: case G_STEP: { const char* v = attr_get(n, magic == G_MIN ? "min" : magic == G_MAX ? "max" : "step"); return jstr(v ? v : ""); }
     case G_VALUEASNUM: { const char* v = input_value(n, &b); return JS_NewFloat64(ctx, (v && *v) ? strtod(v, 0) : NAN); }
@@ -287,6 +428,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     case G_SELECTED: case G_DEFSELECTED: {
         node* s = n->parent;
         if (s && s->tag == T_OPTGROUP) s = s->parent;
+        if (s && s->tag == T_SELECT && magic == G_SELECTED && attr_get(s, "multiple")) return JS_NewBool(ctx, attr_get(n, "selected") != 0);
         if (magic == G_DEFSELECTED || !s || s->tag != T_SELECT || s->selidx < 0) return JS_NewBool(ctx, attr_get(n, "selected") != 0 || (s && s->tag == T_SELECT && s->selidx == -1 && magic == G_SELECTED && 0));
         int idx = 0;
         node* stack[256];
@@ -300,7 +442,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     case G_HREF: case G_SRC: case G_CURSRC: {
         const char* v = attr_get(n, magic == G_HREF ? "href" : "src");
         if (!v) return jstr("");
-        char full[2048];
+        char full[4096];
         url_resolve(G.base, v, full, sizeof(full));
         return jstr(full);
     }
@@ -312,23 +454,25 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
         box* bx = box_of(n);
         if (magic == G_OFFT || magic == G_OFFL) {
             float px = 0, py = 0, pw, ph;
-            for (node* p = n->parent; p && p->type == NT_ELEM; p = p->parent) if (p->st && (p->st->position != P_STATIC || p->tag == T_BODY || p->tag == T_TD || p->tag == T_TABLE)) { abs_pos(p, &px, &py, &pw, &ph); if (p->box) { px += p->box->b[3]; py += p->box->b[0]; } break; }
+            box_rect_s(n, &x, &y, &w, &h, 0);
+            for (node* p = n->parent; p && p->type == NT_ELEM; p = p->parent) if (p->st && (p->st->position != P_STATIC || p->tag == T_BODY || p->tag == T_TD || p->tag == T_TABLE)) { box_rect_s(p, &px, &py, &pw, &ph, 0); if (p->box) { px += p->box->b[3]; py += p->box->b[0]; } break; }
             return JS_NewInt32(ctx, (int)roundf(magic == G_OFFT ? y - py : x - px));
         }
         if (magic == G_CLITOP || magic == G_CLILEFT) return JS_NewInt32(ctx, bx ? (int)(magic == G_CLITOP ? bx->b[0] : bx->b[3]) : 0);
         if (magic == G_CLIW || magic == G_CLIH) { if (!bx || bx->kind == BX_INLINE) return JS_NewInt32(ctx, 0); return JS_NewInt32(ctx, (int)(magic == G_CLIW ? w - bx->b[1] - bx->b[3] : h - bx->b[0] - bx->b[2])); }
-        if (magic == G_SCRW) { if (n->tag == T_HTML || n->tag == T_BODY) return JS_NewInt32(ctx, (int)g_docw); return JS_NewInt32(ctx, (int)w); }
+        if (magic == G_SCRW) { if (n->tag == T_HTML || n->tag == T_BODY) return JS_NewInt32(ctx, (int)g_docw); if (bx && bx->kind != BX_INLINE) { float cw2 = w - bx->b[1] - bx->b[3], sw = box_scroll_w(bx); return JS_NewInt32(ctx, (int)(sw > cw2 ? sw : cw2)); } return JS_NewInt32(ctx, (int)w); }
         if (magic == G_SCRH) { if (n->tag == T_HTML || n->tag == T_BODY) return JS_NewInt32(ctx, (int)g_doch); { float ch2 = bx ? h - bx->b[0] - bx->b[2] : h; if (bx && bx->contenth + bx->p[0] + bx->p[2] > ch2) return JS_NewInt32(ctx, (int)(bx->contenth + bx->p[0] + bx->p[2])); return JS_NewInt32(ctx, (int)ch2); }; }
         return JS_NewInt32(ctx, (int)roundf(magic == G_OFFW ? w : h));
     }
     case G_OFFP: for (node* p = n->parent; p && p->type == NT_ELEM; p = p->parent) if (p->st && (p->st->position != P_STATIC || p->tag == T_BODY)) return wrap(p); return JS_NULL;
     case G_SCRT: if (n->tag == T_HTML || n->tag == T_BODY) return JS_NewInt32(ctx, (int)G.scroll); return JS_NewInt32(ctx, (int)n->scrolly);
-    case G_SCRL: return JS_NewInt32(ctx, 0);
+    case G_SCRL: if (n->tag == T_HTML || n->tag == T_BODY) return JS_NewInt32(ctx, 0); return JS_NewInt32(ctx, (int)n->scrollx);
     case G_FORMEL: return wrap(form_of(n));
     case G_NODEVALUE: if (n->type == NT_TEXT || n->type == NT_COMMENT) return jstrn(n->text, n->tlen); return JS_NULL;
     case G_NATW: case G_NATH: case G_WIDTH: case G_HEIGHT: {
         if (magic == G_WIDTH || magic == G_HEIGHT) {
             if (n->tag == T_CANVAS) { const char* v = attr_get(n, magic == G_WIDTH ? "width" : "height"); return JS_NewInt32(ctx, v ? atoi(v) : (magic == G_WIDTH ? 300 : 150)); }
+            if (n->tag == T_IMG && !box_of(n)) { const char* v = attr_get(n, magic == G_WIDTH ? "width" : "height"); if (v && *v >= '0' && *v <= '9') return JS_NewInt32(ctx, atoi(v)); if (n->img && n->img->state == 2) return JS_NewInt32(ctx, magic == G_WIDTH ? n->img->w : n->img->h); return JS_NewInt32(ctx, 0); }
             abs_pos(n, &x, &y, &w, &h);
             box* bx = box_of(n);
             if (bx) { w -= bx->p[1] + bx->p[3] + bx->b[1] + bx->b[3]; h -= bx->p[0] + bx->p[2] + bx->b[0] + bx->b[2]; }
@@ -341,7 +485,7 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
     case G_TABINDEX: { const char* v = attr_get(n, "tabindex"); if (v) return JS_NewInt32(ctx, atoi(v)); int foc = n->tag == T_A || n->tag == T_INPUT || n->tag == T_BUTTON || n->tag == T_SELECT || n->tag == T_TEXTAREA; return JS_NewInt32(ctx, foc ? 0 : -1); }
     case G_DEFVALUE: { if (n->tag == T_TEXTAREA) { text_content(n, &b); return jstrn(b.s, b.n); } const char* v = attr_get(n, "value"); return jstr(v ? v : ""); }
     case G_OPEN: return JS_NewBool(ctx, attr_get(n, "open") != 0);
-    case G_SELSTART: case G_SELEND: return JS_NewInt32(ctx, n->caret);
+    case G_SELSTART: case G_SELEND: { int a = n->caret, b = n->caret; if (n->sela) { int x = n->sela - 1; if (x > n->vlen) x = n->vlen; a = x < n->caret ? x : n->caret; b = x < n->caret ? n->caret : x; } return JS_NewInt32(ctx, magic == G_SELSTART ? a : b); }
     case G_LENGTH: case G_OPTIONS: case G_ELEMENTS: {
         node* list[4096];
         int cnt = 0;
@@ -377,22 +521,26 @@ static JSValue g_get(JSContext* c, JSValueConst this_val, int magic) {
 
 static void remove_children(node* n) { while (n->first) { node* c = n->first; node_remove(c); eng_node_removed(c); } }
 
+static void frag_scripts_inert(node* f) {
+    node* st[1024]; int sp = 0;
+    for (node* q = f->first; q && sp < 1024; q = q->next) st[sp++] = q;
+    while (sp > 0) { node* c = st[--sp]; if (c->type != NT_ELEM) continue; if (c->tag == T_SCRIPT) c->flags |= NF_SCRIPTDONE; for (node* d = c->first; d && sp < 1024; d = d->next) st[sp++] = d; }
+}
 static JSValue g_set(JSContext* c, JSValueConst this_val, JSValueConst val, int magic) {
     (void)c;
     node* n = N(this_val);
     if (!n) return JS_UNDEFINED;
     if (magic < NREFLECT) {
-        if (magic == 27) { if (JS_ToBool(ctx, val)) attr_set(n, reflect_attr[magic], ""); else attr_del(n, reflect_attr[magic]); dirty(); return JS_UNDEFINED; }
+        if (magic == 27) { if (JS_ToBool(ctx, val)) attr_set(n, reflect_attr[magic], ""); else attr_del(n, reflect_attr[magic]); dirty_attr(n, reflect_attr[magic]); return JS_UNDEFINED; }
         char* s = cstr_or(val, "");
         attr_set(n, reflect_attr[magic], s);
-        if (magic == 1 || magic == 0) css_bump();
-        dirty();
+        dirty_attr(n, reflect_attr[magic]);
         return JS_UNDEFINED;
     }
     switch (magic) {
     case G_TEXTCONTENT: case G_INNERTEXT: {
         char* s = cstr_or(val, "");
-        if (n->type == NT_TEXT || n->type == NT_COMMENT) { char* old = g_mut_on ? nstrndup(n->text ? n->text : "", n->tlen) : 0; n->text = s; n->tlen = (int)strlen(s); if (old) dom_mut_text(n, old); dirty(); return JS_UNDEFINED; }
+        if (n->type == NT_TEXT || n->type == NT_COMMENT) { char* old = g_mut_on ? nstrndup(n->text ? n->text : "", n->tlen) : 0; n->text = s; n->tlen = (int)strlen(s); if (old) dom_mut_text(n, old); text_dirty(n); return JS_UNDEFINED; }
         remove_children(n);
         if (*s) {
             if (magic == G_INNERTEXT && strchr(s, '\n')) {
@@ -400,24 +548,27 @@ static JSValue g_set(JSContext* c, JSValueConst this_val, JSValueConst val, int 
                 while (*p) { const char* e = strchr(p, '\n'); int l = e ? (int)(e - p) : (int)strlen(p); if (l) node_append(n, text_new(p, l)); if (!e) break; node_append(n, elem_new("br")); p = e + 1; }
             } else node_append(n, text_new(s, (int)strlen(s)));
         }
-        if (n->tag == T_STYLE) css_bump();
-        dirty();
+        if (n->tag == T_STYLE) { css_bump(); dirty(); }
+        else dirty_tree(n, n->first && !n->first->next ? n->first : 0);
         return JS_UNDEFINED;
     }
     case G_INNERHTML: {
         char* s = cstr_or(val, "");
         if (n->tag == T_TEMPLATE) { remove_children(n); }
         node* f = parse_fragment(n, s, (int)strlen(s));
+        if (n->tag != T_TEMPLATE) frag_scripts_inert(f);
         remove_children(n);
         while (f->first) { node* k = f->first; node_remove(k); node_append(n, k); eng_node_inserted(k); }
-        if (n->tag == T_STYLE) css_bump();
-        dirty();
+        if (n->tag == T_STYLE || n->tag == T_TEMPLATE) { css_bump(); dirty(); }
+        else if (n->type == NT_ELEM) { eng_style_node(n); eng_lay_mark(n, 1); G.dirty_paint = 1; }
+        else dirty();
         return JS_UNDEFINED;
     }
     case G_OUTERHTML: {
         if (!n->parent) return JS_UNDEFINED;
         char* s = cstr_or(val, "");
         node* f = parse_fragment(n->parent, s, (int)strlen(s));
+        frag_scripts_inert(f);
         node* p = n->parent;
         while (f->first) { node* k = f->first; node_remove(k); node_insert_before(p, k, n); eng_node_inserted(k); }
         node_remove(n);
@@ -425,7 +576,7 @@ static JSValue g_set(JSContext* c, JSValueConst this_val, JSValueConst val, int 
         dirty();
         return JS_UNDEFINED;
     }
-    case G_NODEVALUE: if (n->type == NT_TEXT || n->type == NT_COMMENT) { char* s = cstr_or(val, ""); char* old = g_mut_on ? nstrndup(n->text ? n->text : "", n->tlen) : 0; n->text = s; n->tlen = (int)strlen(s); if (old) dom_mut_text(n, old); dirty(); } return JS_UNDEFINED;
+    case G_NODEVALUE: if (n->type == NT_TEXT || n->type == NT_COMMENT) { char* s = cstr_or(val, ""); char* old = g_mut_on ? nstrndup(n->text ? n->text : "", n->tlen) : 0; n->text = s; n->tlen = (int)strlen(s); if (old) dom_mut_text(n, old); text_dirty(n); } return JS_UNDEFINED;
     case G_VALUE: { char* s = cstr_or(val, ""); set_value(n, s); return JS_UNDEFINED; }
     case G_CHECKED: {
         int v = JS_ToBool(ctx, val);
@@ -450,14 +601,14 @@ static JSValue g_set(JSContext* c, JSValueConst this_val, JSValueConst val, int 
     case G_DISABLED: case G_READONLY: case G_REQUIRED: case G_HIDDEN: case G_OPEN: case G_MULTIPLE: case G_AUTOFOCUS: case G_NOVALIDATE: case G_DEFER: case G_NOMODULE: {
         const char* an = magic == G_DISABLED ? "disabled" : magic == G_READONLY ? "readonly" : magic == G_REQUIRED ? "required" : magic == G_HIDDEN ? "hidden" : magic == G_OPEN ? "open" : magic == G_MULTIPLE ? "multiple" : magic == G_AUTOFOCUS ? "autofocus" : magic == G_NOVALIDATE ? "novalidate" : magic == G_DEFER ? "defer" : "nomodule";
         if (JS_ToBool(ctx, val)) attr_set(n, an, ""); else attr_del(n, an);
-        css_bump();
-        dirty();
+        dirty_attr(n, an);
         return JS_UNDEFINED;
     }
     case G_SELIDX: { int32_t v; JS_ToInt32(ctx, &v, val); n->selidx = v < 0 ? -2 : v; dirty(); return JS_UNDEFINED; }
     case G_SELECTED: {
         node* s = n->parent;
         if (s && s->tag == T_OPTGROUP) s = s->parent;
+        if (s && s->tag == T_SELECT && attr_get(s, "multiple")) { if (JS_ToBool(ctx, val)) attr_set(n, "selected", ""); else attr_del(n, "selected"); dirty(); return JS_UNDEFINED; }
         if (s && s->tag == T_SELECT && JS_ToBool(ctx, val)) { int idx = 0; for (node* c = s->first; c; c = c->next) { if (c == n) { s->selidx = idx; break; } if (c->tag == T_OPTION) idx++; } }
         dirty();
         return JS_UNDEFINED;
@@ -467,22 +618,42 @@ static JSValue g_set(JSContext* c, JSValueConst this_val, JSValueConst val, int 
         char* s = cstr_or(val, "");
         attr_set(n, magic == G_HREF ? "href" : "src", s);
         if (magic == G_SRC && (n->tag == T_IMG || n->tag == T_SCRIPT)) eng_node_inserted(n);
-        if (n->tag == T_LINK) { n->value = 0; css_bump(); }
-        dirty();
+        if (n->tag == T_LINK) { n->value = 0; css_bump(); dirty(); }
+        else dirty_attr(n, magic == G_HREF ? "href" : "src");
+        return JS_UNDEFINED;
+    }
+    case G_SCRL: {
+        double v = 0;
+        JS_ToFloat64(ctx, &v, val);
+        if (n->tag == T_HTML || n->tag == T_BODY) return JS_UNDEFINED;
+        js_flush_n(n);
+        box* b = n->box; float mx = 0;
+        if (b && b->st && b->st->ovx != OV_VISIBLE) { mx = box_scroll_w(b) - (b->w - b->b[1] - b->b[3]); if (mx < 0) mx = 0; }
+        if (v != v || v < 0) v = 0; if (v > mx && (!G.dirty_layout || !b)) v = mx;
+        if (n->scrollx != (float)v) { extern void eng_queue_scroll(node*); eng_queue_scroll(n); }
+        n->scrollx = (float)v; if (b) b->sx = (float)v; G.dirty_paint = 1;
         return JS_UNDEFINED;
     }
     case G_SCRT: {
         double v;
         JS_ToFloat64(ctx, &v, val);
         if (n->tag == T_HTML || n->tag == T_BODY) eng_scroll_to((float)v);
-        else { n->scrolly = (float)v; if (n->box) n->box->sy = (float)v; G.dirty_paint = 1; }
+        else { if (v != v || v < 0) v = 0; js_flush_n(n); if (n->box && !G.dirty_layout) { box* b = n->box; float mx = b->contenth + b->p[0] + b->p[2] - (b->h - b->b[0] - b->b[2]); if (mx < 0) mx = 0; if (b->st && b->st->ovy != OV_VISIBLE && v > mx) v = mx; } if (n->scrolly != (float)v) { extern void eng_queue_scroll(node*); eng_queue_scroll(n); } n->scrolly = (float)v; if (n->box) n->box->sy = (float)v; G.dirty_paint = 1; }
         return JS_UNDEFINED;
     }
     case G_TEXT: { char* s = cstr_or(val, ""); remove_children(n); node_append(n, text_new(s, (int)strlen(s))); dirty(); return JS_UNDEFINED; }
     case G_DEFVALUE: { char* s = cstr_or(val, ""); if (n->tag == T_TEXTAREA) { remove_children(n); node_append(n, text_new(s, (int)strlen(s))); } else attr_set(n, "value", s); dirty(); return JS_UNDEFINED; }
     case G_WIDTH: case G_HEIGHT: { char* s = cstr_or(val, ""); attr_set(n, magic == G_WIDTH ? "width" : "height", s); dirty(); return JS_UNDEFINED; }
     case G_TABINDEX: { char* s = cstr_or(val, "0"); attr_set(n, "tabindex", s); return JS_UNDEFINED; }
-    case G_SELSTART: case G_SELEND: { int32_t v; JS_ToInt32(ctx, &v, val); if (v < 0) v = 0; if (v > n->vlen) v = n->vlen; n->caret = v; return JS_UNDEFINED; }
+    case G_SELSTART: case G_SELEND: {
+        { extern void eng_ensure_value(node*); eng_ensure_value(n); }
+        int32_t v; JS_ToInt32(ctx, &v, val); if (v < 0) v = 0; if (v > n->vlen) v = n->vlen;
+        int a = n->caret, b = n->caret; if (n->sela) { int x = n->sela - 1; a = x < n->caret ? x : n->caret; b = x < n->caret ? n->caret : x; }
+        if (magic == G_SELSTART) { a = v; if (b < a) b = a; } else { b = v; if (a > b) a = b; }
+        n->caret = b; n->sela = a == b ? 0 : a + 1;
+        G.dirty_paint = 1;
+        return JS_UNDEFINED;
+    }
     case G_MAXLEN: { int32_t v; JS_ToInt32(ctx, &v, val); char b[16]; snprintf(b, 16, "%d", v); attr_set(n, "maxlength", b); return JS_UNDEFINED; }
     case G_MIN: case G_MAX: case G_STEP: { char* s = cstr_or(val, ""); attr_set(n, magic == G_MIN ? "min" : magic == G_MAX ? "max" : "step", s); return JS_UNDEFINED; }
     case G_CONTENTEDITABLE: { char* s = cstr_or(val, "inherit"); attr_set(n, "contenteditable", s); return JS_UNDEFINED; }
@@ -516,7 +687,7 @@ static JSValue m_append(JSContext* c, JSValueConst this_val, int argc, JSValueCo
     node_append(p, k);
     if (frag) for (int i = 0; i < ni; i++) eng_node_inserted(items[i]);
     else eng_node_inserted(k);
-    dirty();
+    if (frag) { for (int i = 0; i < ni; i++) dirty_tree(p, items[i]); if (!ni) dirty_tree(p, 0); } else dirty_tree(p, k);
     return JS_DupValue(ctx, argv[0]);
 }
 static JSValue m_insert(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -535,7 +706,7 @@ static JSValue m_insert(JSContext* c, JSValueConst this_val, int argc, JSValueCo
     node_insert_before(p, k, ref);
     if (frag) for (int i = 0; i < ni; i++) eng_node_inserted(items[i]);
     else eng_node_inserted(k);
-    dirty();
+    if (frag) { for (int i = 0; i < ni; i++) dirty_tree(p, items[i]); if (!ni) dirty_tree(p, 0); } else dirty_tree(p, k);
     return JS_DupValue(ctx, argv[0]);
 }
 static JSValue m_removechild(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -547,7 +718,7 @@ static JSValue m_removechild(JSContext* c, JSValueConst this_val, int argc, JSVa
     if (k->parent != p) return JS_ThrowTypeError(ctx, "NotFoundError: The node to be removed is not a child of this node");
     node_remove(k);
     eng_node_removed(k);
-    dirty();
+    dirty_tree(p, 0);
     return JS_DupValue(ctx, argv[0]);
 }
 static JSValue m_replacechild(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -569,7 +740,7 @@ static JSValue m_replacechild(JSContext* c, JSValueConst this_val, int argc, JSV
 static JSValue m_remove(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
     (void)c; (void)argc; (void)argv;
     node* n = N(this_val);
-    if (n && n->parent) { node_remove(n); eng_node_removed(n); dirty(); }
+    if (n && n->parent) { node* pp = n->parent; node_remove(n); eng_node_removed(n); dirty_tree(pp, 0); }
     return JS_UNDEFINED;
 }
 static JSValue m_clone(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -602,10 +773,9 @@ static JSValue m_setattr(JSContext* c, JSValueConst this_val, int argc, JSValueC
     char* k = cstr_or(argv[0], "");
     char* v = cstr_or(argv[1], "");
     attr_set(n, k, v);
-    if (ieq(k, "class") || ieq(k, "id") || ieq(k, "style") || istarts(k, "data-") || istarts(k, "aria-") || ieq(k, "open") || ieq(k, "hidden") || ieq(k, "disabled") || ieq(k, "type") || ieq(k, "checked")) css_bump();
     if ((ieq(k, "src") || ieq(k, "srcset") || ieq(k, "data-src")) && (n->tag == T_IMG || n->tag == T_SCRIPT || n->tag == T_SOURCE)) eng_node_inserted(n);
     if (ieq(k, "href") && n->tag == T_LINK) { n->value = 0; css_bump(); }
-    dirty();
+    dirty_attr(n, k);
     return JS_UNDEFINED;
 }
 static JSValue m_removeattr(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -614,8 +784,7 @@ static JSValue m_removeattr(JSContext* c, JSValueConst this_val, int argc, JSVal
     if (!n || argc < 1) return JS_UNDEFINED;
     char* k = cstr_or(argv[0], "");
     attr_del(n, k);
-    css_bump();
-    dirty();
+    dirty_attr(n, k);
     return JS_UNDEFINED;
 }
 static JSValue m_hasattr(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -646,29 +815,52 @@ static JSValue m_qs(JSContext* c, JSValueConst this_val, int argc, JSValueConst*
 }
 static JSValue m_qs1(JSContext* c, JSValueConst t, int a, JSValueConst* v) { return m_qs(c, t, a, v, 0); }
 static JSValue m_qsa(JSContext* c, JSValueConst t, int a, JSValueConst* v) { return m_qs(c, t, a, v, 1); }
+#define BT_N 16
+typedef struct { node* root; unsigned gen; int magic, cnt; char* key; node** res; } btent;
+static btent g_bt[BT_N];
+static unsigned g_bt_rr;
+unsigned long long js_mem_used(void) { if (!rt) return 0; JSMemoryUsage u; JS_ComputeMemoryUsage(rt, &u); return (unsigned long long)u.malloc_size; }
+void bytag_reset(void) { memset(g_bt, 0, sizeof(g_bt)); }
 static JSValue m_bytag(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv, int magic) {
     (void)c;
+    extern unsigned g_dom_gen;
     node* n = N(this_val);
     if (!n || argc < 1) return JS_NewArray(ctx);
     char* s = cstr_or(argv[0], "");
     JSValue arr = JS_NewArray(ctx);
-    uint32_t k = 0;
-    node* stack[2048];
-    int sp = 0;
-    for (node* q = n->last; q; q = q->prev) if (sp < 2048) stack[sp++] = q;
+    for (int i = 0; i < BT_N; i++) {
+        btent* e = &g_bt[i];
+        if (e->key && e->root == n && e->magic == magic && e->gen == g_dom_gen && !strcmp(e->key, s)) {
+            for (int k = 0; k < e->cnt; k++) JS_SetPropertyUint32(ctx, arr, (uint32_t)k, wrap(e->res[k]));
+            return arr;
+        }
+    }
+    int pv = pool_suspend();
+    char* key = nstrdup(s);
     char* classes[16];
     int ncl = 0;
     if (magic == 1) { char* p = s; while (*p && ncl < 16) { while (is_ws((unsigned char)*p)) p++; if (!*p) break; classes[ncl++] = p; while (*p && !is_ws((unsigned char)*p)) p++; if (*p) *p++ = 0; } }
-    while (sp > 0) {
-        node* q = stack[--sp];
-        if (q->type != NT_ELEM) continue;
-        int ok;
-        if (magic == 0) ok = !strcmp(s, "*") || ieq(q->name, s);
-        else if (magic == 1) { ok = ncl > 0; for (int i = 0; i < ncl && ok; i++) if (!has_class(q, classes[i])) ok = 0; }
-        else { const char* nm = attr_get(q, "name"); ok = nm && !strcmp(nm, s); }
-        if (ok) JS_SetPropertyUint32(ctx, arr, k++, wrap(q));
-        for (node* d = q->last; d; d = d->prev) if (sp < 2048) stack[sp++] = d;
+    int cap = 64, cnt = 0;
+    node** res = nalloc(sizeof(node*) * (size_t)cap);
+    for (node* q = n->first; q;) {
+        if (q->type == NT_ELEM) {
+            int ok;
+            if (magic == 0) ok = !strcmp(s, "*") || ieq(q->name, s);
+            else if (magic == 1) { ok = ncl > 0; for (int i = 0; i < ncl && ok; i++) if (!has_class(q, classes[i])) ok = 0; }
+            else { const char* nm = attr_get(q, "name"); ok = nm && !strcmp(nm, s); }
+            if (ok) { if (cnt >= cap) { node** nr = nalloc(sizeof(node*) * (size_t)cap * 2); memcpy(nr, res, sizeof(node*) * (size_t)cnt); nfree(res); res = nr; cap *= 2; } res[cnt++] = q; }
+        }
+        if (q->first) { q = q->first; continue; }
+        while (q && q != n && !q->next) q = q->parent;
+        if (!q || q == n) break;
+        q = q->next;
     }
+    btent* e = &g_bt[g_bt_rr++ % BT_N];
+    if (e->res) nfree(e->res);
+    if (e->key) nfree(e->key);
+    e->root = n; e->gen = g_dom_gen; e->magic = magic; e->cnt = cnt; e->res = res; e->key = key;
+    pool_resume(pv);
+    for (int k = 0; k < cnt; k++) JS_SetPropertyUint32(ctx, arr, (uint32_t)k, wrap(res[k]));
     return arr;
 }
 static JSValue m_closest(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
@@ -694,7 +886,7 @@ static JSValue m_rect(JSContext* c, JSValueConst this_val, int argc, JSValueCons
     node* n = N(this_val);
     float x = 0, y = 0, w = 0, h = 0;
     js_flush_n(n);
-    if (n) box_rect(n, &x, &y, &w, &h);
+    if (n) { extern void box_rect_tf(node*, float*, float*, float*, float*); box_rect_tf(n, &x, &y, &w, &h); }
     y -= G.scroll;
     JSValue o = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, o, "x", JS_NewFloat64(ctx, x));
@@ -711,8 +903,8 @@ static JSValue m_focus(JSContext* c, JSValueConst this_val, int argc, JSValueCon
     (void)c; (void)argc; (void)argv;
     node* n = N(this_val);
     if (!n) return JS_UNDEFINED;
-    if (magic == 0) { if (G.focus != n) { G.focus = n; n->caret = n->vlen; css_bump(); dirty(); } }
-    else if (G.focus == n) { G.focus = 0; css_bump(); dirty(); }
+    if (magic == 0) { if (G.focus != n) { node* of = G.focus; G.focus = n; { extern void eng_ensure_value(node*); eng_ensure_value(n); } n->caret = n->vlen; eng_chain_dirty(of, n); G.dirty_paint = 1; } }
+    else if (G.focus == n) { G.focus = 0; eng_chain_dirty(n, 0); G.dirty_paint = 1; }
     return JS_UNDEFINED;
 }
 static JSValue m_adjacent(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv, int magic) {
@@ -721,7 +913,7 @@ static JSValue m_adjacent(JSContext* c, JSValueConst this_val, int argc, JSValue
     if (!n || argc < 2) return JS_UNDEFINED;
     char* pos = cstr_or(argv[0], "");
     node* f;
-    if (magic == 0) { char* s = cstr_or(argv[1], ""); f = parse_fragment(ieq(pos, "beforebegin") || ieq(pos, "afterend") ? n->parent : n, s, (int)strlen(s)); }
+    if (magic == 0) { char* s = cstr_or(argv[1], ""); f = parse_fragment(ieq(pos, "beforebegin") || ieq(pos, "afterend") ? n->parent : n, s, (int)strlen(s)); frag_scripts_inert(f); }
     else if (magic == 1) { f = N(argv[1]); if (!f) return JS_NULL; }
     else { char* s = cstr_or(argv[1], ""); f = text_new(s, (int)strlen(s)); }
     node* items[4096];
@@ -752,7 +944,7 @@ static JSValue d_create(JSContext* c, JSValueConst this_val, int argc, JSValueCo
     char* s = argc > 0 ? cstr_or(argv[argc > 1 && magic == 3 ? 1 : 0], "") : nstrdup("");
     node* n;
     switch (magic) {
-    case 0: case 3: n = elem_new(s); if (magic == 3) { memcpy(n->name, s, strlen(s) + 1); n->tag = tag_id(s); } break;
+    case 0: case 3: n = elem_new(s); if (magic == 3) { memcpy(n->name, s, strlen(s) + 1); char ns[64] = { 0 }; const char* nsv = JS_IsString(argv[0]) ? JS_ToCString(ctx, argv[0]) : 0; if (nsv) { snprintf(ns, sizeof ns, "%s", nsv); JS_FreeCString(ctx, nsv); } if (!strcmp(ns, "http://www.w3.org/2000/svg")) { n->flags |= NF_SVG; char lw[64]; int q = 0; for (; s[q] && q < 63; q++) lw[q] = (char)lc((unsigned char)s[q]); lw[q] = 0; n->tag = tag_id(lw); } else if (ns[0] && strcmp(ns, "http://www.w3.org/1999/xhtml")) { n->tag = T_UNKNOWN; } else { for (char* q = n->name; *q; q++) *q = (char)lc((unsigned char)*q); n->tag = tag_id(n->name); } } break;
     case 1: n = text_new(s, (int)strlen(s)); break;
     case 2: n = node_new(NT_COMMENT); n->text = s; n->tlen = (int)strlen(s); break;
     default: n = node_new(NT_FRAG); break;
@@ -829,7 +1021,7 @@ static JSValue n_fetch(JSContext* c, JSValueConst this_val, int argc, JSValueCon
     else if (argc > 2 && JS_IsObject(argv[2])) { size_t l = 0; uint8_t* p = jbytes(argv[2], &l); if (p) { body = nalloc(l + 1); memcpy(body, p, l); body[l] = 0; blen = (int)l; } }
     char* ctype = argc > 3 ? cstr(argv[3]) : 0;
     int bin = argc > 4 && JS_ToBool(ctx, argv[4]);
-    char full[2048];
+    char full[4096];
     url_resolve(G.base, url, full, sizeof(full));
     JSValue arr = JS_NewArray(ctx);
     if (istarts(full, "data:") && bin) {
@@ -852,46 +1044,231 @@ static JSValue n_fetch(JSContext* c, JSValueConst this_val, int argc, JSValueCon
     }
     nwk_resp r;
     memset(&r, 0, sizeof(r));
-    int ok = nwk_fetch(full, method, ctype, body, blen, G.url, &r);
+    char* xh = argc > 5 && JS_IsString(argv[5]) ? cstr(argv[5]) : 0;
+    int skind = g_nwk_kind; const char* sxh = g_nwk_xhdr;
+    if (argc > 5) { g_nwk_kind = 2; g_nwk_xhdr = xh; }
+    extern int eng_mixed(const char*, int, char*, int);
+    int ok = eng_mixed(full, 0, 0, 0) < 0 ? -1 : nwk_fetch(full, method, ctype, body, blen, G.url, &r);
+    g_nwk_kind = skind; g_nwk_xhdr = sxh;
     JS_SetPropertyUint32(ctx, arr, 0, JS_NewInt32(ctx, ok >= 0 ? r.status : 0));
     if (bin) JS_SetPropertyUint32(ctx, arr, 1, JS_NewArrayBufferCopy(ctx, (const uint8_t*)(ok >= 0 && r.body ? r.body : ""), ok >= 0 && r.body ? (size_t)r.len : 0));
     else JS_SetPropertyUint32(ctx, arr, 1, ok >= 0 && r.body ? jstrn(r.body, r.len) : jstr(""));
     JS_SetPropertyUint32(ctx, arr, 2, jstr(r.ctype));
     JS_SetPropertyUint32(ctx, arr, 3, jstr(r.final_url[0] ? r.final_url : full));
+    JS_SetPropertyUint32(ctx, arr, 4, r.hdrs ? jstrn(r.hdrs, r.hlen) : jstr(""));
+    if (r.hdrs) nwk_free(r.hdrs);
     if (r.body) nwk_free(r.body);
     return arr;
+}
+#define NET_OWNER ((long)(uintptr_t)&timers)
+typedef struct { unsigned char* o; size_t n, cap; unsigned acc; int bits; } dfw;
+static void dfw_put(dfw* w, unsigned v, int nb) { w->acc |= v << w->bits; w->bits += nb; while (w->bits >= 8) { if (w->n < w->cap) w->o[w->n] = (unsigned char)w->acc; w->n++; w->acc >>= 8; w->bits -= 8; } }
+static unsigned dfw_rev(unsigned v, int nb) { unsigned r = 0; for (int i = 0; i < nb; i++) { r = (r << 1) | (v & 1); v >>= 1; } return r; }
+static void dfw_lit(dfw* w, int s) {
+    if (s < 144) dfw_put(w, dfw_rev(0x30 + (unsigned)s, 8), 8);
+    else if (s < 256) dfw_put(w, dfw_rev(0x190 + (unsigned)(s - 144), 9), 9);
+    else if (s < 280) dfw_put(w, dfw_rev((unsigned)(s - 256), 7), 7);
+    else dfw_put(w, dfw_rev(0xC0 + (unsigned)(s - 280), 8), 8);
+}
+static const unsigned short LBASE[29] = { 3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258 };
+static const unsigned char LEXT[29] = { 0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0 };
+static const unsigned short DBASE[30] = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577 };
+static const unsigned char DEXT[30] = { 0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13 };
+static size_t deflate_fixed(const unsigned char* in, size_t n, unsigned char* out, size_t cap) {
+    dfw w = { out, 0, cap, 0, 0 };
+    dfw_put(&w, 1, 1); dfw_put(&w, 1, 2);
+    int* head = nalloc(sizeof(int) * 32768); int* prev = nalloc(sizeof(int) * 32768);
+    for (int i = 0; i < 32768; i++) head[i] = -1;
+    size_t i = 0;
+    while (i < n) {
+        int bl = 0, bd = 0;
+        if (i + 2 < n) {
+            unsigned h = ((unsigned)in[i] << 10 ^ (unsigned)in[i + 1] << 5 ^ in[i + 2]) & 32767;
+            int c = head[h], chain = 48;
+            while (c >= 0 && chain-- > 0 && i - (size_t)c <= 32768) {
+                size_t m = 0, mx = n - i < 258 ? n - i : 258;
+                while (m < mx && in[c + m] == in[i + m]) m++;
+                if ((int)m > bl) { bl = (int)m; bd = (int)(i - (size_t)c); if (m == mx) break; }
+                c = prev[c & 32767];
+            }
+            prev[i & 32767] = head[h]; head[h] = (int)i;
+        }
+        if (bl >= 3) {
+            int li = 28; while (li > 0 && LBASE[li] > bl) li--;
+            dfw_lit(&w, 257 + li); if (LEXT[li]) dfw_put(&w, (unsigned)(bl - LBASE[li]), LEXT[li]);
+            int di = 29; while (di > 0 && DBASE[di] > bd) di--;
+            dfw_put(&w, dfw_rev((unsigned)di, 5), 5); if (DEXT[di]) dfw_put(&w, (unsigned)(bd - DBASE[di]), DEXT[di]);
+            for (int k = 1; k < bl && i + (size_t)k + 2 < n; k++) { size_t p = i + (size_t)k; unsigned h = ((unsigned)in[p] << 10 ^ (unsigned)in[p + 1] << 5 ^ in[p + 2]) & 32767; prev[p & 32767] = head[h]; head[h] = (int)p; }
+            i += (size_t)bl;
+        } else { dfw_lit(&w, in[i]); i++; }
+    }
+    dfw_lit(&w, 256);
+    if (w.bits) dfw_put(&w, 0, 8 - w.bits);
+    nfree(head); nfree(prev);
+    return w.n <= cap ? w.n : 0;
+}
+static JSValue n_netstart(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
+    (void)c; (void)this_val;
+    char* url = argc > 0 ? cstr_or(argv[0], "") : nstrdup("");
+    char* method = argc > 1 ? cstr_or(argv[1], "GET") : nstrdup("GET");
+    char* body = 0;
+    int blen = 0;
+    if (argc > 2 && JS_IsString(argv[2])) { body = cstr(argv[2]); blen = body ? (int)strlen(body) : 0; }
+    else if (argc > 2 && JS_IsObject(argv[2])) { size_t l = 0; uint8_t* p = jbytes(argv[2], &l); if (p) { body = nalloc(l + 1); memcpy(body, p, l); body[l] = 0; blen = (int)l; } }
+    char* ctype = argc > 3 && JS_IsString(argv[3]) ? cstr(argv[3]) : 0;
+    char* xh = argc > 4 && JS_IsString(argv[4]) ? cstr(argv[4]) : 0;
+    char full[4096];
+    url_resolve(G.base, url, full, sizeof(full));
+    extern int eng_mixed(const char*, int, char*, int);
+    if (eng_mixed(full, 0, 0, 0) < 0) { nfree(url); nfree(method); if (body) nfree(body); if (ctype) nfree(ctype); if (xh) nfree(xh); return JS_NewInt32(ctx, -1); }
+    int id = (istarts(full, "http:") || istarts(full, "https:")) ? nwk_net_start(NET_OWNER, full, method, ctype, body, blen, xh ? xh : "", G.url) : 0;
+    if (id > 0 && argc > 5 && JS_ToBool(c, argv[5])) nwk_net_keep(id);
+    nfree(url); nfree(method); if (body) nfree(body); if (ctype) nfree(ctype); if (xh) nfree(xh);
+    return JS_NewInt32(ctx, id);
+}
+static JSValue n_netpoll(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
+    (void)c; (void)this_val; (void)argc; (void)argv;
+    JSValue arr = JS_NewArray(ctx);
+    nwk_netev ev;
+    uint32_t n = 0;
+    while (n < 512 && nwk_net_event(NET_OWNER, &ev)) {
+        JSValue e = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, e, 0, JS_NewInt32(ctx, ev.id));
+        JS_SetPropertyUint32(ctx, e, 1, JS_NewInt32(ctx, ev.type));
+        if (ev.type == 1) {
+            JS_SetPropertyUint32(ctx, e, 2, JS_NewInt32(ctx, ev.status));
+            JS_SetPropertyUint32(ctx, e, 3, jstr(ev.ctype ? ev.ctype : ""));
+            JS_SetPropertyUint32(ctx, e, 4, jstr(ev.url ? ev.url : ""));
+            JS_SetPropertyUint32(ctx, e, 5, ev.hdrs ? jstrn(ev.hdrs, ev.hlen) : jstr(""));
+        } else if (ev.type == 2) JS_SetPropertyUint32(ctx, e, 2, JS_NewArrayBufferCopy(ctx, ev.data, (size_t)ev.dlen));
+        else JS_SetPropertyUint32(ctx, e, 2, JS_NewBool(ctx, ev.ok));
+        JS_SetPropertyUint32(ctx, arr, n++, e);
+    }
+    return arr;
+}
+static JSValue n_errsnippet(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) { (void)this_val; if (argc < 1) return JS_UNDEFINED; const char* t = JS_ToCString(c, argv[0]); if (t) { js_err_snippet(t); JS_FreeCString(c, t); } else JS_FreeValue(c, JS_GetException(c)); return JS_UNDEFINED; }
+static JSValue n_netabort(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
+    (void)c; (void)this_val;
+    int32_t id = 0;
+    if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+    if (id > 0) nwk_net_abort(NET_OWNER, id);
+    return JS_UNDEFINED;
 }
 static JSValue n_cookie(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv) {
     (void)c; (void)this_val;
     if (argc > 0) { char* s = cstr_or(argv[0], ""); nwk_cookie_set(G.url, s, 1); return JS_UNDEFINED; }
-    char buf[8192];
+    char* buf = nalloc(16384);
+    if (!buf) return jstr("");
     buf[0] = 0;
-    nwk_cookie_get(G.url, 1, buf, sizeof(buf));
-    return jstr(buf);
+    nwk_cookie_get(G.url, 1, buf, 16384);
+    JSValue v = jstr(buf);
+    nfree(buf);
+    return v;
 }
 static JSValue n_store(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv, int magic) {
     (void)c; (void)this_val;
-    int session = argc > 0 ? JS_ToBool(ctx, argv[0]) : 0;
+    int session = 0;
+    const char* org = G.origin;
+    char swo[300];
+    if (argc > 0 && JS_IsNumber(argv[0])) { int32_t sv = 0; JS_ToInt32(ctx, &sv, argv[0]); if (sv == 2) { snprintf(swo, sizeof(swo), "sw|%s", G.origin); org = swo; } else session = sv != 0; }
+    else if (argc > 0) session = JS_ToBool(ctx, argv[0]);
     char* k = argc > 1 ? cstr_or(argv[1], "") : nstrdup("");
     switch (magic) {
-    case 0: { char* buf = nalloc(65536); buf[0] = 0; int r = nwk_store_get(G.origin, session, k, buf, 65536); JSValue v = r >= 0 ? jstr(buf) : JS_NULL; nfree(buf); return v; }
-    case 1: { char* v = argc > 2 ? cstr_or(argv[2], "") : nstrdup(""); nwk_store_set(G.origin, session, k, v); return JS_UNDEFINED; }
-    case 2: nwk_store_set(G.origin, session, k, 0); return JS_UNDEFINED;
-    case 3: nwk_store_clear(G.origin, session); return JS_UNDEFINED;
-    case 4: { int32_t i = 0; if (argc > 1) JS_ToInt32(ctx, &i, argv[1]); char buf[512]; if (nwk_store_key(G.origin, session, i, buf, sizeof(buf)) < 0) return JS_NULL; return jstr(buf); }
-    case 5: return JS_NewInt32(ctx, nwk_store_len(G.origin, session));
+    case 0: { char* buf = nalloc(65536); buf[0] = 0; int r = nwk_store_get(org, session, k, buf, 65536); JSValue v = r >= 0 ? jstr(buf) : JS_NULL; nfree(buf); return v; }
+    case 1: { char* v = argc > 2 ? cstr_or(argv[2], "") : nstrdup(""); nwk_store_set(org, session, k, v); return JS_UNDEFINED; }
+    case 2: nwk_store_set(org, session, k, 0); return JS_UNDEFINED;
+    case 3: nwk_store_clear(org, session); return JS_UNDEFINED;
+    case 4: { int32_t i = 0; if (argc > 1) JS_ToInt32(ctx, &i, argv[1]); char buf[512]; if (nwk_store_key(org, session, i, buf, sizeof(buf)) < 0) return JS_NULL; return jstr(buf); }
+    case 5: return JS_NewInt32(ctx, nwk_store_len(org, session));
     }
     return JS_UNDEFINED;
 }
 static void mut_hook(int k, node* t, node* c, node* pv, node* nx, const char* nm, const char* old);
+static JSValue n_wk(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv, int magic) {
+    (void)this_val;
+    int wid = 0;
+    if (argc > 0 && magic != 0 && magic != 2 && magic != 6) JS_ToInt32(c, &wid, argv[0]);
+    switch (magic) {
+    case 0: return JS_NewBool(c, !nwk_frame_is() && nwk_wk_ok());
+    case 1: {
+        size_t n = 0;
+        uint8_t* p = JS_WriteObject(c, &n, argc > 1 ? argv[1] : JS_UNDEFINED, JS_WRITE_OBJ_REFERENCE);
+        if (!p) return JS_EXCEPTION;
+        int r = n < (6u << 20) ? nwk_wk_send(wid, 2, p, (int)n) : -2;
+        js_free(c, p);
+        return JS_NewInt32(c, r);
+    }
+    case 2: {
+        size_t l[4] = { 0, 0, 0, 0 };
+        const char* t[4] = { 0, 0, 0, 0 };
+        for (int i = 0; i < 4; i++) t[i] = i < argc ? JS_ToCStringLen(c, &l[i], argv[i]) : 0;
+        int id = -1;
+        size_t tot = l[0] + l[1] + l[2] + l[3] + 4;
+        char* b = t[0] && tot < (6u << 20) ? malloc(tot) : 0;
+        if (b) {
+            size_t o = 0;
+            for (int i = 0; i < 4; i++) { if (t[i]) memcpy(b + o, t[i], l[i]); o += l[i]; b[o++] = 0; }
+            id = nwk_wk_new();
+            if (id > 0 && nwk_wk_send(id, 1, b, (int)tot) < 0) id = -1;
+            free(b);
+        }
+        for (int i = 0; i < 4; i++) if (t[i]) JS_FreeCString(c, t[i]);
+        return JS_NewInt32(c, id);
+    }
+    case 3: nwk_wk_send(wid, 3, 0, 0); return JS_UNDEFINED;
+    case 4: {
+        uint32_t rid = 0;
+        if (argc > 1) JS_ToUint32(c, &rid, argv[1]);
+        size_t n = 0;
+        uint8_t* p = JS_WriteObject(c, &n, argc > 2 ? argv[2] : JS_UNDEFINED, JS_WRITE_OBJ_REFERENCE);
+        if (!p) { JS_FreeValue(c, JS_GetException(c)); p = JS_WriteObject(c, &n, JS_NULL, 0); if (!p) return JS_EXCEPTION; }
+        uint8_t* b = malloc(n + 4);
+        int r = -1;
+        if (b) { memcpy(b, &rid, 4); memcpy(b + 4, p, n); r = nwk_wk_send(wid, 4, b, (int)n + 4); free(b); }
+        js_free(c, p);
+        return JS_NewInt32(c, r);
+    }
+    case 5: {
+        JSValue arr = JS_NewArray(c);
+        uint32_t k = 0;
+        int cap = 1 << 16;
+        uint8_t* b = malloc((size_t)cap);
+        if (!b) return arr;
+        for (int i = 0; i < 256; i++) {
+            int w = 0, ty = 0;
+            int n = nwk_wk_recv(&w, &ty, b, cap);
+            if (n < -1) { int need = -n - 4; uint8_t* nb = realloc(b, (size_t)need + 16); if (!nb) break; b = nb; cap = need + 16; n = nwk_wk_recv(&w, &ty, b, cap); }
+            if (n < 0) break;
+            JSValue e = JS_NewArray(c);
+            JS_SetPropertyUint32(c, e, 0, JS_NewInt32(c, w));
+            JS_SetPropertyUint32(c, e, 1, JS_NewInt32(c, ty));
+            JSValue v = JS_UNDEFINED;
+            if (ty == 11) { v = JS_ReadObject(c, b, (size_t)n, JS_READ_OBJ_REFERENCE); if (JS_IsException(v)) { JS_FreeValue(c, JS_GetException(c)); v = JS_UNDEFINED; } }
+            else if (ty == 14 && n >= 4) { uint32_t rid; memcpy(&rid, b, 4); JSValue q = JS_ReadObject(c, b + 4, (size_t)(n - 4), JS_READ_OBJ_REFERENCE); if (JS_IsException(q)) { JS_FreeValue(c, JS_GetException(c)); q = JS_NULL; } v = JS_NewArray(c); JS_SetPropertyUint32(c, v, 0, JS_NewUint32(c, rid)); JS_SetPropertyUint32(c, v, 1, q); }
+            else v = JS_NewStringLen(c, (const char*)b, (size_t)n);
+            JS_SetPropertyUint32(c, e, 2, v);
+            JS_SetPropertyUint32(c, arr, k++, e);
+        }
+        free(b);
+        return arr;
+    }
+    case 6: return JS_NewBool(c, nwk_wk_busy());
+    }
+    return JS_UNDEFINED;
+}
 static JSValue n_misc(JSContext* c, JSValueConst this_val, int argc, JSValueConst* argv, int magic) {
     (void)c; (void)this_val;
     switch (magic) {
-    case 0: { char* s = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); int lvl = 0; if (argc > 1) JS_ToInt32(ctx, &lvl, argv[1]); char b[1100]; snprintf(b, sizeof(b), "%s%.1000s", lvl >= 2 ? "console.error: " : lvl == 1 ? "console.warn: " : "console: ", s); nwk_log(b); return JS_UNDEFINED; }
-    case 1: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char full[2048]; url_resolve(G.base, u, full, sizeof(full)); eng_navigate(full, "GET", 0, 0); return JS_UNDEFINED; }
+    case 0: { char* s = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); int lvl = 0; if (argc > 1) JS_ToInt32(ctx, &lvl, argv[1]); char b[1100]; snprintf(b, sizeof(b), "%s%.1000s", lvl >= 4 ? "" : lvl >= 3 ? "Uncaught " : lvl >= 2 ? "console.error: " : lvl == 1 ? "console.warn: " : "console: ", s); if (lvl >= 2) { nwk_error(b); if (lvl == 3) js_err_snippet(s); } else nwk_log(b); return JS_UNDEFINED; }
+    case 1: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char full[4096]; url_resolve(G.base, u, full, sizeof(full)); eng_navigate(full, "GET", 0, 0); return JS_UNDEFINED; }
     case 2: return jstr(G.url);
     case 3: { char* q = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); return JS_NewBool(ctx, css_media_match(q, (int)strlen(q))); }
-    case 4: return JS_NewFloat64(ctx, (double)(nwk_ms() - G.t0));
+    case 4: {
+        static unsigned long long us0; static unsigned long lt0; static int have;
+        if (!have || lt0 != G.t0) { have = 1; lt0 = G.t0; us0 = nwk_us() - (unsigned long long)(nwk_ms() - G.t0) * 1000ULL; }
+        unsigned long long d = nwk_us() - us0;
+        return JS_NewFloat64(ctx, (double)(d / 100ULL) / 10.0);
+    }
     case 5: return JS_NewFloat64(ctx, (double)nwk_epoch_ms());
     case 6: { if (argc < 2) return jstr(""); node* n = N(argv[0]); char* p = cstr_or(argv[1], ""); char buf[1024]; buf[0] = 0; if (n) { js_flush_n(n); if (!n->st) eng_layout_if_dirty(); css_computed_get(n, p, buf, sizeof(buf)); } return jstr(buf); }
     case 7: { if (argc < 2) return jstr(""); node* n = N(argv[0]); char* p = cstr_or(argv[1], ""); char buf[1024]; buf[0] = 0; if (n) css_prop_get(n, p, buf, sizeof(buf)); return jstr(buf); }
@@ -903,24 +1280,87 @@ static JSValue n_misc(JSContext* c, JSValueConst this_val, int argc, JSValueCons
     case 13: { char* s = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); nwk_alert(s); return JS_UNDEFINED; }
     case 14: if (argc > 0) { char* s = cstr_or(argv[0], ""); snprintf(G.title, sizeof(G.title), "%s", s); node* h = doc_head(); if (h) { node* t = 0; for (node* q = h->first; q; q = q->next) if (q->tag == T_TITLE) t = q; if (!t) { t = elem_new("title"); node_append(h, t); } while (t->first) node_remove(t->first); node_append(t, text_new(s, (int)strlen(s))); } return JS_UNDEFINED; } return jstr(G.title);
     case 15: return jstr(G.loaded >= 2 ? "complete" : G.loaded == 1 ? "interactive" : "loading");
-    case 16: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char full[2048]; url_resolve(G.base, u, full, sizeof(full)); snprintf(G.url, sizeof(G.url), "%s", full); return JS_UNDEFINED; }
+    case 16: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char full[4096]; url_resolve(G.base, u, full, sizeof(full)); snprintf(G.url, sizeof(G.url), "%s", full); return JS_UNDEFINED; }
     case 17: { uint32_t n = 16; if (argc > 0) JS_ToUint32(ctx, &n, argv[0]); if (n > 65536) n = 65536; JSValue a = JS_NewArray(ctx); static unsigned long long seed = 0x9E3779B97F4A7C15ull; seed ^= nwk_ms() * 0x100000001B3ull; for (uint32_t i = 0; i < n; i++) { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; JS_SetPropertyUint32(ctx, a, i, JS_NewInt32(ctx, (int)(seed & 255))); } return a; }
     case 18: return wrap(G.focus ? G.focus : doc_body());
     case 19: return wrap(G.cur_script);
-    case 20: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char* b = argc > 1 ? cstr_or(argv[1], "") : nstrdup(""); char full[2048]; url_resolve(G.base, u, full, sizeof(full)); eng_navigate(full, "POST", b, (int)strlen(b)); return JS_UNDEFINED; }
+    case 20: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char* b = argc > 1 ? cstr_or(argv[1], "") : nstrdup(""); char full[4096]; url_resolve(G.base, u, full, sizeof(full)); eng_navigate(full, "POST", b, (int)strlen(b)); return JS_UNDEFINED; }
     case 21: { eng_layout_if_dirty(); return JS_NewInt32(ctx, (int)g_doch); }
     case 22: { if (argc < 2) return JS_UNDEFINED; char* tag = cstr_or(argv[0], ""); node* n = elem_new(tag); JSValue o = wrap(n); JS_SetPrototype(ctx, o, argv[1]); return o; }
-    case 23: { if (argc < 2) return JS_UNDEFINED; char* tag = cstr_or(argv[0], ""); int t = tag_id(tag); if (t > 0 && t < T_COUNT) { JS_FreeValue(ctx, tagproto[t]); tagproto[t] = JS_DupValue(ctx, argv[1]); } return JS_UNDEFINED; }
+    case 23: { if (argc < 2) return JS_UNDEFINED; char* tag = cstr_or(argv[0], ""); int t = tag_id(tag); if (t > 0 && t < T_COUNT) { JS_FreeValue(ctx, tagproto[t]); tagproto[t] = JS_DupValue(ctx, argv[1]); } else if (*tag && !strchr(tag, '-') && strlen(tag) < 16) { int i = 0; for (; i < ntagproto_nm; i++) if (ieq(tagproto_nm[i].nm, tag)) break; if (i == ntagproto_nm && ntagproto_nm < 24) { snprintf(tagproto_nm[i].nm, sizeof tagproto_nm[i].nm, "%s", tag); tagproto_nm[i].p = JS_UNDEFINED; ntagproto_nm++; } if (i < ntagproto_nm) { JS_FreeValue(ctx, tagproto_nm[i].p); tagproto_nm[i].p = JS_DupValue(ctx, argv[1]); } } return JS_UNDEFINED; }
     case 24: { if (argc < 1) return JS_UNDEFINED; node* n = N(argv[0]); if (!n) return JS_UNDEFINED; if (G.focus == n) return JS_TRUE; return JS_FALSE; }
     case 25: { char* s = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); nwk_status(s); return JS_UNDEFINED; }
     case 26: return JS_NewFloat64(ctx, (double)nwk_tz_min());
     case 27: return jstr(G.origin);
+    case 96: return JS_NewInt32(ctx, G.sandbox);
+    case 97: { size_t n = 0; uint8_t* u = argc > 0 ? JS_GetUint8Array(ctx, &n, argv[0]) : 0; if (!u) { JS_FreeValue(ctx, JS_GetException(ctx)); return JS_NULL; } size_t cap = n + n / 7 + 1024; unsigned char* o = nalloc(cap); size_t r = deflate_fixed(u, n, o, cap); JSValue v = r ? JS_NewUint8ArrayCopy(ctx, o, r) : JS_NULL; nfree(o); return v; }
+    case 98: { char* t = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char* b = argc > 1 ? cstr_or(argv[1], "") : nstrdup(""); extern void nwk_notify(const char*, const char*); nwk_notify(t, b); return JS_UNDEFINED; }
+    case 99: { int32_t v = 0; if (argc > 0) JS_ToInt32(ctx, &v, argv[0]); extern void nwk_badge(int); nwk_badge(v); return JS_UNDEFINED; }
+    case 100: { extern int nwk_mods(void); return JS_NewInt32(ctx, nwk_mods()); }
     case 28: { if (argc < 1) return JS_NULL; node* n = N(argv[0]); if (!n) return JS_NULL; node* f = node_new(NT_FRAG); for (node* c2 = n->first; c2; c2 = c2->next) node_append(f, clone_node(c2, 1)); return wrap(f); }
     case 29: { char* s = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); node* d = node_new(NT_DOC); node* save = G.doc; G.doc = d; parse_html(d, s, (int)strlen(s), 0); G.doc = save; return wrap(d); }
-    case 30: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char* b = argc > 1 ? cstr_or(argv[1], G.base) : nstrdup(G.base); char full[2048]; url_resolve(b, u, full, sizeof(full)); return jstr(full); }
+    case 30: { char* u = argc > 0 ? cstr_or(argv[0], "") : nstrdup(""); char* b = argc > 1 ? cstr_or(argv[1], G.base) : nstrdup(G.base); char full[4096]; url_resolve(b, u, full, sizeof(full)); return jstr(full); }
     case 31: { if (argc < 1) return JS_UNDEFINED; node* f = N(argv[0]); node* sub = argc > 1 ? N(argv[1]) : 0; if (f) eng_form_submit(f, sub); return JS_UNDEFINED; }
     case 32: { if (argc < 1) return JS_UNDEFINED; node* n = N(argv[0]); extern void eng_synthetic_click(node* n); if (n) eng_synthetic_click(n); return JS_UNDEFINED; }
     case 33: { int on = 0; if (argc > 0) JS_ToInt32(ctx, &on, argv[0]); g_mut_on = on; g_mut_hook = mut_hook; return JS_UNDEFINED; }
+    case 61: { extern void eng_set_highlight(node*, int, node*, int); node* a = argc > 0 ? N(argv[0]) : 0; node* b = argc > 2 ? N(argv[2]) : 0; int ao = 0, bo = 0; if (argc > 1) JS_ToInt32(ctx, &ao, argv[1]); if (argc > 3) JS_ToInt32(ctx, &bo, argv[3]); eng_set_highlight(a, ao, b, bo); return JS_UNDEFINED; }
+    case 64: {
+        size_t n = 0; uint8_t* u = argc > 0 ? JS_GetUint8Array(ctx, &n, argv[0]) : 0;
+        if (!u) { JS_FreeValue(ctx, JS_GetException(ctx)); return JS_NULL; }
+        unsigned char* src = nalloc(n + 2);
+        src[0] = 0x78; src[1] = 0x9c;
+        memcpy(src + 2, u, n);
+        int cap = (int)(n * 4 + 4096);
+        JSValue out = JS_NULL;
+        for (int tries = 0; tries < 8 && cap < (96 << 20); tries++, cap *= 4) {
+            unsigned char* dst = nalloc((size_t)cap);
+            int r = nwk_inflate(src, (int)n + 2, dst, cap);
+            if (r >= 0 && r < cap) { out = JS_NewUint8ArrayCopy(ctx, dst, (size_t)r); nfree(dst); break; }
+            nfree(dst);
+        }
+        nfree(src);
+        return out;
+    }
+    case 65: { extern char g_df_name[256]; extern unsigned char* g_df_data; extern int g_df_len; JSValue a = JS_NewArray(ctx); JS_SetPropertyUint32(ctx, a, 0, JS_NewString(ctx, g_df_name)); JS_SetPropertyUint32(ctx, a, 1, JS_NewUint8ArrayCopy(ctx, g_df_data ? g_df_data : (unsigned char*)"", (size_t)g_df_len)); return a; }
+    case 66: { extern int eng_input_caret_at(node*, float); node* n = argc > 0 ? N(argv[0]) : 0; double x = 0; if (argc > 1) JS_ToFloat64(ctx, &x, argv[1]); if (!n || !n->value) return JS_NewInt32(ctx, 0); return JS_NewInt32(ctx, eng_input_caret_at(n, (float)x)); }
+    case 68: { extern unsigned g_dom_gen; return JS_NewInt32(ctx, (int)g_dom_gen); }
+    case 71: { node* n = argc > 0 ? N(argv[0]) : 0; int on = 0; if (argc > 1) on = JS_ToBool(ctx, argv[1]); if (n) { if (on) n->flags |= NF_NOTRANS; else n->flags &= ~(unsigned)NF_NOTRANS; } return JS_UNDEFINED; }
+    case 70: { extern unsigned g_on_bits[8]; extern unsigned on_hash(const char*); const char* t = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; if (!t) return JS_TRUE; unsigned b = on_hash(t); JS_FreeCString(ctx, t); return JS_NewBool(ctx, (g_on_bits[b >> 5] >> (b & 31)) & 1); }
+    case 69: {
+        node* n = argc > 3 ? N(argv[0]) : 0; if (!n) return JS_NewInt32(ctx, 0);
+        int op = 0; JS_ToInt32(ctx, &op, argv[2]);
+        const char* an = JS_ToCString(ctx, argv[1]); const char* t = JS_ToCString(ctx, argv[3]);
+        int res = 0;
+        if (!an || !t) { res = -3; goto cdone; }
+        int tl = (int)strlen(t);
+        if (op != 0) { if (!tl) { res = -1; goto cdone; } for (int i = 0; i < tl; i++) if (is_ws((unsigned char)t[i])) { res = -2; goto cdone; } }
+        const char* v = attr_get(n, an);
+        enum { MAXT = 256 };
+        const char* ts[MAXT]; int tlen[MAXT]; int nt = 0, has = 0, dup = 0, extra = 0;
+        if (v) { const char* p = v; while (*p) { while (*p && is_ws((unsigned char)*p)) p++; if (!*p) break; const char* s0 = p; while (*p && !is_ws((unsigned char)*p)) p++; int l = (int)(p - s0); int seen = 0; for (int i = 0; i < nt; i++) if (tlen[i] == l && !memcmp(ts[i], s0, (size_t)l)) { seen = 1; break; } if (seen) { dup = 1; continue; } if (nt >= MAXT) { res = -3; goto cdone; } ts[nt] = s0; tlen[nt] = l; nt++; if (l == tl && !memcmp(s0, t, (size_t)tl)) has = 1; } }
+        if (op == 0) { res = has; goto cdone; }
+        int want = op == 1 ? 1 : op == 2 ? 0 : op == 3 ? !has : op == 4 ? 1 : 0;
+        int write = 0;
+        if (want != has) write = 1;
+        else if ((op == 1 || op == 2) && v) write = 1;
+        if (write) {
+            if (want && !has) extra = 1;
+            int total = tl + 2; for (int i = 0; i < nt; i++) total += tlen[i] + 1;
+            char* o = nalloc((size_t)total); int k = 0;
+            for (int i = 0; i < nt; i++) { if (!want && tlen[i] == tl && !memcmp(ts[i], t, (size_t)tl)) continue; if (k) o[k++] = ' '; memcpy(o + k, ts[i], (size_t)tlen[i]); k += tlen[i]; }
+            if (extra) { if (k) o[k++] = ' '; memcpy(o + k, t, (size_t)tl); k += tl; }
+            o[k] = 0;
+            if (!v || strcmp(v, o) || dup) { attr_set(n, an, o); dirty_attr(n, an); }
+            nfree(o);
+        }
+        res = want;
+    cdone:
+        if (an) JS_FreeCString(ctx, an); if (t) JS_FreeCString(ctx, t);
+        return JS_NewInt32(ctx, res);
+    }
+    case 67: { extern node* eng_text_at(float, float, int*); double x = 0, y = 0; if (argc > 0) JS_ToFloat64(ctx, &x, argv[0]); if (argc > 1) JS_ToFloat64(ctx, &y, argv[1]); int off = 0; node* t = eng_text_at((float)x, (float)y, &off); if (!t) return JS_NULL; JSValue a = JS_NewArray(ctx); JS_SetPropertyUint32(ctx, a, 0, wrap(t)); JS_SetPropertyUint32(ctx, a, 1, JS_NewInt32(ctx, off)); return a; }
+    case 62: { const char* t = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; if (t) { nwk_clip_set(t, (int)strlen(t)); JS_FreeCString(ctx, t); } return JS_UNDEFINED; }
+    case 63: { char* b = nalloc(65536); int n2 = nwk_clip_get(b, 65536); JSValue v = JS_NewStringLen(ctx, b, (size_t)n2); nfree(b); return v; }
     case 34: { node* n = argc > 0 ? N(argv[0]) : 0; int o = 0; if (argc > 1) JS_ToInt32(ctx, &o, argv[1]); g_ce_node = n; g_ce_off = o; G.dirty_paint = 1; return JS_UNDEFINED; }
     case 39: {
         node* n = argc > 0 ? N(argv[0]) : 0;
@@ -930,6 +1370,213 @@ static JSValue n_misc(JSContext* c, JSValueConst this_val, int argc, JSValueCons
     }
     case 40: { node* n = argc > 0 ? N(argv[0]) : 0; if (!n || !n->shadow) return JS_NULL; return wrap(n->shadow); }
     case 41: { node* n = argc > 0 ? N(argv[0]) : 0; if (!n || !n->host) return JS_NULL; return wrap(n->host); }
+    case 42: case 43: case 44: case 45: case 46: case 47: {
+        node* n = argc > 0 ? N(argv[0]) : 0;
+        if (!n || n->tag != T_CANVAS) return JS_UNDEFINED;
+        const char* aw = attr_get(n, "width");
+        const char* ah = attr_get(n, "height");
+        nimg* im = cv_get(n, aw ? atoi(aw) : 300, ah ? atoi(ah) : 150);
+        if (magic == 42) return JS_UNDEFINED;
+        if (magic == 46) {
+            int v[4] = { 0, 0, 0, 0 };
+            for (int i = 0; i < 4 && i + 1 < argc; i++) JS_ToInt32(ctx, &v[i], argv[i + 1]);
+            if (v[2] <= 0 || v[3] <= 0 || (long long)v[2] * v[3] > 16 * 1024 * 1024) return JS_NewArrayBufferCopy(ctx, (const uint8_t*)"", 0);
+            unsigned char* o = malloc((size_t)v[2] * v[3] * 4);
+            if (!o) return JS_NULL;
+            cv_getdata(im, v[0], v[1], v[2], v[3], o);
+            JSValue r = JS_NewArrayBufferCopy(ctx, o, (size_t)v[2] * v[3] * 4);
+            free(o);
+            return r;
+        }
+        if (magic == 47) {
+            size_t l = 0;
+            uint8_t* p = argc > 1 ? jbytes(argv[1], &l) : 0;
+            int v[4] = { 0, 0, 0, 0 };
+            for (int i = 0; i < 4 && i + 2 < argc; i++) JS_ToInt32(ctx, &v[i], argv[i + 2]);
+            if (p && v[0] > 0 && v[1] > 0 && l >= (size_t)v[0] * v[1] * 4) cv_putdata(im, p, v[0], v[1], v[2], v[3]);
+            G.dirty_paint = 1;
+            return JS_UNDEFINED;
+        }
+        int clip[4];
+        int ci = magic == 43 ? 6 : magic == 44 ? 8 : 11;
+        const int* cp = 0;
+        if (argc > ci && JS_IsObject(argv[ci])) { size_t l = 0; uint8_t* p = jbytes(argv[ci], &l); if (p && l >= 16) { memcpy(clip, p, 16); cp = clip; } }
+        if (magic == 43) {
+            size_t lp = 0, lc = 0, lq = 0;
+            uint8_t* pp = argc > 1 ? jbytes(argv[1], &lp) : 0;
+            uint8_t* pc = argc > 2 ? jbytes(argv[2], &lc) : 0;
+            uint8_t* pq = argc > 3 ? jbytes(argv[3], &lq) : 0;
+            double al = 1;
+            int mode = 0;
+            if (argc > 4) JS_ToFloat64(ctx, &al, argv[4]);
+            if (argc > 5) JS_ToInt32(ctx, &mode, argv[5]);
+            if (!pp || !pc || !pq) return JS_UNDEFINED;
+            int nsub = (int)(lc / 4), tot = 0;
+            for (int i = 0; i < nsub; i++) { int c = ((int*)pc)[i]; if (c < 0) return JS_UNDEFINED; tot += c; }
+            if ((size_t)tot * 8 > lp) return JS_UNDEFINED;
+            cv_fill(im, (const float*)pp, (const int*)pc, nsub, (const float*)pq, (int)(lq / 4), (float)al, mode, cp);
+        } else if (magic == 44) {
+            const char* t = argc > 1 ? JS_ToCString(ctx, argv[1]) : 0;
+            double x = 0, y = 0, sz = 10, al = 1;
+            int face = 0;
+            if (argc > 2) JS_ToFloat64(ctx, &x, argv[2]);
+            if (argc > 3) JS_ToFloat64(ctx, &y, argv[3]);
+            if (argc > 4) JS_ToInt32(ctx, &face, argv[4]);
+            if (argc > 5) JS_ToFloat64(ctx, &sz, argv[5]);
+            if (argc > 7) JS_ToFloat64(ctx, &al, argv[7]);
+            size_t lq = 0;
+            uint8_t* pq = argc > 6 ? jbytes(argv[6], &lq) : 0;
+            if (face < 0 || face > F_MONO_B) face = 0;
+            if (t && pq) cv_text(im, t, (int)strlen(t), (float)x, (float)y, face, (float)sz, (const float*)pq, (int)(lq / 4), (float)al, cp);
+            if (t) JS_FreeCString(ctx, t);
+        } else {
+            node* sn = argc > 1 ? N(argv[1]) : 0;
+            double v[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+            for (int i = 0; i < 9 && i + 2 < argc; i++) JS_ToFloat64(ctx, &v[i], argv[i + 2]);
+            nimg* si = sn ? sn->img : 0;
+            if (sn && sn->tag == T_CANVAS && !si) si = 0;
+            if (si && si->state == 2) cv_image(im, si, (float)v[0], (float)v[1], (float)v[2], (float)v[3], (float)v[4], (float)v[5], (float)v[6], (float)v[7], (float)v[8], cp);
+        }
+        G.dirty_paint = 1;
+        return JS_UNDEFINED;
+    }
+    case 48: {
+        const char* t = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0;
+        unsigned c = 0;
+        int ok = t ? css_parse_color(t, (int)strlen(t), &c) : 0;
+        if (t) JS_FreeCString(ctx, t);
+        if (!ok) return JS_NULL;
+        JSValue a = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, a, 0, JS_NewFloat64(ctx, ((c >> 16) & 255) / 255.0));
+        JS_SetPropertyUint32(ctx, a, 1, JS_NewFloat64(ctx, ((c >> 8) & 255) / 255.0));
+        JS_SetPropertyUint32(ctx, a, 2, JS_NewFloat64(ctx, (c & 255) / 255.0));
+        JS_SetPropertyUint32(ctx, a, 3, JS_NewFloat64(ctx, (c >> 24) / 255.0));
+        return a;
+    }
+    case 49: {
+        int face = 0;
+        double sz = 10;
+        if (argc > 0) JS_ToInt32(ctx, &face, argv[0]);
+        if (argc > 1) JS_ToFloat64(ctx, &sz, argv[1]);
+        if (face < 0 || face > F_MONO_B) face = 0;
+        const char* t = argc > 2 ? JS_ToCString(ctx, argv[2]) : 0;
+        double w = t ? text_width(face, (float)sz, t, (int)strlen(t), 0) : 0;
+        if (t) JS_FreeCString(ctx, t);
+        return JS_NewFloat64(ctx, w);
+    }
+    case 50: {
+        const char* u = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0;
+        const char* p = argc > 1 ? JS_ToCString(ctx, argv[1]) : 0;
+        const char* o = argc > 2 ? JS_ToCString(ctx, argv[2]) : 0;
+        int id = u ? nwk_ws_open(u, p ? p : "", o ? o : "") : -1;
+        if (u) JS_FreeCString(ctx, u);
+        if (p) JS_FreeCString(ctx, p);
+        if (o) JS_FreeCString(ctx, o);
+        return JS_NewInt32(ctx, id);
+    }
+    case 51: {
+        int id = -1, bin = 0;
+        if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+        if (argc > 2) JS_ToInt32(ctx, &bin, argv[2]);
+        int r = -1;
+        if (argc > 1 && JS_IsString(argv[1])) { size_t l = 0; const char* t = JS_ToCStringLen(ctx, &l, argv[1]); if (t) { r = nwk_ws_send(id, (const unsigned char*)t, (int)l, 0); JS_FreeCString(ctx, t); } }
+        else if (argc > 1) { size_t l = 0; uint8_t* b = jbytes(argv[1], &l); r = nwk_ws_send(id, b ? b : (const uint8_t*)"", b ? (int)l : 0, 1); }
+        return JS_NewInt32(ctx, r);
+    }
+    case 52: {
+        int id = -1;
+        if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+        int cap = 65536, bin = 0;
+        unsigned char* b = malloc((size_t)cap);
+        if (!b) return JS_NULL;
+        int n = nwk_ws_recv(id, b, cap, &bin);
+        if (n <= -4) { int need = -n - 4; free(b); if (need <= 0 || need > 16 * 1024 * 1024) return JS_NULL; cap = need; b = malloc((size_t)cap + 1); if (!b) return JS_NULL; n = nwk_ws_recv(id, b, cap, &bin); }
+        JSValue a = JS_NULL;
+        if (n >= 0) {
+            a = JS_NewArray(ctx);
+            JS_SetPropertyUint32(ctx, a, 0, JS_NewInt32(ctx, bin ? 2 : 1));
+            JS_SetPropertyUint32(ctx, a, 1, bin ? JS_NewArrayBufferCopy(ctx, b, (size_t)n) : JS_NewStringLen(ctx, (const char*)b, (size_t)n));
+        } else if (n == -2 || n == -3) {
+            a = JS_NewArray(ctx);
+            JS_SetPropertyUint32(ctx, a, 0, JS_NewInt32(ctx, 3));
+        }
+        free(b);
+        return a;
+    }
+    case 53: {
+        int id = -1, code = 0;
+        if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+        char proto[64], reason[128];
+        int st = nwk_ws_info(id, &code, proto, sizeof proto, reason, sizeof reason);
+        if (st < 0) return JS_NULL;
+        JSValue a = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, a, 0, JS_NewInt32(ctx, st));
+        JS_SetPropertyUint32(ctx, a, 1, jstr(proto));
+        JS_SetPropertyUint32(ctx, a, 2, JS_NewInt32(ctx, code));
+        JS_SetPropertyUint32(ctx, a, 3, jstr(reason));
+        return a;
+    }
+    case 54: {
+        int id = -1, code = 1000, forget = 0;
+        if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+        if (argc > 1) JS_ToInt32(ctx, &code, argv[1]);
+        if (argc > 2) JS_ToInt32(ctx, &forget, argv[2]);
+        nwk_ws_close(id, code, forget);
+        return JS_UNDEFINED;
+    }
+    case 55: {
+        size_t l = 0;
+        const char* t = argc > 0 ? JS_ToCStringLen(ctx, &l, argv[0]) : 0;
+        int r = t ? nwk_frame_post(t, (int)l) : -1;
+        if (t) JS_FreeCString(ctx, t);
+        return JS_NewInt32(ctx, r);
+    }
+    case 56: {
+        char* b = malloc(262144);
+        if (!b) return JS_NULL;
+        int n = nwk_frame_recv(b, 262144);
+        JSValue v = n >= 0 ? JS_NewStringLen(ctx, b, (size_t)n) : JS_NULL;
+        free(b);
+        return v;
+    }
+    case 57: return JS_NewInt32(ctx, nwk_frame_is());
+    case 102: { const char* u = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; int w = 500, h = 600; if (argc > 1) JS_ToInt32(ctx, &w, argv[1]); if (argc > 2) JS_ToInt32(ctx, &h, argv[2]); int r = 0; if (u) { char full[4096]; url_resolve(G.base, u, full, sizeof(full)); r = nwk_popup_open(full, w, h); JS_FreeCString(ctx, u); } return JS_NewInt32(ctx, r); }
+    case 103: return JS_NewInt32(ctx, nwk_popup_info());
+    case 107: case 108: { const char* t = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; int r = 0; if (t) { r = magic == 107 ? nwk_perm_get(G.origin, t) : nwk_perm_ask(G.origin, t); JS_FreeCString(ctx, t); } return JS_NewInt32(ctx, r); }
+    case 109: { int id = 0; if (argc > 0) JS_ToInt32(ctx, &id, argv[0]); return JS_NewInt32(ctx, nwk_perm_poll(id)); }
+    case 105: { extern int css_prop_id(const char*); const char* t = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; int r = 0; if (t) { r = (t[0] == '-' && t[1] == '-') || css_prop_id(t) >= 0; JS_FreeCString(ctx, t); } return JS_NewBool(ctx, r); }
+    case 106: { extern void css_prop_register(const char*, const char*); const char* a = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; const char* b = argc > 1 ? JS_ToCString(ctx, argv[1]) : 0; if (a && b) css_prop_register(a, b); if (a) JS_FreeCString(ctx, a); if (b) JS_FreeCString(ctx, b); return JS_UNDEFINED; }
+    case 104: nwk_popup_close(); return JS_UNDEFINED;
+    case 90: { size_t l = 0; const char* t = argc > 0 ? JS_ToCStringLen(ctx, &l, argv[0]) : 0; if (t) { nwk_pending_set(t, (int)l); JS_FreeCString(ctx, t); } return JS_UNDEFINED; }
+    case 91: return JS_NewInt32(ctx, nwk_frame_info());
+    case 101: { const char* t = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0; nwk_frame_fail(t ? t : ""); if (t) JS_FreeCString(ctx, t); return JS_UNDEFINED; }
+    case 92: nwk_frame_switch(); return JS_UNDEFINED;
+    case 94: { int sl = 0; if (argc > 0) JS_ToInt32(ctx, &sl, argv[0]); nwk_frame_slot(sl); return JS_UNDEFINED; }
+    case 95: { extern int nwk_battery(int* pct, int* charging, int* mins); int pc = -1, ch = 1, mi = -1; int ok = nwk_battery(&pc, &ch, &mi); JSValue o = JS_NewArray(ctx); JS_SetPropertyUint32(ctx, o, 0, JS_NewInt32(ctx, ok)); JS_SetPropertyUint32(ctx, o, 1, JS_NewInt32(ctx, pc)); JS_SetPropertyUint32(ctx, o, 2, JS_NewInt32(ctx, ch)); JS_SetPropertyUint32(ctx, o, 3, JS_NewInt32(ctx, mi)); return o; }
+    case 93: { static const char* tzn[7] = { "America/Los_Angeles", "America/New_York", "Europe/London", "Europe/Stockholm", "Europe/Moscow", "Asia/Kolkata", "Asia/Tokyo" }; int i = nwk_tz_index(); return jstr(i >= 0 && i < 7 ? tzn[i] : "UTC"); }
+    case 60: {
+        node* f = argc > 0 ? N(argv[0]) : 0;
+        if (!f || f->type != NT_FRAG) return JS_UNDEFINED;
+        size_t l = 0; const char* t = argc > 1 ? JS_ToCStringLen(ctx, &l, argv[1]) : 0;
+        f->value = t && l ? nstrndup(t, (int)l) : 0; f->vlen = t ? (int)l : 0;
+        if (t) JS_FreeCString(ctx, t);
+        css_bump(); G.dirty_style = 1;
+        return JS_UNDEFINED;
+    }
+    case 59: {
+        extern node* g_ce_pend[]; extern int g_ce_npend, g_ce_over;
+        JSValue a = JS_NewArray(ctx);
+        for (int i = 0; i < g_ce_npend; i++) JS_SetPropertyUint32(ctx, a, (uint32_t)i, wrap(g_ce_pend[i]));
+        if (g_ce_over) JS_SetPropertyStr(ctx, a, "over", JS_TRUE);
+        g_ce_npend = 0; g_ce_over = 0;
+        return a;
+    }
+    case 58: {
+        { int32_t sbf = 0; if (argc > 2) JS_ToInt32(ctx, &sbf, argv[2]); nwk_frame_sandbox(sbf); }
+        const char* u = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0;
+        if (u) { if (argc > 1 && JS_IsString(argv[1])) { const char* d = JS_ToCString(ctx, argv[1]); if (d) { nwk_frame_open_doc(d); JS_FreeCString(ctx, d); } } else { char full[4096]; url_resolve(G.base, u, full, sizeof(full)); extern int eng_mixed(const char*, int, char*, int); if (eng_mixed(full, 0, 0, 0) >= 0) nwk_frame_open(full); } JS_FreeCString(ctx, u); }
+        return JS_UNDEFINED;
+    }
     case 37: {
         size_t l = 0;
         uint8_t* p = argc > 0 ? jbytes(argv[0], &l) : 0;
@@ -1129,7 +1776,11 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_MAGIC_DEF("setInterval", 2, n_settimer, 1),
     JS_CFUNC_MAGIC_DEF("raf", 1, n_settimer, 2),
     JS_CFUNC_DEF("clearTimer", 1, n_cleartimer),
-    JS_CFUNC_DEF("fetch", 4, n_fetch),
+    JS_CFUNC_DEF("fetch", 6, n_fetch),
+    JS_CFUNC_DEF("netStart", 5, n_netstart),
+    JS_CFUNC_DEF("netPoll", 0, n_netpoll),
+    JS_CFUNC_DEF("netAbort", 1, n_netabort),
+    JS_CFUNC_DEF("errSnippet", 1, n_errsnippet),
     JS_CFUNC_DEF("cookie", 1, n_cookie),
     JS_CFUNC_MAGIC_DEF("storeGet", 2, n_store, 0),
     JS_CFUNC_MAGIC_DEF("storeSet", 3, n_store, 1),
@@ -1165,6 +1816,11 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_MAGIC_DEF("status", 1, n_misc, 25),
     JS_CFUNC_MAGIC_DEF("tz", 0, n_misc, 26),
     JS_CFUNC_MAGIC_DEF("origin", 0, n_misc, 27),
+    JS_CFUNC_MAGIC_DEF("sandbox", 0, n_misc, 96),
+    JS_CFUNC_MAGIC_DEF("deflateRaw", 1, n_misc, 97),
+    JS_CFUNC_MAGIC_DEF("notify", 2, n_misc, 98),
+    JS_CFUNC_MAGIC_DEF("badge", 1, n_misc, 99),
+    JS_CFUNC_MAGIC_DEF("mods", 0, n_misc, 100),
     JS_CFUNC_MAGIC_DEF("templateContent", 1, n_misc, 28),
     JS_CFUNC_MAGIC_DEF("parseDoc", 1, n_misc, 29),
     JS_CFUNC_MAGIC_DEF("resolve", 2, n_misc, 30),
@@ -1172,6 +1828,17 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_MAGIC_DEF("click", 1, n_misc, 32),
     JS_CFUNC_MAGIC_DEF("moOn", 1, n_misc, 33),
     JS_CFUNC_MAGIC_DEF("setCaret", 2, n_misc, 34),
+    JS_CFUNC_MAGIC_DEF("selHi", 4, n_misc, 61),
+    JS_CFUNC_MAGIC_DEF("clipSet", 1, n_misc, 62),
+    JS_CFUNC_MAGIC_DEF("clipGet", 0, n_misc, 63),
+    JS_CFUNC_MAGIC_DEF("inflateRaw", 1, n_misc, 64),
+    JS_CFUNC_MAGIC_DEF("dropData", 0, n_misc, 65),
+    JS_CFUNC_MAGIC_DEF("caretAt", 2, n_misc, 66),
+    JS_CFUNC_MAGIC_DEF("textAt", 2, n_misc, 67),
+    JS_CFUNC_MAGIC_DEF("domGen", 0, n_misc, 68),
+    JS_CFUNC_MAGIC_DEF("clsOp", 4, n_misc, 69),
+    JS_CFUNC_MAGIC_DEF("onSeen", 1, n_misc, 70),
+    JS_CFUNC_MAGIC_DEF("noTrans", 2, n_misc, 71),
     JS_CFUNC_MAGIC_DEF("caretRect", 2, n_misc, 35),
     JS_CFUNC_MAGIC_DEF("mediaOp", 6, n_misc, 36),
     JS_CFUNC_MAGIC_DEF("utf8dec", 1, n_misc, 37),
@@ -1179,12 +1846,109 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_MAGIC_DEF("getShadow", 1, n_misc, 40),
     JS_CFUNC_MAGIC_DEF("shadowHost", 1, n_misc, 41),
     JS_CFUNC_MAGIC_DEF("utf8enc", 1, n_misc, 38),
+    JS_CFUNC_MAGIC_DEF("cvInit", 1, n_misc, 42),
+    JS_CFUNC_MAGIC_DEF("cvFill", 7, n_misc, 43),
+    JS_CFUNC_MAGIC_DEF("cvText", 9, n_misc, 44),
+    JS_CFUNC_MAGIC_DEF("cvImage", 12, n_misc, 45),
+    JS_CFUNC_MAGIC_DEF("cvGet", 5, n_misc, 46),
+    JS_CFUNC_MAGIC_DEF("cvPut", 6, n_misc, 47),
+    JS_CFUNC_MAGIC_DEF("cvColor", 1, n_misc, 48),
+    JS_CFUNC_MAGIC_DEF("textWidth", 3, n_misc, 49),
+    JS_CFUNC_MAGIC_DEF("wsOpen", 3, n_misc, 50),
+    JS_CFUNC_MAGIC_DEF("wsSend", 3, n_misc, 51),
+    JS_CFUNC_MAGIC_DEF("wsRecv", 1, n_misc, 52),
+    JS_CFUNC_MAGIC_DEF("wsInfo", 1, n_misc, 53),
+    JS_CFUNC_MAGIC_DEF("wsClose", 3, n_misc, 54),
+    JS_CFUNC_MAGIC_DEF("framePost", 1, n_misc, 55),
+    JS_CFUNC_MAGIC_DEF("frameRecv", 0, n_misc, 56),
+    JS_CFUNC_MAGIC_DEF("isFrame", 0, n_misc, 57),
+    JS_CFUNC_MAGIC_DEF("frameOpen", 2, n_misc, 58),
+    JS_CFUNC_MAGIC_DEF("cePending", 0, n_misc, 59),
+    JS_CFUNC_MAGIC_DEF("setAdopted", 2, n_misc, 60),
+    JS_CFUNC_MAGIC_DEF("pendingSet", 1, n_misc, 90),
+    JS_CFUNC_MAGIC_DEF("frameInfo", 0, n_misc, 91),
+    JS_CFUNC_MAGIC_DEF("frameFail", 1, n_misc, 101),
+    JS_CFUNC_MAGIC_DEF("popupOpen", 3, n_misc, 102),
+    JS_CFUNC_MAGIC_DEF("popupInfo", 0, n_misc, 103),
+    JS_CFUNC_MAGIC_DEF("popupClose", 0, n_misc, 104),
+    JS_CFUNC_MAGIC_DEF("cssKnown", 1, n_misc, 105),
+    JS_CFUNC_MAGIC_DEF("cssRegProp", 2, n_misc, 106),
+    JS_CFUNC_MAGIC_DEF("permGet", 1, n_misc, 107),
+    JS_CFUNC_MAGIC_DEF("permAsk", 1, n_misc, 108),
+    JS_CFUNC_MAGIC_DEF("permPoll", 1, n_misc, 109),
+    JS_CFUNC_MAGIC_DEF("wkOk", 0, n_wk, 0),
+    JS_CFUNC_MAGIC_DEF("wkPost", 2, n_wk, 1),
+    JS_CFUNC_MAGIC_DEF("wkStart", 4, n_wk, 2),
+    JS_CFUNC_MAGIC_DEF("wkTerm", 1, n_wk, 3),
+    JS_CFUNC_MAGIC_DEF("wkReply", 3, n_wk, 4),
+    JS_CFUNC_MAGIC_DEF("wkPoll", 0, n_wk, 5),
+    JS_CFUNC_MAGIC_DEF("wkBusy", 0, n_wk, 6),
+    JS_CFUNC_MAGIC_DEF("frameSwitch", 0, n_misc, 92),
+    JS_CFUNC_MAGIC_DEF("tzName", 0, n_misc, 93),
+    JS_CFUNC_MAGIC_DEF("frameSlot", 1, n_misc, 94),
+    JS_CFUNC_MAGIC_DEF("battery", 0, n_misc, 95),
 };
 
+#define IM_N 256
+static char* g_im_k[IM_N];
+static char* g_im_v[IM_N];
+static int g_im_n, g_im_ok;
+static char* im_dup(const char* x) { size_t l = strlen(x); char* r = malloc(l + 1); if (r) memcpy(r, x, l + 1); return r; }
+static void im_load(JSContext* c) {
+    if (g_im_ok) return;
+    g_im_ok = 1;
+    for (int i = 0; i < g_im_n; i++) { free(g_im_k[i]); free(g_im_v[i]); }
+    g_im_n = 0;
+    if (!G.doc) return;
+    node* stack[512]; int sp = 0; stack[sp++] = G.doc;
+    while (sp > 0) {
+        node* n = stack[--sp];
+        if (n->type == NT_ELEM && n->tag == T_SCRIPT) {
+            const char* ty = attr_get(n, "type");
+            if (ty && ieq(ty, "importmap")) {
+                sbuf b = { 0, 0, 0 }; text_content(n, &b);
+                if (b.n) {
+                    JSValue o = JS_ParseJSON(c, b.s, (size_t)b.n, "importmap");
+                    JSValue im = JS_IsObject(o) ? JS_GetPropertyStr(c, o, "imports") : JS_UNDEFINED;
+                    JSPropertyEnum* pe = 0; uint32_t np = 0;
+                    if (JS_IsObject(im) && JS_GetOwnPropertyNames(c, &pe, &np, im, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+                        for (uint32_t i = 0; i < np && g_im_n < IM_N; i++) {
+                            JSValue v = JS_GetProperty(c, im, pe[i].atom);
+                            const char* k = JS_AtomToCString(c, pe[i].atom);
+                            const char* vs = JS_IsString(v) ? JS_ToCString(c, v) : 0;
+                            if (k && vs) { char full[4096]; url_resolve(G.base, vs, full, sizeof(full)); g_im_k[g_im_n] = im_dup(k); g_im_v[g_im_n] = im_dup(full); if (g_im_k[g_im_n] && g_im_v[g_im_n]) g_im_n++; }
+                            if (vs) JS_FreeCString(c, vs);
+                            if (k) JS_FreeCString(c, k);
+                            JS_FreeValue(c, v);
+                        }
+                        JS_FreePropertyEnum(c, pe, np);
+                    }
+                    if (JS_IsException(o)) JS_FreeValue(c, JS_GetException(c));
+                    JS_FreeValue(c, im); JS_FreeValue(c, o);
+                }
+            }
+        }
+        for (node* ch = n->last; ch; ch = ch->prev) if (ch->type == NT_ELEM && sp < 512) stack[sp++] = ch;
+    }
+}
+static int im_map(const char* name, char* out, int cap) {
+    int best = -1, bl = 0;
+    for (int i = 0; i < g_im_n; i++) {
+        int kl = (int)strlen(g_im_k[i]);
+        if (!strcmp(g_im_k[i], name)) { snprintf(out, (size_t)cap, "%s", g_im_v[i]); return 1; }
+        if (kl > bl && kl > 0 && g_im_k[i][kl - 1] == '/' && !strncmp(g_im_k[i], name, (size_t)kl)) { best = i; bl = kl; }
+    }
+    if (best < 0) return 0;
+    snprintf(out, (size_t)cap, "%s%s", g_im_v[best], name + bl);
+    return 1;
+}
 static char* mod_normalize(JSContext* c, const char* base, const char* name, void* op) {
     (void)op;
-    char full[2048];
+    char full[4096];
+    im_load(c);
+    if (g_im_n && im_map(name, full, sizeof(full))) { size_t l = strlen(full); char* r = js_malloc(c, l + 1); if (r) memcpy(r, full, l + 1); return r; }
     url_resolve(base && strchr(base, ':') ? base : G.base, name, full, sizeof(full));
+    if (g_im_n) { char m2[4096]; if (im_map(full, m2, sizeof(m2))) snprintf(full, sizeof(full), "%s", m2); }
     size_t l = strlen(full);
     char* r = js_malloc(c, l + 1);
     if (r) memcpy(r, full, l + 1);
@@ -1205,14 +1969,22 @@ static JSModuleDef* mod_loader(JSContext* c, const char* name, void* op) {
 static JSClassDef node_cls = { "Node", 0, 0, 0, 0 };
 
 int js_init(void) {
+    nwk_net_cancel_owner(NET_OWNER);
+    if (!nwk_frame_is()) nwk_wk_send(0, 5, 0, 0);
+    g_im_ok = 0;
     g_load_js_ms = 0;
+    g_rej_n = 0;
+    g_js_oom = 0;
+    g_js_gc_t = 0;
     rt = JS_NewRuntime();
     if (!rt) return -1;
     extern size_t nwe_arena_size(void);
     size_t asz = nwe_arena_size();
     JS_SetMemoryLimit(rt, asz ? asz * 7 / 10 : (64u << 20));
-    JS_SetMaxStackSize(rt, 3u * 1024 * 1024);
+    JS_SetMaxStackSize(rt, nwe_stack_top() ? 8u * 1024 * 1024 : 3u * 1024 * 1024);
+    JS_SetGCThreshold(rt, 16u << 20);
     JS_SetInterruptHandler(rt, interrupt_cb, 0);
+    JS_SetHostPromiseRejectionTracker(rt, rej_tracker, 0);
     JS_SetModuleLoaderFunc(rt, mod_normalize, mod_loader, 0);
     ctx = JS_NewContext(rt);
     if (!ctx) return -1;
@@ -1232,12 +2004,16 @@ int js_init(void) {
     JS_SetPropertyFunctionList(ctx, p_doc, doc_funcs, (int)(sizeof(doc_funcs) / sizeof(doc_funcs[0])));
     p_frag = JS_NewObjectProto(ctx, p_node);
     for (int i = 0; i < T_COUNT; i++) tagproto[i] = JS_UNDEFINED;
+    for (int i = 0; i < ntagproto_nm; i++) tagproto_nm[i].p = JS_UNDEFINED;
+    ntagproto_nm = 0;
     timers = 0;
     ntimers = ctimers = 0;
     next_tid = 0;
     JSValue glob = JS_GetGlobalObject(ctx);
     JSValue nat = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, nat, native_funcs, (int)(sizeof(native_funcs) / sizeof(native_funcs[0])));
+    { extern void wasm_install(JSContext*, JSValue); wasm_install(ctx, nat); }
+    { extern void webgl_install(JSContext*, JSValue); webgl_install(ctx, nat); }
     JSValue protos = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, protos, "Node", JS_DupValue(ctx, p_node));
     JS_SetPropertyStr(ctx, protos, "CharacterData", JS_DupValue(ctx, p_chardata));
@@ -1253,7 +2029,29 @@ int js_init(void) {
     JS_SetPropertyStr(ctx, glob, "__n", nat);
     JS_FreeValue(ctx, glob);
     arm();
-    JSValue r = JS_Eval(ctx, nwe_prelude, strlen(nwe_prelude), "<prelude>", JS_EVAL_TYPE_GLOBAL);
+    JSValue r = JS_UNDEFINED;
+    {
+        int plen = (int)strlen(nwe_prelude), pdone = 0;
+        unsigned long long ph = 0x9e3779b97f4a7c15ull ^ ((unsigned long long)plen << 20) ^ 0x50524Cull;
+        for (int i = 0; i < plen; i += 97) { ph ^= (unsigned char)nwe_prelude[i]; ph *= 1099511628211ull; }
+        const unsigned char* cd = 0;
+        int cl = 0;
+        if (nwk_code_get(ph, plen, &cd, &cl)) {
+            JSValue f = JS_ReadObject(ctx, cd, (size_t)cl, JS_READ_OBJ_BYTECODE);
+            if (!JS_IsException(f)) { r = JS_EvalFunction(ctx, f); pdone = 1; }
+            else { JSValue e = JS_GetException(ctx); JS_FreeValue(ctx, e); }
+        }
+        if (!pdone) {
+            JSValue f = JS_Eval(ctx, nwe_prelude, (size_t)plen, "<prelude>", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+            if (JS_IsException(f)) r = f;
+            else {
+                size_t sz = 0;
+                uint8_t* out = JS_WriteObject(ctx, &sz, f, JS_WRITE_OBJ_BYTECODE);
+                if (out) { nwk_code_put(ph, plen, out, (int)sz); js_free(ctx, out); }
+                r = JS_EvalFunction(ctx, f);
+            }
+        }
+    }
     if (JS_IsException(r)) report();
     JS_FreeValue(ctx, r);
     js_deadline = 0;
@@ -1273,28 +2071,72 @@ void js_drain(void) {
 }
 
 
+int g_no_code_cache;
+void js_run_script_in(const char* src, int len, const char* name, int module);
 void js_run_script(const char* src, int len, const char* name, int module) {
+    extern int g_dom_parsing;
+    int sp = g_dom_parsing;
+    g_dom_parsing = 0;
+    js_run_script_in(src, len, name, module);
+    g_dom_parsing = sp;
+}
+void js_run_script_in(const char* src, int len, const char* name, int module) {
     if (!js_inited || !src) return;
-    if (g_load_js_ms > 8000) { char m[200]; snprintf(m, sizeof(m), "script skipped (page scripts already used 8 s): %s", name ? name : "<script>"); nwk_log(m); return; }
-    unsigned long st0 = nwk_ms();
+    if (g_load_js_ms > 300000) { char m[200]; snprintf(m, sizeof(m), "script skipped (page scripts already used 300 s): %s", name ? name : "<script>"); nwk_log(m); return; }
+    unsigned long st0 = nwk_ms_active();
+    unsigned long long pu0 = nwk_us();
+    g_nwe_perf.scripts++;
+    { extern int eng_is_loaded(void); if (eng_is_loaded()) g_nwe_perf.after_scripts++; }
+    unsigned long dsv = js_deadline;
     char* buf = nalloc((size_t)len + 1);
     memcpy(buf, src, (size_t)len);
     buf[len] = 0;
     arm();
-    { unsigned long extra = (unsigned long)len / 200000ul * 1000ul; if (extra > 8000ul) extra = 8000ul; js_deadline += extra; }
-    JSValue r = JS_Eval(ctx, buf, (size_t)len, name ? name : "<script>", module ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL);
+    { unsigned long extra = (unsigned long)len / 100000ul * 1000ul; if (extra > 60000ul) extra = 60000ul; js_deadline += extra; }
+    JSValue r = JS_UNDEFINED;
+    int done = 0;
+    { JSValue glob = JS_GetGlobalObject(ctx); JSValue fn = JS_GetPropertyStr(ctx, glob, "__ids"); if (JS_IsFunction(ctx, fn)) { JSValue rr = JS_Call(ctx, fn, glob, 0, 0); if (JS_IsException(rr)) { JSValue e = JS_GetException(ctx); JS_FreeValue(ctx, e); } JS_FreeValue(ctx, rr); } JS_FreeValue(ctx, fn); JS_FreeValue(ctx, glob); }
+    if (!module && len >= 8192 && !g_no_code_cache) {
+        const char* nm = name ? name : "<script>";
+        unsigned long long h = 1469598103934665603ull;
+        for (int i = 0; i < len; i++) { h ^= (unsigned char)buf[i]; h *= 1099511628211ull; }
+        for (const char* q = nm; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211ull; }
+        h ^= (unsigned long long)len << 40;
+        const unsigned char* cd = 0;
+        int cl = 0;
+        if (nwk_code_get(h, len, &cd, &cl)) {
+            JSValue f = JS_ReadObject(ctx, cd, (size_t)cl, JS_READ_OBJ_BYTECODE);
+            if (!JS_IsException(f)) { g_nwe_perf.code_hits++; r = JS_EvalFunction(ctx, f); done = 1; }
+            else { JSValue e = JS_GetException(ctx); JS_FreeValue(ctx, e); }
+        }
+        if (!done) {
+            unsigned long long cu0 = nwk_us();
+            JSValue f = JS_Eval(ctx, buf, (size_t)len, nm, JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+            g_nwe_perf.compile_us += nwk_us() - cu0;
+            if (JS_IsException(f)) r = f;
+            else {
+                size_t sz = 0;
+                uint8_t* out = JS_WriteObject(ctx, &sz, f, JS_WRITE_OBJ_BYTECODE);
+                if (out) { nwk_code_put(h, len, out, (int)sz); js_free(ctx, out); }
+                r = JS_EvalFunction(ctx, f);
+            }
+            done = 1;
+        }
+    }
+    if (!done) r = JS_Eval(ctx, buf, (size_t)len, name ? name : "<script>", module ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(r)) report();
     JS_FreeValue(ctx, r);
-    js_deadline = 0;
+    js_deadline = dsv;
     nfree(buf);
     js_drain();
-    g_load_js_ms += nwk_ms() - st0;
+    g_load_js_ms += nwk_ms_active() - st0;
+    { unsigned long long d = nwk_us() - pu0; extern int eng_is_loaded(void); if (eng_is_loaded()) g_nwe_perf.after_js_us += d; else g_nwe_perf.js_us += d; }
 }
 
 static int mut_busy;
 static void mut_hook(int k, node* t, node* c, node* pv, node* nx, const char* nm, const char* old) {
-    if (!js_inited || !ctx || mut_busy) return;
-    mut_busy = 1;
+    if (!js_inited || !ctx || mut_busy >= 8) return;
+    mut_busy++;
     JSValue glob = JS_GetGlobalObject(ctx);
     JSValue fn = JS_GetPropertyStr(ctx, glob, "__mut");
     if (JS_IsFunction(ctx, fn)) {
@@ -1306,7 +2148,7 @@ static void mut_hook(int k, node* t, node* c, node* pv, node* nx, const char* nm
     }
     JS_FreeValue(ctx, fn);
     JS_FreeValue(ctx, glob);
-    mut_busy = 0;
+    mut_busy--;
 }
 void js_ce_call(const char* name, node* a, int b) {
     if (!js_inited || !a) return;
@@ -1324,6 +2166,24 @@ void js_ce_call(const char* name, node* a, int b) {
     }
     JS_FreeValue(ctx, fn);
     JS_FreeValue(ctx, glob);
+}
+void js_anim_event(node* target, const char* type, const char* name, float el) {
+    if (!js_inited || !target) return;
+    JSValue glob = JS_GetGlobalObject(ctx);
+    JSValue fn = JS_GetPropertyStr(ctx, glob, "__animEv");
+    if (JS_IsFunction(ctx, fn)) {
+        JSValue args[4];
+        args[0] = wrap(target); args[1] = jstr(type); args[2] = jstr(name ? name : ""); args[3] = JS_NewFloat64(ctx, el);
+        arm();
+        JSValue r = JS_Call(ctx, fn, glob, 4, args);
+        if (JS_IsException(r)) report();
+        JS_FreeValue(ctx, r);
+        for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
+        js_deadline = 0;
+    }
+    JS_FreeValue(ctx, fn);
+    JS_FreeValue(ctx, glob);
+    js_drain();
 }
 void js_dispatch(node* target, const char* type, int bubbles, float cx, float cy, int key, int* prevented) {
     if (prevented) *prevented = 0;
@@ -1355,6 +2215,11 @@ void js_fire_load(void) {
     if (!js_inited) return;
     js_run_script("__fireLoad()", 12, "<load>", 0);
 }
+void js_fire_stage(int n) {
+    if (!js_inited) return;
+    char b[24]; int l = snprintf(b, sizeof(b), "__fireStage(%d)", n);
+    js_run_script(b, l, "<load>", 0);
+}
 
 static void call_timer(JSValue fn, double arg, int witharg) {
     JSValue a = JS_NewFloat64(ctx, arg);
@@ -1367,6 +2232,16 @@ static void call_timer(JSValue fn, double arg, int witharg) {
 
 int js_tick(void) {
     if (!js_inited) return 0;
+    {
+        size_t lim = JS_GetMallocLimit(rt), used = JS_GetMallocSize(rt);
+        unsigned long t = nwk_ms();
+        if (g_js_oom || (lim && used > lim / 10 * 7 && t - g_js_gc_t > 2000)) {
+            JS_RunGC(rt);
+            g_js_gc_t = t;
+            if (g_js_oom) { char m[160]; snprintf(m, sizeof m, "The page ran out of script memory; memory was cleaned up (%u MB in use of %u MB)", (unsigned)(JS_GetMallocSize(rt) >> 20), (unsigned)(lim >> 20)); nwk_error(m); g_js_oom = 0; }
+        }
+    }
+    if (g_rej_n) rej_flush();
     unsigned long now = nwk_ms();
     int ran = 0;
     int n = ntimers;

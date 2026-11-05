@@ -1,0 +1,37 @@
+#!/bin/bash
+N="$1"; shift
+L=/tmp/$N.log; D=/tmp/$N.done
+rm -f "$D"
+export HOME=/root
+export DISPLAY=127.0.0.1:0
+export GTK_A11Y=none
+export NO_AT_BRIDGE=1
+export GSETTINGS_BACKEND=memory
+export GDK_BACKEND=x11
+export QT_QPA_PLATFORM=xcb
+export LIBGL_ALWAYS_SOFTWARE=1
+export SDL_AUDIODRIVER=dummy
+export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+export ELECTRON_OZONE_PLATFORM_HINT=x11
+mkdir -p "$XDG_RUNTIME_DIR" /root/.config /root/.local/share /root/.cache; chmod 700 "$XDG_RUNTIME_DIR"
+export DBUS_SESSION_BUS_ADDRESS=$(/usr/bin/nvx-session-bus)
+echo "=== $N $(date) ===" >> "$L"
+if ! command -v "$1" >/dev/null 2>&1; then echo "$1 is not installed - run: sudo apt install $N" >> "$L"; echo 127 > "$D"; exit 127; fi
+for i in $(seq 150); do [ -e /tmp/Xvfb_screen0 ] && break; sleep 0.2; done
+[ -e /tmp/Xvfb_screen0 ] || echo "X server did not start (see /tmp/Xvfb.log)" >> "$L"
+B=$(command -v "$1"); /lib64/ld-linux-x86-64.so.2 --list "$B" 2>&1 | grep -i "not found" | sed "s|^|missing library: |" >> "$L"
+export XDG_CACHE_HOME=/root/.cache
+FCS=/root/.cache/nvx-fc-stamp
+if command -v fc-cache >/dev/null 2>&1; then if [ ! -e "$FCS" ] || [ -n "$(find /usr/share/fonts /usr/local/share/fonts /root/.fonts /root/.local/share/fonts -newer "$FCS" 2>/dev/null | head -1)" ]; then fc-cache >/dev/null 2>&1; touch "$FCS"; fi; fi
+EX=()
+CR=""; for c in "$(readlink -f "$B")" $(grep -ao '/[A-Za-z0-9_./+-]*' "$B" 2>/dev/null | head -60); do d=$(dirname "$c"); if [ -f "$c" ] && { [ -f "$d/resources.pak" ] || [ -f "$d/chrome_100_percent.pak" ] || [ -f "$d/v8_context_snapshot.bin" ]; }; then CR="$c"; break; fi; if [ -d "$c" ] && { [ -f "$c/resources.pak" ] || [ -f "$c/chrome_100_percent.pak" ] || [ -f "$c/v8_context_snapshot.bin" ]; }; then CR="$c"; break; fi; done
+if [ -z "$CR" ]; then t=$(readlink -f "$B"); bn=$(basename "$t"); for d in "$(dirname "$t")" "$(dirname "$(dirname "$t")")" "/usr/lib/$bn" "/usr/lib/$N" "/opt/$bn" "/opt/$N" "/usr/lib64/$bn" "/usr/share/$bn"; do if [ -f "$d/resources.pak" ] || [ -f "$d/v8_context_snapshot.bin" ]; then CR="$d"; break; fi; done; fi
+if [ -n "$CR" ]; then EX=(--no-sandbox --disable-gpu --disable-gpu-compositing --password-store=gnome-libsecret); if [ -e /etc/noovex/chromium-multiprocess ]; then EX+=(--ipc-connection-timeout=120); else EX+=(--single-process); fi; CRD="$CR"; [ -d "$CRD" ] || CRD=$(dirname "$CR"); if [ -f "$CRD/resources/app/out/cli.js" ]; then [ "$(id -u)" = 0 ] && { mkdir -p "/root/.config/$N"; EX+=("--user-data-dir=/root/.config/$N"); }; for e in "$CRD/$N" "$CRD/$(basename "$(readlink -f "$B")")"; do if [ -x "$e" ] && [ -f "$e" ] && [ "$(head -c 4 "$e" | od -An -c | tr -d " ")" = "177ELF" ]; then shift; set -- "$e" "$@"; echo "VS Code-style app: starting the program $e directly" >> "$L"; break; fi; done; fi; echo "Chromium-based app ($CR): adding ${EX[*]}" >> "$L"; fi
+case "$(readlink -f "$B") $N" in *libreoffice*|*soffice*|*openoffice*) export LD_PRELOAD="/usr/lib/nvx/libnvx-throwlog.so${LD_PRELOAD:+:$LD_PRELOAD}";; esac
+[ -n "$NVX_THROWLOG" ] && export LD_PRELOAD="/usr/lib/nvx/libnvx-throwlog.so${LD_PRELOAD:+:$LD_PRELOAD}"
+L0=$(wc -l < "$L")
+"$@" "${EX[@]}" >> "$L" 2>&1
+RC=$?
+if [ $RC -ne 0 ] && tail -n +$((L0+1)) "$L" | grep -q "without --no-sandbox is not supported"; then echo "nvx-xrun: the program needs --no-sandbox as root; starting it again with Chromium flags" >> "$L"; EX=(--no-sandbox --disable-gpu --disable-gpu-compositing --password-store=gnome-libsecret --single-process); "$@" "${EX[@]}" >> "$L" 2>&1; RC=$?; fi
+tail -n +$((L0+1)) "$L" | tail -n 40 | cut -c1-150 | sed "s/^/xrun $N: /" > /dev/kmsg 2>/dev/null
+echo $RC > "$D"

@@ -1,0 +1,76 @@
+[package]
+name = "taffy"
+version = "0.15.0"
+authors = [
+    "Alice Cecile <alice.i.cecile@gmail.com>",
+    "Johnathan Kelley <jkelleyrtp@gmail.com>",
+    "Nico Burns <nico@nicoburns.com>",
+]
+edition = "2021"
+rust-version = "1.71"
+description = "A flexible UI layout library "
+repository = "https://github.com/DioxusLabs/taffy"
+keywords = ["cross-platform", "layout", "flexbox", "css-grid", "grid"]
+categories = ["gui"]
+license = "MIT"
+
+[dependencies]
+smallvec = { path = "../../rust/shims/smallvec", optional = true }
+
+# see https://doc.rust-lang.org/nightly/rustdoc/scraped-examples.html
+
+[features]
+default = [
+    "std",
+    "taffy_tree",
+    "flexbox",
+    "flexbox_balance",
+    "grid",
+    "block_layout",
+    "float_layout",
+    "calc",
+    "content_size",
+    "detailed_layout_info",
+]
+#! ## Feature Flags
+#!
+#! ### Algorithms
+
+## Enables the Block layout algorithm. See [`compute_block_layout`](crate::compute_block_layout).
+block_layout = []
+## Enables the Float layout algorithm. This is a sub-feature of block layout.
+float_layout = []
+## Enables the Flexbox layout algorithm. See [`compute_flexbox_layout`](crate::compute_flexbox_layout).
+flexbox = []
+## Enables support for `flex-wrap: balance` and `flex-line-count` from [CSS Flexbox Level 2](https://drafts.csswg.org/css-flexbox-2/)
+flexbox_balance = ["flexbox"]
+## Enables the CSS Grid layout algorithm. See [`compute_grid_layout`](crate::compute_grid_layout).
+grid = ["dep:smallvec"]
+## Enables calc() values for all layout algorithms
+calc = []
+## Causes all algorithms to compute and output a content size for each node
+content_size = []
+## Causes algorithms to stores detailed information of the nodes in TaffyTree, with only CSS Grid supporting this.
+detailed_layout_info = []
+## Use strict provenance APIs for pointer manipulation. Using this feature requires Rust 1.84 or higher.
+strict_provenance = []
+
+#! ### Taffy Tree
+
+## Enable the built-in Taffy node tree. See [`TaffyTree`](crate::TaffyTree).
+taffy_tree = []
+
+#! ### Other
+
+## Add [`serde`] derives to Style structs
+## Implement `FromStr` trait for Taffy style types
+## Enable the `parse` feature with proc-macro dependent optimisations
+## Allow Taffy to depend on the [`Rust Standard Library`](std)
+std = []
+## Deprecated no-op: Taffy always depends on the `alloc` library. Retained so that existing `features = ["alloc"]` configurations keep compiling.
+alloc = []
+## Internal feature for debugging
+debug = ["std"]
+## Internal feature for profiling
+profile = ["std"]
+

@@ -150,12 +150,16 @@ Note: Before v8.95 nothing pointed the port back, so after `disks` the main driv
 
 | Macro | Address | Use |
 |---|---|---|
-| `NVME_ASQ` | `0x00B30000` | Admin submission queue (64-byte entries) |
-| `NVME_ACQ` | `0x00B31000` | Admin completion queue (16-byte entries) |
-| `NVME_IOSQ` | `0x00B32000` | I/O submission queue, qid 1 |
-| `NVME_IOCQ` | `0x00B33000` | I/O completion queue, qid 1 |
-| `NVME_ID` | `0x00B34000` | Identify data |
-| `NVME_BUF` | `0x00B35000` | One-block data buffer, used as PRP1 only |
+| `NVME_ASQ` | `DMW(0x1B0000)` | Admin submission queue (64-byte entries) |
+| `NVME_ACQ` | `DMW(0x1B1000)` | Admin completion queue (16-byte entries) |
+| `NVME_IOSQ` | `DMW(0x1B2000)` | I/O submission queue, qid 1 |
+| `NVME_IOCQ` | `DMW(0x1B3000)` | I/O completion queue, qid 1 |
+| `NVME_ID` | `DMW(0x1B4000)` | Identify data |
+| `NVME_BUF` | `DMW(0x1B5000)` | One-block data buffer, used as PRP1 only |
+| `NVME_PRPL` | `DMW(0x1B6000)` | PRP list for multi-page commands (one 4 KiB page, up to 512 entries) |
+| `NVME_BIG` | `DMW(0x1B8000)` | 64 KiB buffer (`NVME_BIGP` = 16 pages) for multi-block reads and writes |
+
+All addresses are offsets into the 2 MB device window (`include/nvx/mem/dmawin.h`).
 
 ### Initialisation and the `nvme_failstage` codes
 
@@ -195,9 +199,12 @@ Doorbells are at `0x1000 + (2*qid + is_cq) * (4 << CAP.DSTRD)` (see `nvme_db`).
 | admin | `0x06` | Identify | CNS 0 (namespace) into `NVME_ID`. If that fails, CNS 2 (`d10=2`, active namespace list), then the first NSID it returns. |
 | admin | `0x05` | Create I/O CQ | `d10=((q-1)<<16)\|1`, `d11=1` (physically contiguous) |
 | admin | `0x01` | Create I/O SQ | `d10=((q-1)<<16)\|1`, `d11=(1<<16)\|1` (CQID 1, PC) |
-| I/O | `0x02` | Read | `e[10]=slba`, `e[12]=0`, so NLB=0: one native block per command |
+| admin | `0x06` | Identify controller | CNS 1, read at the end of `nvme_init()`: byte 77 (MDTS) sets `nvme_maxpg`, the largest transfer in 4 KiB pages (MDTS 0 means no limit), capped at `NVME_BIGP` |
+| I/O | `0x02` | Read | `nvme_cmd`: `e[10]=slba`, `e[12]=0`, one native block into `NVME_BUF`. `nvme_cmdn`: `e[12]=nblk-1`, data in `NVME_BIG` |
 | I/O | `0x01` | Write | same layout |
 | I/O | `0x00` | Flush | `nvme_flush()` |
+
+`nvme_cmdn(op,slba,nblk,bytes)` builds the PRPs for `NVME_BIG`: PRP1 is the first page; for two pages PRP2 is the second page; for more, PRP2 points to `NVME_PRPL`, which lists pages 2 to n. The counters `g_nvme_cmds` and `g_nvme_multi` count these commands; the `disktest` command and the installer log print them.
 
 `nvme_wait()` matches completions by command ID (`nvme_next_cid`, which wraps at `0xFFF0`) and handles the phase tag. When the loop's 20 M iterations run out it sets `nvme_lasterr=1`; when `CSTS.CFS` is set it sets `nvme_lasterr=2`. Either way it also sets `nvme_bad=1`. The next `nvme_cmd` sees `nvme_bad` and calls `nvme_init()` again before retrying, which resets the controller.
 
@@ -214,8 +221,8 @@ The rest of the kernel addresses everything in 512-byte LBAs. NVMe bridges the d
 |---|---|
 | `nvme_read1(lba,out)` | Loads native block `lba/ratio` (skipped if it is already cached) and copies out the 512-byte slice at `(lba%ratio)*512`. |
 | `nvme_write1(lba,in)` | When `ratio>1`, it reads the native block first (read-modify-write), patches the slice and writes the block back. |
-| `nvme_read(lba,cnt,out)` | A loop over `nvme_read1`. |
-| `nvme_writen(lba,cnt,in)` | Writes whole native blocks directly when the request is aligned and long enough. Otherwise it falls back to `nvme_write1`. |
+| `nvme_read(lba,cnt,out)` | When the request is aligned to a native block and at least one block long, it reads up to `nvme_maxpg` pages with one `nvme_cmdn` command and copies them out of `NVME_BIG`. The rest (and any failed big command) goes through `nvme_read1`. |
+| `nvme_writen(lba,cnt,in)` | Copies up to `nvme_maxpg` pages of whole native blocks into `NVME_BIG` and writes them with one `nvme_cmdn` command. If that fails, or the request is not aligned, it falls back to one native block at a time and then to `nvme_write1`. |
 
 The generic layer exposes the ratio as `dk_ratio()`:
 
@@ -327,7 +334,7 @@ Install mode. "Continue" on the disk page always sets `ip_mode=0` (whole disk). 
 Size constants:
 
 ```c
-#define INST_BOOTP (dk_ratio()>1?557056u:131072u)          /* boot partition: 64 MiB, or 272 MiB on 4K-sector disks */
+#define INST_BOOTP 1048576u                                 /* boot partition: 512 MiB, room for the kernel and the previous version kept by updates */
 #define INST_DATAP (((NVX_REGION_SECS)+2047u)&~2047u)      /* NVX_REGION_SECS = 8+(24+1)*4096 = 102408 -> 104448 sectors */
 ```
 
@@ -349,16 +356,22 @@ Its return codes: -1 = format failed; -2 = mount failed; -3 = marker write faile
 
 ### The kernel snapshot
 
-`kmain` calls `inst_snapshot_data()` first, right after `.bss` is zeroed (`core/init/main.c:124`). This happens before anything can modify the loaded image. The function copies the kernel image at `0x100000` into `g_kimg_snap[KSNAP_MAX]` (`KSNAP_MAX` = `0x800000`, 8 MiB, the same as the build limit). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`.
+`kmain` calls `inst_snapshot_data()` right after `.bss` is zeroed. The installer needs the kernel file as it was built, but the loaded image changes while the system runs, so the snapshot keeps only what can change:
 
-Note: Up to v8.94 the buffer was 3 MiB while the kernel had grown past 5 MB, so the snapshot was always empty and every installation stopped with "The kernel image could not be captured at boot." The buffer lives in `.bss`, which starts at `0xC00000`, so the larger size does not touch the fixed low-memory regions.
+- `[0x100000, __immutable_end)`: code, read-only data and the signature block. Never written at run time. Its 4 KiB pages are hashed (FNV) into `g_kpg_sum` for `kcheck`.
+- `[__immutable_end, __blob_end)`: the `.blob` section with the large embedded files (`doom_wad.o`, `lq_pak0.o`, `lq_pak1.o`, `wpf_data.o`, `nvfw_gsp.o`, about 42 MB). `build.sh` renames their `.data` section to `.blobdata` with `objcopy` and both linker scripts place it here. Nothing writes to it, so it is copied straight from memory at install time.
+- `[__blob_end, size stamp)`: `.data`, under 1 MB. This part is copied into `g_kdata_snap[KDATA_MAX]` (4 MiB). Two areas in it were already changed before the snapshot: the boot page tables in `boot64.S` (`boot_pt_first` to `boot_pt_last`, zero in the file) and the early IDT `g_eidt` in `early_fault.c` (`{1,0,...}` in the file). The snapshot writes their file contents back.
 
-`kimg_check()` verifies the snapshot against `g_buildsig` using SHA-256 twice:
+`KSNAP_MAX` is `0x6000000` (96 MiB). The length comes from the size stamp at `0x100000+24`; if that is outside 4096-`KSNAP_MAX`, it falls back to `__file_end`. `kimg_full()` joins memory and snapshot into one buffer when the installer runs.
+
+Note: Up to v9.99 `KSNAP_MAX` was 64 MiB and all embedded files lived in `.data`. After the kernel passed 64 MB every installation stopped with "The kernel size stamp is invalid", and with a larger limit the 43 MB `.data` would not have fit the 4 MiB snapshot ("The kernel image could not be captured at boot").
+
+`kimg_check()` verifies the image against `g_buildsig` using SHA-256 twice:
 
 - the immutable part up to `__immutable_end`, with the hash field at `sig+32` zeroed, compared with `g_buildsig.sha256`;
 - the whole file, with the field at `sig+88` also zeroed, compared with `g_buildsig.sha256_full`.
 
-The shell command `kcheck` (`kcheck_run`) prints the same comparison and writes it to the kernel log. It also lists the 4 KiB code pages that have changed since boot. On v8.96 in QEMU (BIOS and UEFI) it reports `code MATCHES   whole file MATCHES` for the 5,298,992-byte kernel.
+The shell command `kcheck` (`kcheck_run`) prints the same comparison and writes it to the kernel log. It also lists the 4 KiB code pages that have changed since boot. The installer turns the freeze detector off while it runs (`g_frz_hold`), because hashing 77 MB in QEMU takes longer than the 5 s limit.
 
 ### The boot partition: `inst_build_fs`
 
@@ -383,13 +396,14 @@ Contents (all directory timestamps are fixed at `0x6000`/`0x5B3B`):
 
 ```text
 /            volume label entry
-/boot/kernel64.bin       (copy 1 of the snapshot)
+/boot/kernel64.bin       (the kernel image)
 /boot.cfg                (assets/installer/inst_boot.cfg: kernel=/boot/kernel64.bin, cmdline=noovexos, ...)
-/KERNEL64.BIN            (copy 2)
 /EFI/BOOT/BOOTX64.EFI    (boot/uefi/BOOTX64.EFI, embedded by build.sh as inst_efi.bin)
 ```
 
-The installer writes only `used = dstart + (next-2)` sectors, which ends at the last allocated cluster. The FAT, however, describes the whole partition. `ko1` and `ko2` are the byte offsets of the two kernel copies inside the image. `ip_mem_verify` uses them to compare the copies against the snapshot, both after building and after verification. If a copy differs, it rewrites the copy, waits 1 s and compares again, to tell RAM that does not hold data apart from something else overwriting it.
+Up to v9.99 a second copy was written as `/KERNEL64.BIN`. Since v10.00 there is one copy, so the 512 MiB partition has room for the kernel, the previous version kept by updates and future growth. The UEFI loader opens `\boot\kernel64.bin` when `\KERNEL64.BIN` is missing.
+
+The installer writes only `used = dstart + (next-2)` sectors, which ends at the last allocated cluster. The FAT, however, describes the whole partition. `ko1` and `ko2` are the byte offset of the kernel inside the image (both the same since v10.00). `ip_mem_verify` uses them to compare the copies against the snapshot, both after building and after verification. If a copy differs, it rewrites the copy, waits 1 s and compares again, to tell RAM that does not hold data apart from something else overwriting it.
 
 ### `ip_run()` stages
 
@@ -401,11 +415,11 @@ The installer writes only `used = dstart + (next-2)` sectors, which ends at the 
 | 1, 40 | Build the boot-partition image and run `ip_mem_verify` on both kernel copies. |
 | 2, 90 | Write the MBR (below). On a GPT disk in whole-disk mode, also zero the last native block, where the backup GPT header lives. |
 | 3, 110 | Write `inst_stage2.bin` to LBA 1.... This step is skipped when `dk_ratio()>1` (`s2s=0`). |
-| 4, 140 to 700 | Write `used` sectors of the image to `bst`, one sector at a time with `gdisk_write`, refreshing the UI every 128 sectors. |
+| 4, 140 to 700 | Write `used` sectors of the image to `bst`, 128 sectors (64 KiB) per `gdisk_writen` call, refreshing the UI after each call. |
 | 5, 700 | FS 1-3: `nk_install` (progress 760-860 via `ip_nk_prog`). |
 | 6, 760 | FS 0: set `g_nvx_base`/`g_nvx_secs`, then call `n4_format(dsz)`. |
-| 7, 870 to 1000 | Verify: read back the MBR, stage2 and every boot-partition sector and compare them. Recheck the kernel copies in RAM. Call `gdisk_flush()`. |
-| done | `ip_prog=1000`, page `IP_DONE`, `ip_load()` |
+| 7, 870 to 1000 | Verify: read back the MBR, stage2 and every boot-partition sector (128 sectors per `gdisk_readn` call into a 64 KiB buffer from `kmalloc`, one sector at a time if that fails) and compare them. Recheck the kernel copies in RAM. Call `gdisk_flush()`. |
+| done | Log `install: done in N ms, N boot sectors, disk ..., nvme cmds N multi N`; `ip_prog=1000`, page `IP_DONE`, `ip_load()` |
 
 ### MBR writing
 
@@ -515,6 +529,7 @@ This driver is separate from `fs/fat/fat_ata.c` (`fat_mount`, `fat_listdir`, `fa
 | `fatls` | 338 | lists the root directory of the IDE FAT volume |
 | `fatcat <NAME.EXT>` | 492 | Reads a file from the IDE FAT volume and prints up to 8000 characters. |
 | `bcstat`, `bufcache` | 532 | buffer-cache hits, misses and hit rate |
+| `disktest` | 1706 | Reads the first 32 MB (or the whole disk if smaller) of the active disk with `gdisk_readn` and prints the time, MB/s and, on NVMe, how many commands it took and how many were multi-block. |
 | `usbdisk`, `usbls` | 719 | `msd_autoinit` + `ufat_mount`. Prints the size, FAT type and file list, or "no USB stick found (enum failed at: ...)". |
 | `usbcat <FILE>` | 730 | `ufat_read`. The name match is case-insensitive. |
 | `usbwrite <FILE> <text>` | 736 | `ufat_write_file`. Prints "written to USB" or "write failed". |
@@ -522,6 +537,7 @@ This driver is separate from `fs/fat/fat_ata.c` (`fat_mount`, `fat_listdir`, `fa
 | `usb`, `xhci` | 972 | rescans the controllers (`xhci_mouse_autoinit`), then runs `usbinfo` |
 | `ntfs mount [ro] \| umount \| info \| ls \| cat \| write \| mv \| mkdir \| rm` | 1591 | NTFS on the gdisk disk through `nk_mount`/`nvxntfs_*`. Every subcommand except `ls`, `cat`, `info` and `help` needs root. Errors include "ntfs: no NTFS volume found on the disk" and "ntfs: not mounted - run 'ntfs mount' first". |
 | `install` | 361 | `ip_open(ST_DESKTOP)` (root only) |
+| `update [status\|check\|install\|reinstall\|back\|new\|url <url>]` | 552 | NoovexOS updates (8.12): show the state, ask the server, install the new version, go back to the previous one, use the new one again, set the server address |
 | `kcheck` / `memmap` / `memtest` | 1537-1541 | Installer diagnostics: snapshot integrity, the firmware memory map against kernel areas (plus the `g_pci_quiesced` count), and a fill/verify/re-verify test of free RAM. |
 | `pci` | 696 | Prints `vendor:device class=`, flagging network devices. Covers only the `pci_scan` set (buses 0-3, function 0). |
 
@@ -557,3 +573,94 @@ Each partition is probed for its file system: NTFS, exFAT, FAT12/16/32, BitLocke
 | `nk_scan` (`fs/ntfs/ntfsk.c`) | the root file system search walks `parts_scan_main` instead of its own four-entry MBR and 128-entry GPT loops |
 
 Limits: reads only (writing is still through the main disk); LBAs above 2^32 on the main and USB disks are not reachable through their 32-bit readers; one NVMe namespace.
+
+## 8.12 Updates from inside NoovexOS (`core/update.c`)
+
+An installed system updates itself from noovexos.site. The Settings page "Update & recovery > NoovexOS Update" and the shell command `update` use the same code.
+
+### The update server
+
+`GET https://noovexos.site/api/public/update` (the website builds it from its download catalog) returns:
+
+```text
+{"product":"NoovexOS 64","version":"10.00","published":"...","iso_url":"https://...iso","iso_name":"...",
+ "iso_bytes":87031808,"iso_sha256":"<64 hex>","changelog_url":"...","notes":["...","..."]}
+```
+
+`update url <url>` stores another address in `/etc/update-url` (for a test server or a mirror); `update url default` goes back. `upd_check()` fetches the answer with `net_get_url` (the redirect-following fetcher of `apt`, `fs/pkg/apt.c`), reads it with `json_str`/`nvx_json_int` and compares versions as `major*100+minor`. If the network was not ready (the first DHCP request at boot often gets no answer), it asks for an address again with `dhcp_renew()` and tries once more. The ISO download in `upd_install` is tried up to three times on a network error ("could not connect", "Connection ...", "No route ...", "Temporary failure ..."), waiting 300 ticks between tries and renewing DHCP after "No route"; the screen shows "The download failed, trying again (N of 3)" (v10.08). Error texts come from `ap_get`: for HTTPS a failed TCP connection is "could not connect to HOST" and a failed lookup "could not find HOST" (before v10.08 both were misreported, the first as "No route to gateway").
+
+### Checks before anything is changed
+
+| Step | Check |
+|---|---|
+| Download | the whole ISO with `iso_bytes` as the buffer hint; progress comes from `g_net_rx` (bytes received, set by `tls_get` and `tcp_get`) |
+| Size | the download must have exactly `iso_bytes` bytes |
+| Checksum | SHA-256 of the ISO must equal `iso_sha256` |
+| Unpack | the ISO's MBR partition (FAT32 at LBA 2048) is mounted read-only from memory with `vfat` and `/boot/kernel64.bin` is read |
+| Build check | `upd_kcheck`: the `NVX64SIG` block must be present, `image_size` must equal the file size and SHA-256 of the file with the two hash fields zeroed must equal `sha256_full` |
+| Version | the new kernel must be newer than the running one (`update reinstall` skips this) |
+| Installed version | the kernel that will be kept is read from the disk and must pass the same build check, otherwise nothing is changed (there would be no way back) |
+| Space | free space plus the files that will be replaced must hold both kernels plus 1 MB |
+
+### The boot partition and the state file
+
+The updater finds the boot partition on the system disk (an MBR entry of type `0x0B`/`0x0C`, active first, holding `/boot.cfg` and a kernel) when NoovexOS is installed (`/etc/nvx-installed` and a loaded data partition). Otherwise it looks at the USB stick (`up_find_usb`, see below). Disks with 4 KiB sectors are not supported because `vfat` needs 512-byte sectors.
+
+### Updating a USB stick (v10.02)
+
+A stick made from the ISO has the same layout as an installed boot partition: one active FAT32 partition at LBA 2048 with `/boot.cfg`, `/boot/kernel64.bin`, `/EFI/BOOT/BOOTX64.EFI`, and the same BIOS stage2 and UEFI loader, which already read `/boot/update.txt`. So the same install order and the same fallback work; only the block functions and the space differ.
+
+- Finding it: when NoovexOS is not installed, `up_find_usb` uses the stick that was mounted at start (`msd_ok`, starting the USB mass storage driver again at most every 10 s if needed), requires 512-byte blocks and an MBR partition with `/boot.cfg` and a kernel, and sets `g_upd.usb`. A CD or an ISO file in a virtual machine has no writable stick, so it is told so.
+- Block access: `up_rd`/`up_wr` call `usb_msd_rdn`/`usb_msd_wrn` (`drivers/usb/xhci.c`), which split requests into chunks of up to 64 sectors that do not cross a 64 KiB boundary of the transfer buffer and retry each chunk once. Flushing sends SCSI SYNCHRONIZE CACHE (`usb_msd_sync`). Data and status phases of USB storage commands now wait up to about 10 s (`msd_wait_rounds`, 150 rounds for SYNCHRONIZE CACHE) instead of 0.4 s; a slow stick or a host that needs longer to flush would otherwise leave the command and status out of step, and every later command failed. While the updater has the stick open for writing, the small FAT driver used for `CRASH.TXT` (`ufat`) is flushed first and mounted again afterwards.
+- Space: the partition in the ISO has only about 8 MiB free, too little to keep a second 77 MB kernel. Before writing, `up_grow` makes the partition larger: the new size is the smaller of what the FATs can describe (`fatsz*128-2` clusters, 512 MiB for a stick made from the 10.02 ISO) and the end of the stick (or the start of another partition). It checks that every FAT entry for the added clusters is zero, then writes, each read back and compared: the ISO9660 volume size (2 KiB sector 16, so firmware that uses the El Torito EFI entry sees the whole partition; without this OVMF failed with "error reading the kernel (status 2)"), the MBR partition size, the backup boot sector and the boot sector's total sector count. Nothing is moved. A stick made from an older ISO has FATs sized for the image, so it cannot grow; the user is told to write the 10.02 ISO (or newer) to it once.
+- After the restart, `upd_tick` retries finding the stick every 5 s for up to 2 minutes, so a stick that answers late still gets its new version confirmed.
+
+Settings shows "(USB stick)" in the footer, "NoovexOS X is kept on the USB stick" and the Go back button. `update` prints "boot partition: found on the USB stick".
+
+The partition is mounted with the same `vfat` driver as a FAT root file system. `vf_swap_out`/`vf_swap_in` save and restore `g_vfat` around it, so a FAT32 data partition stays mounted. `vf_reclaim` frees clusters that no file uses (left by an interrupted write) and makes both FATs equal again.
+
+`/boot/update.txt` is always 512 bytes and is changed in place (`vf_inplace`), so the boot loaders can rewrite its first four bytes without touching the FAT:
+
+```text
+TRY0
+new=10.01
+old=10.00
+```
+
+| State | Meaning | BIOS stage2 and UEFI loader start |
+|---|---|---|
+| (no file), `OK  ` | normal | `kernel64.bin` |
+| `PREP` | the previous version is being saved as `kernel64.old` | `kernel64.bin` (still complete) |
+| `SWAP` | `kernel64.bin` is being replaced | `kernel64.old` |
+| `TRY0` | new version written, not started yet | writes `TRY1`, starts `kernel64.bin` |
+| `TRY1` | first start attempt done | writes `TRY2`, starts `kernel64.bin` |
+| `TRY2` | second start attempt done and not confirmed | writes `FAIL`, starts `kernel64.old` |
+| `FAIL` | the new version did not start twice | `kernel64.old` |
+| `OLD ` | the user went back, or an update was interrupted | `kernel64.old` |
+
+If the chosen kernel file cannot be read, both loaders fall back to the other one (and to `\KERNEL64.BIN` on older installations). The UEFI loader also shows "press P to start the previous version" for 0.6 s when `kernel64.old` exists; the BIOS menu has the entry "NoovexOS 64 (previous version)", which the updater adds to `/boot.cfg`.
+
+### Install order
+
+1. Write `PREP` (with `new=` and `old=`).
+2. Delete the old `kernel64.old` and a root `\KERNEL64.BIN` if `kernel64.bin` exists.
+3. Write `kernel64.old` (the current kernel), read it back and compare.
+4. Write `SWAP`, delete `kernel64.bin`, write the new kernel, read it back and compare.
+5. Add the "previous version" entry to `/boot.cfg`.
+6. Write `TRY0`, flush the disk and restart.
+
+When `kernel64.old` is the known good kernel (`FAIL`, `OLD`), steps 1-3 are skipped. A failed write puts things back where possible: a failed copy of the current kernel leaves `OK`; a failed new kernel is replaced by the old bytes (`OK`) or, if that fails too, leaves `OLD`.
+
+### After the restart
+
+`upd_tick()` (main loop) reads the state 3 s after start. If the running version is the one in `new=` and the state is `TRY0`-`TRY2`, it waits 60 s and writes `OK  `. It then compares the UEFI loader files and the BIOS stage2 (LBA 1, only if the first 64 bytes match and no partition starts there) with the copies built into the new kernel and writes them if they differ, so a fixed boot loader reaches installed systems. An interrupted update is reported: `PREP` removes a damaged `kernel64.old` and writes `OK`; `SWAP` writes `OLD`. `FAIL` shows "NoovexOS X did not start twice, so NoovexOS went back to Y."
+
+"Go back" writes `OLD ` and restarts; "Use it again" writes `TRY0` (the new version gets two new attempts). Both check the target kernel first.
+
+### The update screen
+
+`upd_screen_begin/upd_screen/upd_screen_end` draw a full-screen page: plain blue (`rgb(43,95,201)`), five dots in a row (one bright, the next one half, the rest faint, moving every 14 ticks), "Working on updates NN%" (the title and percentage; no percentage at 100) and "Don't turn off your computer" in Liberation Sans from the word-processor font tables (`us_text`, sizes 20 pt and 12 pt), and "Your computer will restart once when it's done" at the bottom. When the update fails the reason is shown instead of the second line and the bottom line says the current version is kept. The current step is written to the log. It is drawn by `g_wait_pump` during the download and by the block functions during disk writes. The freeze detector is paused (`g_frz_hold`). Percent ranges: download 0-55, checks 56-70, saving the previous version 74-84, new version 85-97, finish 98-100.
+
+### Speed
+
+`vfat` reads and writes runs of up to 128 clusters, and the updater's block functions use `gdisk_readn`/`gdisk_writen`. AHCI, VirtIO and IDE then move up to 64 KB per command. The NVMe driver still sends one command per 512-byte sector, so an update moves about 300,000 commands there (a few seconds on real hardware, about 10 minutes in QEMU without KVM).

@@ -19,7 +19,7 @@ extern int g_wifi_pwlen;
 extern int g_wifi_entry;
 extern char g_wifi_conn[33];
 extern int g_wifi_scanning;
-extern char g_wifi_status[48];
+extern char g_wifi_status[96];
 
 void nvx_settings_save(void);
 void nvx_settings_load(void);

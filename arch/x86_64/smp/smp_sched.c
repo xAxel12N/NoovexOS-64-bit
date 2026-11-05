@@ -73,6 +73,7 @@ static void ap_loop(void){
         if(c->stop){ c->parked=1; while(c->stop){ cpu_idle(); cpu_irq_off(); } c->parked=0; }
         int ran=0;
         if(g_smp_sched){ bkl_lock(); int pick=g_smp_sched?jc_pick():-1; if(pick>=0){ jc_enter(pick); ran=1; } bkl_unlock(); }
+        { extern int wk_ap_turn(void); if(wk_ap_turn())ran=1; }
         if(!ran&&!smp_work_step()){ cpu_idle(); cpu_irq_off(); }
     }
 }
@@ -81,6 +82,7 @@ void ap_entry_c(int id){
     cpu_set_percpu(c);
     arch_fpu_init();
     { extern void pat_cpu_init(void); pat_cpu_init(); }
+    { extern int g_nx_on; extern void cpu_nx_init(void); if(g_nx_on)cpu_nx_init(); }
     idt_load();
     { u64 b=cpu_rdmsr(0x1B); if(g_lapic_x2&&!(b&(1ULL<<10)))cpu_wrmsr(0x1B,b|(1ULL<<10)|(1ULL<<11)); else if(!(b&(1ULL<<11)))cpu_wrmsr(0x1B,b|(1ULL<<11)); }
     lapic_wr(0x80,0); lapic_wr(0xF0,0x1FF); lapic_wr(0x350,0x10000); lapic_wr(0x360,0x10000);

@@ -10,7 +10,7 @@
 
 static unsigned long long rs=0x9E3779B97F4A7C15ULL;
 static unsigned long long rnd(void){ rs^=rs<<13; rs^=rs>>7; rs^=rs<<17; return rs; }
-static const int DENY[]={0,7,9,11,12,15,22,23,34,35,56,57,58,59,60,61,62,130,158,200,230,231,234,247,270,271,293,24,165,166,169,105,106,113,114,117,119,170,202,43,288,37,38};
+static const int DENY[]={0,7,9,11,12,15,22,23,34,35,56,57,58,59,60,61,62,130,158,200,230,231,234,247,270,271,293,24,165,166,169,105,106,113,114,117,119,170,202,43,288,37,38,128,129,297,435};
 static int denied(long n){ for(unsigned i=0;i<sizeof DENY/sizeof DENY[0];i++) if(DENY[i]==n)return 1; return 0; }
 static char* g_buf; static char* g_edge; static char* g_str;
 static const char* PATHS[]={"/tmp/fz","/tmp/fzd","/","/tmp","/dev/null","/dev/zero","/proc/version","/bin/mhello","/nope/x","","..","/tmp/fz/../fz","/dev/urandom","/tmp/fzl"};
@@ -88,6 +88,7 @@ int main(int argc,char** argv){
         if(n==77&&a[0]<3)continue;
         if(n==13||n==14){ if(a[0]==9||a[0]==19)a[0]=10; if(n==13&&(a[0]==11||a[0]==7||a[0]==4||a[0]==8))a[1]=0; if(n==14)a[1]=0; }
         if(n==95)a[0]&=0777;
+        if(n==232||n==281)a[3]=0;
         if(n==80||n==81){ continue; }
         if(n==25&&a[0]!=0)a[0]=0;
         if(i>=trace){ char t[200]; int L=snprintf(t,sizeof t,"#%ld n=%ld %lx %lx %lx %lx %lx %lx\n",i,n,a[0],a[1],a[2],a[3],a[4],a[5]); write(1,t,L); }

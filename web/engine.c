@@ -25,8 +25,96 @@ static int npend;
 static node* deferred[256];
 static int ndeferred;
 static int g_scroll_evt;
+static node* g_scroll_q[16]; static int g_scroll_qn;
+void eng_queue_scroll(node* n) { for (int i = 0; i < g_scroll_qn; i++) if (g_scroll_q[i] == n) return; if (g_scroll_qn < 16) g_scroll_q[g_scroll_qn++] = n; }
 static unsigned long g_last_move;
 static node* g_down;
+static int g_down_btn, g_down_cnt, g_drag_sel;
+static node* g_range;
+static int range_is(node* n) { if (!n || n->tag != T_INPUT) return 0; const char* t = attr_get(n, "type"); return t && ieq(t, "range") && !attr_get(n, "disabled"); }
+static void range_set(node* n, float x) {
+    if (!n->box) return;
+    box* b = n->box;
+    float bx = b->x + b->b[3] + b->p[3];
+    float bw = b->w - b->b[1] - b->b[3] - b->p[1] - b->p[3];
+    if (bw < 1) bw = 1;
+    float t = (x - bx) / bw;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    const char* a = attr_get(n, "min"), *z = attr_get(n, "max"), *st = attr_get(n, "step");
+    double mn = a ? atof(a) : 0, mx = z ? atof(z) : 100, sp = st && !ieq(st, "any") ? atof(st) : 1;
+    if (mx < mn) mx = mn;
+    double v = mn + t * (mx - mn);
+    if (sp > 0) { double k = (v - mn) / sp; long q = (long)(k + 0.5); v = mn + q * sp; if (v > mx) v = mx; }
+    char buf[48];
+    if (sp >= 1 && (long)sp == sp && (long)mn == mn) snprintf(buf, sizeof(buf), "%ld", (long)v); else snprintf(buf, sizeof(buf), "%g", v);
+    if (n->value && !strcmp(n->value, buf)) return;
+    int l = (int)strlen(buf);
+    n->value = nalloc((size_t)l + 1);
+    memcpy(n->value, buf, (size_t)l + 1);
+    n->vlen = l; n->vcap = l + 1; n->caret = l; n->dirtyval = 1;
+    int p; js_dispatch(n, "input", 1, 0, 0, 0, &p);
+    G.dirty_paint = 1;
+}
+extern node* g_ishift_n; extern float g_ishift;
+char g_df_name[256]; unsigned char* g_df_data; int g_df_len;
+static int input_caret_at(node* f, float x);
+int eng_input_caret_at(node* f, float x) { return input_caret_at(f, x); }
+static int input_caret_at(node* f, float x) {
+    if (!f->box || !f->value) return 0;
+    float bx = f->box->x + f->box->b[3] + f->box->p[3] - (g_ishift_n == f ? g_ishift : 0);
+    float rel = x - bx;
+    int best = f->vlen;
+    float acc = 0;
+    int i = 0;
+    while (i < f->vlen) { int cp; int k = u8dec(f->value + i, f->vlen - i, &cp); float aw = font_adv(f->st->face, f->st->fsize, cp); if (acc + aw / 2 > rel) { best = i; break; } acc += aw; i += k; }
+    return best;
+}
+unsigned g_hsel_gen = 1;
+int g_hsel_on;
+node* g_hs_node; int g_hs_off; node* g_he_node; int g_he_off;
+static int g_psel_drag;
+void eng_set_highlight(node* sn, int so, node* en, int eo) {
+    g_hsel_gen++;
+    if (!g_hsel_gen) g_hsel_gen = 1;
+    g_hsel_on = 0;
+    G.dirty_paint = 1;
+    if (!sn || !en || !G.doc) return;
+    g_hs_node = sn; g_hs_off = so; g_he_node = en; g_he_off = eo;
+    int on = 0, cap = 4096, sp = 0;
+    node** st = nalloc(sizeof(node*) * (size_t)cap);
+    st[sp++] = G.doc;
+    while (sp > 0) {
+        node* x = st[--sp];
+        if (x == sn) on = 1;
+        if (on && x->type == NT_TEXT) x->selgen = g_hsel_gen;
+        if (x == en) break;
+        int nk = 0;
+        for (node* c = x->first; c; c = c->next) nk++;
+        if (sp + nk > cap) { int nc = (sp + nk) * 2; node** ns = nalloc(sizeof(node*) * (size_t)nc); memcpy(ns, st, sizeof(node*) * (size_t)sp); nfree(st); st = ns; cap = nc; }
+        for (node* c = x->last; c; c = c->prev) st[sp++] = c;
+    }
+    nfree(st);
+    g_hsel_on = on;
+}
+static node* text_at(float x, float y, int* off) {
+    eng_layout_if_dirty();
+    frag* f = 0;
+    hit_test(x, y + G.scroll, &f);
+    if (!f || f->kind != FK_TEXT || !f->b || !f->b->n || f->b->n->type != NT_TEXT) return 0;
+    node* tn = f->b->n;
+    if (!tn->text || f->s < tn->text || f->s > tn->text + tn->tlen) return 0;
+    float rel = x - f->x;
+    int i = 0, best = f->n;
+    float acc = 0;
+    while (i < f->n) { int cp; int k = u8dec(f->s + i, f->n - i, &cp); if (k <= 0) break; float aw = font_adv(f->st->face, f->st->fsize, cp) + f->st->lspace; if (acc + aw / 2 > rel) { best = i; break; } acc += aw; i += k; }
+    *off = (int)(f->s - tn->text) + best;
+    return tn;
+}
+node* eng_text_at(float x, float y, int* off) { return text_at(x, y, off); }
+int eng_is_loaded(void) { return G.loaded ? 1 : 0; }
+static int word_ch(int c) { return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80; }
+static int mouse_key(int btn, int buttons, int detail) { return 0x40000000 | (btn & 7) | ((buttons & 7) << 4) | ((detail & 3) << 8); }
 static float g_downx, g_downy;
 static node* g_selopen;
 static float sel_x, sel_y, sel_w, sel_ih;
@@ -72,6 +160,7 @@ unsigned char* data_url(const char* u, int* len, int* is_text) {
     return out;
 }
 
+int imgx_decode(const unsigned char* d, int len, unsigned** argb, int* ow, int* oh);
 static void img_set_pixels(nimg* im, unsigned* argb, int w, int h) {
     int maxw = 1600, maxh = 1600;
     int tw = w, th = h;
@@ -121,6 +210,7 @@ static void img_from_svg(nimg* im, const char* src, int len) {
     unsigned* bb = nalloc((size_t)bw * (size_t)bh * 4);
     for (int i = 0; i < bw * bh; i++) { wb[i] = 0xFFFFFF; bb[i] = 0x000000; }
     svg->st = 0;
+    if (!vb) { char vbs[96]; snprintf(vbs, sizeof vbs, "0 0 %g %g", (double)w, (double)h); attr_set(svg, "viewBox", vbs); }
     svg_paint(svg, 0, 0, (float)bw, (float)bh, 1, wb, bw, 0, 0, bw, bh);
     svg_paint(svg, 0, 0, (float)bw, (float)bh, 1, bb, bw, 0, 0, bw, bh);
     unsigned* px = malloc((size_t)iw * (size_t)ih * 4);
@@ -162,9 +252,16 @@ static void fire_img_event(nimg* im) {
     }
 }
 
+static void img_prefetch(void) {
+    if (img_pending() < 2) return;
+    const char* il[6]; int m = 0; nimg* ord[64]; int no = 0;
+    for (nimg* i = imgs; i && no < 64; i = i->next) if (i->state == 0 && istarts(i->url, "http")) ord[no++] = i;
+    for (int k = 0; k < no && m < 6; k++) il[m++] = ord[k]->url;
+    if (m >= 2) nwk_prefetch_more(il, m, G.url);
+}
 int img_load_one(void) {
     nimg* im = 0;
-    for (nimg* i = imgs; i; i = i->next) if (i->state == 0) im = i;
+    for (nimg* i = imgs; i; i = i->next) if (i->state == 0) { im = i; break; }
     if (!im) return 0;
     im->state = 1;
     int sv = pool_suspend();
@@ -179,7 +276,8 @@ int img_load_one(void) {
         char st[200];
         snprintf(st, sizeof(st), "Loading image %.150s", im->url);
         nwk_status(st);
-        if (nwk_fetch(im->url, "GET", 0, 0, 0, G.url, &r) >= 0 && r.status >= 200 && r.status < 300 && r.body) {
+        char upu[4096]; const char* imu = eng_mixed(im->url, 1, upu, sizeof(upu)) > 0 ? upu : im->url;
+        if (nwk_fetch(imu, "GET", 0, 0, 0, G.url, &r) >= 0 && r.status >= 200 && r.status < 300 && r.body) {
             data = (unsigned char*)r.body;
             len = r.len;
             tofree = r.body;
@@ -191,7 +289,10 @@ int img_load_one(void) {
         else {
             unsigned* argb = 0;
             int w = 0, h = 0;
-            if (nwk_image(data, len, &argb, &w, &h) == 0 && argb && w > 0 && h > 0) { img_set_pixels(im, argb, w, h); nwk_free(argb); }
+            int xr = imgx_decode(data, len, &argb, &w, &h);
+            if (xr == 0 && argb) { img_set_pixels(im, argb, w, h); free(argb); }
+            else if (xr == -2) im->state = 3;
+            else if (nwk_image(data, len, &argb, &w, &h) == 0 && argb && w > 0 && h > 0) { img_set_pixels(im, argb, w, h); nwk_free(argb); }
             else im->state = 3;
         }
     } else im->state = 3;
@@ -234,7 +335,7 @@ static const char* choose_src(node* n, char* buf, int cap) {
         for (node* s = n->parent->first; s && s != n; s = s->next) {
             if (s->tag != T_SOURCE) continue;
             const char* ty = attr_get(s, "type");
-            if (ty && !strstr(ty, "jpeg") && !strstr(ty, "jpg") && !strstr(ty, "png") && !strstr(ty, "webp") && !strstr(ty, "gif")) continue;
+            if (ty && !strstr(ty, "jpeg") && !strstr(ty, "jpg") && !strstr(ty, "png") && !strstr(ty, "webp") && !strstr(ty, "gif") && !strstr(ty, "avif") && !strstr(ty, "jxl")) continue;
             const char* m = attr_get(s, "media");
             if (m && !css_media_match(m, (int)strlen(m))) continue;
             const char* ss = attr_get(s, "srcset");
@@ -255,10 +356,10 @@ static const char* choose_src(node* n, char* buf, int cap) {
 }
 
 static void request_img(node* n) {
-    char buf[1024];
+    char buf[4096];
     const char* s = choose_src(n, buf, sizeof(buf));
     if (!s || !*s) { n->img = 0; return; }
-    char full[2048];
+    char full[4096];
     url_resolve(G.base, s, full, sizeof(full));
     n->img = img_get(full);
 }
@@ -277,7 +378,18 @@ static void scan_images(node* root) {
     }
 }
 
+int eng_mixed(const char* url, int passive, char* up, int cap) {
+    if (!istarts(G.url, "https:") || !istarts(url, "http:")) return 0;
+    const char* h = url + 7;
+    if (istarts(h, "localhost") || istarts(h, "127.") || istarts(h, "[::1]")) return 0;
+    if (passive && up && cap > 8) { snprintf(up, (size_t)cap, "https:%s", url + 5); return 1; }
+    char m[700];
+    snprintf(m, sizeof(m), "Mixed Content: The page at '%.250s' was loaded over HTTPS, but requested an insecure resource '%.250s'. This request has been blocked; the content must be served over HTTPS.", G.url, url);
+    nwk_error(m);
+    return -1;
+}
 char* eng_fetch_text(const char* url, int* len) {
+    if (eng_mixed(url, 0, 0, 0) < 0) { *len = 0; return 0; }
     *len = 0;
     int sv = pool_suspend();
     if (istarts(url, "data:")) { int l; int t; char* d = (char*)data_url(url, &l, &t); *len = d ? l : 0; pool_resume(sv); return d; }
@@ -305,6 +417,102 @@ static int script_kind(node* s) {
     return 0;
 }
 
+
+static const unsigned int SHK[64] = { 0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2 };
+#define SHR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+static void sh_blk(unsigned int* h, const unsigned char* p) {
+    unsigned int w[64];
+    for (int i = 0; i < 16; i++) w[i] = ((unsigned)p[i * 4] << 24) | ((unsigned)p[i * 4 + 1] << 16) | ((unsigned)p[i * 4 + 2] << 8) | p[i * 4 + 3];
+    for (int i = 16; i < 64; i++) { unsigned s0 = SHR(w[i - 15], 7) ^ SHR(w[i - 15], 18) ^ (w[i - 15] >> 3), s1 = SHR(w[i - 2], 17) ^ SHR(w[i - 2], 19) ^ (w[i - 2] >> 10); w[i] = w[i - 16] + s0 + w[i - 7] + s1; }
+    unsigned a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (int i = 0; i < 64; i++) { unsigned t1 = hh + (SHR(e, 6) ^ SHR(e, 11) ^ SHR(e, 25)) + ((e & f) ^ (~e & g)) + SHK[i] + w[i]; unsigned t2 = (SHR(a, 2) ^ SHR(a, 13) ^ SHR(a, 22)) + ((a & b) ^ (a & c) ^ (b & c)); hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2; }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+static void sha256_buf(const unsigned char* d, size_t n, unsigned char out[32]) {
+    unsigned int h[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+    size_t i = 0;
+    for (; i + 64 <= n; i += 64) sh_blk(h, d + i);
+    unsigned char t[128]; size_t r = n - i; memcpy(t, d + i, r); t[r] = 0x80;
+    size_t tl = r + 1 + 8 <= 64 ? 64 : 128; memset(t + r + 1, 0, tl - r - 1);
+    unsigned long long bits = (unsigned long long)n * 8; for (int k = 0; k < 8; k++) t[tl - 1 - k] = (unsigned char)(bits >> (8 * k));
+    sh_blk(h, t); if (tl == 128) sh_blk(h, t + 64);
+    for (int k = 0; k < 8; k++) { out[k * 4] = (unsigned char)(h[k] >> 24); out[k * 4 + 1] = (unsigned char)(h[k] >> 16); out[k * 4 + 2] = (unsigned char)(h[k] >> 8); out[k * 4 + 3] = (unsigned char)h[k]; }
+}
+static int b64dec(const char* s, int n, unsigned char* out, int cap) { unsigned acc = 0; int bits = 0, o = 0; for (int i = 0; i < n; i++) { int v = b64v((unsigned char)s[i]); if (v < 0) continue; acc = (acc << 6) | (unsigned)v; bits += 6; if (bits >= 8) { bits -= 8; if (o < cap) out[o++] = (unsigned char)(acc >> bits); } } return o; }
+typedef struct { int active, ui, sd, nn, nh, ns; char nonce[8][96]; unsigned char hash[8][32]; char src[32][160]; char raw[400]; } cspol;
+static cspol g_cspE, g_cspR;
+static void csp_parse(const char* hdr, cspol* c) {
+    memset(c, 0, sizeof(*c));
+    if (!hdr || !hdr[0]) return;
+    const char* d = 0; const char* def = 0;
+    for (const char* q = hdr; *q && *q != ','; q++) {
+        if (q != hdr && q[-1] != ';' && q[-1] != ' ') continue;
+        if (istarts(q, "script-src ") || istarts(q, "script-src;") || !strcmp(q, "script-src")) { d = q + 10; break; }
+        if (!def && (istarts(q, "default-src ") || istarts(q, "default-src;"))) def = q + 11;
+    }
+    if (!d) d = def;
+    if (!d) return;
+    c->active = 1;
+    { const char* st = d - (d == def ? 11 : 10); int k = 0; while (st[k] && st[k] != ';' && st[k] != ',' && k < 399) { c->raw[k] = st[k]; k++; } c->raw[k] = 0; }
+    const char* q = d;
+    while (*q && *q != ';' && *q != ',') {
+        while (*q == ' ') q++;
+        const char* t = q; while (*q && *q != ' ' && *q != ';' && *q != ',') q++;
+        int tl = (int)(q - t); if (!tl) continue;
+        if (tl == 15 && !strncmp(t, "'unsafe-inline'", 15)) c->ui = 1;
+        else if (tl == 16 && !strncmp(t, "'strict-dynamic'", 16)) c->sd = 1;
+        else if (tl > 8 && !strncmp(t, "'nonce-", 7) && t[tl - 1] == '\'' && c->nn < 8) { int l = tl - 8; if (l > 95) l = 95; memcpy(c->nonce[c->nn], t + 7, (size_t)l); c->nonce[c->nn][l] = 0; c->nn++; }
+        else if (tl > 9 && !strncmp(t, "'sha256-", 8) && t[tl - 1] == '\'' && c->nh < 8) { if (b64dec(t + 8, tl - 9, c->hash[c->nh], 32) == 32) c->nh++; }
+        else if (t[0] != '\'' || (tl == 6 && !strncmp(t, "'self'", 6))) { if (c->ns < 32 && tl < 159) { memcpy(c->src[c->ns], t, (size_t)tl); c->src[c->ns][tl] = 0; c->ns++; } }
+    }
+}
+static int csp_src_ok(const char* s, const char* url) {
+    char uo[300], po[300];
+    if (!strcmp(s, "'self'")) { url_origin(url, uo, sizeof(uo)); url_origin(G.url, po, sizeof(po)); return !strcmp(uo, po); }
+    if (!strcmp(s, "*")) return istarts(url, "http:") || istarts(url, "https:");
+    int sl = (int)strlen(s);
+    if (s[sl - 1] == ':') return istarts(url, s) || (!strcmp(s, "http:") && istarts(url, "https:"));
+    const char* h = s; int hs = -1;
+    if (istarts(h, "https://")) { hs = 1; h += 8; } else if (istarts(h, "http://")) { hs = 0; h += 7; }
+    if (hs == 1 && !istarts(url, "https:")) return 0;
+    const char* uh = strstr(url, "://"); if (!uh) return 0; uh += 3;
+    int ul = 0; while (uh[ul] && uh[ul] != '/' && uh[ul] != ':' && uh[ul] != '?' && uh[ul] != '#') ul++;
+    int hl = 0; while (h[hl] && h[hl] != '/' && h[hl] != ':') hl++;
+    if (hl > 2 && h[0] == '*' && h[1] == '.') { int sf = hl - 1; return ul >= sf && ieqn(uh + ul - sf, h + 1, sf); }
+    if (ul != hl || !ieqn(uh, h, hl)) return 0;
+    const char* hp = h + hl; while (*hp == ':' ) { hp++; while (*hp >= '0' && *hp <= '9') hp++; while (*hp == '*') hp++; }
+    if (*hp == '/' && hp[1]) { const char* up = uh + ul; while (*up == ':') { up++; while (*up >= '0' && *up <= '9') up++; } return !strncmp(up, hp, strlen(hp)); }
+    return 1;
+}
+static int csp_check(cspol* c, node* s, const char* url, const char* text, int len) {
+    if (!c->active) return 1;
+    const char* nc = attr_get(s, "nonce");
+    if (nc && nc[0]) for (int i = 0; i < c->nn; i++) if (!strcmp(nc, c->nonce[i])) return 1;
+    if (!url) {
+        if (c->nh && text) { unsigned char hh[32]; sha256_buf((const unsigned char*)text, (size_t)len, hh); for (int i = 0; i < c->nh; i++) if (!memcmp(hh, c->hash[i], 32)) return 1; }
+        return c->ui && !c->nn && !c->nh && !c->sd;
+    }
+    if (c->sd) return !(s->flags & NF_PARSERINS);
+    for (int i = 0; i < c->ns; i++) if (csp_src_ok(c->src[i], url)) return 1;
+    return 0;
+}
+extern int g_web_csp;
+static int csp_allow(node* s, const char* url, const char* text, int len) {
+    int ok = csp_check(&g_cspE, s, url, text, len);
+    cspol* c = ok ? (csp_check(&g_cspR, s, url, text, len) ? 0 : &g_cspR) : &g_cspE;
+    int off = !g_web_csp && !ok;
+    if (c) {
+        char m[900];
+        if (url) snprintf(m, sizeof(m), "%sRefused to load the script '%.300s' because it violates the following Content Security Policy directive: \"%.380s\".", off ? "[CSP off, allowed] " : c == &g_cspR ? "[Report Only] " : "", url, c->raw);
+        else snprintf(m, sizeof(m), "%sRefused to execute inline script because it violates the following Content Security Policy directive: \"%.380s\". Either the 'unsafe-inline' keyword, a hash, or a nonce is required to enable inline execution.", off ? "[CSP off, allowed] " : c == &g_cspR ? "[Report Only] " : "", c->raw);
+        nwk_error(m);
+    }
+    return ok || off;
+}
+void eng_csp_load(void) { char* a = nalloc(4096); char* b = nalloc(4096); a[0] = b[0] = 0; nwk_doc_policy(a, 4096, b, 4096); csp_parse(a, &g_cspE); csp_parse(b, &g_cspR); nfree(a); nfree(b); }
+int eng_csp_ok_url(const char* url, int script_inserted) { if (!g_cspE.active && !g_cspR.active) return 1; static node dummy; memset(&dummy, 0, sizeof(dummy)); dummy.type = NT_ELEM; dummy.flags = script_inserted ? 0 : NF_PARSERINS; return csp_allow(&dummy, url, 0, 0); }
+
+static int g_stat_err;
 static void run_script_node(node* s) {
     if (s->flags & NF_SCRIPTDONE) return;
     s->flags |= NF_SCRIPTDONE;
@@ -315,19 +523,28 @@ static void run_script_node(node* s) {
     G.cur_script = s;
     int ok = 1;
     if (src && *src) {
-        char full[2048];
+        char full[4096];
         url_resolve(G.base, src, full, sizeof(full));
         int len = 0;
+        if (!csp_allow(s, full, 0, 0)) { G.cur_script = save; int p; js_dispatch(s, "error", 0, 0, 0, 0, &p); return; }
         char* t = eng_fetch_text(full, &len);
-        if (t) js_run_script(t, len, full, k == 2);
-        else ok = 0;
+        const char* sn = strrchr(full, '/'); sn = sn && sn[1] ? sn + 1 : full;
+        char st[200];
+        if (t) {
+            extern int g_js_errs; int e0 = g_js_errs;
+            snprintf(st, sizeof(st), "Running script %.120s", sn); nwk_status(st);
+            eng_src_add(full, t, len);
+            js_run_script(t, len, full, k == 2);
+            if (g_js_errs != e0) { snprintf(st, sizeof(st), "Script failed: %.110s - see about:errors", sn); nwk_status(st); g_stat_err = 1; }
+            else if (!g_stat_err) nwk_status(G.loaded ? "Done" : "Loading page");
+        } else { ok = 0; snprintf(st, sizeof(st), "Could not load %.110s - see about:errors", sn); nwk_status(st); g_stat_err = 1; }
         G.cur_script = save;
         int p;
         js_dispatch(s, ok ? "load" : "error", 0, 0, 0, 0, &p);
     } else {
         sbuf b = { 0, 0, 0 };
         text_content(s, &b);
-        if (b.n) js_run_script(b.s, b.n, G.url, k == 2);
+        if (b.n && csp_allow(s, 0, b.s, b.n)) js_run_script(b.s, b.n, G.url, k == 2);
         G.cur_script = save;
     }
 }
@@ -336,10 +553,27 @@ void eng_script_parsed(node* s) {
     int k = script_kind(s);
     if (!k) { s->flags |= NF_SCRIPTDONE; return; }
     const char* src = attr_get(s, "src");
+    s->flags |= NF_PARSERINS;
     if (k == 2 || (src && (attr_get(s, "defer") || attr_get(s, "async")))) { if (ndeferred < 256) deferred[ndeferred++] = s; return; }
     run_script_node(s);
 }
 
+static void prefetch_nodes(node** l, int n) {
+    static char bufs[32][4096];
+    const char* list[32];
+    int m = 0;
+    for (int i = 0; i < n && m < 32; i++) {
+        node* s = l[i];
+        if (!s || (s->flags & NF_SCRIPTDONE) || !script_kind(s)) continue;
+        const char* src = attr_get(s, "src");
+        if (!src || !*src) continue;
+        url_resolve(G.base, src, bufs[m], sizeof(bufs[m]));
+        if (!ieqn(bufs[m], "http", 4)) continue;
+        int dup = 0; for (int k = 0; k < m; k++) if (!strcmp(list[k], bufs[m])) dup = 1;
+        if (!dup) { list[m] = bufs[m]; m++; }
+    }
+    if (m >= 2) nwk_prefetch_more(list, m, G.url);
+}
 static void subtree(node* n, void (*fn)(node*)) {
     node* stack[2048];
     int sp = 0;
@@ -352,7 +586,7 @@ static void subtree(node* n, void (*fn)(node*)) {
 }
 static void on_ins(node* c) {
     if (c->type != NT_ELEM) return;
-    if (c->tag == T_SCRIPT && !(c->flags & NF_SCRIPTDONE) && !G.parsing) { if (npend < 512) pend_scripts[npend++] = c; }
+    if (c->tag == T_SCRIPT && !(c->flags & NF_SCRIPTDONE)) { const char* sr = attr_get(c, "src"); if (!sr || !*sr) { if (c->first && script_kind(c) == 1 && js_ready()) run_script_node(c); else if (c->first && npend < 512) pend_scripts[npend++] = c; } else if (npend < 512) pend_scripts[npend++] = c; }
     else if (c->tag == T_STYLE || c->tag == T_LINK) css_bump();
     else if (c->tag == T_IMG || (c->tag == T_INPUT && attr_get(c, "type") && ieq(attr_get(c, "type"), "image"))) request_img(c);
     else if (c->tag == T_SOURCE && c->parent && c->parent->tag == T_PICTURE) { for (node* q = c->parent->first; q; q = q->next) if (q->tag == T_IMG) request_img(q); }
@@ -365,10 +599,12 @@ static int in_composed_doc(node* n) {
     }
     return 0;
 }
+static void lay_root(node* n, int isdom);
 void eng_node_inserted(node* n) {
     if (!n || !G.doc || !in_composed_doc(n)) return;
     subtree(n, on_ins);
-    G.dirty_style = 1;
+    if (n->parent && n->parent->type == NT_ELEM && n->parent->st && G.dirty_style != 1) lay_root(n->parent, 1); else G.dirty_layout = 1;
+    G.dirty_paint = 1;
 }
 static void on_rem(node* c) { if (c->tag == T_STYLE || c->tag == T_LINK) css_bump(); }
 void eng_node_removed(node* n) {
@@ -377,12 +613,21 @@ void eng_node_removed(node* n) {
     if (G.active && node_contains(n, G.active)) G.active = 0;
     if (g_selopen && node_contains(n, g_selopen)) g_selopen = 0;
     subtree(n, on_rem);
-    G.dirty_style = 1;
+    { extern node* g_rm_parent; node* p = n->parent ? n->parent : g_rm_parent; g_rm_parent = 0; if (p && p->type == NT_ELEM && p->st && p->box && G.dirty_style != 1) lay_root(p, 1); else G.dirty_layout = 1; }
+    G.dirty_paint = 1;
 }
 
+void eng_lay_mark(node* n, int isdom) { if (!n || n->type != NT_ELEM || !n->st || G.dirty_style == 1) { G.dirty_layout = 1; return; } lay_root(n, isdom); }
 void eng_invalidate(int what) { if (what & 1) G.dirty_style = 1; if (what & 2) G.dirty_layout = 1; G.dirty_paint = 1; }
 
 static void apply_scroll_offsets(node* n) {
+    if (n->box && n->scrollx > 0) {
+        box* b = n->box;
+        float mx = box_scroll_w(b) - (b->w - b->b[1] - b->b[3]);
+        if (mx < 0) mx = 0;
+        if (n->scrollx > mx) n->scrollx = mx;
+        b->sx = n->scrollx;
+    }
     if (n->box && n->scrolly > 0) {
         box* b = n->box;
         float inner = b->h - b->b[0] - b->b[2];
@@ -395,16 +640,68 @@ static void apply_scroll_offsets(node* n) {
     for (node* c = n->first; c; c = c->next) if (c->type == NT_ELEM) apply_scroll_offsets(c);
 }
 
+static node* g_sd[48];
+static int g_nsd;
+static node* g_ld[64];
+static unsigned char g_ldd[64];
+static int g_nld;
+static void lay_root(node* n, int isdom) {
+    if (G.dirty_layout == 1) return;
+    if (!n || g_nld >= 64) { G.dirty_layout = 1; g_nld = 0; return; }
+    for (int i = 0; i < g_nld; i++) if (g_ld[i] == n && g_ldd[i] == isdom) { G.dirty_layout = 2; return; }
+    g_ld[g_nld] = n; g_ldd[g_nld] = (unsigned char)isdom; g_nld++;
+    G.dirty_layout = 2;
+}
+int g_part_stats[3];
+void eng_style_node(node* n) {
+    if (G.dirty_style == 1) return;
+    extern int g_css_sib;
+    if (n && g_css_sib && n->parent && n->parent->type == NT_ELEM) n = n->parent;
+    if (!n || n->type != NT_ELEM) { G.dirty_style = 1; g_nsd = 0; return; }
+    for (int i = 0; i < g_nsd; i++) { if (g_sd[i] == n || node_contains(g_sd[i], n)) { G.dirty_style = 2; G.dirty_paint = 1; return; } }
+    int k = 0;
+    for (int i = 0; i < g_nsd; i++) if (!node_contains(n, g_sd[i])) g_sd[k++] = g_sd[i];
+    g_nsd = k;
+    if (g_nsd >= 48) { G.dirty_style = 1; g_nsd = 0; return; }
+    g_sd[g_nsd++] = n;
+    G.dirty_style = 2;
+    G.dirty_paint = 1;
+}
 void eng_layout_if_dirty(void) {
     if (!G.doc) return;
+    if (G.dirty_style == 2) {
+        extern int style_partial(node** roots, int nr);
+        node* sd0[48]; int nsd0 = g_nsd; for (int i = 0; i < nsd0; i++) sd0[i] = g_sd[i];
+        int r = style_partial(g_sd, g_nsd);
+        for (int i = 0; i < nsd0; i++) if (!g_sd[i]) sd0[i] = 0;
+        g_nsd = 0;
+        if (r < 0) { G.dirty_style = 1; g_part_stats[0]++; }
+        else { G.dirty_style = 0; if (r) { for (int i = 0; i < nsd0; i++) if (sd0[i]) lay_root(sd0[i], 0); g_part_stats[1]++; } else { G.dirty_paint = 1; g_part_stats[2]++; } }
+    }
     if (G.dirty_style) {
+        g_nsd = 0;
         style_all(G.doc, G.vw, G.vh);
         G.dirty_style = 0;
         G.dirty_layout = 1;
     }
+    if (G.dirty_layout == 2) {
+        extern int layout_partial(node** roots, const unsigned char* isdom, int nr);
+        int r = layout_partial(g_ld, g_ldd, g_nld);
+        g_nld = 0;
+        if (r == 0) {
+            G.dirty_layout = 0;
+            apply_scroll_offsets(G.doc);
+            float mx = g_doch - G.vh;
+            if (mx < 0) mx = 0;
+            if (G.scroll > mx) G.scroll = mx;
+            G.dirty_paint = 1;
+        } else G.dirty_layout = 1;
+    }
     if (G.dirty_layout) {
+        g_nld = 0;
         layout_all(G.vw, G.vh);
         G.dirty_layout = 0;
+        { extern int g_cq_used; extern int css_cq_changed(void); if (g_cq_used && css_cq_changed()) { g_nsd = 0; style_all(G.doc, G.vw, G.vh); layout_all(G.vw, G.vh); } }
         apply_scroll_offsets(G.doc);
         float mx = g_doch - G.vh;
         if (mx < 0) mx = 0;
@@ -507,6 +804,7 @@ static const char* ctl_value(node* n, sbuf* tmp) {
 }
 
 void eng_form_submit(node* form, node* submitter) {
+    if (G.sandbox && !(G.sandbox & 4)) { nwk_error("Blocked form submission because the form's frame is sandboxed and the 'allow-forms' permission is not set."); return; }
     sbuf b = { 0, 0, 0 };
     node* stack[2048];
     int sp = 0;
@@ -538,7 +836,7 @@ void eng_form_submit(node* form, node* submitter) {
     }
     const char* action = submitter && attr_get(submitter, "formaction") ? attr_get(submitter, "formaction") : attr_get(form, "action");
     const char* method = submitter && attr_get(submitter, "formmethod") ? attr_get(submitter, "formmethod") : attr_get(form, "method");
-    char full[2048];
+    char full[4096];
     url_resolve(G.base, action && *action ? action : G.url, full, sizeof(full));
     if (method && ieq(method, "post")) { eng_navigate(full, "POST", b.s ? b.s : "", b.n); return; }
     char* q = strchr(full, '?');
@@ -561,13 +859,16 @@ static int is_text_input(node* n) {
 node* g_ce_node;
 int g_ce_off;
 node* edit_host(node* n) {
+    node* top = 0;
     for (node* q = n; q && q->type == NT_ELEM; q = q->parent) {
         const char* v = attr_get(q, "contenteditable");
         if (v) { if (ieq(v, "false")) return 0; return q; }
+        top = q;
     }
+    if (top && top->tag == T_HTML && attr_get(top, "nvx-design")) { for (node* c = top->first; c; c = c->next) if (c->tag == T_BODY) return c; return top; }
     return 0;
 }
-static int is_edit_host(node* n) { return n && n->type == NT_ELEM && edit_host(n) == n && attr_get(n, "contenteditable"); }
+static int is_edit_host(node* n) { return n && n->type == NT_ELEM && edit_host(n) == n; }
 static void ce_place(node* host, float x, float y) {
     eng_layout_if_dirty();
     frag* f = 0;
@@ -597,6 +898,19 @@ static int focusable(node* n) {
     return 0;
 }
 
+void eng_ensure_value(node* n) {
+    if (!n || n->value || !is_text_input(n)) return;
+    sbuf t = { 0, 0, 0 };
+    const char* v = ctl_value(n, &t);
+    int l = v ? (int)strlen(v) : 0;
+    n->value = nalloc((size_t)l + 1);
+    if (l) memcpy(n->value, v, (size_t)l);
+    n->value[l] = 0;
+    n->vlen = l;
+    n->vcap = l + 1;
+    n->caret = l;
+    n->sela = 0;
+}
 static void set_focus(node* n) {
     if (G.focus == n) return;
     node* old = G.focus;
@@ -617,11 +931,13 @@ static void set_focus(node* n) {
                 n->vcap = l + 1;
             }
             n->caret = n->vlen;
+            n->sela = 0;
         }
         js_dispatch(n, "focus", 0, 0, 0, 0, &p);
         js_dispatch(n, "focusin", 1, 0, 0, 0, &p);
     }
-    G.dirty_style = 1;
+    eng_chain_dirty(old, n);
+    G.dirty_paint = 1;
 }
 
 static node* elem_of(box* b, frag* f) {
@@ -675,7 +991,7 @@ static void default_action(node* t) {
     for (node* n = t; n && n->type == NT_ELEM; n = n->parent) {
         if ((n->tag == T_A || n->tag == T_AREA) && attr_get(n, "href")) {
             const char* h = attr_get(n, "href");
-            char full[2048];
+            char full[4096];
             url_resolve(G.base, h, full, sizeof(full));
             eng_navigate(full, "GET", 0, 0);
             return;
@@ -717,6 +1033,7 @@ static void default_action(node* t) {
         }
         if (n->tag == T_SELECT) {
             if (attr_get(n, "disabled")) return;
+            if (sel_listbox_rows(n) > 0) return;
             g_selopen = g_selopen == n ? 0 : n;
             G.dirty_paint = 1;
             return;
@@ -769,14 +1086,80 @@ static void focus_next(int back) {
     if (y < G.scroll || y + h > G.scroll + G.vh) eng_scroll_to(y - G.vh / 3);
 }
 
+static int n_editable_ok(node* n) { return !attr_get(n, "disabled"); }
+static int sel_range(node* n, int* a, int* b) {
+    if (!n->sela || !n->value) return 0;
+    int x = n->sela - 1, y = n->caret;
+    if (x > n->vlen) x = n->vlen;
+    if (y > n->vlen) y = n->vlen;
+    if (x == y) return 0;
+    *a = x < y ? x : y; *b = x < y ? y : x;
+    return 1;
+}
+static void sel_delete(node* n) {
+    int a, b;
+    if (!sel_range(n, &a, &b)) { n->sela = 0; return; }
+    memmove(n->value + a, n->value + b, (size_t)(n->vlen - b + 1));
+    n->vlen -= b - a;
+    n->caret = a;
+    n->sela = 0;
+    n->dirtyval = 1;
+}
 static int key_event(int k) {
+    int mods = (k >> 24) & 31;
+    k &= 0xFFFFFF;
     if (k == 13) k = '\n';
     node* tgt = G.focus ? G.focus : doc_body();
     if (!tgt) return 0;
     int prevented = 0;
-    js_dispatch(tgt, "keydown", 1, 0, 0, k, &prevented);
+    js_dispatch(tgt, "keydown", 1, 0, 0, k | (mods << 24), &prevented);
     if (prevented) return 1;
-    if (k >= 32 && k != 127 && k < 0x110000) { js_dispatch(tgt, "keypress", 1, 0, 0, k, &prevented); if (prevented) return 1; }
+    node* fn0 = G.focus;
+    int txt0 = fn0 && is_text_input(fn0) && n_editable_ok(fn0);
+    if (txt0) eng_ensure_value(fn0);
+    if ((mods & 9) && txt0) {
+        int lk = (k >= 'A' && k <= 'Z') ? k + 32 : k;
+        if (lk == 'a') { fn0->sela = 1; fn0->caret = fn0->vlen; G.dirty_paint = 1; return 1; }
+        if (lk == 'c' || lk == 'x') {
+            int a, b2; if (sel_range(fn0, &a, &b2)) {
+                int pc = 0; js_dispatch(fn0, lk == 'c' ? "copy" : "cut", 1, 0, 0, 0, &pc);
+                if (!pc) { nwk_clip_set(fn0->value + a, b2 - a); if (lk == 'x' && !attr_get(fn0, "readonly")) { sel_delete(fn0); int p; js_dispatch(fn0, "input", 1, 0, 0, 0, &p); eng_style_node(fn0); if (fn0->tag == T_TEXTAREA) G.dirty_layout = 1; } }
+            }
+            G.dirty_paint = 1; return 1;
+        }
+        if (lk == 'v') {
+            if (attr_get(fn0, "readonly")) return 1;
+            int pc = 0; js_dispatch(fn0, "paste", 1, 0, 0, 0, &pc);
+            if (!pc) {
+                char* buf = nalloc(65536); int n = nwk_clip_get(buf, 65536);
+                if (fn0->tag != T_TEXTAREA) { int o = 0; for (int i = 0; i < n; i++) if (buf[i] != '\n' && buf[i] != '\r') buf[o++] = buf[i]; n = o; buf[n] = 0; }
+                if (n > 0) { sel_delete(fn0); text_insert(fn0, buf, n); int p; js_dispatch(fn0, "input", 1, 0, 0, 0, &p); }
+                nfree(buf);
+                eng_style_node(fn0); if (fn0->tag == T_TEXTAREA) G.dirty_layout = 1; G.dirty_paint = 1;
+            }
+            return 1;
+        }
+        if (lk == NWE_K_LEFT || lk == NWE_K_RIGHT || lk == NWE_K_HOME || lk == NWE_K_END || lk == '\b' || lk == 127) {
+            if ((mods & 2) && !fn0->sela) fn0->sela = fn0->caret + 1;
+            if (!(mods & 2) && lk != '\b' && lk != 127) fn0->sela = 0;
+            int c = fn0->caret, L = fn0->vlen; const char* v = fn0->value ? fn0->value : "";
+            if (lk == NWE_K_LEFT || lk == '\b') { while (c > 0 && v[c - 1] == ' ') c--; while (c > 0 && v[c - 1] != ' ' && v[c - 1] != '\n') c--; }
+            else if (lk == NWE_K_RIGHT || lk == 127) { while (c < L && v[c] != ' ' && v[c] != '\n') c++; while (c < L && v[c] == ' ') c++; }
+            else if (lk == NWE_K_HOME) c = 0; else c = L;
+            if (lk == '\b' || lk == 127) { if (!fn0->sela) fn0->sela = fn0->caret + 1; fn0->caret = c; sel_delete(fn0); int p; js_dispatch(fn0, "input", 1, 0, 0, 0, &p); eng_style_node(fn0); if (fn0->tag == T_TEXTAREA) G.dirty_layout = 1; }
+            else fn0->caret = c;
+            G.dirty_paint = 1; return 1;
+        }
+    }
+    if ((mods & 9) && !txt0) {
+        int lk = (k >= 'A' && k <= 'Z') ? k + 32 : k;
+        if (lk == 'c' || lk == 'x') { js_ce_call("__copySel", tgt, lk == 'x'); return 1; }
+        if (lk == 'a' && !(G.focus && is_edit_host(G.focus))) { js_ce_call("__pageSelAll", tgt, 0); return 1; }
+        if (lk == 'v') { js_ce_call("__pasteSel", tgt, 0); G.dirty_style = 1; G.dirty_paint = 1; return 1; }
+    }
+    if (k == '\t' && !(mods & 9)) { g_selopen = 0; if (G.focus) G.focus->sela = 0; focus_next((mods & 2) ? 1 : 0); return 1; }
+    if (mods & 9) return 0;
+    if (k >= 32 && k != 127 && k < 0x110000) { js_dispatch(tgt, "keypress", 1, 0, 0, k | (mods << 24), &prevented); if (prevented) return 1; }
     node* n = G.focus;
     if (n && is_edit_host(n) && !g_selopen) {
         if (k == '\t') { focus_next(0); return 1; }
@@ -798,9 +1181,38 @@ static int key_event(int k) {
         G.dirty_paint = 1;
         return 1;
     }
-    if (n && is_text_input(n) && !attr_get(n, "readonly") && !attr_get(n, "disabled")) {
+    if (n && is_text_input(n) && !attr_get(n, "disabled")) {
         int ta = n->tag == T_TEXTAREA;
         int changed = 0;
+        int ro = attr_get(n, "readonly") != 0;
+        int nav = k == NWE_K_LEFT || k == NWE_K_RIGHT || k == NWE_K_HOME || k == NWE_K_END || k == NWE_K_UP || k == NWE_K_DOWN;
+        if (ro && !nav && k != '\t' && k != 27 && k != '\n') return 1;
+        if (nav) {
+            if (mods & 2) { if (!n->sela) n->sela = n->caret + 1; }
+            else if (n->sela) {
+                int a, b2;
+                if (sel_range(n, &a, &b2) && (k == NWE_K_LEFT || k == NWE_K_RIGHT)) { n->caret = k == NWE_K_LEFT ? a : b2; n->sela = 0; G.dirty_paint = 1; return 1; }
+                n->sela = 0;
+            }
+            if (ta && (k == NWE_K_UP || k == NWE_K_DOWN)) {
+                const char* v = n->value ? n->value : ""; int c = n->caret, L = n->vlen;
+                int ls = c; while (ls > 0 && v[ls - 1] != '\n') ls--;
+                int col = c - ls;
+                if (k == NWE_K_UP) { if (ls == 0) c = 0; else { int pe = ls - 1, ps = pe; while (ps > 0 && v[ps - 1] != '\n') ps--; c = ps + (col < pe - ps ? col : pe - ps); } }
+                else { int le = c; while (le < L && v[le] != '\n') le++; if (le >= L) c = L; else { int ns = le + 1, ne = ns; while (ne < L && v[ne] != '\n') ne++; c = ns + (col < ne - ns ? col : ne - ns); } }
+                n->caret = c; G.dirty_paint = 1; return 1;
+            }
+            if (ta && (k == NWE_K_HOME || k == NWE_K_END)) {
+                const char* v = n->value ? n->value : ""; int c = n->caret, L = n->vlen;
+                if (k == NWE_K_HOME) { while (c > 0 && v[c - 1] != '\n') c--; } else { while (c < L && v[c] != '\n') c++; }
+                n->caret = c; G.dirty_paint = 1; return 1;
+            }
+        }
+        if (!nav && k != '\t' && k != 27 && (k == '\b' || k == 127 || (k >= 32 && k < 0x110000) || (k == '\n' && ta)) && n->sela) {
+            int a, b2;
+            if (sel_range(n, &a, &b2)) { int bp = 0; js_dispatch(n, "beforeinput", 1, 0, 0, k, &bp); if (bp) { G.dirty_paint = 1; return 1; } sel_delete(n); changed = 1; n->dirtyval = 1; if (k == '\b' || k == 127) { int p; js_dispatch(n, "input", 1, 0, 0, k, &p); eng_style_node(n); if (ta) G.dirty_layout = 1; G.dirty_paint = 1; return 1; } }
+            n->sela = 0;
+        }
         if (k == '\b' || k == 127 || (k >= 32 && k < 0x110000 && k != 127) || (k == '\n' && ta)) { int bp = 0; js_dispatch(n, "beforeinput", 1, 0, 0, k, &bp); if (bp) { G.dirty_paint = 1; return 1; } }
         if (k == '\n') {
             if (ta) { text_insert(n, "\n", 1); changed = 1; }
@@ -834,7 +1246,8 @@ static int key_event(int k) {
             changed = 1;
         }
         if (changed) { int p; js_dispatch(n, "input", 1, 0, 0, k, &p); }
-        G.dirty_style = 1;
+        eng_style_node(n);
+        if (ta) eng_lay_mark(n, 0);
         G.dirty_paint = 1;
         return 1;
     }
@@ -847,7 +1260,8 @@ static int key_event(int k) {
     case NWE_K_UP: eng_scroll_to(G.scroll - line); return 1;
     case NWE_K_DOWN: eng_scroll_to(G.scroll + line); return 1;
     case NWE_K_PGUP: eng_scroll_to(G.scroll - G.vh * 0.9f); return 1;
-    case NWE_K_PGDN: case ' ': eng_scroll_to(G.scroll + G.vh * 0.9f); return 1;
+    case NWE_K_PGDN: eng_scroll_to(G.scroll + G.vh * 0.9f); return 1;
+    case ' ': eng_scroll_to(G.scroll + ((mods & 2) ? -1 : 1) * G.vh * 0.9f); return 1;
     case NWE_K_HOME: eng_scroll_to(0); return 1;
     case NWE_K_END: eng_scroll_to(1e9f); return 1;
     }
@@ -869,7 +1283,63 @@ static box* scroll_box_at(float x, float y) {
     return 0;
 }
 
-static int do_wheel(float x, float y, int dy) {
+static int snap_collect(box* b, box* root, float top, float inner, float* out, int n, int cap) {
+    for (box* c = b->first; c && n < cap; c = c->next) {
+        if (c->st && c->st->snapalign && c->n && c->n->box == c) {
+            float off = c->y - top, ch = c->h;
+            out[n++] = c->st->snapalign == 1 ? off : c->st->snapalign == 2 ? off + ch / 2 - inner / 2 : off + ch - inner;
+        }
+        if (c->first && !(c->st && c->st->snaptype && c != root)) n = snap_collect(c, root, top, inner, out, n, cap);
+    }
+    return n;
+}
+static int snap_collect_x(box* b, box* root, float left, float inner, float* out, int n, int cap) {
+    for (box* c = b->first; c && n < cap; c = c->next) {
+        if (c->st && c->st->snapalign && c->n && c->n->box == c) {
+            float off = c->x - left, cw = c->w;
+            out[n++] = c->st->snapalign == 1 ? off : c->st->snapalign == 2 ? off + cw / 2 - inner / 2 : off + cw - inner;
+        }
+        if (c->first && !(c->st && c->st->snaptype && c != root)) n = snap_collect_x(c, root, left, inner, out, n, cap);
+    }
+    return n;
+}
+static float snap_pick(style* st, float* pos, int n, float cur, float want, float d, float inner, float mx) {
+    if (n <= 0) return want;
+    for (int i = 0; i < n; i++) { if (pos[i] < 0) pos[i] = 0; if (pos[i] > mx) pos[i] = mx; }
+    if (st->snapstrict) {
+        float best = -1;
+        if (d > 0) { for (int i = 0; i < n; i++) if (pos[i] > cur + 1 && (best < 0 || pos[i] < best)) best = pos[i]; }
+        else { for (int i = 0; i < n; i++) if (pos[i] < cur - 1 && (best < 0 || pos[i] > best)) best = pos[i]; }
+        return best < 0 ? cur : best;
+    }
+    float best = want, bd = inner * 0.3f;
+    for (int i = 0; i < n; i++) { float dd = pos[i] > want ? pos[i] - want : want - pos[i]; if (dd < bd) { bd = dd; best = pos[i]; } }
+    return best;
+}
+static int do_wheel(float x, float y, int dy, int dx) {
+    node* tn = hit(x, y);
+    if (tn) {
+        int p = 0; int dy16 = dy > 32767 ? 32767 : dy < -32767 ? -32767 : dy; int dx16 = dx > 32767 ? 32767 : dx < -32767 ? -32767 : dx;
+        js_dispatch(tn, "wheel", 1, x, y, (int)(((unsigned)dy16 & 0xFFFFu) | ((unsigned)dx16 << 16)), &p);
+        if (p) return 1;
+    }
+    if (dx) {
+        eng_layout_if_dirty();
+        frag* f;
+        box* hb = hit_test(x, y + G.scroll, &f);
+        for (; hb; hb = hb->parent) {
+            if (!hb->st || !hb->parent || (hb->st->ovx != OV_AUTO && hb->st->ovx != OV_SCROLL)) continue;
+            float mx = box_scroll_w(hb) - (hb->w - hb->b[1] - hb->b[3]);
+            if (mx <= 1) continue;
+            float ns = hb->sx + (float)dx;
+            if (ns < 0) ns = 0;
+            if (ns > mx) ns = mx;
+            if (hb->st->snaptype & 1) { float inner = hb->w - hb->b[1] - hb->b[3]; float pos[256]; int np = snap_collect_x(hb, hb, hb->x + hb->b[3], inner, pos, 0, 256); ns = snap_pick(hb->st, pos, np, hb->sx, ns, (float)dx, inner, mx); }
+            if (ns != hb->sx) { hb->sx = ns; if (hb->n) hb->n->scrollx = ns; G.dirty_paint = 1; if (hb->n) { int p2; js_dispatch(hb->n, "scroll", 0, x, y, 0, &p2); } }
+            break;
+        }
+    }
+    if (!dy) return 1;
     box* b = scroll_box_at(x, y);
     float d = (float)dy;
     if (b) {
@@ -878,9 +1348,15 @@ static int do_wheel(float x, float y, int dy) {
         float ns = b->sy + d;
         if (ns < 0) ns = 0;
         if (ns > total - inner) ns = total - inner;
-        if (ns != b->sy) { b->sy = ns; if (b->n) b->n->scrolly = ns; G.dirty_paint = 1; return 1; }
+        if (b->st && (b->st->snaptype & 2)) { float pos[256]; int np = snap_collect(b, b, b->y + b->b[0], inner, pos, 0, 256); ns = snap_pick(b->st, pos, np, b->sy, ns, d, inner, total - inner > 0 ? total - inner : 0); }
+        if (ns != b->sy) { b->sy = ns; if (b->n) { b->n->scrolly = ns; int p2; js_dispatch(b->n, "scroll", 0, x, y, 0, &p2); js_dispatch(b->n, "scrollend", 0, x, y, 0, &p2); } G.dirty_paint = 1; return 1; }
     }
-    eng_scroll_to(G.scroll + d);
+    {
+        node* he = 0; for (node* c = G.doc ? G.doc->first : 0; c; c = c->next) if (c->type == NT_ELEM) { he = c; break; }
+        float want = G.scroll + d;
+        if (he && he->st && (he->st->snaptype & 2) && he->box) { float pos[256]; float mx = g_doch - G.vh; if (mx < 0) mx = 0; int np = snap_collect(he->box, he->box, he->box->y, (float)G.vh, pos, 0, 256); want = snap_pick(he->st, pos, np, G.scroll, want, d, (float)G.vh, mx); }
+        eng_scroll_to(want);
+    }
     return 1;
 }
 
@@ -921,6 +1397,37 @@ static void paint_select_overlay(unsigned* fb, int stride, int fbw, int fbh, int
     }
 }
 
+static void listbox_click(node* sn, float px, float py) {
+    box* b = sn->box; style* s = sn->st; if (!s) return;
+    int rows = sel_listbox_rows(sn);
+    node* it[256]; int ni = sel_items(sn, it, 256);
+    float ih = sel_item_h(s);
+    int multi = attr_get(sn, "multiple") != 0;
+    int oi = 0, first_sel = -1;
+    for (int i = 0; i < ni; i++) { if (it[i]->tag != T_OPTION) continue; int on = multi ? attr_get(it[i], "selected") != 0 : (sn->selidx >= 0 ? oi == sn->selidx : attr_get(it[i], "selected") != 0); if (on && first_sel < 0) first_sel = i; oi++; }
+    int top = first_sel >= rows ? first_sel - rows + 1 : 0;
+    float cy = b->y + b->b[0] + b->p[0];
+    (void)px;
+    if (py < cy) return;
+    int i = top + (int)((py - cy) / ih);
+    if (i < 0 || i >= ni || it[i]->tag != T_OPTION || attr_get(it[i], "disabled")) return;
+    int idx = 0; for (int k = 0; k < i; k++) if (it[k]->tag == T_OPTION) idx++;
+    int changed = 0;
+    static node* lb_sel; static int lb_anchor;
+    int mods = nwk_mods();
+    if (multi && (mods & 1)) { if (attr_get(it[i], "selected")) attr_del(it[i], "selected"); else attr_set(it[i], "selected", ""); changed = 1; lb_sel = sn; lb_anchor = i; }
+    else if (multi && (mods & 2) && lb_sel == sn && lb_anchor >= 0 && lb_anchor < ni) { int a0 = lb_anchor < i ? lb_anchor : i, a1 = lb_anchor < i ? i : lb_anchor; for (int k = 0; k < ni; k++) { if (it[k]->tag != T_OPTION) continue; int want = k >= a0 && k <= a1 && !attr_get(it[k], "disabled"); int has = attr_get(it[k], "selected") != 0; if (want && !has) { attr_set(it[k], "selected", ""); changed = 1; } else if (!want && has) { attr_del(it[k], "selected"); changed = 1; } } }
+    else if (multi) { for (int k = 0; k < ni; k++) if (it[k]->tag == T_OPTION && k != i && attr_get(it[k], "selected")) { attr_del(it[k], "selected"); changed = 1; } if (!attr_get(it[i], "selected")) { attr_set(it[i], "selected", ""); changed = 1; } lb_sel = sn; lb_anchor = i; }
+    else changed = sn->selidx != idx || first_sel != i;
+    sn->selidx = idx;
+    G.focus = sn;
+    G.dirty_paint = 1;
+    if (!changed) return;
+    int p;
+    js_dispatch(sn, "input", 1, 0, 0, 0, &p);
+    js_dispatch(sn, "change", 1, 0, 0, 0, &p);
+    G.dirty_style = 1; G.dirty_paint = 1;
+}
 static int sel_overlay_click(float x, float y) {
     if (!g_selopen) return 0;
     if (x >= sel_x && x < sel_x + sel_w && y >= sel_y && y < sel_y + sel_ih * sel_n) {
@@ -972,12 +1479,32 @@ static int find_text(const char* q, int next) {
     return count;
 }
 
+void eng_chain_dirty(node* a, node* b) {
+    node* pa[512]; node* pb[512]; int na = 0, nb = 0;
+    for (node* q = a; q && na < 512; q = q->parent) if (q->type == NT_ELEM) pa[na++] = q;
+    for (node* q = b; q && nb < 512; q = q->parent) if (q->type == NT_ELEM) pb[nb++] = q;
+    if (na >= 512 || nb >= 512) { G.dirty_style = 1; return; }
+    int i = na - 1, j = nb - 1;
+    while (i >= 0 && j >= 0 && pa[i] == pb[j]) { i--; j--; }
+    if (i >= 0) eng_style_node(pa[i]);
+    if (j >= 0) eng_style_node(pb[j]);
+}
 static void reset_engine(void) {
+    g_scroll_qn = 0;
+    nwk_ws_close_all();
+    nwk_frame_reset();
     wm_reset_all();
     { extern void anim_reset(void); anim_reset(); }
     ttf_reset();
+    { extern void emoji_reset(void); emoji_reset(); }
     { extern void webfont_reset(void); webfont_reset(); }
     nwe_arena_reset();
+    { extern int g_ce_npend, g_ce_over; g_ce_npend = 0; g_ce_over = 0; }
+    { extern void find_id_reset(void); find_id_reset(); extern void qsel_reset(void); qsel_reset(); extern void bytag_reset(void); bytag_reset(); }
+    { extern void css_cq_reset(void); css_cq_reset(); }
+    g_hsel_on = 0; g_hs_node = g_he_node = 0; g_psel_drag = 0; g_range = 0; g_down = 0; g_ishift_n = 0;
+    g_nsd = 0;
+    { extern void cv_reset(void); cv_reset(); extern void webgl_reset(void); webgl_reset(); }
     nwe_pools_forget();
     font_cache_reset();
     css_reset_all();
@@ -1008,7 +1535,68 @@ static void title_from_doc(void) {
     G.title[o] = 0;
 }
 
+static const char* tag_attr(const char* t, const char* e, const char* name, int* ln) {
+    int nl = (int)strlen(name);
+    for (const char* q = t; q + nl < e; q++) {
+        if ((q == t || is_ws((unsigned char)q[-1])) && ieqn(q, name, nl)) {
+            const char* v = q + nl;
+            while (v < e && is_ws((unsigned char)*v)) v++;
+            if (v >= e || *v != '=') continue;
+            v++;
+            while (v < e && is_ws((unsigned char)*v)) v++;
+            char qc = (*v == '"' || *v == '\'') ? *v++ : 0;
+            const char* ve = v;
+            while (ve < e && (qc ? *ve != qc : (!is_ws((unsigned char)*ve) && *ve != '>'))) ve++;
+            *ln = (int)(ve - v);
+            return v;
+        }
+    }
+    return 0;
+}
+static void prefetch_scan(const char* src, int len) {
+    static char bufs[32][4096];
+    const char* list[32];
+    int n = 0;
+    for (int i = 0; i + 6 < len && n < 32; i++) {
+        if (src[i] != '<') continue;
+        int isscript = ieqn(src + i + 1, "script", 6) && (is_ws((unsigned char)src[i + 7]) || src[i + 7] == '>');
+        int islink = ieqn(src + i + 1, "link", 4) && is_ws((unsigned char)src[i + 5]);
+        if (!isscript && !islink) continue;
+        const char* e = memchr(src + i, '>', (size_t)(len - i));
+        if (!e) break;
+        const char* t = src + i + 1;
+        int ul = 0; const char* u = 0;
+        if (isscript) {
+            int tl = 0; const char* ty = tag_attr(t, e, "type", &tl);
+            if (ty && !(tl == 0 || ieqn(ty, "text/javascript", 15) || ieqn(ty, "module", 6) || ieqn(ty, "application/javascript", 22))) { i = (int)(e - src); continue; }
+            u = tag_attr(t, e, "src", &ul);
+        } else {
+            int rl = 0; const char* rel = tag_attr(t, e, "rel", &rl);
+            if (rel) {
+                int ok = 0;
+                if ((rl == 10 && ieqn(rel, "stylesheet", 10)) || (rl == 13 && ieqn(rel, "modulepreload", 13))) ok = 1;
+                else if (rl == 7 && ieqn(rel, "preload", 7)) { int al = 0; const char* as = tag_attr(t, e, "as", &al); if (as && ((al == 6 && ieqn(as, "script", 6)) || (al == 5 && ieqn(as, "style", 5)) || (al == 4 && ieqn(as, "font", 4)))) ok = 1; }
+                if (ok) u = tag_attr(t, e, "href", &ul);
+            }
+        }
+        if (u && ul > 0 && ul < 4000) {
+            static char tmp[4096]; memcpy(tmp, u, (size_t)ul); tmp[ul] = 0;
+            for (char* a = tmp; *a; a++) if (*a == '&' && !strncmp(a, "&amp;", 5)) memmove(a + 1, a + 5, strlen(a + 5) + 1);
+            url_resolve(G.base, tmp, bufs[n], sizeof(bufs[n]));
+            if (ieqn(bufs[n], "http", 4)) { int dup = 0; for (int k = 0; k < n; k++) if (!strcmp(list[k], bufs[n])) dup = 1; if (!dup) { list[n] = bufs[n]; n++; } }
+        }
+        i = (int)(e - src);
+    }
+    if (n > 0) nwk_prefetch(list, n, G.url);
+}
+#define SRC_N 256
+static struct { const char* url; const char* t; int len; } g_src[SRC_N];
+static int g_nsrc;
+void eng_src_add(const char* url, const char* t, int len) { if (!url || !t) return; int i = g_nsrc < SRC_N ? g_nsrc++ : (int)(g_nsrc++ % SRC_N); g_src[i].url = nstrdup(url); g_src[i].t = t; g_src[i].len = len; }
+const char* eng_src_get(const char* url, int* len) { int n = g_nsrc < SRC_N ? g_nsrc : SRC_N; for (int i = n - 1; i >= 0; i--) if (g_src[i].url && !strcmp(g_src[i].url, url)) { *len = g_src[i].len; return g_src[i].t; } return 0; }
 static void do_load(nwe_req* r) {
+    g_stat_err = 0;
+    g_nsrc = 0;
     float vw = (float)(r->w > 0 ? r->w : 800), vh = (float)(r->h > 0 ? r->h : 600);
     reset_engine();
     G.vw = vw;
@@ -1017,10 +1605,13 @@ static void do_load(nwe_req* r) {
     snprintf(G.url, sizeof(G.url), "%s", r->url ? r->url : "about:blank");
     snprintf(G.base, sizeof(G.base), "%s", G.url);
     url_origin(G.url, G.origin, sizeof(G.origin));
+    G.sandbox = ((unsigned)r->key & 0xFF000000u) == 0x5B000000u ? (r->key & 0xFFFF) | 0x10000 : 0;
+    eng_csp_load();
+    if (G.sandbox && !(G.sandbox & 2)) snprintf(G.origin, sizeof(G.origin), "null");
     if (!strcmp(G.url, "about:crash")) *(volatile int*)0x8000000000000000ULL = 1;
     G.doc = node_new(NT_DOC);
     css_bump();
-    js_init();
+    if (G.sandbox && !(G.sandbox & 1)) { extern void js_reset(void); js_reset(); } else js_init();
     const char* src = r->data ? r->data : "";
     int len = r->len;
     sbuf wrapped = { 0, 0, 0 };
@@ -1053,15 +1644,21 @@ static void do_load(nwe_req* r) {
         }
     }
     G.loaded = 0;
+    if (r->btn == 2) { parse_html(G.doc, src, len, 0); title_from_doc(); G.dirty_style = 1; eng_layout_if_dirty(); G.dirty_paint = 1; return; }
+    if (r->btn != 1 && ieqn(G.url, "http", 4)) prefetch_scan(src, len);
     parse_html(G.doc, src, len, 1);
     title_from_doc();
     scan_images(G.doc);
     G.loaded = 1;
+    { extern void js_fire_stage(int); js_fire_stage(1); }
+    if (npend > 0) { int n = npend < 512 ? npend : 512; node* list[512]; memcpy(list, pend_scripts, sizeof(node*) * (size_t)n); npend = 0; prefetch_nodes(list, n); for (int i = 0; i < n; i++) run_script_node(list[i]); }
     for (int i = 0; i < ndeferred; i++) run_script_node(deferred[i]);
     ndeferred = 0;
+    { extern void js_fire_stage(int); js_fire_stage(2); }
     G.dirty_style = 1;
     G.loaded = 2;
-    js_fire_load();
+    { extern void js_fire_stage(int); js_fire_stage(3); }
+    prefetch_nodes(pend_scripts, npend < 512 ? npend : 512);
     for (int i = 0; i < npend && i < 512; i++) run_script_node(pend_scripts[i]);
     npend = 0;
     title_from_doc();
@@ -1116,7 +1713,7 @@ static void hover_info(nwe_req* r, node* n) {
 static long dispatch(long op, nwe_req* r) {
     if (op == NWE_OP_INIT) { nwe_arena_init(); g_inited = 1; return 0; }
     if (!g_inited) { nwe_arena_init(); g_inited = 1; }
-    if (op == NWE_OP_LOAD) { g_dead = 0; do_load(r); fill_info(r); fill_nav(r); return 0; }
+    if (op == NWE_OP_LOAD) { g_dead = 0; memset(&g_nwe_perf, 0, sizeof(g_nwe_perf)); unsigned long long lu0 = nwk_us(), ln0 = nwk_net_us(); do_load(r); g_nwe_perf.load_us = nwk_us() - lu0; g_nwe_perf.net_us = nwk_net_us() - ln0; fill_info(r); fill_nav(r); return 0; }
     if (op == NWE_OP_EVAL) {
         if (!G.doc || g_dead) { blank_doc(); g_dead = 0; }
         r->ret = js_eval_expr(r->data ? r->data : "", r->out, sizeof(r->out));
@@ -1157,46 +1754,89 @@ static long dispatch(long op, nwe_req* r) {
         fill_info(r);
         break;
     case NWE_OP_SCROLL: eng_scroll_to(G.scroll + (float)r->y); fill_info(r); break;
-    case NWE_OP_WHEEL: do_wheel((float)r->x, (float)r->y, r->key); fill_info(r); break;
+    case NWE_OP_WHEEL: do_wheel((float)r->x, (float)r->y, r->key, r->btn); fill_info(r); break;
     case NWE_OP_MOVE: {
         node* n = hit((float)r->x, (float)r->y);
         hover_info(r, n);
         if (n != G.hover) {
             node* old = G.hover;
             G.hover = n;
-            if (g_css_hover) G.dirty_style = 1;
+            if (g_css_hover) eng_chain_dirty(old, n);
             int p;
             if (old) js_dispatch(old, "mouseout", 1, (float)r->x, (float)r->y, 0, &p);
             if (n) js_dispatch(n, "mouseover", 1, (float)r->x, (float)r->y, 0, &p);
         }
         unsigned long now = nwk_ms();
-        if (n && now - g_last_move > 60) { g_last_move = now; int p; js_dispatch(n, "mousemove", 1, (float)r->x, (float)r->y, 0, &p); }
+        int held = r->btn != 0;
+        if (held && g_range) range_set(g_range, (float)r->x);
+        if (held && g_drag_sel && G.focus && is_text_input(G.focus) && G.focus->tag != T_TEXTAREA && G.focus->value) {
+            node* f = G.focus;
+            int c = input_caret_at(f, (float)r->x);
+            if (!f->sela) f->sela = f->caret + 1;
+            f->caret = c;
+            if (f->sela == c + 1) f->sela = 0;
+            G.dirty_paint = 1;
+        }
+        if (held && g_psel_drag) {
+            int off = 0;
+            node* tn = text_at((float)r->x, (float)r->y, &off);
+            for (int dxs = 6; !tn && dxs < 480 && r->x - dxs >= 0; dxs += 6) tn = text_at((float)(r->x - dxs), (float)r->y, &off);
+            for (int dys = 4; !tn && dys < 40; dys += 4) tn = text_at((float)r->x, (float)(r->y - dys), &off);
+            if (tn) { if (tn->text && off <= tn->tlen) js_ce_call("__pageSel", tn, (off << 3) | 1); }
+        }
+        if (n && (held || now - g_last_move > 60)) { g_last_move = now; int p; int mk = mouse_key(0, held ? 1 : 0, 0); js_dispatch(n, "pointermove", 1, (float)r->x, (float)r->y, mk, &p); js_dispatch(n, "mousemove", 1, (float)r->x, (float)r->y, mk, &p); }
         fill_info(r);
         break;
     }
     case NWE_OP_DOWN: {
         if (g_selopen) { if (sel_overlay_click((float)r->x, (float)r->y)) { g_down = 0; fill_info(r); break; } }
         node* n = hit((float)r->x, (float)r->y);
+        { node* sn = n; while (sn && sn->tag != T_SELECT) sn = sn->parent; if (sn && sn->box && !attr_get(sn, "disabled") && sel_listbox_rows(sn) > 0) listbox_click(sn, (float)r->x, (float)r->y + G.scroll); }
+        int btn = r->btn == 2 ? 2 : r->btn == 3 ? 1 : 0;
+        int cnt = r->key > 0 ? r->key : 1;
+        g_down_btn = btn;
+        g_down_cnt = cnt;
+        g_drag_sel = 0;
+        g_range = 0;
         g_down = n;
         g_downx = (float)r->x;
         g_downy = (float)r->y;
-        G.active = n;
-        if (g_css_hover) G.dirty_style = 1;
         int p = 0;
-        if (n) { js_dispatch(n, "pointerdown", 1, (float)r->x, (float)r->y, 0, &p); js_dispatch(n, "mousedown", 1, (float)r->x, (float)r->y, 0, &p); }
+        int bmask = btn == 0 ? 1 : btn == 2 ? 2 : 4;
+        int mk = mouse_key(btn, bmask, cnt);
+        if (btn != 0) {
+            if (n) { js_dispatch(n, "pointerdown", 1, (float)r->x, (float)r->y, mk, &p); js_dispatch(n, "mousedown", 1, (float)r->x, (float)r->y, mk, &p); }
+            fill_info(r);
+            break;
+        }
+        G.active = n;
+        if (g_css_hover) eng_chain_dirty(0, n);
+        if (n) { js_dispatch(n, "pointerdown", 1, (float)r->x, (float)r->y, mk, &p); js_dispatch(n, "mousedown", 1, (float)r->x, (float)r->y, mk, &p); }
         node* f = n;
         while (f && !focusable(f)) f = f->parent;
         if (!p) set_focus(f && (is_text_input(f) || f->tag == T_SELECT || f->tag == T_BUTTON || f->tag == T_INPUT || f->tag == T_A || attr_get(f, "tabindex") || is_edit_host(f)) ? f : 0);
         if (!p && f && is_edit_host(f) && G.focus == f) ce_place(f, (float)r->x, (float)r->y);
         if (g_selopen && g_selopen != f) { g_selopen = 0; G.dirty_paint = 1; }
         if (f && is_text_input(f) && f->box && f->value) {
-            float bx = f->box->x + f->box->b[3] + f->box->p[3];
-            float rel = (float)r->x - bx;
-            int best = f->vlen;
-            float acc = 0;
-            int i = 0;
-            while (i < f->vlen) { int cp; int k = u8dec(f->value + i, f->vlen - i, &cp); float aw = font_adv(f->st->face, f->st->fsize, cp); if (acc + aw / 2 > rel) { best = i; break; } acc += aw; i += k; }
-            if (f->tag != T_TEXTAREA) f->caret = best;
+            int best = input_caret_at(f, (float)r->x);
+            int sa0 = f->sela ? f->sela - 1 : -1, slo = sa0 < (int)f->caret ? sa0 : (int)f->caret, shi = sa0 < (int)f->caret ? (int)f->caret : sa0;
+            if (f->tag != T_TEXTAREA && !p && cnt == 1 && sa0 >= 0 && slo != shi && best > slo && best < shi) { js_ce_call("__tdragArm", f, 0); }
+            else if (f->tag != T_TEXTAREA) {
+                f->caret = best;
+                f->sela = 0;
+                if (cnt == 2) { int a = best, b = best; const char* v = f->value; while (a > 0 && word_ch((unsigned char)v[a - 1])) a--; while (b < f->vlen && word_ch((unsigned char)v[b])) b++; if (a < b) { f->sela = a + 1; f->caret = b; } }
+                else if (cnt >= 3) { f->sela = 1; f->caret = f->vlen; }
+                else g_drag_sel = !p;
+                G.dirty_paint = 1;
+            }
+        }
+        if (!p && range_is(f ? f : n)) { g_range = f ? f : n; range_set(g_range, (float)r->x); }
+        g_psel_drag = 0;
+        if (!p && !(f && (is_text_input(f) || is_edit_host(f))) && !g_range) {
+            int off = 0;
+            node* tn = text_at((float)r->x, (float)r->y, &off);
+            if (tn) { js_ce_call("__pageSel", tn, (off << 3) | ((cnt > 3 ? 3 : cnt) << 1)); g_psel_drag = cnt == 1; }
+            else if (g_hsel_on) js_ce_call("__pageSel", doc_body() ? doc_body() : G.doc, -1);
         }
         fill_info(r);
         break;
@@ -1204,14 +1844,30 @@ static long dispatch(long op, nwe_req* r) {
     case NWE_OP_UP: {
         node* n = hit((float)r->x, (float)r->y);
         int p = 0;
-        if (n) { js_dispatch(n, "pointerup", 1, (float)r->x, (float)r->y, 0, &p); js_dispatch(n, "mouseup", 1, (float)r->x, (float)r->y, 0, &p); }
+        int btn = r->btn == 2 ? 2 : r->btn == 3 ? 1 : 0;
+        int mk = mouse_key(btn, 0, g_down_cnt);
+        g_drag_sel = 0;
+        g_psel_drag = 0;
+        if (g_range) { node* rg = g_range; g_range = 0; int pc; js_dispatch(rg, "change", 1, 0, 0, 0, &pc); }
+        r->ret = 0;
+        if (btn != 0) {
+            if (n) { js_dispatch(n, "pointerup", 1, (float)r->x, (float)r->y, mk, &p); js_dispatch(n, "mouseup", 1, (float)r->x, (float)r->y, mk, &p); }
+            if (n && btn == 2) { p = 0; js_dispatch(n, "contextmenu", 1, (float)r->x, (float)r->y, mk, &p); r->ret = p ? 1 : 0; }
+            else if (n && btn == 1) { p = 0; js_dispatch(n, "auxclick", 1, (float)r->x, (float)r->y, mk, &p); }
+            g_down = 0;
+            fill_info(r);
+            if (n && btn == 1 && !p) { hover_info(r, n); if (r->href[0] && r->cursor == 1) r->ret = 2; }
+            break;
+        }
+        if (n) { js_dispatch(n, "pointerup", 1, (float)r->x, (float)r->y, mk, &p); js_dispatch(n, "mouseup", 1, (float)r->x, (float)r->y, mk, &p); }
+        if (g_css_hover) eng_chain_dirty(G.active, 0);
         G.active = 0;
-        if (g_css_hover) G.dirty_style = 1;
         if (n && g_down && (n == g_down || node_contains(g_down, n) || node_contains(n, g_down))) {
             node* t = node_contains(g_down, n) ? n : g_down;
             if (fabsf((float)r->x - g_downx) < 6 && fabsf((float)r->y - g_downy) < 6) {
                 p = 0;
-                js_dispatch(t, "click", 1, (float)r->x, (float)r->y, 0, &p);
+                js_dispatch(t, "click", 1, (float)r->x, (float)r->y, mk, &p);
+                if (g_down_cnt == 2) { int pd = 0; js_dispatch(t, "dblclick", 1, (float)r->x, (float)r->y, mk, &pd); }
                 node* mn = t;
                 while (mn && mn->tag != T_VIDEO && mn->tag != T_AUDIO) mn = mn->parent;
                 int mc = !p && mn ? wm_click(mn, (float)r->x, (float)r->y) : -100;
@@ -1224,7 +1880,19 @@ static long dispatch(long op, nwe_req* r) {
         fill_info(r);
         break;
     }
-    case NWE_OP_KEY: r->ret = key_event(r->key); fill_info(r); break;
+    case NWE_OP_PERF: { extern size_t nwe_arena_used(void); extern size_t nwe_arena_size(void); extern unsigned long long js_mem_used(void); g_nwe_perf.mem_used = nwe_arena_used(); g_nwe_perf.mem_size = nwe_arena_size(); g_nwe_perf.js_mem = js_mem_used(); memcpy(r->out, &g_nwe_perf, sizeof(g_nwe_perf)); } break;
+    case NWE_OP_DROPFILE: {
+        g_df_len = r->len > 0 ? r->len : 0;
+        g_df_data = nalloc((size_t)g_df_len + 1);
+        if (g_df_len && r->data) memcpy(g_df_data, r->data, (size_t)g_df_len);
+        { const char* nm = r->url ? r->url : "file"; int l = (int)strlen(nm); if (l > 255) l = 255; memcpy(g_df_name, nm, (size_t)l); g_df_name[l] = 0; }
+        node* n = hit((float)r->x, (float)r->y);
+        if (!n) n = doc_body();
+        if (n) js_ce_call("__fileDrop", n, ((r->x & 0xFFFF) << 16) | (r->y & 0xFFFF));
+        fill_info(r);
+        break;
+    }
+    case NWE_OP_KEY: { r->ret = key_event(r->key); int kk = r->key & 0xFFFFFF; if (kk == 13) kk = '\n'; node* kt = G.focus ? G.focus : doc_body(); if (kt && G.doc && !(r->key & 0x10000000)) { int pu = 0; js_dispatch(kt, "keyup", 1, 0, 0, kk | (r->key & 0x0F000000), &pu); } fill_info(r); break; }
     case NWE_OP_TICK: {
         int any = js_tick();
         if (npend > 0) {
@@ -1232,19 +1900,22 @@ static long dispatch(long op, nwe_req* r) {
             node* list[512];
             memcpy(list, pend_scripts, sizeof(node*) * (size_t)n);
             npend = 0;
+            prefetch_nodes(list, n);
             for (int i = 0; i < n; i++) run_script_node(list[i]);
             any = 1;
         }
         unsigned long t0 = nwk_ms();
         int loaded = 0;
-        while (img_pending() && nwk_ms() - t0 < 60 && loaded < 4) { img_load_one(); loaded++; if (G.nav_pending) break; }
-        if (loaded) { G.dirty_layout = 1; any = 1; if (!img_pending()) nwk_status("Done"); }
-        if (g_scroll_evt) { g_scroll_evt = 0; int p; if (js_ready()) js_dispatch(G.doc, "scroll", 0, 0, 0, 0, &p); }
+        while (img_pending() && nwk_ms() - t0 < 60 && loaded < 8) { img_prefetch(); img_load_one(); loaded++; if (G.nav_pending) break; }
+        if (loaded) { G.dirty_layout = 1; any = 1; if (!img_pending() && !g_stat_err) nwk_status("Done"); }
+        if (g_scroll_evt) { g_scroll_evt = 0; int p; if (js_ready()) { js_dispatch(G.doc, "scroll", 0, 0, 0, 0, &p); js_dispatch(G.doc, "scrollend", 0, 0, 0, 0, &p); } }
+        if (g_scroll_qn) { node* q[16]; int qn = g_scroll_qn; for (int i = 0; i < qn; i++) q[i] = g_scroll_q[i]; g_scroll_qn = 0; if (js_ready()) for (int i = 0; i < qn; i++) { int p; js_dispatch(q[i], "scroll", 0, 0, 0, 0, &p); } }
         if (G.dirty_style || G.dirty_layout) { eng_layout_if_dirty(); any = 1; }
         { int wt = wm_tick(); if (wt & 2) { G.dirty_layout = 1; eng_layout_if_dirty(); } if (wt) any = 1; }
         {
             extern int anim_tick(void);
-            extern int anim_events(node** ns, const char** ts, int cap);
+            extern int anim_events(node** ns, const char** ts, const char** nm, float* el, int cap);
+            extern void js_anim_event(node* n, const char* type, const char* name, float el);
             static unsigned long last_af;
             unsigned long nowa = nwk_ms();
             if (nowa - last_af >= 33) {
@@ -1253,12 +1924,15 @@ static long dispatch(long op, nwe_req* r) {
                 if (af & 2) { G.dirty_layout = 1; eng_layout_if_dirty(); }
                 if (af) any = 1;
             }
-            node* evn[64];
-            const char* evt[64];
-            int ne = anim_events(evn, evt, 64);
-            for (int i = 0; i < ne; i++) { int p; if (js_ready()) js_dispatch(evn[i], evt[i], 1, 0, 0, 0, &p); }
+            static node* evn[512];
+            static const char* evt[512];
+            static const char* evm[512];
+            static float eve[512];
+            int ne = anim_events(evn, evt, evm, eve, 512);
+            for (int i = 0; i < ne; i++) if (js_ready()) js_anim_event(evn[i], evt[i], evm[i], eve[i]);
             if (ne) any = 1;
         }
+        { extern int g_prog_indet; static unsigned long lp; unsigned long nm = nwk_ms(); if (g_prog_indet && nm - lp >= 50) { lp = nm; g_prog_indet = 0; any = 1; } }
         if (any) G.dirty_paint = 1;
         r->ret = G.dirty_paint || (g_selopen != 0) || (G.focus && is_text_input(G.focus));
         fill_info(r);
@@ -1280,14 +1954,22 @@ static long dispatch(long op, nwe_req* r) {
 }
 
 int g_nwe_user_stop;
+unsigned long nwk_ms_active(void);
+static unsigned long g_op_t0;
+static unsigned long long g_op_net0;
+nwe_perf g_nwe_perf;
 void nwe_check_stop(void) {
     static unsigned c;
-    if ((++c & 127) == 0 && nwk_busy()) { g_nwe_user_stop = 0; nwe_fail("the page stopped responding and was stopped with Esc"); }
+    if ((++c & 127) == 0) {
+        if (nwk_busy()) { g_nwe_user_stop = 0; nwe_fail("the page stopped responding and was stopped with Esc"); }
+        if (g_op_t0 && nwk_ms_active() - g_op_t0 > 300000 + (unsigned long)((nwk_net_us() - g_op_net0) / 1000ull)) nwe_fail("the page was busy for more than 300 seconds and was stopped");
+    }
 }
 long nwe_entry(long op, void* req) {
     nwe_req* r = req;
     static int depth;
     if (depth > 0) { if (op == NWE_OP_PAINT || op == NWE_OP_INFO) { r->ret = -2; return -2; } }
+    if (depth == 0) { g_op_t0 = nwk_ms_active(); g_op_net0 = nwk_net_us(); }
     depth++;
     int sv = g_pool;
     if (__builtin_setjmp(jb)) {
@@ -1302,7 +1984,14 @@ long nwe_entry(long op, void* req) {
         r->nav[0] = 0;
         return -1;
     }
+    unsigned long long du0 = depth == 1 ? nwk_us() : 0, dn0 = depth == 1 ? nwk_net_us() : 0;
     long rv = dispatch(op, r);
+    if (depth == 1 && op != NWE_OP_LOAD && op != NWE_OP_PERF && op != NWE_OP_INIT && op != NWE_OP_INFO) {
+        unsigned long long d = nwk_us() - du0;
+        g_nwe_perf.after_us += d; g_nwe_perf.after_net_us += nwk_net_us() - dn0; g_nwe_perf.after_ops++;
+        if (op == NWE_OP_TICK) g_nwe_perf.tick_us += d; else if (op != NWE_OP_PAINT) g_nwe_perf.event_us += d;
+        if (d > g_nwe_perf.longest_us) g_nwe_perf.longest_us = d;
+    }
     if (g_nwe_user_stop) { g_nwe_user_stop = 0; nwe_fail("the page stopped responding and was stopped with Esc"); }
     g_pool = sv;
     depth--;

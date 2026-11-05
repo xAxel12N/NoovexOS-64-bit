@@ -73,7 +73,7 @@ static void ps2_byte(void){
 }
 ```
 
-Keyboard. `kbd_feed` decodes scancode set 1 with two 128-entry tables (`kmap_lo`, `kmap_up`). The state flags are `kshift` (0x2A/0x36), `kalt` (0x38), `kcaps` (toggled by 0x3A) and `kext` (the 0xE0 prefix). Extended make codes 0x4B/0x4D/0x48/0x50 become the arrow codes. Releases (bit 7) only clear `kdown[]`. Caps Lock inverts the case of letters only. No keyboard initialisation is sent: the driver relies on the firmware's translated set 1. There are no LEDs, no keymaps other than US, and no function keys (F1-F12 map to 0).
+Keyboard. `kbd_feed` decodes scancode set 1 with two 128-entry tables (`kmap_lo`, `kmap_up`). The state flags are `kshift` (0x2A/0x36), `kalt` (0x38), `kcaps` (toggled by 0x3A) and `kext` (the 0xE0 prefix). Extended make codes 0x4B/0x4D/0x48/0x50 become the arrow codes. Releases (bit 7) only clear `kdown[]`. Caps Lock inverts the case of letters only. No keyboard initialisation is sent: the driver relies on the firmware's translated set 1. There are no LEDs, no keymaps other than US, and no function keys (F1-F12 map to 0). Print Screen goes to the hotkey queue: extended 0x37 is `hk_push(28)`, with Shift 30 and with Alt 29; the non-extended 0x54 that keyboards send for Alt+Print Screen (SysRq) is 29, or 30 with Shift.
 
 Mouse init (`mouse_init`, `ps2_mouse.c`). Every controller wait is bounded:
 
@@ -89,10 +89,10 @@ The init sequence:
 1. Enable the aux port (0xA8).
 2. Read the config byte (0x20), set bit 1 (IRQ12) and clear bit 5 (aux clock disable), and write it back (0x60).
 3. Try `etp_detect()` (section 10.4). If it finds a v3/v4 Elantech pad, set `g_mbytes=6`, enable reporting and stop.
-4. Otherwise send defaults (0xF6), then the IntelliMouse "magic knock" (set rate 200, 100, 80), then Get ID (0xF2). An ID of 3 switches to 4-byte packets (`g_mbytes=4`).
+4. Otherwise send defaults (0xF6), then the IntelliMouse "magic knock" (set rate 200, 100, 80), then Get ID (0xF2). An ID of 3 switches to 4-byte packets (`g_mbytes=4`). Since v10.22 a second knock (200, 200, 80) follows; an ID of 4 (IntelliMouse Explorer) sets `g_mimex=1`, then the rate goes back to 100.
 5. Enable reporting (0xF4) and set `g_mouse_ok=1`.
 
-Packet path. `mouse_feed` resyncs on bit 3 of the first byte. It drops packets with the X/Y overflow bits (0xC0) set, sign-extends the deltas from flag bits 4 and 5, and adds the wheel byte (`int8_t mb[3]`) to `mouse_scroll`. When an ELAN pad is active (`g_etp_hw>=3`), every byte goes to `etp_irq_byte` instead.
+Packet path. `mouse_feed` resyncs on bit 3 of the first byte. It drops packets with the X/Y overflow bits (0xC0) set, sign-extends the deltas from flag bits 4 and 5, and subtracts the wheel byte (`int8_t mb[3]`, positive when the wheel turns towards the user) from `mouse_scroll`, where positive means up as for USB mice. In IntelliMouse Explorer mode the fourth byte is read like Linux: top bits `0x40` carry a 6-bit horizontal wheel value (`mouse_hscroll`, positive is right), `0x80` a 6-bit vertical value, otherwise the low nibble is the wheel and bits 4 and 5 are buttons 4 and 5 (`in_xbtn`, counted in `mouse_xback`/`mouse_xfwd`; the browser goes back on button 4). When an ELAN pad is active (`g_etp_hw>=3`), every byte goes to `etp_irq_byte` instead.
 
 Inspect: `mousetest` prints movement, buttons and wheel for up to 3000 ticks (30 s); a key press stops it early. `usbinfo` ends with `PS/2: controller present` or `no controller`.
 
@@ -158,12 +158,12 @@ This is MMIO only. `dw_present(base)` requires a page-aligned base below 4 GB an
 2. Controller list (`tp_list_ctrls`, at most 12):
    - ACPI devices `AMDI0010`/`AMDI0510` with a memory resource.
    - On AMD CPUs (CPUID vendor check `tp_is_amd`), fixed MMIO 0xFEDC2000-0xFEDC6000 in 4 KiB steps.
-   - Intel PCI functions on bus 0 with class 0x0C80. `tp_pci_dw` enables memory decode, moves the function to D0 through its PM capability (10 ms wait), and if `COMP_TYPE` does not match, writes 7 to BAR+0x204 and checks again.
-3. For each candidate device (HID-over-I2C or one of 52 `ELAN0000`-`ELAN1000` IDs), resolve its `I2cSerialBus` controller path to a base address (`tp_ctrl_base`). If the resource has no address, try `TP_ADDRS = {0x2C,0x15,0x2A,0x10,0x20,0x24,0x38,0x40,0x14,0x5D}`. If it has no speed, use 400 kHz. A device that has an ELAN ID and is not PNP0C50 tries the native ELAN protocol first, then HID.
+   - Intel PCI functions on bus 0 with class 0x0C80 (all functions of multi-function devices, never device 0x1F, where the SPI flash controller has the same class). `tp_pci_dw` first moves the function to D0 through its PM capability (10 ms wait), then reads the 32- or 64-bit BAR, enables memory decode, reads the LPSS capability register (BAR+0x2FC) and skips the function when its type is UART or SPI, and only then takes it out of reset (BAR+0x204 = 7) and sets the remap address. Each try is recorded in `g_tpc[]` (device and function, ID, BAR, previous power state, capability value, the value read from `COMP_TYPE`, and the outcome), which `tpinfo` prints as "PCI 00:15.1 ..." lines.
+3. For each candidate device (HID-over-I2C or one of 52 `ELAN0000`-`ELAN1000` IDs) the interpreter is asked first (since v10.04): `_STA` (devices that report "off" are only tried after all others), `_INI` (run again for devices that are on, because Intel reference firmware fills in the address, speed and interrupt there), `_DSM` for the HID descriptor register (a result of 0 is ignored) and `_CRS`. Intel-based laptops describe one touchpad template (`TPD0`) and one touch panel template (`TPL1`, `_HID` `XXXX0000`) under several I2C controllers; the copies that `_STA` turns off and templates that still have the `XXXX0000` name are skipped. When the controller path in the resource is missing or the template value `NULL`, the device's parent (for example `\_SB.PC00.I2C1`) is used, and the parent is always added as a last choice. `tp_ctrl_base` resolves a controller from the pre-scanner (`Memory32Fixed`, `_ADR` to PCI device and function) and then from the interpreter (`tpa_ctrl`: the controller's `_PR0`/`_PS0` are run, `_ADR` is evaluated, and `_CRS` is read for `Memory32Fixed`, DWord or QWord memory). If the resource has no address, `TP_ADDRS = {0x2C,0x15,0x2A,0x10,0x20,0x24,0x38,0x40,0x14,0x5D}` are tried, with 0x15 first for ELAN devices. If it has no speed, use 400 kHz. A device that has an ELAN ID and is not PNP0C50 tries the native ELAN protocol first, then HID.
 4. HID descriptor registers are tried in the order `TP_DREGS = {0x20,0x01,0x00,0x10,0x30}`.
 5. If the device's `GpioInt` controller is `AMDI0030`, the interrupt line is read directly: `gpio_base + pin*4`, bit 16, honouring active-low.
 
-`scan_all=1` additionally brute-forces every controller x address x descriptor register. Its only caller is `tpinfo_run(1)`, reached with `tpinfo scan` (the shell checks the first letter of the argument after `tpinfo`).
+`scan_all=1` additionally brute-forces every controller x address x descriptor register, then ELAN at 0x15 on every controller. `tpinfo scan` sets it; since v10.04 the boot probe does the same by itself when the firmware lists a touchpad but none answered, so a wrong or missing controller path in the firmware does not stop the touchpad. Without a touchpad in the firmware the bus is left alone. `tpinfo` prints one block per candidate (path, `_HID`, `_STA` on or off, `_INI` run, none, failed or skipped, the address used and the controller base or why it was not found), then the PCI lines.
 
 Once a descriptor register returns a valid HID descriptor, no other register is tried at that address. `ih_get_desc` decodes into a local copy and writes `t->d` only after the descriptor is valid, so a later failed probe cannot overwrite a good vendor and product. The `_CRS` address that is put in front of the static resource list is removed from the rest of the list (paths compared without `_` and `\`), so it is tried once. A device whose `_HID` starts with `ELAN` is a candidate even without PNP0C50; it is tried with HID first and the ELAN protocol second, like any HID pad with vendor 0x04F3.
 
@@ -264,8 +264,8 @@ Failures stop at a named step stored in `xhci_failstep`, for example `"Address D
 
 `xhci_mouse_poll()` to for each controller, `xhci_poll_one()`. It first replays parked events, then handles up to 128 new events. For each transfer event, `hid_xfer` finds the endpoint, copies up to 16 bytes into `xhid_last` (shown by `usbinfo`) and decodes:
 
-- boot mouse: `btn, int8 dx, int8 dy[, int8 wheel]`;
-- boot keyboard, or a report-protocol keyboard turned into an 8-byte boot report: `kbd_report` diffs against the previous report, pushes ASCII through `usb_key_code` and updates `kdown[]`. Caps Lock (usage 0x39) toggles the shared `kcaps`. Reports with ErrorRollOver (`d[2]==1`) are ignored;
+- boot mouse: `btn, int8 dx, int8 dy[, int8 wheel]`; bits 3 and 4 of `btn` are the back and forward buttons (`in_xbtn`, also for report-protocol mice);
+- boot keyboard, or a report-protocol keyboard turned into an 8-byte boot report: `kbd_report` diffs against the previous report, pushes ASCII through `usb_key_code` and updates `kdown[]`. Caps Lock (usage 0x39) toggles the shared `kcaps`. Print Screen (usage 0x46) is not typed: it calls `hk_push` with 28, 30 with a Shift modifier, or 29 with an Alt modifier, like the PS/2 keyboard. Reports with ErrorRollOver (`d[2]==1`) are ignored;
 - report protocol: `hid_report_decode` uses the parsed bit offsets.
 
 Each HID endpoint has 16 transfers in flight (`XHID_INFLIGHT`). `xhid_arm` gives each Normal TRB its own 64-byte slot in the region's data buffer, rotating through `xhid_bs[]`, so reports that arrive while the desktop is redrawing are not overwritten. The transfer event carries the TRB address; `hid_xfer` reads the buffer pointer back from that TRB and decodes the report from its own slot. Parked events (`xh_q`) now store the TRB address too. After decoding, one new TRB is queued, which keeps 16 outstanding. Before v9.05 only one TRB was queued, so a 1000 Hz wireless mouse lost most of its reports and the backlog in the dongle made the pointer lag.
@@ -316,14 +316,14 @@ Shell: `shutdown`/`poweroff`/`halt`, `reboot`/`restart`, `suspend`.
 
 ### 10.7.2 AML pre-scanner (`drivers/acpi/aml_scan.c`)
 
-This is a non-executing walker for the touchpad code. It copies pointers to the DSDT and all SSDTs (max 33), finds every Scope/Device (`0x10`, `0x5B 0x82`) up to 768 nodes, and builds full paths. For each device (max 160) it scans raw bytes for:
+This is a non-executing walker for the touchpad code. It copies pointers to the DSDT and all SSDTs (max 33), finds every Scope/Device (`0x10`, `0x5B 0x82`) up to 8192 nodes (`AMLN_MAX`), and builds full paths. For each device (max 1024, `AMLD_MAX`) it scans raw bytes for:
 - `_HID` (string or EISA ID, decoded by `aml_eisa`) and `_ADR`;
 - the `PNP0C50`/`ACPI0C50` HID-over-I2C IDs;
 - `I2cSerialBus` (0x8E, type 1): address, speed and controller path;
 - `GpioInt` (0x8C): pin, polarity and controller path;
 - `Memory32Fixed` (0x86).
 
-Child devices are skipped (`aml_in_child`). Because it never runs methods, a `_CRS` that is built at runtime (`Method(_CRS)` returning a computed buffer) is still found only if the resource bytes appear literally in the device body.
+Child devices are skipped (`aml_in_child`, which stops at the first node that starts after the current byte). Before v10.02 the limits were 768 nodes and 160 devices; the firmware of large laptops (for example an ASUS TUF Gaming F17 with an 11th-generation Intel CPU) describes more, so the touchpad and its I2C controller were never read and `tpinfo` showed "160 devices, 0 I2C touchpads". When a limit is reached, `g_aml_full` is set (bit 0 nodes, bit 1 devices) and `tpinfo` says that devices were left out. Because it never runs methods, a `_CRS` that is built at runtime (`Method(_CRS)` returning a computed buffer) is still found only if the resource bytes appear literally in the device body.
 
 ### 10.7.3 AML interpreter (`drivers/acpi/aml.c`)
 
@@ -390,6 +390,20 @@ Shell.
 
 A second `acpi` branch further down `commands.c` (S5/S1/reset summary) cannot be reached because the earlier `seq(cmd,"acpi")` matches first.
 
+### 10.7.5 Lid, power button, low battery (`drivers/acpi/acpi_dev.c`, `apps/system/powerui.c`) (v10.32)
+
+Devices: after `_INI`, `acpi_aml_init` looks up the first `PNP0C0D` (lid), `PNP0C0C` (control-method power button) and `PNP0C0E` (sleep button) and logs "acpi: lid switch found" and "acpi: power button device found". PM1 enable bit 8 (PWRBTN_EN) is set next to clearing PWRBTN_STS: QEMU sets the status bit only when it is enabled, and the SCI line stays masked in the PIC and the I/O APIC, so no interrupt is raised; `acpi_poll` still reads the status bit.
+
+Lid: `lid_check` evaluates `_LID` on a Notify to the lid device and every 50 ticks from `acpi_poll` (many laptops report the lid through a GPE that is not handled). A change calls `g_acpi_lid_cb` = `pm_lid_changed`. On close, `g_lid_action` 0 turns the screen off (`g_screen_off`, `bl_screen(0)`: `_BCM` with the lowest level from `_BCL` and the Intel PWM duty at 0), 1 sleeps (S1 through `power_sleep` when `g_acpi_have_s1`, otherwise the same as 0), 2 does nothing. Opening the lid restores the saved brightness. While `g_screen_off` is set, `compose_present_body` draws one black frame and then nothing; a key or a click turns the screen back on unless the lid is closed.
+
+Power button: the fixed button (PM1 status) and Notify 0x80 or 0x02 on the `PNP0C0C` device both call `acpi_power_button` -> `pm_power_button`. On the desktop, `g_pbtn_action` 0 opens the power menu (Shut down, Restart, Sleep, Cancel; arrow keys, Tab, Enter, Esc or the mouse; closes itself after 30 s); a second press more than 0.3 s later shuts down. Action 1 sleeps, 2 shuts down at once. Outside the desktop the button shuts down as before. Notify 0x80 on `PNP0C0E` calls `pm_sleep_button`. Presses within one second are merged.
+
+Settings: Power and battery has a "Lid and power button" card (control ids 360-365); the choices are saved as `lid=` and `pbtn=` in `/etc/nvx-setup-done` (`power_prefs_save` in `core/init/setup.c`).
+
+Low battery: `pm_battery_tick` runs after each battery update (every 5 s). While discharging it shows a toast when the charge falls to 15% and to 7% (with the real value). At 3% it starts a 60 s countdown with a toast every 15 s and then calls `power_off`; connecting the charger cancels it.
+
+Browser: `navigator.getBattery()` returns a `BatteryManager` filled from `nwk_battery` (charge, charging, minutes from `_BST`), polled every 30 s with `chargingchange`, `levelchange`, `chargingtimechange` and `dischargingtimechange` events. Without a battery it reports charging at 100% like Chrome on a desktop.
+
 ## 10.8 RTC (`drivers/rtc/cmos.c`)
 
 ```c
@@ -446,7 +460,22 @@ The device is PCI class 04/03 with a 32-bit MMIO BAR (BARs above 4 GB are refuse
 
 Host-side tests for both probes, including codec timeout and muted-codec cases, are in `tools/tests/drivers/drvsim.c`.
 
-Sound limits: playback only, no capture; one stream; a fixed format; no jack detection or switching (all found paths are routed at the same time); no HDMI audio codecs beyond what the path search happens to find; the first matching PCI device only.
+Sound limits (HD Audio): playback only, no capture; one stream; a fixed format; no jack detection or switching (all found paths are routed at the same time); no HDMI audio codecs beyond what the path search happens to find; the first matching PCI device only.
+
+### 10.9.4 USB audio (`drivers/usb/xhci.c`, the `aud_*` functions)
+
+USB Audio Class 1 devices: USB headsets, wireless headsets with a USB dongle (they are USB audio devices to the computer), USB speakers and USB microphones. Bluetooth headsets need a Bluetooth stack and are not supported.
+
+| Step | What happens |
+|---|---|
+| Detection | `xhci_enum_loc`: a configuration with an Audio interface (class 1, subclass 1 or 2) is read again in full (up to 16000 bytes) and given to `aud_attach`. If the device also has HID interfaces (the volume buttons of most dongles), the normal keyboard set-up runs after it and `aud_sync_e0` takes over the endpoint 0 state; an audio-only device keeps its memory region (`aud_reg_hold`). |
+| Parsing | `aud_parse`: the Audio Control interface and its Feature Units, and per streaming alternate setting the `AS_GENERAL` format tag (PCM), the Type I format (channels, subframe size, bits, discrete rates or a range) and the isochronous endpoint (direction, packet size, interval). `aud_pick` chooses 16-bit, stereo before mono, 48 kHz before 44.1 kHz. |
+| Start | `SET_CONFIGURATION`, Feature Units unmuted. Playback starts on the first write, capture on `rec_start`: `SET_INTERFACE`, sample rate with `SET_CUR` to the endpoint when the device offers more than one, then a Configure Endpoint command for an isochronous OUT (type 1) or IN (type 5) endpoint with a 256-TRB ring. |
+| Streaming | Transfer events go to interrupter 2 (its own 4096-entry event ring), so they do not mix with the camera (interrupter 1) or the keyboard and mouse. `aud_service` (called from `snd_poll` and every write and read) handles finished TDs and keeps up to 96 playback TDs (one per service interval, about 96 ms) and 64 capture TDs queued. Frames per TD come from the rate and the interval with a running remainder, so 44.1 kHz gives 44 and 45 frame packets. |
+| Conversion | The system format is 48 kHz 16-bit stereo. Playback is converted to the device rate and channel count (nearest sample, stereo averaged to mono) and scaled by the volume; capture is converted to 48 kHz stereo. |
+| Switching | `snd_usb_arrived` builds the `nvx_snd` entry and `snd_usb_attach` makes it the current device, keeping the built-in one; `aud_unplug` (on port disconnect) calls `snd_usb_detach`, which goes back. A toast says which headset was connected or that it was disconnected. |
+
+Limits: one USB audio device at a time; 16-bit PCM only; feedback endpoints of asynchronous devices are ignored (the nominal rate is sent, which can give an occasional click on some devices); no hardware volume (software volume instead); USB Audio Class 2 devices are not supported.
 
 ## 10.10 Video
 
@@ -462,7 +491,7 @@ There is no display-mode driver. The kernel draws into the linear framebuffer th
 | `BPP` | 0x5020 (u8) | 24 or 32 (`BYPP` 3 or 4) |
 | RGB flag | 0x5021 (u8, valid if 0x502C == `'UEFI'`) | 1 = RGBX byte order to `g_fb_rgb` swaps R/B on blit |
 
-All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpaper and icons. Primitives include `fill_rect`, anti-aliased `fill_round` and `fill_circle` (coverage from `isqrt32`), `shadow_soft`, the 8x14 bitmap font (`dchar/dstr`) and proportional anti-aliased text from `fontaa` (`pdstr`). `blit_all()` copies `SCENE` to the hardware buffer row by row, honouring pitch, 24/32 bpp and the RGB swap. If `g_panel_oled` is set, the whole image shifts by 1 px through 4 positions every 3000 ticks (30 s) to protect OLED panels.
+All drawing goes into `SCENE[MAXW*MAXH]` (32-bit xRGB). `BG` caches the wallpaper and icons. Primitives include `fill_rect`, anti-aliased `fill_round` and `fill_circle` (coverage from `isqrt32`), `shadow_soft`, the 8x14 bitmap font (`dchar/dstr`) and proportional anti-aliased text from `fontaa` (`pdstr`). `blit_all()` copies `SCENE` to the hardware buffer, honouring pitch, 24/32 bpp and the RGB swap. Since v9.85 it only sends what changed: a shadow copy in RAM holds what the screen shows, `dmg_rects` (`drivers/video/fb/damage.c`) compares `SCENE` with it in 64x16 tiles and returns up to 256 rectangles (runs of changed tiles in a tile row, joined with the same run in the row above), and only those are copied, by the CPU or by the NVIDIA copy engine (section 10.10.7). More than 70% changed, too many rectangles, the first frame, a new screen size, the OLED shift and the Intel page-flip path send the whole frame. Everything else that writes the screen (`blit_region`, the boot log) also updates the shadow (`fb_shadow_note`). `fbdamage` in the terminal shows the counts and turns it off and on. If `g_panel_oled` is set, the whole image shifts by 1 px through 4 positions every 3000 ticks (30 s) to protect OLED panels.
 
 ### 10.10.2 SIMD blitting (`arch/x86_64/cpu/simd.c`)
 
@@ -597,7 +626,8 @@ Added in v9.81. It follows the boot order of the Linux nouveau r535 code and use
 | `nvgsp vram` | finds the card, sizes the BARs, waits for GFW_BOOT, reads the VRAM size (0x100CE0) and the VGA workspace (0x625F04) and prints the WPR2 layout; touches nothing |
 | `nvgsp boot` | steps 1-10 below: GSP-RM running, BAR2 and BAR1 working |
 | `nvgsp objects` | steps 11-15: the objects and the copy-engine test |
-| `nvgsp all` | boot, then objects |
+| `nvgsp all` | boot, then objects, then step 16 (the screen through the copy engine) |
+| `nvgsp present on`, `nvgsp present off` | desktop frames through the copy engine, or back to the CPU copy |
 | `nvgsp unload` | UNLOADING to GSP-RM, then booter_unload on SEC2, which clears WPR2 |
 | `nvgsp log` | the log of the last command |
 
@@ -609,7 +639,7 @@ Added in v9.81. It follows the boot order of the Linux nouveau r535 code and use
 | 4 | VBIOS ROM read (1 MB, IFR header skipped), FWSEC found through the BIT 'p' table (application 0x85), patched for FRTS (or SB) and run on the GSP falcon (0x110000) through `acr/bl.bin`; then WPR2 must be where FRTS was asked for | `nvb_find_fwsec`, `nv_run_fwsec` |
 | 5 | booter_load on SEC2 (0x840000) with the WPR metadata address in the mailboxes | `nv_booter` |
 | 6 | GSP RISC-V core running | `boot_gsp` |
-| 7 | GSP_INIT_DONE event (the GSP sequencer events are run on the way) | `rpc_wait`, `seq_run` |
+| 7 | GSP_INIT_DONE event (the GSP sequencer events are run on the way, including CORE_RESUME, see below) | `rpc_wait`, `seq_run`, `seq_resume` |
 | 8 | GET_GSP_STATIC_INFO: the usable VRAM regions and BAR1 page directory base; the VRAM allocator gets those regions with the console framebuffer reserved | `vram_alloc_init` |
 | 9 | BAR2: page tables in VRAM, UPDATE_BAR_PDE, write and read back a test page through the window | `bars` |
 | 10 | BAR1: page tables under the base GSP-RM reports, the console framebuffer mapped 1:1, read back through the window | `bars` |
@@ -618,16 +648,95 @@ Added in v9.81. It follows the boot order of the Linux nouveau r535 code and use
 | 13 | client (NV01_ROOT, 0x0000), device (0x0080), subdevice (0x2080), address space FERMI_VASPACE_A (0x90F1) with its page directory | `objects` |
 | 14 | channels (TURING_CHANNEL_GPFIFO_A, 0xC46F) for GR and the copy engine, context buffers promoted, then `TURING_A` (0xC597), `TURING_COMPUTE_A` (0xC5C0) and `TURING_DMA_COPY_A` (0xC5B5) | `user_chan`, `objects` |
 | 15 | copy-engine test: a push buffer with SET_OBJECT and LAUNCH_DMA copies a 4 KB pattern in VRAM, kicked through the work-submit token and the doorbell | `ce_test` |
+| 16 | the screen through the copy engine: the console framebuffer's VRAM (its address minus BAR1, which step 10 maps 1:1) is mapped into the address space, a copy-engine fill and a 4 KB RAM-to-VRAM copy are read back through PRAMIN, then desktop frames go through the copy engine; if anything does not match the screen stays on CPU copies and `nvgsp all` still succeeds | `scanout` |
+| 17 | the 2D engine: a FERMI_TWOD_A object (class 0x902D) on the graphics channel; one push buffer fills, copies, scales 2x and blends (premultiplied alpha) into a VRAM test surface, ends with a host semaphore release (SEM_EXECUTE with wait-for-idle), and 15 pixels are read back through PRAMIN; only then is the 2D engine used | `twod` |
 
 Memory: `nvv_*` is an extent allocator over VRAM (256 free ranges, 1024 allocations, 4 KB granularity, never returns address 0, clears what it hands out). `nvm_*` builds GPU page tables in the version 2 format (PD3, PD2, PD1, dual PD0, 4 KB small page tables), joins an address space to an instance block (page directory at instance+0x200) and flushes the GPU TLB (0xB830A0). VRAM is reached through the PRAMIN window (0x1700, 0x700000).
 
 Copy engine for other code (v9.82): `nvgsp_ce_ready()` says whether the channels exist; `nvgsp_ce_map(kva, len)` maps kernel memory into the GPU address space page by page through the CPU page tables (`kva_to_pa`, so it also works for pages `early_remap` moved); `nvgsp_ce_copy2d(src, src_pitch, dst, dst_pitch, bytes_per_line, lines)` pushes one pitched multi-line copy with a semaphore release and waits up to 200 ms for it. The Gears app uses it to put frames on the screen. The simulator checks a 300x170 copy into a pitched frame and that nothing outside it changes.
 
-Limits: untested on a real card; only the simulator (`tools/tests/nvidia/nvsim.c`, `check.py nvidia`) has run it. The firmware has no TU117 booter, so a TU117 uses the TU116 one unless `booter_load-535.113.01.bin` for TU117 is put in Files. FWSEC cannot run twice: if WPR2 is still set from an earlier try the driver stops and asks for a full power-off. After `nvgsp boot` a monitor on the NVIDIA card may go dark, because GSP-RM takes over the display engine and there is no mode setting yet. No interrupts are used; every wait polls with a time limit.
+The CPU sequencer: while it starts, GSP-RM sends RUN_CPU_SEQUENCER (event 0x1002) with a list of register writes, polls, delays and core operations for the CPU to carry out (opcodes 0-8: REG_WRITE, REG_MODIFY, REG_POLL, DELAY_US, REG_STORE, CORE_RESET, CORE_START, CORE_WAIT_FOR_HALT, CORE_RESUME). CORE_RESUME (v9.85, found on the GTX 1650 where it is the last command of the list) is done as in nouveau: reset the GSP falcon (0x1103C0 pulse, wait for scrubbing), write the LibOS argument address to GSP mailboxes 0x110040/0x110044 again, start SEC2 again (the booter is still loaded there), wait for bit 26 of 0x1180F8, check that SEC2 mailbox 0 is 0, write the bootloader version to 0x110080 and check that the GSP RISC-V core runs (0x111240 bit 0). A failed sequencer command ends step 7 with its reason.
+
+Physical addresses (v9.85): everything handed to the GPU goes through `kva_to_pa`, page by page for the radix3 tables, the message-queue page list and the log-buffer page lists; buffers that must be contiguous (the log buffers, the method buffer, the FWSEC copy) are checked and allocated again if they are not.
+
+The log: `nvgsp-log.txt` in Files, and `NVGSPLOG.TXT` on the USB stick when one is plugged in (FAT, written with `ufat_write_file`). It starts with `nvgsp <command> - RESULT: all steps passed` or `FAILED at step N: reason`, then the state reached, then the steps; lines are wrapped at 72 columns with a 6-space indent.
+
+Booters: the built-in booter is the TU116 one. linux-firmware links `nvidia/tu117/gsp` to `tu116/gsp`, so TU116 and TU117 use the same file. TU102, TU104 and TU106 need `booter_load-535.113.01.bin` from `nvidia/tu102/gsp` in Files.
+
+Limits: on the owner's GTX 1650 (TU117, 4 GB) v9.84 got through steps 1-6 and stopped in step 7 at the CORE_RESUME sequencer command. v9.85 added CORE_RESUME and then got through steps 7-13 (GSP-RM running, static info "NVIDIA GeForce GTX 1650", 7 TPCs, BAR1/BAR2, engine list, golden context, our client and address space) and stopped in step 14: PROMOTE_CTX for our graphics channel returned NV_ERR_INVALID_ARGUMENT (0x1F) because the shared PRIV_ACCESS_MAP buffer was sent as not mapped and without an address. nouveau maps the shared buffer into the channel's address space for every channel after the golden one; v9.86 does the same, and the simulator now refuses the old entry. v9.86 also puts the copy channel on CE2 (its own runlist 8) instead of CE0, which shares the graphics runlist. Everything after step 14 has only run in the simulator (`tools/tests/nvidia/nvsim.c`, `check.py nvidia`). FWSEC cannot run twice: if WPR2 is still set from an earlier try the driver stops and asks for a full power-off. After `nvgsp boot` a monitor on the NVIDIA card may go dark, because GSP-RM takes over the display engine and there is no mode setting yet. No interrupts are used; every wait polls with a time limit.
+
+### 10.10.7 2D acceleration on NVIDIA: stages
+
+The Intel path (section 10.10.4) draws the whole desktop on the GPU. For NVIDIA the same result is reached in stages; each stage works on its own and falls back to the CPU when the card does not answer.
+
+| Stage | What | State |
+|---|---|---|
+| 1 | GSP-RM running, BAR1/BAR2, client and channels, copy engine (`nvgsp all`, steps 1-15) | on the GTX 1650 steps 1-13 work (v9.85); step 14 fixed in v9.86 |
+| 2 | Desktop frames to the screen through the copy engine (step 16, `nvgsp_fb_present`), solid fills (`nvgsp_ce_fill`) | v9.84, simulator; needs stage 1 on the card |
+| 3 | Only changed areas are sent: `blit_all` keeps a shadow of the screen, finds changed 64x16 tiles (`dmg_rects`) and sends just those rectangles, all in one copy-engine push buffer (`nvgsp_fb_present_rects`, up to about 80 copies per kick, one semaphore at the end) or by the CPU when the card is not running | v9.85, simulator and QEMU (CPU path) |
+| 4 | The 2D engine (FERMI_TWOD_A, step 17): `nv2d_fill`, `nv2d_blit` (any size, scaled, from RAM or VRAM), constant-alpha and premultiplied per-pixel blending (`NV2D_OVER`), `nv2d_to_screen`. Used for Gears: while its window is fully visible, each frame goes from the renderer to the screen by itself, without redrawing the desktop, through the 2D engine (scaled 2x in half mode) or the CPU | v9.86, simulator and QEMU (CPU path) |
+| 5 | The whole desktop drawn on the GPU by compute shaders on TURING_COMPUTE_A (step 18, `nvdraw.c`): the GPU draw queue `gq.c` of the Intel path sends each operation to `nvc_op`, which writes one launch of the `gqk` shader | v9.87, simulator and QEMU (CPU path) |
+| 6 | Display engine through GSP-RM: mode setting, page flips without tearing, native resolution, the second monitor | separate, can come before 3-5 |
+
+Stage 2 does not make one frame much faster than a write-combined CPU copy; what it shows is that copy-engine writes reach the screen and that the read-back check works. Stage 3 cuts what crosses the bus to the changed part of the screen (for Gears in a window about a third of the screen, for a clock tick a few tiles), on the CPU path as well. Keeping windows in VRAM was planned for stage 3, but the desktop draws rounded corners, shadows and transparent title bars that the copy engine cannot blend, so composing in VRAM only pays off together with the 2D engine; that part moved to stage 4. In v9.86 it was measured: the existing layered compositor (`gpu draw emu`, every drawing operation on the CPU) runs Gears at 2 frames a second in QEMU where direct drawing reaches 5, and the operations that make up most of it (masks for text, shadows and corners) cannot run on the 2D engine. So whole-desktop composition moved again, to stage 5 with compute shaders, and the 2D engine is used where it helps today: frames of a window that changes alone.
+
+Stage 5 in detail (v9.87). The shader `drivers/video/nvidia/shaders/gqk.c` takes one parameter block (`nvop`, 136 bytes: operation, rectangle, offsets, colours, alpha, gradient step and three surfaces with GPU address, pitch, width and height) and runs one thread per pixel in 32x4 thread blocks. It implements fill, blend, mask, copy, masked copy, horizontal and vertical gradient, tint, horizontal and vertical 8-tap blur, and premultiplied "over" with and without mask, with the same integer arithmetic as `cpu_exec` in `gq.c`, so the GPU and the CPU give identical pixels. The source is plain C; clang 18 (`-target nvptx64-nvidia-cuda -march=sm_75 -O2`) makes `gqk.ptx`, NVIDIA's ptxas makes `gqk.cubin`, and `tools/nvcubin.py` embeds it as `include/nvx/drivers/video/nvidia/gqk_cubin.h`. ptxas is the only NVIDIA tool in the chain; `tools/nvshaders.sh` fetches it from PyPI into a private folder and runs it.
+
+`nvc_parse` reads the cubin at run time: it must be a 64-bit CUDA ELF for sm_75 with a `.text.gqk` section and no relocations, local memory, stack or shared memory. The register count comes from the section's info field, the parameter offset in constant bank 0 from `EIATTR_PARAM_CBANK` (0x160), and other constant banks from `.nv.constantN.gqk` (ptxas puts the jump table of the operation switch in bank 2). `cp_load` writes the code to VRAM and maps it read-only, puts bank 2 in system memory, and allocates 1600 launch slots (a 256-byte QMD and a 512-byte constant bank 0 each) and a 64 KB push buffer, all mapped into the channel's address space.
+
+Each operation (`nvc_op`) fills bank 0 with the block size (c[0][0x0], c[0][0x4], used by the shader for its pixel index), the grid size and the parameters at 0x160, and a QMD v2.2 (fields from NVIDIA's `clc3c0qmd.h`, as nouveau and NVK use for Turing): version 2.2, grid, 32x4x1 threads, register count (rounded up), 8-64 KB shared memory configuration, global caching, L1 data and constant cache invalidation, constant banks 0 and 2, program address. It is started with SEND_PCAS_A (QMD address >> 8) and SEND_SIGNALING_PCAS_B (invalidate and schedule). The draw queue already knows which operations read or write the same area; when one depends on an earlier one in the batch, WAIT_FOR_IDLE goes before it. A batch starts with SET_OBJECT, the shared and local memory windows (0xFE000000 and 0xFF000000) and an instruction, data and constant cache invalidation, and ends with WAIT_FOR_IDLE, a host semaphore release that waits for the engine, an L2 flush and a second semaphore release that the CPU waits for (500 ms).
+
+`nvdraw.c` connects this to the desktop: GPU buffers are ordinary RAM mapped into the GPU (`nvgsp_ce_map`), the self-test of the Intel path runs (first fill, cache test, coherency test, 400 random operations against the CPU), and `nvd_start` calls `gfx_start(GFX_GPU, ...)`. From then on the layered compositor (section 11) runs as on Intel, and `blit_all` sends the finished frame to the screen through the copy engine (stages 2 and 3). After `nvgsp all` runs again, buffers are mapped again into the new address space; `nvgsp unload` stops GPU drawing first.
+
+### 10.10.8 NVIDIA 2D: review results and the plan from here (v10.59)
+
+A line-by-line review of the copy-engine and 2D paths (`nvgsp.c`) and their callers (`framebuffer.c`, `gpu3d.cpp`, `nvdraw.c`) found these problems; all are fixed in v10.59 and the simulator (`check.py`, group `nvidia`, 62 checks) passes:
+
+| Problem | Effect | Fix |
+|---|---|---|
+| `nv2d_screen` only checked that the screen copy path had been set up, not that its picture was still right | after a failed read-back (the copy engine writes somewhere that is not the visible screen) Gears kept drawing into that VRAM and its window stopped updating | `g_sc_wrong` is set on a read-back mismatch; the 2D screen target is refused until `nvgsp present on` or a new `nvgsp all` |
+| The changed-tile shadow was not cleared when the copy-engine screen path switched itself off | screen areas sent wrongly in the frames before the failed check stayed stale | `sc_off` calls `fb_shadow_invalidate` |
+| `nv2d_to_screen` never unmapped the previous source and did not notice a bigger frame at the same address | GPU address space and page tables grew with every Gears resize; a frame larger than the mapping could make the 2D engine read unmapped memory | one tracked mapping (address, length, generation), unmapped before a new one |
+| `sc_prep` replaced the desktop mapping without unmapping the old one | same leak on resolution changes | unmap first |
+| `nvgsp_ce_map` left a half-made mapping when a page could not be mapped | stray GPU mappings of memory that is later freed | rolls back |
+| The 2D push buffer had a size constant (`GPB_CAP`) that nothing checked | a future batch of many operations would write past the 4 KB buffer | `gm` stops at the limit and `gr_end` drops the batch |
+| `twod` (step 17) freed its VRAM test surface but left it mapped, and leaked it on failure | GPU address pointing at reused VRAM | unmap and free on every path |
+| `nd_remap` (compute desktop) did not update the stored address after `nvgsp all` ran again; the self-test freed its images without unmapping | the new mapping was never removed when a window closed, so the GPU kept a mapping of freed memory | address and length updated; self-test unmaps |
+
+Still open (needs the real card): whether system-RAM mappings made by `nvm_map(...,1,0,0)` are cache-coherent (snooped) for the copy and 2D engines - no CPU cache flush is done for the desktop picture or Gears frames before a copy; the constant-alpha mode (`NV2D` alpha 0-255) uses BLEND_PREMULT, which is only right when the source alpha byte is 255 (desktop buffers are X8R8G8B8 with an undefined alpha byte), and step 17 tests the A8R8G8B8 format only, not the X8R8G8B8 format the screen uses.
+
+The plan, ordered by what is most likely to work first on the GTX 1650. Every stage keeps the CPU path and switches itself off after a failed check, as now.
+
+| # | Stage | Test on the laptop | Fallback | Hours |
+|---|---|---|---|---|
+| 1 | Get `nvgsp all` to the end of step 13 again and fix step 14 (channels) on the card; collect the log | `nvgsp all`, photo of the RESULT line and the last 20 lines | nothing changes on the screen; CPU drawing | 2-4 per round, 1-3 rounds |
+| 2 | Copy engine to the screen (steps 15-16): fill test and RAM-to-VRAM test read back | `nvgsp all`, then `gpuinfo`; Gears in a window should look the same | `present off`, CPU | 2-3 |
+| 3 | Cache coherency: test both a snooped and a non-snooped mapping in step 16 with a pattern written just before the copy, choose the one that reads back right, flush when needed | step 16 lines in the log | CPU copies | 2-3 |
+| 4 | Changed tiles only (already written): measure frames per second and bus traffic | `bench`, photo | full copies or CPU | 1-2 |
+| 5 | 2D engine (step 17) with the X8R8G8B8 format the screen uses; constant alpha with BLEND_AND/BETA1 checked by read-back before it is used | step 17 lines; Gears window | CPU blend | 3-5 |
+| 6 | Window contents kept in VRAM and composed by the 2D engine (opaque windows first, rounded corners and shadows still on the CPU) | moving windows smoothly, `bench` | current compositor | 8-12 |
+| 7 | Compute-shader desktop (step 18, already written) on the card | `nvgsp all`, `gpu draw on`, photo | CPU compositor | 4-8 |
+| 8 | Display engine through GSP-RM: native mode set, page flips without tearing | a new `nvgsp mode` command, photo of the monitor | firmware framebuffer | 10-20 |
+
+Photos needed for stage 1: the `nvgsp all` RESULT screen and of `cat /System/Hardware/gpu.nvh`, plus `gpuinfo`.
 
 ## 10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)
 
 The file defines the `cpuid()` and `rdmsr()` inline wrappers that the rest of the kernel uses (`tp_is_amd`, `arch_fpu_init`, timers). `get_brand()` reads leaves 0x80000002-4 into `g_brand[52]` and strips leading spaces, or uses "x86-64 CPU" when the extended leaves are missing. It sets `g_lma` from IA32_EFER (MSR 0xC0000080) bit 10. The `cpu`/`cpuid` command prints these two values. The later `cores`/`cpu` command branch (SMP view) responds only to `cores`, because the earlier `seq(cmd,"cpu")` takes `cpu`. Frequency, cache and feature-flag reporting are not in this file. TSC/HPET calibration lives in `hrtimer.c` (`timers` command).
+
+## 10.11a CPU temperature and speed (`arch/x86_64/cpu/cputemp.c`)
+
+| Item | Detail |
+|---|---|
+| Intel | CPUID 6 EAX bit 0 (digital sensor): `IA32_THERM_STATUS` (0x19C) bits 22:16 are degrees below TjMax; bit 6: package sensor 0x1B1. TjMax from `MSR_TEMPERATURE_TARGET` (0x1A2) bits 23:16 on family 6 models from 0x1A that are not Atom cores, otherwise 100 C. |
+| AMD | Family 17h and later with an AMD root complex at 0:0.0: SMN register 0x59800 through PCI config 0x60/0x64; temperature = bits 31:21 x 0.125 C, minus 49 C when bit 19 is set (Tctl, as Linux k10temp). |
+| HWP | CPUID 6 EAX bit 7: `IA32_PM_ENABLE` (0x770) bit 0, then `IA32_HWP_REQUEST` (0x774) = lowest to highest performance from `IA32_HWP_CAPABILITIES` (0x771), energy preference 0x80 when bit 10 says it exists. |
+| Speed | APERF/MPERF (0xE8/0xE7) ratio times the base clock from CPUID 0x16, every 2 s. |
+| Safety | Nothing is read or written inside a virtual machine (CPUID 1 ECX bit 31). A warning when the CPU is within 5 C of TjMax, at most every 5 minutes. |
+
+## 10.11b AMD GPIO (`drivers/gpio/amd_gpio.c`)
+
+The controller is the ACPI device AMDI0030, AMDI0031 or AMD0030 with a memory resource; each pin is one 32-bit register at base + pin x 4 (Linux pinctrl-amd). Bits used: 16 pin level, 23 output enable, 20/21 pull-up/down, 11 interrupt enable, 12 interrupt mask, 8 level trigger, 10:9 active level, 28 interrupt status, 6:5 debounce. For the touchpad, `amdg_tp_setup` accepts a pin that reads a value other than 0xFFFFFFFF and is an input; `amdg_sample`/`amdg_learn` compare its level with 24 reads that returned data and 24 that did not, and only a pin that matches every time (either polarity) is used to skip empty reads.
 
 ## 10.12 Summary of bounded waits
 

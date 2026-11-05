@@ -1,0 +1,22 @@
+[package]
+name = "nvxlayout"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+taffy = { path = "../../third_party/taffy", default-features = false, features = ["grid", "flexbox", "block_layout", "content_size"] }
+
+[profile.release]
+opt-level = 2
+panic = "abort"
+lto = true
+codegen-units = 1
+debug = false
+
+[profile.dev]
+panic = "abort"

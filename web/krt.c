@@ -23,8 +23,8 @@ static lnode* lfree;
 
 void nwe_arena_init(void) {
     if (A) return;
-    unsigned long want[] = { 768ul << 20, 512ul << 20, 384ul << 20, 256ul << 20, 160ul << 20, 96ul << 20, 64ul << 20, 32ul << 20 };
-    for (int i = 0; i < 8 && !A; i++) { A = nwk_alloc_arena(want[i]); if (A) AS = want[i]; }
+    unsigned long want[] = { 1024ul << 20, 768ul << 20, 512ul << 20, 384ul << 20, 256ul << 20, 160ul << 20, 96ul << 20, 64ul << 20, 32ul << 20 };
+    for (int i = 0; i < 9 && !A; i++) { A = nwk_alloc_arena(want[i]); if (A) AS = want[i]; }
     size_t s = 16;
     ncls = 0;
     while (s <= 65536 && ncls < NCLS) { csz[ncls++] = s; s += s < 512 ? 16 : ((s / 4 + 15) & ~(size_t)15); }
@@ -51,6 +51,30 @@ static void* bump(size_t n) {
     if (AT > peak) peak = AT;
     return p;
 }
+static lnode* lf_merge(lnode* a, lnode* b) { lnode head; lnode* t = &head; while (a && b) { if ((unsigned char*)a < (unsigned char*)b) { t->next = a; a = a->next; } else { t->next = b; b = b->next; } t = t->next; } t->next = a ? a : b; return head.next; }
+static lnode* lf_sort(lnode* l) { if (!l || !l->next) return l; lnode* slow = l; lnode* fast = l->next; while (fast && fast->next) { slow = slow->next; fast = fast->next->next; } lnode* r = slow->next; slow->next = 0; return lf_merge(lf_sort(l), lf_sort(r)); }
+static void lf_coalesce(void) {
+    lfree = lf_sort(lfree);
+    for (lnode* l = lfree; l && l->next; ) {
+        hdr* h = (hdr*)l - 1; hdr* nh = (hdr*)l->next - 1;
+        if ((unsigned char*)(h + 1) + h->sz == (unsigned char*)nh) { h->sz += sizeof(hdr) + nh->sz; l->sz = h->sz; l->next = l->next->next; }
+        else l = l->next;
+    }
+    lnode** pp = &lfree; lnode* last = 0; lnode** lastp = 0;
+    while (*pp) { last = *pp; lastp = pp; pp = &(*pp)->next; }
+    if (last) { hdr* h = (hdr*)last - 1; if ((unsigned char*)(h + 1) + h->sz == A + AT) { AT = (size_t)((unsigned char*)h - A); *lastp = 0; } }
+}
+static hdr* carve(size_t want) {
+    want = (want + 15) & ~(size_t)15;
+    for (lnode** pp = &lfree; *pp; pp = &(*pp)->next) {
+        lnode* l = *pp; hdr* h = (hdr*)l - 1; size_t tot = sizeof(hdr) + h->sz;
+        if (tot < want) continue;
+        *pp = l->next;
+        if (tot - want >= sizeof(hdr) + 4096) { hdr* r = (hdr*)((unsigned char*)h + want); r->sz = tot - want - sizeof(hdr); r->cls = 0xFFFF; lnode* rl = (lnode*)(r + 1); rl->sz = r->sz; rl->next = lfree; lfree = rl; }
+        return h;
+    }
+    return 0;
+}
 void* malloc(size_t n) {
     if (n == 0) n = 1;
     if (ncls && n <= csz[ncls - 1]) {
@@ -58,27 +82,36 @@ void* malloc(size_t n) {
         if (c < 0 || c >= ncls || csz[c] < n) return 0;
         if (fl[c]) { fnode* f = fl[c]; fl[c] = f->next; return f; }
         hdr* h = bump(sizeof(hdr) + csz[c]);
+        if (!h) { lf_coalesce(); h = bump(sizeof(hdr) + csz[c]); }
+        if (!h) h = carve(sizeof(hdr) + csz[c]);
         if (!h) return 0;
         h->sz = csz[c];
         h->cls = (size_t)c;
         return h + 1;
     }
     size_t need = (n + 4095) & ~(size_t)4095;
-    lnode** pp = &lfree;
-    while (*pp) {
-        lnode* l = *pp;
-        if (l->sz >= need && l->sz <= need * 2) {
-            *pp = l->next;
-            hdr* h = (hdr*)l - 1;
-            return h + 1;
+    for (int pass = 0; pass < 2; pass++) {
+        lnode** pp = &lfree;
+        while (*pp) {
+            lnode* l = *pp;
+            if (l->sz >= need) {
+                *pp = l->next;
+                hdr* h = (hdr*)l - 1;
+                if (l->sz - need >= 65536 + sizeof(hdr)) {
+                    hdr* r = (hdr*)((unsigned char*)(h + 1) + need);
+                    r->sz = l->sz - need - sizeof(hdr); r->cls = 0xFFFF;
+                    lnode* rl = (lnode*)(r + 1); rl->sz = r->sz; rl->next = lfree; lfree = rl;
+                    h->sz = need;
+                }
+                return h + 1;
+            }
+            pp = &l->next;
         }
-        pp = &l->next;
+        hdr* h = bump(sizeof(hdr) + need);
+        if (h) { h->sz = need; h->cls = 0xFFFF; return h + 1; }
+        if (pass == 0) lf_coalesce();
     }
-    hdr* h = bump(sizeof(hdr) + need);
-    if (!h) return 0;
-    h->sz = need;
-    h->cls = 0xFFFF;
-    return h + 1;
+    return 0;
 }
 void free(void* p) {
     if (!p) return;
@@ -103,6 +136,7 @@ void* realloc(void* p, size_t n) {
     if (n == 0) { free(p); return 0; }
     size_t old = ((hdr*)p - 1)->sz;
     if (n <= old) return p;
+    { hdr* h = (hdr*)p - 1; if (h->cls == 0xFFFF && (unsigned char*)p + h->sz == A + AT) { size_t need = (n + 4095) & ~(size_t)4095; if (AT + (need - h->sz) <= AS) { AT += need - h->sz; if (AT > peak) peak = AT; h->sz = need; return p; } } }
     void* q = malloc(n);
     if (!q) return 0;
     memcpy(q, p, old);
@@ -384,3 +418,26 @@ unsigned long strtoul(const char* s, char** end, int base) { return (unsigned lo
 int atoi(const char* s) { return (int)strtol(s, 0, 10); }
 long atol(const char* s) { return strtol(s, 0, 10); }
 char* strcat(char* d, const char* s) { char* r = d; while (*d) d++; while ((*d++ = *s++)) {} return r; }
+int bcmp(const void* a, const void* b, size_t n) { return memcmp(a, b, n); }
+static int krt_errno;
+int* __errno_location(void) { return &krt_errno; }
+unsigned long long strtoull(const char* s, char** end, int base) {
+    while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+    if (*s == '+') s++;
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; base = 16; }
+    else if (base == 0 && s[0] == '0') base = 8;
+    else if (base == 0) base = 10;
+    unsigned long long v = 0;
+    for (;; s++) { int d; if (*s >= '0' && *s <= '9') d = *s - '0'; else if (*s >= 'a' && *s <= 'z') d = *s - 'a' + 10; else if (*s >= 'A' && *s <= 'Z') d = *s - 'A' + 10; else break; if (d >= base) break; v = v * (unsigned)base + (unsigned)d; }
+    if (end) *end = (char*)s;
+    return v;
+}
+long long strtoll(const char* s, char** end, int base) { while (*s == ' ' || *s == '\t' || *s == '\n') s++; int neg = 0; if (*s == '-' || *s == '+') neg = *s++ == '-'; unsigned long long v = strtoull(s, end, base); return neg ? -(long long)v : (long long)v; }
+int __popcountdi2(long long a) { unsigned long long x = (unsigned long long)a; int n = 0; while (x) { x &= x - 1; n++; } return n; }
+void* fopen(const char* p, const char* m) { (void)p; (void)m; return 0; }
+size_t fread(void* p, size_t a, size_t b, void* f) { (void)p; (void)a; (void)b; (void)f; return 0; }
+int fclose(void* f) { (void)f; return 0; }
+int fseek(void* f, long o, int w) { (void)f; (void)o; (void)w; return -1; }
+long ftell(void* f) { (void)f; return -1; }
+int remove(const char* p) { (void)p; return -1; }
+int rename(const char* a, const char* b) { (void)a; (void)b; return -1; }

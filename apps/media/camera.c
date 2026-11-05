@@ -54,8 +54,9 @@ void camera_draw(int i){
     cam_btn(bx,by,96,cam_hd?"HD (MJPEG)":"SD",cam_hd); bx+=104;
     cam_btn(bx,by,96,"Mirror",cam_mirror); bx+=104;
     cam_btn(bx,by,120,"Take photo",0); bx+=128;
+    { extern int uvc_streams(void); if(uvc_streams()>1){ cam_btn(bx,by,130,"Switch camera",0); bx+=138; } }
     char st[96],*p=st;
-    if(uvc_state==2){ p=udec(p,(u32)uvc_w); *p++='x'; p=udec(p,(u32)uvc_h); p=scopy(p,uvc_kind==1?"  MJPEG  ":uvc_kind==2?"  NV12  ":"  YUY2  "); p=udec(p,uvc_fps10/10); *p++='.'; p=udec(p,uvc_fps10%10); p=scopy(p," fps"); }
+    if(uvc_state==2){ p=udec(p,(u32)uvc_w); *p++='x'; p=udec(p,(u32)uvc_h); extern const char* uvc_kind_name(int); *p++=' '; *p++=' '; p=scopy(p,uvc_kind_name(uvc_kind)); *p++=' '; *p++=' '; p=udec(p,uvc_fps10/10); *p++='.'; p=udec(p,uvc_fps10%10); p=scopy(p," fps"); }
     else p=scopy(p,uvc_found()?uvc_name:"No camera"); *p=0;
     dstr(bx+6,by+9,st,rgb(70,78,98),1);
     if(infow){ int ix=wx+ww-infow, iy=wy+14; fill_rect(ix-6,wy,1,wh,rgb(226,229,238));
@@ -70,7 +71,7 @@ void camera_draw(int i){
         q=b; q=udec(q,uvc_tds); q=scopy(q," ok, "); q=udec(q,uvc_tderr); q=scopy(q," err"); *q=0; cam_line(ix,&iy,"USB packets",b);
         q=b; q=udec(q,uvc_bytes/1024u); q=scopy(q," KB  cc "); q=udec(q,(u32)uvc_lastcc); *q=0; cam_line(ix,&iy,"Data",b);
         iy+=8; dstr(ix,iy,"Sizes",rgb(30,34,46),1); iy+=18;
-        for(int k=0;k<uvc_nfr()&&iy<wy+wh-60;k++){ int kd,w,h; u32 di; if(!uvc_frame_info(k,&kd,&w,&h,&di))continue; q=b; q=scopy(q,kd==1?"MJPEG ":kd==2?"NV12  ":"YUY2  "); q=udec(q,(u32)w); *q++='x'; q=udec(q,(u32)h); if(di){ q=scopy(q,"  "); q=udec(q,10000000u/di); q=scopy(q," fps"); } *q=0;
+        for(int k=0;k<uvc_nfr()&&iy<wy+wh-60;k++){ int kd,w,h; u32 di; if(!uvc_frame_info(k,&kd,&w,&h,&di))continue; q=b; { extern const char* uvc_kind_name(int); q=scopy(q,uvc_kind_name(kd)); *q++=' '; } q=udec(q,(u32)w); *q++='x'; q=udec(q,(u32)h); if(di){ q=scopy(q,"  "); q=udec(q,10000000u/di); q=scopy(q," fps"); } *q=0;
             dstr(ix,iy,b,(w==uvc_w&&h==uvc_h&&kd==uvc_kind&&uvc_state==2)?ACC:rgb(90,98,118),1); iy+=16; } } }
 static u32 crc_t[256]; static int crc_ok=0;
 static u32 crc32b(u32 c,const u8* p,u32 n){ if(!crc_ok){ for(u32 i=0;i<256;i++){ u32 v=i; for(int k=0;k<8;k++)v=(v&1)?0xEDB88320u^(v>>1):v>>1; crc_t[i]=v; } crc_ok=1; } c=~c; for(u32 i=0;i<n;i++)c=crc_t[(c^p[i])&255]^(c>>8); return ~c; }
@@ -96,6 +97,7 @@ void camera_click(int px,int py){
         else if(k==1){ cam_hd^=1; if(uvc_state==2)uvc_start(cam_hd); }
         else if(k==2) cam_mirror^=1;
         else if(k==3) cam_photo();
+        else if(k==4){ extern int uvc_streams(void), uvc_stream_cur(void), uvc_select_stream(int); int n=uvc_streams(); if(n>1){ int was=uvc_select_stream((uvc_stream_cur()+1)%n); if(was>=0)uvc_start(cam_hd); } }
         return; } } }
 void camera_key(int c){ if(c==' ')cam_photo(); else if(c=='m'||c=='M')cam_mirror^=1; else if(c=='h'||c=='H'){ cam_hd^=1; if(uvc_state==2)uvc_start(cam_hd); } }
 void camera_open(void){ cam_auto=1; open_win(W_CAMERA); }

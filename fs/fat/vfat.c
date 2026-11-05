@@ -5,8 +5,10 @@
 typedef struct { char name[256]; u8 sname[11]; u8 attr; u32 clus; u32 size; u32 sec; int off; int first_idx, idx; } vf_ent;
 struct nvx_g_vfat_t g_vfat;
 static u8 g_vfat_sec[512]; static u32 g_vfat_secno=0xFFFFFFFFu;
-static int vf_rs(u32 rel,int n,void* b){ return g_vfat.rd(g_vfat.base+rel,n,b); }
-static int vf_ws(u32 rel,int n,const void* b){ if(g_vfat.ro||!g_vfat.wr)return -1; return g_vfat.wr(g_vfat.base+rel,n,b); }
+extern int g_vf_err; extern u32 g_vf_errlba;
+static int vf_rs(u32 rel,int n,void* b){ int r=g_vfat.rd(g_vfat.base+rel,n,b); if(r){ g_vf_err=3; g_vf_errlba=rel; } return r; }
+int g_vf_err; u32 g_vf_errlba;
+static int vf_ws(u32 rel,int n,const void* b){ if(g_vfat.ro||!g_vfat.wr){ g_vf_err=1; return -1; } int r=g_vfat.wr(g_vfat.base+rel,n,b); if(r){ g_vf_err=2; g_vf_errlba=rel; } return r; }
 static u16 vf_r16(const u8* p){ return (u16)(p[0]|(p[1]<<8)); }
 static u32 vf_r32(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
 static void vf_w16(u8* p,u32 v){ p[0]=(u8)v; p[1]=(u8)(v>>8); }
@@ -14,8 +16,10 @@ static void vf_w32(u8* p,u32 v){ p[0]=(u8)v; p[1]=(u8)(v>>8); p[2]=(u8)(v>>16); 
 static void vf_zero(void* p,u32 n){ u8* q=(u8*)p; while(n--)*q++=0; }
 static void vf_copy(void* d,const void* s,u32 n){ u8* a=(u8*)d; const u8* b=(const u8*)s; while(n--)*a++=*b++; }
 static u32 vf_eoc(void){ return g_vfat.type==32?0x0FFFFFF8u:0xFFF8u; }
-static u32 vf_get(u32 c){ if(g_vfat.type==32)return vf_r32(g_vfat.fat+c*4)&0x0FFFFFFFu; return vf_r16(g_vfat.fat+c*2); }
+static int vf_valid(u32 c);
+static u32 vf_get(u32 c){ if(!vf_valid(c))return 0x0FFFFFFFu; if(g_vfat.type==32)return vf_r32(g_vfat.fat+c*4)&0x0FFFFFFFu; return vf_r16(g_vfat.fat+c*2); }
 static void vf_set(u32 c,u32 v){
+    if(!vf_valid(c))return;
     if(g_vfat.type==32){ u32 o=vf_r32(g_vfat.fat+c*4); vf_w32(g_vfat.fat+c*4,(o&0xF0000000u)|(v&0x0FFFFFFFu)); g_vfat.fdirty[(c*4)/512]=1; }
     else { vf_w16(g_vfat.fat+c*2,v&0xFFFF); g_vfat.fdirty[(c*2)/512]=1; }
 }
@@ -39,6 +43,7 @@ static u32 vf_alloc1(u32 prev){
 static void vf_freechain(u32 c){ int g=0; while(vf_valid(c)&&g++<0x400000){ u32 n=vf_get(c); vf_set(c,0); g_vfat.free_cnt++; if(vf_iseoc(n)||n<2)break; c=n; } }
 static int vf_zclus(u32 c){ vf_zero(g_vfat.cbuf,g_vfat.cbytes); if(vf_ws(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf))return -1; if(g_vfat_secno>=vf_c2s(c)&&g_vfat_secno<vf_c2s(c)+g_vfat.spc)g_vfat_secno=0xFFFFFFFFu; return 0; }
 static int vf_loc(u32 dc,int idx,u32* sec,int* off){
+    if(dc&&!vf_valid(dc))return -1;
     if(dc==0){ if((u32)idx>=g_vfat.rootent)return -1; *sec=g_vfat.root_lba+(u32)idx/16; *off=(idx%16)*32; return 0; }
     u32 epc=g_vfat.cbytes/32, step=(u32)idx/epc, c=dc;
     for(u32 i=0;i<step;i++){ u32 n=vf_get(c); if(!vf_valid(n))return -1; c=n; }
@@ -122,6 +127,7 @@ static void vf_alias(u32 dc,const char* name,u8* sn){
         if(!vf_snexists(dc,sn))return; }
 }
 static int vf_slot(u32 dc,int need){
+    if(dc&&!vf_valid(dc))return -1;
     int i=0, run=0, start=0;
     for(;;){ u32 sec; int off;
         if(vf_loc(dc,i,&sec,&off)){
@@ -150,11 +156,18 @@ static int vf_setent(const vf_ent* e,u32 clus,u32 size){ if(vf_rsec(e->sec))retu
     vf_w16(d+20,clus>>16); vf_w16(d+26,clus&0xFFFF); vf_w32(d+28,size); vf_w16(d+22,t); vf_w16(d+24,dt); vf_w16(d+18,dt); return vf_wsec(e->sec); }
 static int vf_killent(u32 dc,const vf_ent* e){ for(int i=e->first_idx;i<=e->idx;i++){ u32 sec; int off; if(vf_loc(dc,i,&sec,&off)||vf_rsec(sec))return -1; g_vfat_sec[off]=0xE5; if(vf_wsec(sec))return -1; } return 0; }
 static u32 vf_writechain(const char* buf,long len){
-    if(len<=0)return 0; u32 n=(u32)((len+g_vfat.cbytes-1)/g_vfat.cbytes); if(n>g_vfat.free_cnt)return 0xFFFFFFFFu;
-    u32 first=0, prev=0; long done=0;
+    if(len<=0)return 0; u32 n=(u32)((len+g_vfat.cbytes-1)/g_vfat.cbytes); if(n>g_vfat.free_cnt){ g_vf_err=4; return 0xFFFFFFFFu; }
+    u32 first=0, prev=0, rs=0, rn=0; long done=0, roff=0;
     for(u32 i=0;i<n;i++){ u32 c=vf_alloc1(prev); if(!c){ if(first)vf_freechain(first); return 0xFFFFFFFFu; } if(!first)first=c; prev=c;
-        long k=len-done; if(k>(long)g_vfat.cbytes)k=g_vfat.cbytes; vf_zero(g_vfat.cbuf,g_vfat.cbytes); vf_copy(g_vfat.cbuf,buf+done,(u32)k);
-        if(vf_ws(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf)){ vf_freechain(first); return 0xFFFFFFFFu; } done+=k; }
+        long k=len-done; if(k>(long)g_vfat.cbytes)k=g_vfat.cbytes;
+        if(k<(long)g_vfat.cbytes){
+            if(rn){ if(vf_ws(vf_c2s(rs),(int)(rn*g_vfat.spc),buf+roff)){ vf_freechain(first); return 0xFFFFFFFFu; } rn=0; }
+            vf_zero(g_vfat.cbuf,g_vfat.cbytes); vf_copy(g_vfat.cbuf,buf+done,(u32)k);
+            if(vf_ws(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf)){ vf_freechain(first); return 0xFFFFFFFFu; } }
+        else if(rn&&c==rs+rn&&rn<128)rn++;
+        else { if(rn&&vf_ws(vf_c2s(rs),(int)(rn*g_vfat.spc),buf+roff)){ vf_freechain(first); return 0xFFFFFFFFu; } rs=c; rn=1; roff=done; }
+        done+=k; }
+    if(rn&&vf_ws(vf_c2s(rs),(int)(rn*g_vfat.spc),buf+roff)){ vf_freechain(first); return 0xFFFFFFFFu; }
     if(g_vfat_secno>=g_vfat.data_lba)g_vfat_secno=0xFFFFFFFFu;
     return first;
 }
@@ -175,6 +188,8 @@ int vf_mount(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long lon
     g_vfat.rootclus=g_vfat.type==32?vf_r32(b+44):0; g_vfat.fsinfo=g_vfat.type==32?vf_r16(b+48):0;
     const u8* lb=b+(g_vfat.type==32?71:43); int n=11; while(n>0&&lb[n-1]==' ')n--; for(int i=0;i<n;i++)g_vfat.label[i]=(char)lb[i]; g_vfat.label[n]=0;
     if((unsigned long long)fz*512>16ULL*1024*1024)return -3;
+    { u32 cap=(u32)(((unsigned long long)fz*512)/(g_vfat.type==32?4u:2u)); if(cap<3)return -3; if(g_vfat.clusters+2>cap)g_vfat.clusters=cap-2; }
+    if(g_vfat.type==32&&!vf_valid(g_vfat.rootclus))return -3;
     g_vfat.fat=(u8*)kmalloc(fz*512); g_vfat.fdirty=(u8*)kmalloc(fz); g_vfat.cbuf=(u8*)kmalloc(g_vfat.cbytes);
     if(!g_vfat.fat||!g_vfat.fdirty||!g_vfat.cbuf){ g_vfat.mounted=1; vf_umount(); return -4; }
     for(u32 s=0;s<fz;s+=8){ int k=(int)(fz-s<8?fz-s:8); if(vf_rs(rsvd+s,k,g_vfat.fat+s*512)){ g_vfat.mounted=1; vf_umount(); return -1; } }
@@ -183,16 +198,43 @@ int vf_mount(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long lon
     g_vfat.next_free=2; if(g_vfat.type==32&&g_vfat.fsinfo){ u8 f[512]; if(vf_rs(g_vfat.fsinfo,1,f)==0&&vf_r32(f)==0x41615252u){ u32 h=vf_r32(f+492); if(vf_valid(h))g_vfat.next_free=h; } }
     g_vfat.mounted=1; return 0;
 }
+static u8* g_vf_mark;
+static void vf_mark_chain(u32 c){ int g=0; while(vf_valid(c)&&g++<0x400000){ if(g_vf_mark[c>>3]&(u8)(1u<<(c&7)))break; g_vf_mark[c>>3]|=(u8)(1u<<(c&7)); u32 n=vf_get(c); if(vf_iseoc(n)||n<2)break; c=n; } }
+static void vf_mark_dir(u32 dc,int depth){ if(depth>16)return; if(dc)vf_mark_chain(dc); int i=0; vf_ent e;
+    for(;;){ int r=vf_next(dc,&i,&e); if(r<=0)break; if(e.sname[0]=='.')continue; if(!vf_valid(e.clus))continue;
+        if(e.attr&0x10)vf_mark_dir(e.clus,depth+1); else vf_mark_chain(e.clus); } }
+int vf_reclaim(void){
+    if(!g_vfat.mounted||g_vfat.ro)return -1; u32 n=g_vfat.clusters+2; g_vf_mark=(u8*)kmalloc(n/8+1); if(!g_vf_mark)return -1; vf_zero(g_vf_mark,n/8+1);
+    vf_mark_dir(vf_rootdc(),0); int freed=0;
+    for(u32 c=2;c<n;c++) if(vf_get(c)!=0&&!(g_vf_mark[c>>3]&(u8)(1u<<(c&7)))){ vf_set(c,0); g_vfat.free_cnt++; freed++; }
+    kfree(g_vf_mark); g_vf_mark=0;
+    if(freed){ for(u32 s=0;s<g_vfat.fatsz;s++)g_vfat.fdirty[s]=1; if(vf_flush())return -1; }
+    return freed; }
+void vf_swap_out(struct nvx_g_vfat_t* save){ *save=g_vfat; g_vfat.mounted=0; g_vfat.fat=0; g_vfat.fdirty=0; g_vfat.cbuf=0; g_vfat_secno=0xFFFFFFFFu; }
+void vf_swap_in(const struct nvx_g_vfat_t* save){ g_vfat=*save; g_vfat_secno=0xFFFFFFFFu; }
+long vf_size(const char* path){ vf_ent e; if(!g_vfat.mounted||vf_walk(path,&e,0,0)!=0||(e.attr&0x10))return -1; return (long)e.size; }
+u32 vf_free_bytes_kb(void){ if(!g_vfat.mounted)return 0; return (u32)(((unsigned long long)g_vfat.free_cnt*g_vfat.cbytes)/1024ULL); }
+long vf_inplace(const char* path,const char* buf,long len){
+    vf_ent e; if(!g_vfat.mounted||g_vfat.ro||vf_walk(path,&e,0,0)!=0||(e.attr&0x10)||(long)e.size!=len)return -1;
+    long done=0; u32 c=e.clus; int g=0;
+    while(done<len&&vf_valid(c)&&g++<0x400000){ long k=len-done; if(k>(long)g_vfat.cbytes)k=g_vfat.cbytes;
+        if(vf_rs(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf))return -1; vf_copy(g_vfat.cbuf,buf+done,(u32)k);
+        if(vf_ws(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf))return -1; g_vfat_secno=0xFFFFFFFFu; done+=k; c=vf_get(c); }
+    return done==len?len:-1;
+}
 int vf_exists(const char* path){ vf_ent e; if(!g_vfat.mounted)return 0; return vf_walk(path,&e,0,0)>=0; }
 long vf_read(const char* path,char* buf,long cap){
     vf_ent e; if(!g_vfat.mounted||vf_walk(path,&e,0,0)!=0||(e.attr&0x10))return -1;
     long n=e.size<(u32)cap?(long)e.size:cap, got=0; u32 c=e.clus; int g=0;
-    while(got<n&&vf_valid(c)&&g++<0x400000){ if(vf_rs(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf))return -1; long k=n-got; if(k>(long)g_vfat.cbytes)k=g_vfat.cbytes; vf_copy(buf+got,g_vfat.cbuf,(u32)k); got+=k; c=vf_get(c); }
+    while(got<n&&vf_valid(c)&&g++<0x400000){
+        if(n-got>=(long)g_vfat.cbytes){ u32 run=1, cc=c; while(run<128&&(long)(run+1)*(long)g_vfat.cbytes<=n-got){ u32 nx=vf_get(cc); if(nx!=cc+1)break; cc=nx; run++; }
+            if(vf_rs(vf_c2s(c),(int)(run*g_vfat.spc),buf+got))return -1; got+=(long)run*g_vfat.cbytes; c=vf_get(cc); continue; }
+        if(vf_rs(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf))return -1; long k=n-got; if(k>(long)g_vfat.cbytes)k=g_vfat.cbytes; vf_copy(buf+got,g_vfat.cbuf,(u32)k); got+=k; c=vf_get(c); }
     return got;
 }
 long vf_write(const char* path,const char* buf,long len){
     if(!g_vfat.mounted||g_vfat.ro||len<0)return -1; vf_ent e; u32 parent; char leaf[256]; int r=vf_walk(path,&e,&parent,leaf);
-    if(r==1||r==-2||(r==0&&(e.attr&0x10)))return -1;
+    if(r==1||r==-2||(r==0&&(e.attr&0x10))){ g_vf_err=10+r; return -1; }
     u32 c=vf_writechain(buf,len); if(c==0xFFFFFFFFu){ vf_flush(); return -1; }
     if(r==0){ u32 old=e.clus; if(vf_setent(&e,c,(u32)len)){ vf_flush(); return -1; } if(vf_valid(old))vf_freechain(old); }
     else if(vf_mkent(parent,leaf,0x20,c,(u32)len)){ if(c)vf_freechain(c); vf_flush(); return -1; }

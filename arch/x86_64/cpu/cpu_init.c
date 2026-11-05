@@ -39,3 +39,4 @@ void arch_idt_init(void){
     for(int i=48;i<256;i++) set_gate(i,isr_ignore);
     struct idt_ptr ip={(u16)(sizeof(idt)-1),(u64)idt}; __asm__ volatile("lidt %0"::"m"(ip));
 }
+__asm__(".text\n.globl nf_swap\n.type nf_swap,@function\nnf_swap:\n\tpush %rbp\n\tpush %rbx\n\tpush %r12\n\tpush %r13\n\tpush %r14\n\tpush %r15\n\tmov %rsp,(%rdi)\n\tmov %rsi,%rsp\n\tpop %r15\n\tpop %r14\n\tpop %r13\n\tpop %r12\n\tpop %rbx\n\tpop %rbp\n\tret\n.size nf_swap,.-nf_swap\n");

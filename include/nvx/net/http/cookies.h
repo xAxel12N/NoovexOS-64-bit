@@ -3,6 +3,7 @@
 #include "include/nvx/base.h"
 void cookie_set(const char* url, const char* line, int fromjs);
 int cookie_header(const char* url, int forjs, char* out, int cap);
+int cookie_header2(const char* url, int forjs, char* out, int cap, int cross, int topnav, int safe);
 void cookie_clear(void);
 int cookie_count(void);
 int cookie_list(int idx, char* domain, int dcap, char* name, int ncap, char* value, int vcap, u64* expires, int* flags);

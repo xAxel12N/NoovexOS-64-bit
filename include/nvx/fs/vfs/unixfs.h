@@ -32,6 +32,7 @@ int ux_dev_write(struct vfile* v,const char* buf,int len);
 int ux_perm_ok(int k,int want);
 int perm_file(int k,int want);
 int perm_dir(int d);
+int ux_dir_ok(int d,int want);
 int ux_links_in(int d);
 int fs_is_open(int k);
 void fs_newslot(int k);
@@ -50,6 +51,9 @@ void ux_load_localpw(void);
 int ux_stat2(const char* p,u32* o,int follow);
 int k_readdir_extra(int d,int n,char* name,int* type);
 void ux_core_start(const char* user);
+void ux_session_user(const char* user);
+void ux_legacy_account(const char* user);
+int ux_write_text(const char* path,const char* body,int len,unsigned mode);
 void ux_desktop_start(const char* user);
 
 #endif

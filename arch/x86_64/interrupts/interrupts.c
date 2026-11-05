@@ -15,6 +15,7 @@
 #include "include/nvx/core/proc/jobs.h"
 #include "include/nvx/sys/linux/linux.h"
 volatile u32 g_stray_n=0; volatile int g_stray_vec=-1;
+volatile int g_msr_probe=0, g_msr_fault=0; volatile u32 g_msr_faults=0;
 /* =========================================================================
    IDT / PIC / PIT
    ========================================================================= */
@@ -31,6 +32,7 @@ void idt_set128(void){   /* INT 0x80 gate, DPL=3 (callable from ring 3) */
     u64 a=(u64)isr128;
     idt[0x80].lo=a&0xFFFF; idt[0x80].sel=0x08; idt[0x80].ist=0; idt[0x80].attr=0xEE;
     idt[0x80].mid=(a>>16)&0xFFFF; idt[0x80].hi=(u32)(a>>32); idt[0x80].z=0;
+    idt[3].attr=0xEE; idt[4].attr=0xEE;
 }
 void idt_use_ist(int n,int ist){ idt[n].ist=(u8)ist; }
 void pic_remap(void){
@@ -54,10 +56,12 @@ struct vfile;
 
 static void isr_body(regs_t*r){
     if(r->vector==14&&vm_user_pf(r))return;
-    if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } { extern int web_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&web_fault_redirect(&r->rip,&r->rsp))return; } panic(r,0); return; }        /* exception -> RSOD */
+    if(r->vector==13&&g_msr_probe&&(r->cs&3)==0){ const u8* ip=(const u8*)r->rip; if(ip[0]==0x0F&&(ip[1]==0x32||ip[1]==0x30)){ g_msr_fault=1; g_msr_faults++; r->rip+=2; return; } }
+    if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } { extern int wk_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&wk_fault_redirect(&r->rip,&r->rsp))return; } { extern int web_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&web_fault_redirect(&r->rip,&r->rsp))return; } panic(r,0); return; }        /* exception -> RSOD */
     if(r->vector==HR_LAPIC_VEC){ hr_lapic_isr(); return; }
     int irq=(int)r->vector-32;
     if(irq==0){
+        { extern void ps2_kbd_tick(void); ps2_kbd_tick(); }
         if(g_js_running&&(r->cs&3)==3) jc_timer(r);
         if(g_preempt_on){
             int cur=g_curproc;
@@ -74,8 +78,7 @@ static void isr_body(regs_t*r){
     else if(irq==1||irq==12) ps2_byte();
     if(r->vector==255){ extern void lapic_eoi_any(void); extern int lapic_isr_top(void); int tv=lapic_isr_top(); if(tv>=0)g_stray_vec=tv; g_stray_n++; lapic_eoi_any(); return; }
     pic_eoi(irq);
-    if(irq==0){ extern volatile u32 g_ml_beat; extern volatile int g_ml_stage; static u32 lb=0; static u32 still=0; static int shown=0;
-        if(g_ml_beat!=lb){ lb=g_ml_beat; still=0; } else if(++still==600&&!shown){ shown=1; extern void early_note(const char*,const char*,u64,int); early_note("NoovexOS main loop has not run for 6 seconds - please take a photo.","stage",r->rip,g_ml_stage); } }
+    if(irq==0){ extern void freeze_tick(regs_t*) __attribute__((weak)); extern void stk_check(void) __attribute__((weak)); if(stk_check)stk_check(); if(freeze_tick)freeze_tick(r); }
 }
 
 void isr_dispatch(regs_t*r){

@@ -22,6 +22,7 @@ void mouse_init(void){
     if(!mcmd(0xF6))return;                                        /* defaults   */
     mouse_rate(200); mouse_rate(100); mouse_rate(80);            /* magic knock */
     if(mcmd(0xF2) && pw_read()){ u8 id=inb(0x60); if(id==3) g_mbytes=4; }
+    if(g_mbytes==4){ mouse_rate(200); mouse_rate(200); mouse_rate(80); if(mcmd(0xF2) && pw_read()){ u8 id=inb(0x60); if(id==4){ extern int g_mimex; g_mimex=1; } } mouse_rate(100); }
     if(!mcmd(0xF4))return;                                        /* enable rpt */
     g_mouse_ok=1;
 }

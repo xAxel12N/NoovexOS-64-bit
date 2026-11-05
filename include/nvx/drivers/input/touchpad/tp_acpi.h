@@ -16,5 +16,9 @@ int tpa_timing(const char* ctrl,u16 ss[3],u16 fs[3]);
 void tpa_lpss_init(u64 base);
 u64 tpa_map(u64 base);
 int tpa_hid(const char* dev,char* out);
+typedef struct { int found, adr_ok; u32 adr; u64 mem; } tpa_ctl;
+int tpa_sta(const char* dev);
+int tpa_ini(const char* dev);
+int tpa_ctrl(const char* ctrl,tpa_ctl* c);
 
 #endif

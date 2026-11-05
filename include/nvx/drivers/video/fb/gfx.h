@@ -18,6 +18,8 @@ extern char g_gfx_why[64];
 
 typedef int (*gfx_alloc_fn)(u32 w,u32 h,u32 pitch,u32** px);
 int gfx_start(int mode,gfx_alloc_fn al,u32* scene_px,int scene_sid);
+extern gfx_alloc_fn g_gfx_alloc_gpu;
+void gfx_forget(void);
 void gfx_stop(const char* why);
 void gfx_sync(void);
 void gfx_px(int x,int y,u32 c,int a);

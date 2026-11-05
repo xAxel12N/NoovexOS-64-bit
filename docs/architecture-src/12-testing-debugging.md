@@ -291,7 +291,7 @@ Templates are split into named parts with `@@NAME@@` lines (`template()` in `che
 
 ### 12.4.6 `tools/webhost.c`, the web engine on the host
 
-The web engine (Part 13) builds for Linux unchanged except for `web/krt.c`, whose job glibc does. Compile every `web/*.c` file except `krt.c`, the QuickJS sources and `tools/webhost.c` with `gcc -O1 -g -D_GNU_SOURCE -I.` from the repository root and link with `-lm`. Then:
+The web engine (Part 13) builds for Linux unchanged except for `web/krt.c`, whose job glibc does. Compile every `web/*.c` file except `krt.c`, `wk.c` and `wk_prelude_gen.c`, the QuickJS and wasm3 sources and `tools/webhost.c` with `gcc -O1 -g -D_GNU_SOURCE -DIMGX_HOST -I. -Ithird_party/quickjs` from the repository root; compile the dav1d sources as `build.sh` does (step 3, the `DVF` flags, the template files twice with `-DBITDEPTH=8` and `16`); build the worker blob from `web/wk.c`, `web/wk_prelude_gen.c` (made by `tools/js2c.py web/wk_prelude.js web/wk_prelude_gen.c nwe_wkprelude`), a second copy of the QuickJS objects and three empty functions `nwe_arena_init`, `nwe_arena_reset` and `nwe_arena_size`, joined with `ld -r` and `objcopy --keep-global-symbol=wkx_entry --keep-global-symbol=wkx_fail` (section 13.64); and link everything with `-lm -lz -lpthread`. Then:
 
 ```
 webhost page.html out.ppm [width] [height] [maxheight] [javascript]
@@ -483,3 +483,45 @@ Compiled from version tags in the old `ARCHITECTURE.md` and in the sources. Only
 | v9.24 | this document, "What changed in v9.24" | Python IDE package in the start menu |
 | v9.23 | this document, "What changed in v9.23" | CPython 3.13, apt and dpkg for Debian packages, layered sysroot |
 | v9.22 | this document, "What changed in v9.22" | glibc 2.44 and GNU tools, 100 MiB kernel limit |
+
+## 12.6 Crash reports, freeze reports and start-up notes (`core/crash.c`)
+
+| Part | How it works |
+|---|---|
+| Function names | `g_ksyms` (384 KB in `.data`, magic `NVXKSYM1`) is filled by `build.sh` after linking: header `NVXKSYM2`, count, string offset, text start and end, then (address, name offset) pairs sorted by address and the names. `kname_find` does a binary search; `kname_fmt` prints `name+0xoff`. |
+| Call chain | Kernel units are built with frame pointers. `crash_bt` follows saved RBP values while each frame is 8-byte aligned, mapped (a page-table walk), above the previous one and returns into kernel text. |
+| Crash | `panic` calls `crash_panic`, which stops the other CPUs, copies the registers and switches to a 64 KB stack before drawing. The screen is drawn straight into the framebuffer with the anti-aliased font (no compositor, no GPU). The report is saved to `CRASH.TXT` on the USB stick (unless the crash is in USB code) and `crash-report.txt` in Files (unless the heap was busy); R restarts. |
+| Freeze | `freeze_tick` runs in the timer interrupt. When `g_ml_beat` has not changed for 5 s (500 ticks) it builds a report from the interrupted registers and draws it in a box; at 30 s it saves it; when the loop runs again `crash_tick` removes the box, saves the report and shows how long the freeze lasted. |
+| Next start | `crash_tick` checks `crash-new.flag` and `CRASHNEW.TXT` 3 s after the first screen, copies the report into Files, shows a notice and opens it in the Editor on the desktop. |
+| Start-up notes | `drv_begin(id)` writes the driver name to `DRVSTART.TXT` and `driver-start.txt`; `drv_boot_done` writes `-`. `drv_boot_check` (after the xHCI start, which also mounts the boot stick) skips a driver whose name is still there, once. |
+| Stack guards | `stk_guard_boot` splits the 2 MB page at 0x09800000 and unmaps its lowest 4 KB. `stk_watch` puts 8 marker words at the bottom of each 16 KB stack; `stk_check` runs every timer tick. |
+| Tests | `crash test panic`, `crash test stack`, `crash test smash`, `crash test heap`, `crash test freeze`; `crash` prints the last report. |
+
+## 12.12 Testing updates in QEMU
+
+The updater needs an installed disk and an update server. A local server is enough:
+
+1. Build two ISOs that differ only in the version in `core/buildsig.c` (for example 10.00 and 10.01).
+2. Write a manifest next to the newer ISO (`version`, `iso_url` such as `http://10.0.2.2:8000/new.iso`, `iso_bytes`, `iso_sha256`, `notes`) and serve the folder with `python3 -m http.server 8000`.
+3. Install the older ISO to an empty disk (USB stick image as the boot device, the disk as NVMe or SATA), finish the first-start setup, then in the terminal: `update url http://10.0.2.2:8000/update.json` and `update install` (or Settings > Update & recovery > NoovexOS Update).
+4. Watch the serial log: `update: installed`, then the loader line `Starting the new version (try 1 of 2)`, then `update: new version confirmed` one minute after the start.
+
+Useful checks:
+
+| Test | How |
+|---|---|
+| Fallback | build a kernel that stops at start (for example an invalid instruction right after the integrity check) and offer it; restart twice from the crash screen; the loader prints "The new version did not start twice" and starts `kernel64.old` |
+| Power cut | read `/boot/update.txt` from the disk image on the host while the update runs and stop QEMU when it says `SWAP`; the next start uses the previous version and writes `OLD` |
+| Boot partition | `tools/tests/fatck.py` on the partition (offset 2048 sectors) after each step: no lost clusters, both FATs equal |
+| UEFI | the same disk with the OVMF firmware; the loader shows the try count and "press P to start the previous version" |
+
+SATA (`-device ahci`) is much faster than NVMe in QEMU without KVM, because the NVMe driver sends one command per sector.
+
+USB stick updates: copy the ISO to `stick.img`, make it as large as a real stick (`truncate -s 1G stick.img`) and boot it as the only disk: `-device qemu-xhci,id=xh -drive if=none,id=u0,file=stick.img,format=raw -device usb-storage,bus=xh.0,drive=u0,bootindex=0 -netdev user,id=e0 -device e1000,netdev=e0` (add the OVMF firmware for UEFI). `/etc/update-url` lives in memory on a stick, so type `update url ...` again after each restart. The log shows "update: growing the USB stick partition from 90 MB to 516 MB" on the first update. A bad kernel stops at the crash screen; press R twice. For a power cut, stop QEMU right after "update: Installing the new version".
+
+Firmware with many devices: `tools/tests/aml` style tables can be passed to QEMU with `-acpitable file=ssdt.aml`. An SSDT with 420 devices and a touchpad (`ELAN1201`, `_CID PNP0C50`, `I2cSerialBus` 0x15 on `\_SB.I2C1`) after them showed "160 devices, 0 I2C touchpads" on 10.01 and "474 devices, 1 I2C touchpads" with the touchpad on 10.02.
+
+## 12.13 Tracing Linux programs (v10.43)
+
+When a Linux program gets a fault or exception, the kernel log (serial port) shows a line like `lx fault: pid 38 sig 11 vec 14 rip ... addr ... err ... rsp ... (libfoo.so+0x1234) handled 48 c7 07 ...`, followed by the last 16 system calls of that thread (`sc nr(a1, a2) = result`), for the first 24 faults after boot. `tgkill`/`kill` with SIGABRT, SIGSEGV and similar signals and `exit_group` with a non-zero code are logged too. `echo lxtrace on > /dev/kmsg` (from bash) logs every Linux system call with its name and the path argument (`T pid openat("/etc/passwd", ...) = 0x3`) until `echo lxtrace off > /dev/kmsg`; this slows programs down a lot. The ring of recent calls (`lx_sc_dump`) has 512 entries. More modes (v10.44): `lxtrace exec` logs only program starts, exits and missing files, `lxtrace errors` logs failed calls except the common harmless ones (EAGAIN, EINTR, ETIMEDOUT, ENOENT), `lxtrace ps` writes the list of Linux processes every minute (pid, parent, state, thread count, last system call of each thread) and `lxps` writes it once. Since v10.45 the list has one line per thread with the system call it is in now (`in`), its first argument and, for calls on a descriptor, the kind of file; for a Unix socket also its state, bytes and messages waiting on both ends. `nvx-abitest` (24 checks, also run on a normal Linux system for comparison) covers `/proc/cpuinfo`, pseudo-terminals and epoll with reused descriptor numbers; `nvx-sndtest [device] [rate] [seconds]` plays a tone through libasound, reports how long it took and records from the microphone.
+

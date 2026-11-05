@@ -1,0 +1,9 @@
+name=python-pip
+version=26.2.1
+summary=pip for Python 3.13, so pip install works; venv comes with Python
+kind=python
+needs=python
+packages=pip
+scripts=pip:pip._internal.cli.main pip3:pip._internal.cli.main pip3.13:pip._internal.cli.main
+license=MIT
+source=the pip wheel that comes with CPython (ensurepip)

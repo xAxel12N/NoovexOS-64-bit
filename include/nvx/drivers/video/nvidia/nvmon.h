@@ -15,5 +15,6 @@ int nvm_edid_parse(const u8* e,nvm_edid_t* m);
 int nvm_read_edid(int port,u8* e);
 void nvm_decode_head(u32 total,u32 synce,u32 blanke,u32 blanks,u32 pclk,nvm_head_t* h);
 const char* nvm_proto(u32 p);
+int nvm_screens(char t[][96],int max);
 
 #endif

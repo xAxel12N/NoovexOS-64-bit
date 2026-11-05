@@ -13,7 +13,7 @@ long xzk_decode_into(const u8* in,long n,u8* out,long cap){
     xzk_init(); struct xz_dec* s=xz_dec_init(XZ_SINGLE,0); if(!s)return -1;
     struct xz_buf b; b.in=in; b.in_pos=0; b.in_size=(size_t)n; b.out=out; b.out_pos=0; b.out_size=(size_t)cap;
     enum xz_ret r=xz_dec_run(s,&b); xz_dec_end(s); if(r!=XZ_STREAM_END)return -1; return (long)b.out_pos; }
-static int ugrow(u8** buf,long* cap,long need){ if(need<=*cap)return 1; long nc=*cap*2; if(nc<need)nc=need; u8* n=(u8*)krealloc(*buf,(unsigned long)nc); if(!n)return 0; *buf=n; *cap=nc; return 1; }
+static int ugrow(u8** buf,long* cap,long need){ if(need<=*cap)return 1; long nc=*cap>=(128L<<20)?*cap+*cap/4:*cap*2; if(nc<need)nc=need; u8* n=(u8*)krealloc(*buf,(unsigned long)nc); if(!n)return 0; *buf=n; *cap=nc; return 1; }
 u8* unp_xz(const u8* in,long n,long* outlen){
     xzk_init(); struct xz_dec* s=xz_dec_init(XZ_DYNALLOC,1u<<26); if(!s)return 0;
     long cap=n*4+65536; u8* out=(u8*)kmalloc((unsigned long)cap); if(!out){ xz_dec_end(s); return 0; }
@@ -21,7 +21,7 @@ u8* unp_xz(const u8* in,long n,long* outlen){
     for(;;){ enum xz_ret r=xz_dec_run(s,&b);
         if(r==XZ_STREAM_END)break;
         if(r!=XZ_OK&&r!=XZ_UNSUPPORTED_CHECK){ xz_dec_end(s); kfree(out); return 0; }
-        if(b.out_pos==b.out_size){ long c=cap; if(!ugrow(&out,&c,cap*2)){ xz_dec_end(s); kfree(out); return 0; } cap=c; b.out=out; b.out_size=(size_t)cap; }
+        if(b.out_pos==b.out_size){ long c=cap; if(!ugrow(&out,&c,cap+1)){ xz_dec_end(s); kfree(out); return 0; } cap=c; b.out=out; b.out_size=(size_t)cap; }
         else if(b.in_pos==b.in_size){ xz_dec_end(s); kfree(out); return 0; } }
     xz_dec_end(s); *outlen=(long)b.out_pos; return out; }
 u8* unp_zst(const u8* in,long n,long* outlen){
@@ -30,7 +30,7 @@ u8* unp_zst(const u8* in,long n,long* outlen){
     ZSTD_inBuffer ib={in,(size_t)n,0}; ZSTD_outBuffer ob={out,(size_t)cap,0};
     for(;;){ size_t r=ZSTD_decompressStream(d,&ob,&ib); if(ZSTD_isError(r)){ ZSTD_freeDStream(d); kfree(out); return 0; }
         if(r==0&&ib.pos==ib.size)break;
-        if(ob.pos==ob.size){ long c=cap; if(!ugrow(&out,&c,cap*2)){ ZSTD_freeDStream(d); kfree(out); return 0; } cap=c; ob.dst=out; ob.size=(size_t)cap; }
+        if(ob.pos==ob.size){ long c=cap; if(!ugrow(&out,&c,cap+1)){ ZSTD_freeDStream(d); kfree(out); return 0; } cap=c; ob.dst=out; ob.size=(size_t)cap; }
         else if(ib.pos==ib.size){ if(r==0)break; ZSTD_freeDStream(d); kfree(out); return 0; } }
     ZSTD_freeDStream(d); *outlen=(long)ob.pos; return out; }
 u8* unp_gz(const u8* in,long n,long* outlen){

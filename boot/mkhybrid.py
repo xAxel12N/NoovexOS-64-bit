@@ -85,9 +85,9 @@ def build_fat16(files, label='NVXEFI'):
     for k in range(nf): img[(rsv + k * fatsz) * S512:(rsv + (k + 1) * fatsz) * S512] = fb
     return bytes(img), sectors, clus
 
-def build_fat32(part_lba, part_sectors, tree, label='NOOVEXOS'):
+def build_fat32(part_lba, part_sectors, tree, label='NOOVEXOS', grow_sectors=0):
     bps, spc, reserved, nfats, root_clus = S512, 1, 32, 2, 2
-    tmp1 = part_sectors - reserved; tmp2 = (256 * spc + nfats) // 2
+    tmp1 = max(part_sectors, grow_sectors) - reserved; tmp2 = (256 * spc + nfats) // 2
     fatsz = (tmp1 + (tmp2 - 1)) // tmp2
     data_start = reserved + nfats * fatsz
     img = bytearray(part_sectors * bps)
@@ -157,6 +157,8 @@ def build_fat32(part_lba, part_sectors, tree, label='NOOVEXOS'):
             c = d['clus'][i // epc]; o = coff(c) + (i % epc) * 32; img[o:o + 32] = e
     used = state['next']
     assert used * spc + data_start <= part_sectors, "FAT partition too small for contents"
+    total_cl = (part_sectors - data_start) // spc
+    struct.pack_into('<I', img, fsi + 488, max(0, total_cl - (used - 2))); struct.pack_into('<I', img, fsi + 492, used)
     return bytes(img), used
 
 # ------------------------------------------------------------ ISO9660 helpers
@@ -185,12 +187,23 @@ def main():
     if os.path.exists(_efi):
         tree.append(('EFI/BOOT/BOOTX64.EFI', open(_efi, 'rb').read()))
         print('  + UEFI: /EFI/BOOT/BOOTX64.EFI added to ESP')
+    import zlib
+    for fp, d in list(tree):
+        if fp.lower() not in ('boot/kernel64.bin', 'kernel64.bin') or len(d) < 64: continue
+        crc, sz = struct.unpack_from('<II', d, 16)
+        if not sz or any(t[0].lower().startswith('sysroot/') for t in tree): continue
+        src = os.environ.get('NVX_SYSROOT') or os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), '..', 'build', 'sysroot.bin')
+        sr = open(src, 'rb').read()
+        assert len(sr) == sz and (zlib.crc32(sr) & 0xffffffff) == crc, f"{src} does not match the kernel (want {sz} bytes crc {crc:08X})"
+        tree.append((f'sysroot/{crc:08X}.BIN', sr))
+        print(f'  + Linux files: /sysroot/{crc:08X}.BIN ({len(sr)} bytes)')
     assert len(boot) == 512 and len(stage2) <= 63 * S512, "boot must be 512B, stage2 <= 63 sectors"
 
     # --- FAT32 partition sized to contents (+ 8 MB slack), min 16 MB ---
     total_bytes = sum(len(d) for _, d in tree)
-    part_sectors = max(69632, ((total_bytes + 8 * 1024 * 1024) // S512 + 2048) & ~2047)
-    fat, used = build_fat32(PART_LBA, part_sectors, tree, volid)
+    grow = int(os.environ.get('NVX_GROW_SECTORS', '1048576'))
+    part_sectors = max(69632, ((total_bytes + 8 * 1024 * 1024) // S512 + 2 * (grow // 127) + 2048) & ~2047)
+    fat, used = build_fat32(PART_LBA, part_sectors, tree, volid, grow)
     _bs = fat[0:512]; _fz = struct.unpack_from('<I', _bs, 36)[0]; _rsv = struct.unpack_from('<H', _bs, 14)[0]
     _ncl = (part_sectors - _rsv - _bs[16] * _fz) // _bs[13]
     assert _ncl >= 65525, f"FAT32 partition has only {_ncl} clusters; UEFI would read it as FAT16"

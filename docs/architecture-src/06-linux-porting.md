@@ -89,6 +89,8 @@ static int lx_ok(u64 p,u64 n){ return jc_umapped(p,n); }
 3. Absolute paths are copied as-is. Otherwise the base node is the current directory `g_dcwd`, or, if `dirfd != AT_FDCWD (-100)`, the directory node of that fd, which must be a directory vfile (`dev == LX_DIRDEV == 11`, else `-ENOTDIR`; closed fd to `-EBADF`).
 4. `dt_path(node,...)` gives the base path; the relative part is appended.
 
+`lx_path` wraps this (`lx_path0`) and removes trailing slashes, so `mkdir("a/")` and `stat("a/")` work; if a trailing slash was removed and the path is an existing non-directory, the call fails with `-ENOTDIR` (v10.07).
+
 `lx_noent(p)` refines a failed lookup: it walks the prefixes and returns `-ENOTDIR` if a prefix is a regular file (e.g. `open("file.txt/x")`), else `-ENOENT`. `musltest` checks both.
 
 ## 6.2 File-related details
@@ -147,8 +149,9 @@ Only `LX_DIRDEV` fds (`-ENOTDIR` otherwise). Each record is a `linux_dirent64`: 
 | `0xC0045006` / `0xC0045003` | SNDCTL_DSP_CHANNELS / STEREO | dsp | 2 / 1 |
 | `0x8010500C` | SNDCTL_DSP_GETOSPACE | dsp | `{free/4096, 32, 4096, free}` from `g_snd.free_bytes()` |
 | `0xC004500A` | SNDCTL_DSP_SETFRAGMENT | dsp | no-op |
+| `0x80084E50` | NoovexOS: pointer position | `/dev/input/mice` (dev 10) | two `int`s: the desktop pointer `mx`, `my` (v10.07, used by the NetSurf surface) |
 
-Any other request on the tty or dsp is `-EINVAL`; on any other device it is `-ENOTTY` (this is what makes `isatty()` false for files).
+Any other request on the tty or dsp is `-EINVAL`; on any other device it is `-ENOTTY` (this is what makes `isatty()` false for files). The request is cut to 32 bits first (`req=(u32)req`), like Linux, because musl passes it as a sign-extended `int`; before v10.07 requests with bit 31 set never matched from musl programs.
 
 ### `fcntl` (`lx_fcntl`)
 
@@ -171,7 +174,11 @@ Address space. The user window and the regions `linux.c` and `elf.c` assume:
 | `0x40004000000`, `0x80000000000` | `mmap` area (`g_mmap_next`, `lx_find_gap`); shared libraries loaded by the dynamic linker and thread stacks go here |
 | `0x7F000000000` | the dynamic linker of a dynamic program (`ELF_INTERP_BASE`) |
 
-`lx_mmap` rejects `len==0`, unaligned offsets and lengths over 1 GiB. Anonymous mappings (`MAP_ANONYMOUS 0x20`) are lazy (`vm_map_lazy`), so an 8 MiB mapping only consumes the pages that are touched. File mappings must be on a regular file (`-ENODEV` otherwise, e.g. `/dev/fb0`) and are private copies filled at map time; writes never reach the file. `prot` is ignored (all pages user-RW). `MAP_FIXED` (0x10) unmaps the target first and refuses the stack region. Without it, `lx_find_gap` reuses freed holes before extending `g_mmap_next`. `mprotect`, `msync`, `madvise`, `mlock*` return 0; `mremap` returns `-ENOMEM` (musl's `realloc` then copies); `mincore` is ENOSYS. All user pages come from one frame pool shared by every process: 32 MiB at `PF_BASE` plus a range taken from the heap that grows with RAM, up to 2 GiB more (section 3.7); `pframe_free_count()` gates `mmap`/`brk`.
+Memory protection (v10.06). `vm_prot_bits(prot)` turns `PROT_*` into software PTE bits: `PTE_PRO` (bit 52, no write), `PTE_PNO` (bit 53, no access) and the hardware NX bit 63 (only when `g_nx_on`; `cpu_nx_init` sets `EFER.NXE` on each CPU that has it). `vm_pflags` applies them (RW cleared for `PTE_PRO`, the user bit cleared for `PTE_PNO`) and `vm_live` keeps them when a lazy page gets its frame or a copy-on-write page is copied. Lazy pages store the bits in the empty PTE (`vm_map_lazy_p`), reserved ranges in `g_res[].pb`. `lx_mprotect` changes present pages, lazy pages and untouched parts of reservations (splitting them), then shoots down the TLBs. A write to a `PTE_PRO` page is refused by `vm_fault_user` even if it is copy-on-write; `jc_umap_chk` refuses kernel copies into read-only or no-access pages (EFAULT) and no longer copies a page on a read check when the page is read-only. An instruction fetch from an NX page (page-fault error bit 4) becomes SIGSEGV. `fork` marks read-only private pages copy-on-write too, so a later `mprotect` back to writable cannot change the parent's page. Every place that takes a frame out of a PTE masks with `PTE_ADDR`.
+
+Signal frames for Linux programs (v10.06). `jc_push_lx` builds the Linux `rt_sigframe`: return address (the `SA_RESTORER` function), a 304-byte `ucontext` (`uc_stack`, the 32-word `sigcontext` with all registers, `err`, `trapno`, `oldmask`, `cr2` and a pointer to a 512-byte FXSAVE copy, then `uc_sigmask`), and a 128-byte `siginfo` (`si_signo`, `si_code`, `si_addr` for faults; `SI_TKILL` for `tgkill`). `rdi`, `rsi` and `rdx` hold the signal, `&siginfo` and `&ucontext`; the stack is the alternate stack when `SA_ONSTACK` is set and one is installed. `lx_sigreturn` reads every register, the mask and the FPU state back from the `ucontext` and restores the alternate stack from `uc_stack`. Native programs keep the old frame. Fault details come from `vm_user_pf` and `jc_fault` (`flt_addr`, `flt_code`, `flt_err`, `flt_trap` in `struct jproc`).
+
+`lx_mmap` rejects `len==0`, unaligned offsets and lengths over 1 GiB. Anonymous mappings (`MAP_ANONYMOUS 0x20`) are lazy (`vm_map_lazy`), so an 8 MiB mapping only consumes the pages that are touched. File mappings must be on a regular file (`-ENODEV` otherwise, e.g. `/dev/fb0`) and are private copies filled at map time; writes never reach the file. `prot` is applied (see Memory protection above). `MAP_FIXED` (0x10) unmaps the target first and refuses the stack region. Without it, `lx_find_gap` reuses freed holes before extending `g_mmap_next`. `mprotect`, `msync`, `madvise`, `mlock*` return 0; `mremap` returns `-ENOMEM` (musl's `realloc` then copies); `mincore` is ENOSYS. All user pages come from one frame pool shared by every process: 32 MiB at `PF_BASE` plus a range taken from the heap that grows with RAM, up to 2 GiB more (section 3.7); `pframe_free_count()` gates `mmap`/`brk`.
 
 Processes.
 
@@ -190,13 +197,13 @@ static long lx_clone(struct sysregs* r,u64 flags,u64 stack,u64 ptid,u64 ctid,u64
 
 With `CLONE_THREAD`, `clone` creates a thread that shares the address space, descriptors and signal handlers (section 5.15). Without it, `clone` forks: `CLONE_VM` and `CLONE_VFORK` are accepted but the child gets a copy-on-write copy from `vm_clone_user`; a child stack, `CLONE_SETTLS`, `CLONE_CHILD_CLEARTID` and `CLONE_PARENT_SETTID` are honoured. `fork` (57) and `vfork` (58) are `clone(0)`. `execve` (`lx_execve`) copies up to `XA_MAX` = 32 argv and 32 envp strings into 2048-byte buffers (`XA_CAP`), rejects names over 63 characters or containing spaces, resolves the program with `jc_find_prog` (6.6) and calls `jc_exec`, which frees the old address space, closes close-on-exec fds, resets caught signal handlers, `fsbase`, `brk` and the mmap cursor. `wait4` supports `WNOHANG|WUNTRACED|WCONTINUED` (`opts&0xB`) and zero-fills `rusage`; with no matching child it is `-ECHILD`. `exit`/`exit_group` store `(code&0xFF)<<8`.
 
-Signals. The kernel keeps signals 1-31 in 32-bit masks where bit *s* is signal *s*; Linux uses bit *s-1*. `lx_k2l` (`k>>1`) and `lx_l2k` (`l<<1`) convert. `rt_sigaction` reads/writes the 32-byte kernel `sigaction` (`handler, flags, restorer, mask`), keeps `SA_RESTORER` (`0x04000000`) restorer addresses, refuses SIGKILL/SIGSTOP, and silently accepts real-time signals 32-64 without effect (`kill` with signal at least 32 also returns 0). `jc_push_handler` builds the frame: a copy of `regs_pt` plus the saved mask, then the restorer address as return address; with `SA_SIGINFO` (flag 4) a 128-byte `siginfo` containing only `si_signo` is passed in `rsi`. `rt_sigreturn` (`lx_sigreturn`) reads that frame from the user `rsp`, forces user segments and sanitises `rflags`, and kills the process with SIGSEGV if the frame or the return `rip` is outside the user window. `rt_sigsuspend` (130) swaps the mask and sleeps; `sigaltstack` reports `SS_DISABLE`. `alarm`, `setitimer` and `getitimer` work for `ITIMER_REAL` (section 5.16). `tgkill` and `tkill` send a signal to one thread; `kill` sends it to the process, and the kernel picks a thread that does not block it (section 5.15). `futex` is described in section 5.15.
+Signals. The kernel keeps signals 1-31 in 32-bit masks where bit *s* is signal *s*; Linux uses bit *s-1*. `lx_k2l` (`k>>1`) and `lx_l2k` (`l<<1`) convert. `rt_sigaction` reads/writes the 32-byte kernel `sigaction` (`handler, flags, restorer, mask`), keeps `SA_RESTORER` (`0x04000000`) restorer addresses, refuses SIGKILL/SIGSTOP, and silently accepts real-time signals 32-64 without effect (`kill` with signal at least 32 also returns 0). `jc_push_handler` builds the frame: a copy of `regs_pt` plus the saved mask, then the restorer address as return address; with `SA_SIGINFO` (flag 4) a 128-byte `siginfo` containing only `si_signo` is passed in `rsi`. `rt_sigreturn` (`lx_sigreturn`) reads that frame from the user `rsp`, forces user segments and sanitises `rflags`, and kills the process with SIGSEGV if the frame or the return `rip` is outside the user window. `rt_sigsuspend` (130) swaps the mask and sleeps; `sigaltstack` installs a per-thread alternate stack (see Signal frames above). `alarm`, `setitimer` and `getitimer` work for `ITIMER_REAL` (section 5.16). `tgkill` and `tkill` send a signal to one thread; `kill` sends it to the process, and the kernel picks a thread that does not block it (section 5.15). `futex` is described in section 5.15.
 
 Identity and system info. `uname` (`lx_uname`) returns `NoovexOS`, the hostname, release `8.97`, version `NoovexOS 64 v8.97`, machine `x86_64`, domain `(none)`. `sched_getaffinity` (204) returns an 8-byte mask with one bit per online core (`g_cores_online` when `g_smp_on`), which is what musl's `sysconf(_SC_NPROCESSORS_ONLN)` counts; `sched_setaffinity` is a no-op. `getcpu` (309) returns `cpu_id()` and node 0. `getrlimit`/`prlimit64` report `RLIMIT_STACK` = 1 MiB and `RLIMIT_NOFILE` = 256, everything else unlimited. `arch_prctl` supports `ARCH_SET_FS` (0x1002, also loads the MSR through `cpu_set_fsbase` and `lsys_fsbase`) and `ARCH_GET_FS` (0x1003), this is musl's TLS. `getrandom`, `/dev/random` and `/dev/urandom` return output of the kernel's ChaCha20 generator `csprng_bytes` (`lib/crypto/nvxcrypto2.c`), seeded from RDSEED or RDRAND when the CPU has them and from TSC timing jitter. Before v8.97 they were an xorshift or LCG sequence, which is not good enough for TLS keys; the seeding code also used RDSEED without checking CPUID, which faulted on CPUs without it.
 
 ## 6.4 Complete Linux system-call table
 
-Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns `-ENOSYS`.
+Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else returns `-ENOSYS`.
 
 | Nr | Name | Notes |
 |---|---|---|
@@ -210,7 +217,7 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 7 | poll | `lx_poll`, ms timeout |
 | 8 | lseek | `-ESPIPE` on tty/pipes; dirs accept SEEK_SET only; `/dev/fb0` size is `W*H*4` |
 | 9 | mmap | `lx_mmap` |
-| 10 | mprotect | returns 0, no effect |
+| 10 | mprotect | `lx_mprotect`: real page protection (read-only, no access, no execute), also inside reservations |
 | 11 | munmap | `lx_munmap`, refuses the stack |
 | 12 | brk | `lx_brk`, heap window 32 MiB |
 | 13 | rt_sigaction | `lx_sigaction` |
@@ -253,11 +260,11 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 61 | wait4 | `lx_wait4` |
 | 62 | kill | sig 0 probes; uid check via `g_kill_check` |
 | 63 | uname | `lx_uname` |
-| 72 | fcntl | `lx_fcntl` |
-| 73 | flock | 0 for a valid fd, no locking |
+| 72 | fcntl | `lx_fcntl`; F_GETLK/F_SETLK/F_SETLKW and the OFD forms (36-38) go to `lx_fcntl_lock` (real advisory record locks, section 6.22) |
+| 73 | flock | `lx_flock`: shared and exclusive locks per open file, LOCK_NB, blocking waits (section 6.22) |
 | 74 / 75 | fsync / fdatasync | `k_fsync` |
 | 76 / 77 | truncate / ftruncate | `k_truncate` / `k_ftruncate` (needs a writable fd) |
-| 78 | getdents | ENOSYS (use 217) |
+| 78 | getdents | the old record layout, converted in place from `lx_getdents` |
 | 79 | getcwd | `-ERANGE` if too small |
 | 80 / 81 | chdir / fchdir | sets `g_dcwd` |
 | 82 | rename | `lx_rename` (directory-over-empty-directory supported) |
@@ -287,9 +294,12 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 116 | setgroups | root only, no effect |
 | 118 / 120 | getresuid / getresgid | all three = current id |
 | 121 / 124 | getpgid / getsid | |
+| 125 / 126 | capget / capset | all capabilities for root, none otherwise; capset accepted for root |
 | 127 | rt_sigpending | pending & blocked |
+| 128 | rt_sigtimedwait | waits for a signal of the set, with time limit (v10.43) |
+| 129 | rt_sigqueueinfo | like kill (v10.43) |
 | 130 | rt_sigsuspend | |
-| 131 | sigaltstack | reports SS_DISABLE |
+| 131 | sigaltstack | per-thread alternate signal stack (`lx_sigaltstack`) |
 | 132 | utime | times argument ignored |
 | 133 | mknod | EPERM |
 | 135 | personality | 0 |
@@ -310,6 +320,13 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 191-199 | getxattr ... fremovexattr | ENOTSUP (188-190 setxattr family: ENOSYS) |
 | 200 / 234 | tkill / tgkill | signal one thread (`jc_signal_thread`) |
 | 201 | time | |
+| 222-226 | timer_create, timer_settime, timer_gettime, timer_getoverrun, timer_delete | POSIX timers with SIGEV_SIGNAL, SIGEV_NONE and SIGEV_THREAD_ID (signals 1-31), absolute and interval times, overrun count (section 6.22) |
+| 227 | clock_settime | EPERM |
+| 235 / 261 | utimes / futimesat | seconds of both times |
+| 247 | waitid | P_ALL, P_PID, P_PGID with WEXITED, WSTOPPED, WCONTINUED, WNOHANG; fills `siginfo_t` (WNOWAIT not supported) |
+| 251 / 252 | ioprio_set / ioprio_get | 0 |
+| 253 / 294 | inotify_init / inotify_init1 | section 6.22 |
+| 254 / 255 | inotify_add_watch / inotify_rm_watch | section 6.22 |
 | 202 | futex | `lx_futex`: WAIT, WAKE, REQUEUE, CMP_REQUEUE, WAKE_OP, WAIT_BITSET, WAKE_BITSET (section 5.15) |
 | 203 / 204 | sched_setaffinity / sched_getaffinity | no-op / online-core mask |
 | 217 | getdents64 | `lx_getdents` |
@@ -328,16 +345,23 @@ Every `case` in `lx_dispatch()`; 190 numbers are handled, anything else returns 
 | 270 / 271 | pselect6 / ppoll | signal mask argument ignored |
 | 273 / 274 | set_robust_list / get_robust_list | stored and returned, not walked |
 | 280 | utimensat | UTIME_NOW/UTIME_OMIT handled; NULL path to fd check |
+| 282 / 289 | signalfd / signalfd4 | reads `signalfd_siginfo` records for pending signals in the mask (section 6.22) |
 | 285 | fallocate | ENOTSUP |
 | 288 | accept4 | `lx_accept` with `SOCK_NONBLOCK` and `SOCK_CLOEXEC` |
 | 292 / 293 | dup3 / pipe2 | O_CLOEXEC, O_NONBLOCK |
+| 295 / 296 / 327 / 328 | preadv / pwritev / preadv2 / pwritev2 | `lx_prw` per iovec; offset -1 in the v2 forms uses the file position |
+| 297 | rt_tgsigqueueinfo | like tgkill (v10.43) |
+| 299 / 307 | recvmmsg / sendmmsg | one `lx_msg` per message; after the first message the rest do not wait |
 | 302 | prlimit64 | own pid only, get only |
+| 277 / 306 | sync_file_range / syncfs | 0 for a valid fd |
+| 314 / 315 | sched_setattr / sched_getattr | 0 / a `SCHED_OTHER` record |
 | 309 | getcpu | |
 | 318 | getrandom | kernel ChaCha20 generator, at most 1 MiB |
+| 325 | mlock2 | 0 |
 | 334 | rseq | ENOSYS (musl falls back) |
 | 436 | close_range | `CLOSE_RANGE_CLOEXEC` (4) supported |
 
-Not present (ENOSYS): `epoll_*`, `eventfd`, `timerfd`, `signalfd`, `inotify`, `memfd_create`, `statx`, `getdents`, process-shared futexes across different processes, `ITIMER_VIRTUAL`/`ITIMER_PROF` expiry.
+Not present (ENOSYS): real-time signals (32-64), `SIGEV_THREAD` timers (glibc uses signal 32 for them), `copy_file_range`, `io_uring`, `clone3` (glibc falls back to `clone`), process-shared futexes across different processes, `ITIMER_VIRTUAL`/`ITIMER_PROF` expiry.
 
 ## 6.5 The C libraries
 
@@ -474,6 +498,72 @@ Three other third-party components are kernel code, not user programs:
 * Lua 5.5.1 (`third_party/lua`): compiled with `LUAF` (freestanding, SSE enabled) against its own mini libc `nvxlibc.c` (190 lines, output through `lua_emit`), linked as `lua_all.o`; `nvxlua.c` exposes `nvx.window/clear/rect/text/present/waitkey...` and `nvx_lua_run()` backs the shell's `lua <code>` command.
 * Doom (`third_party/doom`, doomgeneric): `build_doom.sh` compiles it with SSE at 640x400, `ld -r` combines it and `objcopy --keep-global-symbol` keeps only the interface (`doomgeneric_Create`, `doomgeneric_Tick`, `DG_ScreenBuffer`, `dsh_set_*`, `webp_decode`). `apps/games/doom.c` loads the WAD from a boot module or `DOOM1.WAD`/`FREEDOOM.WAD`/... on the FAT disk (32 MiB buffer).
 * NTFS (ntfs-3g, `third_party/ntfs`): built with `-Ulinux -U__linux__ ...` against `compat/` headers and `ntfslibc.c`, mkntfs with `-Dmain=mkntfs_main`; used by `fs/ntfs/ntfsk.c`.
+
+## 6.7a Ports built from source: TCC, vim, less, curl, git, Dropbear (v10.07)
+
+`tools/build_ports2.sh [build/ports2]` builds these with their own build systems, each step cached by a stamp file (`build/ports2/.<name>`; delete it to rebuild one), and puts the result in `build/ports2/root`, which `build.sh` copies over the sysroot before `mksysroot.py`.
+
+The compiler is `tools/mcc-port`: clang with `--sysroot=build/ports2/sys`, the musl headers, `-fPIE`, and for linking the shared musl start files, `-pie` and `-Wl,-dynamic-linker,/lib/ld-musl-x86_64.so.1` (`-shared` gives a shared library instead). Linking through clang with a sysroot keeps the build machine's libraries out: `mcc-dyn` (gcc) silently found `/usr/lib/x86_64-linux-gnu/libcairo.so` when vim's configure asked for it. `PKG_CONFIG=false` does the same for configure scripts. Libraries the ports share are built static into `build/ports2/sys`.
+
+| Step | Source | How | Result in the image |
+|---|---|---|---|
+| kernel headers | the build machine's `/usr/include/{linux,asm-generic}` and `x86_64-linux-gnu/asm` | copied | `/usr/include/linux`, `asm`, `asm-generic` (mlibc's links now resolve too) |
+| zlib | `third_party/zlib` 1.3.2 | compiled with `-fPIC`, `ar` | `libz.a`, `zlib.h`, `zlib.pc` |
+| ncurses | `third_party/ncurses` (snapshot, 6.6) | `--without-shared --enable-widec --with-termlib --with-fallbacks=xterm-256color,xterm,vt100,linux,ansi,dumb,screen,tmux-256color`, host `tic`/`infocmp` | static `libncursesw.a`, `libtinfow.a`; no terminfo files needed |
+| mbedTLS | `third_party/mbedtls` 3.6.7 | `make lib` | `libmbedtls/x509/crypto.a` |
+| curl | `third_party/curl` 8.23.0 (`autoreconf` already run) | `--with-mbedtls --with-zlib --enable-shared --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt`, no LDAP, RTSP, DICT, TELNET, TFTP, POP3, IMAP, SMTP, GOPHER, MQTT | `/usr/bin/curl`, `/usr/lib/libcurl.so.4` |
+| vim | `third_party/vim` 9.2.1225 | `--with-features=huge --with-tlib=tinfow`, no GUI, X, NLS, channel, canberra, sodium, gpm; cache variables for cross-configure; `vim_cv_timer_create=no` | `vim` and links `vi view vimdiff ex rview`, `xxd`, `/usr/share/vim/vim92` (without tutor, spell, lang, print, tools, macros, most of `doc`) |
+| less | `third_party/less` 712 (`help.c`, `funcs.h`, `lessmsg.inc`, `configure` generated) | `--with-regex=posix` | `less`, `lessecho` |
+| git | `third_party/git` 2.56.0 | `make` with `NO_OPENSSL NO_EXPAT NO_GETTEXT NO_TCLTK NO_PERL NO_PYTHON NO_REGEX NO_ICONV SKIP_DASHED_BUILT_INS INSTALL_SYMLINKS`, `CURLDIR` | `git` (links `git-receive-pack`, `git-upload-archive`, `git-upload-pack`), `/usr/libexec/git-core` without the Perl and Python commands and the server programs (`git-daemon`, `git-http-backend`, `git-shell`, `scalar`, `git-imap-send`), templates |
+| Dropbear | `third_party/dropbear` 2026.94 | `MULTI=1 PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp"`, no lastlog/utmp/wtmp/PAM/syslog | `dropbearmulti` and links `ssh dbclient scp dropbear dropbearkey dropbearconvert` |
+| TCC | `third_party/tinycc` (`mob`, `NVX-VERSION` has the commit) | `tools/build_tcc.sh`: a host TCC builds `libtcc1.a` and the runtime objects, then `tcc` itself is built with `mcc-dyn`; `--config-musl --config-pie` | `tcc`, `cc`, `/usr/lib/tcc`, `/usr/lib/musl` (headers, start files, a real copy of the shared `libc.so` to link against, static `libm.a` and the other empty musl libraries) |
+
+Configuration files written by the script: `/etc/ssl/certs/ca-certificates.crt` (the Mozilla store from `lib/crypto/roots`), `/etc/ld-musl-x86_64.path`, `/etc/shells`, `/etc/dropbear/README`, `/etc/gitconfig` (`core.pager = less -FRX`, `core.editor = vim`, `init.defaultBranch = main`, `http.sslCAInfo`).
+
+Notes:
+
+* vim's time limits for searches and syntax use `setitimer` because NoovexOS has no `timer_create`; with `timer_create` vim showed "Could not set timeout" on every redraw and seemed to hang. Start-up reads about 1 MB of scripts in 1 KB pieces (musl's stdio buffer); about 7 s under QEMU without KVM.
+* curl and git use the Mozilla root store. A private CA: `curl --cacert file`, `git -c http.sslCAInfo=file`. `/etc/ssl/local-ca.pem` (used by the kernel and `fetch`) is not read by curl.
+* git's pager is `less -FRX`, so short output is printed directly.
+* `ssh` connects with keys (`dropbearkey -t ed25519 -f ~/.ssh/id_dropbear`, `ssh -i ...`) or a password. The server works for commands, `scp` and `ssh -T`; interactive logins need pseudo-terminals, which NoovexOS does not have yet. Accounts whose shell is the built-in `/bin/nsh` get `/bin/sh` (bash) (`fill_passwd` in `common-session.c`). Host keys are created in `/etc/dropbear` with `dropbear -R`.
+* The native shell `nsh` does not split commands at `;`; type them one by one or use `bash`.
+
+Compressed in the image these add about 10 MB; the kernel grew from 78 MB to 89 MB.
+
+## 6.7b NetSurf (v10.07)
+
+`tools/build_netsurf.sh [build/netsurf] [build/ports2/sys]` builds the NetSurf web browser after the ports above (it needs their zlib, curl and mbedTLS). All sources are in `third_party/netsurf` (one directory per project, `NVX-VERSION` has the upstream commit; test data removed).
+
+| Step | Source | How |
+|---|---|---|
+| libjpeg-turbo 3.2.0, libpng 1.6.59, FreeType 2.15.0, expat 2.9.0 | GitHub tags | CMake with `mcc-port` (`CMAKE_SYSTEM_NAME=Linux`, static, PIC, no SIMD for jpeg) |
+| utf8proc 2.12.0 | GitHub tag | one file, `libutf8proc.a` and a `.pc` file |
+| gperf 3.2 | `gnu-mirror-unofficial/gperf` | built for the build machine from the sources directly (`HAVE_DYNAMIC_ARRAY`); libhubbub and libsvgtiny need it |
+| buildsystem, libwapcaplet, libparserutils, libhubbub, libdom, libcss, libnsgif, libnsbmp, libnsutils, libnspsl, libsvgtiny, libnsfb | `github.com/netsurf-browser/*` master | NetSurf's own buildsystem: `make PREFIX=/usr DESTDIR=build/ports2/sys CC=mcc-port BUILD_CC=gcc HOST=x86_64-linux-musl COMPONENT_TYPE=lib-static install` |
+| NetSurf | `netsurf-browser/netsurf` master | `make TARGET=framebuffer` with `Makefile.config`: no Duktape (JavaScript), OpenSSL, iconv, RISC OS sprites, WebP, JPEG XL, nslog; SVG and utf8proc on; frontend `noovex`; FreeType fonts from `/usr/share/fonts/truetype/dejavu`; resources in `/usr/share/netsurf` |
+
+`pkg-config` looks only in the ports sysroot (`PKG_CONFIG_LIBDIR`, `PKG_CONFIG_SYSROOT_DIR`); an empty `libiconv.a` satisfies NetSurf's `-liconv` (musl has iconv in libc). JavaScript needs `nsgenbind`, which needs flex; flex cannot be installed on the build machine used for this release and its own sources need an existing flex. libnslog needs flex too and is left out.
+
+In the image: `/usr/bin/netsurf-fb`, `/usr/bin/netsurf` (link), `/usr/share/netsurf` (CSS, messages, welcome page), the DejaVu fonts (Sans, Sans Bold, Oblique, Bold Oblique, Serif, Serif Bold, Mono, Mono Bold) with their licence in `/usr/share/fonts/truetype/dejavu` (from `third_party/fonts/dejavu`). About 2.6 MB compressed.
+
+### The `noovex` surface (`libnsfb/src/surface/noovex.c`)
+
+| Part | What it does |
+|---|---|
+| `initialise` | opens `/dev/fb0`, reads the size with `FBIOGET_VSCREENINFO`/`FBIOGET_FSCREENINFO`, allocates a 32-bit XRGB back buffer of the screen size (the size NetSurf asks for is ignored), opens `/dev/input/mice` non-blocking, and puts the tty (fd 0) into raw mode (no `ICANON`, `ECHO`, `ISIG`, `IXON`, `ICRNL`) |
+| `update` / `claim` / `cursor` | software pointer like the SDL surface: cleared on claim, drawn on update; changed rectangles are written to `/dev/fb0` with `lseek` and `write`, one write for full-width rectangles |
+| `input` | `poll` on the tty and the mouse with NetSurf's timeout; mouse packets (3 bytes, PS/2 sign convention) become button events (left 401, right 403, middle 402) and one `MOVE_ABSOLUTE` from ioctl `0x80084E50` (relative moves only if that fails); tty bytes become key events: letters, digits and symbols with `LSHIFT` around shifted characters, Ctrl+letter as `LCTRL`, `ESC [ A/B/C/D/H/F` and `ESC [ n ~` for arrows, Home, End, Insert, Delete, Page Up/Down, F5, Backspace (127), Return, Tab, Escape |
+| `finalise` | restores the termios and closes the devices; the kernel then shows the console or desktop again |
+
+While a program has `/dev/fb0` open the desktop or console is not drawn (`g_fb0_open`), keys go to the program's tty, and the mouse goes to `/dev/input/mice` (from the desktop input loop, and since v10.07 from `live_input` in the text console).
+
+### Path drawing in the framebuffer frontend
+
+`framebuffer_plot_path` (`frontends/framebuffer/framebuffer.c`) used to log "path unimplemented". It now applies the 2x3 transform, flattens cubic Bezier segments into 16 lines each, and for each sub-path fills with `nsfb_plot_polygon` and strokes with `nsfb_plot_polylines` (closing the line for `PLOTTER_PATH_CLOSE`). Sub-paths are filled one by one, so holes made by a second sub-path (even-odd or non-zero rules across sub-paths) are not cut out.
+
+### Using it
+
+`netsurf` opens the welcome page, `netsurf URL` a page. Close with the window button at the top right. Ctrl+C, Ctrl+V and Ctrl+X reach NetSurf as copy, paste and cut (not tested); Ctrl+A in the address bar does nothing, so click and use Backspace to replace an address. There are no tabs or windows; the back, forward, history, stop and reload buttons are in the toolbar. The mouse wheel is not passed on (`/dev/input/mice` has no wheel byte); use the scroll bars or Page Up/Down.
 
 ## 6.8 Test programs
 
@@ -718,8 +808,8 @@ For a shared library, compile with `-fPIC` against the musl headers and link wit
 ### Limits
 
 - Only PIE (`ET_DYN`) programs can have an interpreter; a non-PIE `ET_EXEC` with `PT_INTERP` is refused.
-- `mprotect` is a no-op, so RELRO does not make pages read-only.
-- Text relocations work (every page is writable) but are not needed by gcc's default PIE code.
+- RELRO pages are made read-only with `mprotect` since v10.06.
+- Until v10.07 the shared musl searched only `/lib` and the build machine's `musl-sh/lib`, so `DT_NEEDED` libraries outside `/lib` were not found. Now it is built with `libdir=/usr/lib` and `/etc/ld-musl-x86_64.path` lists `/lib`, `/usr/local/lib` and `/usr/lib`.
 
 ---
 
@@ -852,6 +942,16 @@ Inside `play`, the input is an `AVIOContext`: a local file, `httpio`, or `ks_rea
 
 The kernel main loop calls `video_fast` and then `browser_media_fast` when nothing else changed. It also no longer recomposes the desktop after every scheduler slice in which a program ran: `jc_step` returns bit 0 when a program ran and bit 1 when one marked the screen dirty; the desktop redraws on bit 1, on terminal output, or every 50 ticks. Before v9.12 a decoding process got only the time between full redraws.
 
+## 6.14a mlibc (`third_party/mlibc`, `/usr/mlibc`)
+
+mlibc is a portable C library written for hobby operating systems. NoovexOS has its own mlibc target, `sysdeps/noovex` (host system `noovex` in `ci/noovex-x86_64.cross-file`); it starts as a copy of mlibc's Linux layer, because NoovexOS programs use the Linux system-call interface, and can grow NoovexOS-specific parts from there. The top-level `meson.build` and `tests/meson.build` treat `noovex` like `linux`.
+
+Building: `tools/build_mlibc.sh` (called by `build.sh`) uses the meson copy in `tools/meson`, clang 18 or newer, lld and ninja, Linux kernel headers from `/usr/include` (linked into `build/mlibc-khdr`) and the freestanding compiler headers in `subprojects/freestnd-*`. Two changes make it build with clang 18: `-D__cpp_concepts=202002L` in the cross file (for `std::expected`) and explicit `frg::string<MemoryAllocator>` instead of class template argument deduction through an alias in `locale.cpp`, `netdb.cpp` and `sysdeps/noovex/generic/sysdeps.cpp`; the `tlsdesc` test is only built when the compiler accepts `-mtls-dialect=gnu2`.
+
+In the image: `/usr/mlibc/lib` (`ld.so`, `libc.so`, `libm.so`, `libpthread.so`, ... and static libraries, start files `crt1.o`, `Scrt1.o`, `crti.o`, `crtn.o`), `/usr/mlibc/include` (with links to the kernel headers `linux`, `asm` and `asm-generic`), and `mlibc-gcc` with `mlibc-gcc.specs` (dynamic linker `/usr/mlibc/lib/ld.so`, run path `/usr/mlibc/lib`). `mlibc-gcc` needs a `gcc` inside NoovexOS, which is not in the image yet (section 6.15); programs can be built on the build machine against the same files.
+
+Test results inside NoovexOS (mlibc's own suite, built against `/mlt`): 176 of 242 pass, against 212 of 242 on Linux. The differences are mostly system calls NoovexOS does not have or answers differently (`nanosleep` details, `realpath`, `waitid`, `ppoll`, resource limits, scheduling priorities, System V message queues and semaphores, `pidfd`, `sigqueue`, `xattr`) and two tests that call the AVX2 string functions directly, which QEMU's default CPU does not have.
+
 ## 6.15 glibc programs
 
 ### Building glibc
@@ -869,9 +969,9 @@ The kernel main loop calls `video_fast` and then `browser_media_fast` when nothi
 | `/opt/gnu/bin` | bash, coreutils (ls, cat, sort, wc, ...), grep, sed, awk, find, xargs, diff and a glibc test program `gthreads` |
 | `/etc/nsswitch.conf` | `files` for passwd and group, `files dns` for hosts |
 
-`mksysroot.py` packs the tree into one file, format `NVS2`: a 16-byte header (magic, entry count, block count, string table offset), a block table (type, offset, compressed and original size), 24-byte entries (name and link target as string table offsets, mode, block, offset in the block, size), the string table, then the blocks. Files are grouped into blocks of up to 8 MiB; ELF files go into blocks compressed with xz and the x86 branch filter, other files into plain xz blocks. It is linked into the kernel as `sysroot_bin.o`. The old `NVSR` format (one raw-deflate stream per file) is still read.
+`mksysroot.py` packs the tree into one file, format `NVS2`: a 16-byte header (magic, entry count, block count, string table offset), a block table (type, offset, compressed and original size), 24-byte entries (name and link target as string table offsets, mode, block, offset in the block, size), the string table, then the blocks. Files are grouped into blocks of up to 8 MiB; ELF files go into blocks compressed with xz and the x86 branch filter, other files into plain xz blocks. Since v10.41 it is no longer linked into the kernel: it is the file `/sysroot/<CRC>.BIN` on the boot disk, loaded by the boot loader (section 2.13b). The old `NVSR` format (one raw-deflate stream per file) is still read.
 
-The sysroot is a stack of layers. Layer 0 is the one in the kernel; every installed Debian package is one more layer (section 6.16). `sysroot_add_layer` and `sysroot_del_layer` add and remove layers; after each change the index is rebuilt:
+The sysroot is a stack of layers. Layer 0 is the base file (always slot 0, also when it is added later from the boot partition or a download); every installed Debian package is one more layer (section 6.16). `sysroot_add_layer` and `sysroot_del_layer` add and remove layers; after each change the index is rebuilt:
 
 - every path is a node in a hash table (FNV-1a, open addressing); directories are implicit, created from the paths of their files, and keep a list of their children;
 - links in layer 0 are placed first, then all package layers (newest slot first), then the files of layer 0; the first file placed at a path wins, so a package can replace a library from layer 0;
@@ -924,7 +1024,10 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 ### Resolving
 
 - The index is decompressed into memory and parsed into records (name, version, architecture, dependencies, provides, file name, size, SHA256, description). Only `amd64` and `all` are kept. Names are hashed; for several versions the highest wins, compared with the Debian rules (epoch, upstream, revision, `~` sorts first).
-- A dependency group (`a | b (>= 1)`) is met when any alternative is installed, already planned, provided by a planned package, `Essential: yes` or `Priority: required`, or part of NoovexOS. Otherwise the first alternative found (by name or `Provides`) is planned and resolved in turn. Version limits and architecture qualifiers are read but not enforced. `Recommends` are not installed.
+- A dependency group (`a | b (>= 1)`) is met when any alternative is already planned or provided by a planned package, is installed in a version that meets the limit, is in the Linux files in a version that meets the limit (`/usr/share/noovex/provided.txt`, written by `build.sh` from the build machine's `dpkg` for every library in `/lib64`), or is `Essential: yes`, `Priority: required` or part of NoovexOS. Otherwise the first alternative whose index version meets the limit is planned and resolved in turn (v10.44: before that, version limits were not checked, so a Debian 13 program could get the older library of the Linux files). Architecture qualifiers are read but not enforced. `Recommends` are not installed. Every `apt install` also checks the dependencies of the packages already installed and adds what is missing or too old.
+- Files of a package are written to the NoovexOS file system even when the Linux files have a file at the same path (v10.44: before that, `vfs_open` opened the read-only Linux-files copy and the write was lost). `vfs_lookup_rw` (fs/vfs/vfs.c) makes a file opened for writing or creating a NoovexOS file, copying the old content first unless `O_TRUNC` is given; a NoovexOS file then hides the Linux-files copy of the same path, also for Linux programs (`lx_open`).
+- After installing or removing, apt writes `/etc/ld.so.cache` (format `glibc-ld.so.cache1.1`, entries sorted like `_dl_cache_libcmp`) with every library of an installed package whose name is its `SONAME` and that lies in `/usr/lib/x86_64-linux-gnu`, `/lib/x86_64-linux-gnu`, `/usr/lib`, `/lib`, `/usr/local/lib` or `/usr/lib64` (`ld_cache_build` in fs/pkg/apt.c). glibc's loader reads the cache before its default folders, so libraries installed by apt win over the Linux-files copies in `/lib64`. When Debian's `libc6` is installed, apt also copies its `ld-linux-x86-64.so.2` to `/lib64/ld-linux-x86-64.so.2` as a NoovexOS file; `jc_find_lib` (core/proc/jobs.c) prefers NoovexOS files, so all glibc programs then use Debian's loader and C library together. To go back: `rm /lib64/ld-linux-x86-64.so.2` and `rm /etc/ld.so.cache` in the NoovexOS Terminal.
+- Unpacking does not save the file system after every file: `g_fs_batch` (fs/nvx/nvx4.c) holds back `nvx3_sync` and `nvx3_flush_meta` until the package is unpacked, then one `nvx3_sync_all` writes everything; `mkdirp` saves the folder tree only when it made a folder. Before v10.44 every file saved the whole file system index, so a package with thousands of files (LibreOffice) froze an installed system for a very long time. The kernel log gets `apt: unpacked <name>, <n> files in <ms> ms, saved to disk in <ms> ms`.
 - Packages that NoovexOS provides itself are never installed: `libc6`, `libc-bin`, `libgcc-s1`, `python3`, `python3.13`, `python3-minimal`, `libpython3.13-stdlib` and the other Python core packages, `bash`, `coreutils`, `dpkg`, `apt`, `base-files`, `debconf` and a few more (`g_prot`). `apt install python3` answers that it is already the newest version.
 
 ### Downloading
@@ -962,6 +1065,32 @@ CPython 3.13 is built from `third_party/src/cpython-3.13.tar.xz` by `tools/build
 | `site-packages/debian-dist-packages.pth` | adds `/usr/lib/python3/dist-packages`, where Debian's `python3-*` packages install, so modules from `apt install python3-...` import |
 
 `PYTHON_BASIC_REPL=1` is set in the default environment: the new 3.13 prompt needs a terminfo database, the basic prompt does not. `python3 FILE.py`, `python3 -c`, scripts starting with `#!/usr/bin/env python3` and the interactive prompt work in the Terminal and in bash.
+
+## 6.17a Python libraries, pip and venv (v10.58)
+
+Three ports (section 6.29) add to `/usr/lib/python3.13/site-packages`:
+
+| Port | Contents |
+|---|---|
+| `python-pip` | pip 26.2.1 from the wheel CPython ships, the commands `pip`, `pip3`, `pip3.13`, and `/etc/pip.conf` (`root-user-action = ignore`, since the Terminal runs as root) |
+| `python-web` | requests, urllib3, idna, certifi, charset-normalizer, httpx, httpcore, h11, anyio, sniffio, websockets (with its C speedups), Flask (with Werkzeug, Jinja2, MarkupSafe, itsdangerous, blinker, click and the `flask` command), Bottle, typing_extensions |
+| `python-data` | numpy 2.5.3 (with OpenBLAS and libgfortran inside `numpy.libs`), pandas 3.0.5, python-dateutil, six |
+
+httpx, httpcore, websockets and Bottle are vendored from their GitHub release tags in `third_party/pylibs/`. The others are manylinux wheels for CPython 3.13; `nvxport.py` takes them from `build/pywheels`, else from the build machine's Python 3.13 (never from Debian's `/usr/lib/python3/` and never editable installs), else `pip download` (its messages go to `build/pywheels/pip.log`). Folders named `tests` are left out, which keeps the libraries at about 88 MB (the Linux files grew from 188 to 210 MB of the 268 MB slot). Every package has a correct `RECORD`, so `pip list`, `pip show` and `pip uninstall` see them.
+
+How installing works. The built-in libraries are part of the read-only Linux files. Three kernel changes make pip behave as on a normal Linux system:
+
+| Change | Where | Effect |
+|---|---|---|
+| `access(dir, W_OK)` returns `EROFS` for a directory that exists only in the Linux files | `lx_access` | pip sees that site-packages is not writable and says "Defaulting to user installation"; packages go to `~/.local/lib/python3.13/site-packages`, commands to `~/.local/bin`. A newer version of a built-in package (`pip install -U requests`) is installed there and shadows the built-in one; `pip uninstall` brings the built-in version back |
+| Creating a file or folder inside a directory that exists only in the Linux files creates the missing parent folders in the writable tree first | `vfs_materialize_parent` (`fs/vfs/vfs.c`), used by `lx_parent_ok`, `lx_mkdir`, `lx_rename` and `vfs_open` with `O_CREAT` | before, folders deeper than 3 levels (`/usr/lib/python3.13/site-packages/x`) could not be created at all (`ENOENT`) |
+| A symbolic link in the writable tree whose target is in the Linux files is followed by `stat`, `open` and `exec` | `ux_lookup_ex` / `ux_resolve_links` (`fs/vfs/unixfs.c`), `ux_stat2`, `vfs_open`, `jc_find_prog` | a venv's `bin/python -> python3.13 -> /usr/bin/python3.13` works; before, `os.path.exists` was false and running it failed, so `python3 -m venv` stopped with `ENOENT` |
+
+The command search of the Terminal also looks in `$HOME/.local/bin`, after the system folders and never for root unless HOME is `/root` (`jc_script`), and login and `su` set `PATH=/usr/local/bin:/opt/gnu/bin:/bin:/usr/bin:$HOME/.local/bin` (`acct_set_path`). A link followed this way must sit in folders the user may enter (`ux_dir_ok` on every hop); new parent folders are only made for absolute paths without `.` or `..` parts and after the rename source was found. `access(W_OK)` answers `EROFS` for root too, so root's pip also installs into `/root/.local`.
+
+Tested in the emulator (UEFI, 4 GB): numpy and pandas (matrix inverse, a 200x200 product, groupby, date ranges, CSV), `ctypes.CDLL("libc.so.6").getpid()`, requests, httpx and urllib3 against a local server, a Flask and a Bottle app, a websockets echo over asyncio; `pip install` over HTTPS from a local package index with a dependency and a console command, `pip uninstall`, `pip install -U six` over the built-in six and back, `python3 -m venv` and pip inside it (the venv stays separate from the system). Importing numpy and pandas takes about 20 s under QEMU without KVM.
+
+Not tested: downloading from pypi.org itself (the test machine cannot reach it), packages that must be compiled during installation (they need `gcc` and the Python headers; `gcc` is in the Linux files, the headers are not yet).
 
 ## 6.18 The Python IDE package (`python3-ide`)
 
@@ -1057,3 +1186,116 @@ IDLE runs in its normal mode, with the user code in a second Python process conn
 ### Opening Python files
 
 A double click on a `.py` file (Files, desktop icons, search results) opens it in IDLE (`idle3 'path'`) instead of the NoovexOS Editor.
+
+## 6.22 inotify, signalfd, file locks and POSIX timers (v10.42)
+
+All four live in `sys/linux/linux.c` next to `eventfd` and `timerfd`. The test program `nvx-abitest` (`usr/glibc/nvx-abitest.c`, in `/opt/gnu/bin`) checks them together with `waitid`, `preadv`/`pwritev`, `sendmmsg`/`recvmmsg`, the old `getdents`, `capget` and `utimes`; it gives the same result on NoovexOS and on Linux (13 of 13), and check.py runs it in the SMP group.
+
+**inotify.** `inotify_init1` makes a descriptor of device 22 (`LX_INOFD`) with up to 64 watches and an 8 KiB event queue; 16 such descriptors can exist. Events come from the Linux system calls themselves: while any inotify descriptor is open, `lx_dispatch_ino` wraps `lx_dispatch` and, after a successful call, reports IN_CREATE (open with O_CREAT of a new file, mkdir, link, symlink), IN_DELETE (unlink, rmdir), IN_MOVED_FROM and IN_MOVED_TO with the same cookie (rename), IN_ATTRIB (chmod, chown, utime), IN_MODIFY (write, truncate, open with O_TRUNC) and IN_CLOSE_WRITE or IN_CLOSE_NOWRITE (close). A watch on the file itself also gets IN_DELETE_SELF or IN_MOVE_SELF, followed by IN_IGNORED. Repeated IN_MODIFY events for the same name are merged, a full queue ends with one IN_Q_OVERFLOW, and `read` returns whole events only (EINVAL if the buffer is too small for the first one). Changes made by the native NoovexOS apps (Files, the Editor) do not produce events yet.
+
+**signalfd.** Device 23 (`LX_SIGFD`); the mask is stored per descriptor and can be changed with `signalfd(fd, ...)`. `read` takes the pending signals of the calling thread and of its process that are in the mask (lowest number first) and returns one 128-byte `signalfd_siginfo` per signal with `ssi_signo`, `ssi_code` and `ssi_uid`; `poll` and `epoll` report the descriptor readable while such a signal is pending. As on Linux, the program blocks the signals with `sigprocmask`, otherwise they are delivered normally first.
+
+**Locks.** `flock` and `fcntl` record locks are real advisory locks in a table of 256 ranges (`g_lxlk`), keyed by the file (its file slot, or a hash of the path for the read-only Linux files). `flock` locks belong to the open file and end when its last descriptor closes (`lx_lock_vfclose`, called from `vf_unref`); POSIX locks belong to the process and end when it closes any descriptor of the file or exits; open-file-description locks (F_OFD_*) belong to the open file. Ranges are split on unlock as on Linux, F_GETLK reports the first conflicting lock and its process, and the waiting forms (LOCK_EX without LOCK_NB, F_SETLKW) sleep until the lock is free or a signal arrives (EINTR). There is no deadlock detection.
+
+**POSIX timers.** `timer_create` keeps up to 64 timers (`g_pt`) for CLOCK_REALTIME, CLOCK_MONOTONIC, the boot-time clocks and the CPU-time clocks (which count as monotonic). The scheduler checks them in `jc_itimer` (`lx_ptimer_tick`), so they have the 10 ms resolution of the scheduler tick. On expiry the signal goes to the process (SIGEV_SIGNAL) or to one thread (SIGEV_THREAD_ID) with `si_code` SI_TIMER; SIGEV_NONE timers only count. Signals 32-64 are refused with EINVAL, so glibc's SIGEV_THREAD form fails cleanly (it uses signal 32).
+
+## 6.23 GTK 3 programs (v10.42)
+
+The Linux files include the GTK 3 runtime of the build machine (GTK 3.24, GDK, Pango, Cairo, HarfBuzz, fontconfig, FreeType, GLib/GIO, ATK, gdk-pixbuf, libepoxy and the X client libraries, about 20 MB more, copied by the `ldd` loop in `build.sh`), `/etc/fonts`, the shared MIME database files gdk-pixbuf uses to recognise PNG (`/usr/share/mime/mime.cache`, `magic`, `globs2` and the small index files, without the XML sources) and the demo program `gtkdemo` (`usr/x11/gtkdemo.c`). It declares the few GTK functions it uses itself, so the build machine only needs the GTK runtime, not its development headers.
+
+Typing `gtkdemo` in the Terminal starts the X server if needed (the name is in `x_needs`, section 6.21) and opens a GTK window with a label, an entry, a switch, a drop-down list, a slider joined to a progress bar, a text view and two buttons; `gtkdemo --selftest` also writes `/tmp/gtkdemo.ok`. The program sets `GDK_BACKEND=x11`, `NO_AT_BRIDGE=1`, `GSETTINGS_BACKEND=memory` and the XDG folders before `gtk_init`, the same settings `nvx-xrun` uses for GTK programs installed with apt.
+
+Limits: there is no SVG image loader (librsvg), so the Adwaita check box and radio button marks are missing (the demo uses a switch); there is no icon theme, so named icons fall back to GTK's own built-in ones; there is no D-Bus session bus, so GTK features that need one (portals, the accessibility bridge) are off.
+
+## 6.24 LibreOffice, D-Bus, the keyring and Chromium (v10.43)
+
+LibreOffice. The test package was built from the build machine's LibreOffice 24.2 (`/usr/lib/libreoffice`, `/etc/libreoffice` and 86 libraries that are not in the Linux files, 174 MB). It uses the plain X plug-in (`SAL_USE_VCLPLUGIN=gen`). Three things stopped it: `oosplash` refuses to start when `stat("/proc/version")` fails, and `stat` only knew real files, so `lx_stat_path` and `lx_access` now ask the procfs (`procfs_size` in `fs/vfs/vfs.c`); without `/usr/share/X11/locale` Xlib cannot open an input method (now copied by `build.sh`); and `nvxwm` shrank windows bigger than the screen to three quarters without telling the program, so LibreOffice drew its contents at the wrong place. `nvxwm` now fits windows to the screen (`fit`) and sends a synthetic `ConfigureNotify` with the real position after every map, move and resize (`send_config`), as ICCCM asks. The first start ends with exit code 81 (LibreOffice restarts itself after making the profile); `paperconf` is missing (code 127), which only means the default paper size.
+
+D-Bus and the keyring. `nvx-xrun` sets `DBUS_SESSION_BUS_ADDRESS` from `/usr/bin/nvx-session-bus`, which starts `dbus-daemon --session` on `/tmp/.nvx-session-bus` once. `/usr/share/dbus-1/services/org.freedesktop.secrets.service` lets D-Bus start `/usr/bin/nvx-keyring` on demand. nvx-keyring speaks the D-Bus wire protocol itself (no python-dbus) and implements the Secret Service: `OpenSession` (plain only, so libsecret falls back from Diffie-Hellman), `SearchItems`, `Unlock`, `GetSecrets`, `ReadAlias`, `CreateItem` (replaces an item with the same attributes), `GetSecret`, `SetSecret`, `Delete`, the properties and the signals. For this the Unix sockets got: a socket file on disk for path names (`stat`, `chmod`, `[ -e ]` work), `sendto`/`recvfrom`, `SO_PASSCRED` with `SCM_CREDENTIALS` and the real peer pid in `SO_PEERCRED`.
+
+Chromium. With a stripped Chromium 141 as the test program (`nvx-xrun` adds `--no-sandbox --disable-gpu --disable-gpu-compositing --password-store=gnome-libsecret` to programs that have a `resources.pak` next to them): the browser process, the zygotes, the crash handler and the page processes start and the window opens with its title. Found and fixed on the way, in this order: the image window for big programs; `/proc/self/fd` as a folder; the number of links of `/proc/self/task` (Chromium checks that a process has one thread before it forks); `libX11-xcb.so.1` (opened with `dlopen`); the reservation table; `stat` of `/proc/self/fd/N`; memfd and `/dev/shm` sharing between processes. Left: helper processes end with code 127, the page stays empty.
+
+v10.44: `execve` of `/proc/self/exe` or `/proc/<pid>/exe` runs that process's program (Chromium starts every helper this way; before, all helpers ended with code 127 in a loop). epoll entries remember the open file (`vi[]`) and are dropped when the descriptor number now points at another file; epoll tables are freed on close (they leaked) and there are 256 tables of 128 entries. Unix sockets: 512 sockets, up to 64 passed descriptors per message and 64 queued messages with descriptors (a sender waits instead of losing them), the descriptor queue is allocated per socket. With these, Chromium renders pages in `--single-process` mode (a `data:` page, then `st/p/v42.html` over the network with AVIF images and a worker). In the normal mode the browser window, tabs and address bar work, the renderers start (`ChildThreadImpl::EnsureConnected`) and stay idle in `epoll_wait`/`futex`, the page stays at "Loading" and the browser later restarts the network service and kills renderers. `--disable-features=MojoIpcz` and `--no-zygote` did not change this. Next step: trace the Mojo messages between the browser and one renderer (`lxtrace on` limited to two pids). `nvx-xrun` therefore adds `--single-process` for Chromium-based programs; Electron programs (Claude Desktop, VS Code, Discord) get the same flag and were not tested, because none of them can be downloaded on the build machine.
+
+
+## 6.25 /proc/cpuinfo, pseudo-terminals, sound, downloaded packages and notifications (v10.45)
+
+`/proc/cpuinfo`. There were two copies: a fixed text in `proc_gen` (`fs/vfs/unixfs.c`, "vendor_id: NoovexOS", five flags) and a short list in `procfs_build` (`fs/vfs/vfs.c`). Both now call `cpuinfo_linux` in `arch/x86_64/cpu/cpuinfo.c`, which reads the processor with `cpuid` and writes one block per online processor in the Linux format: `vendor_id`, `cpu family`, `model`, `model name`, `stepping`, `microcode`, `cpu MHz` (from the TSC frequency), `cache size` (leaf 4 on Intel, leaf 0x80000006 on AMD), `physical id`, `siblings`, `core id`, `cpu cores`, `apicid`, `cpuid level`, `flags`, `bugs`, `bogomips`, `clflush size`, `address sizes` and `power management`. The flags use the Linux names in the Linux order (leaf 1 EDX and ECX, 0x80000001, leaf 7 sub-leaf 0 and 1, leaf 0xD sub-leaf 1, 0x80000008, leaf 6), so SSE3 is `pni`. Checked against the build machine's Linux: every field matches except `microcode` (NoovexOS prints 0) and five flags that the Linux kernel makes up itself (`rep_good`, `nopl`, `tsc_known_freq`, `cpuid_fault`, `ibrs_enhanced`). `cpuinfo_has("pni")` answers a single flag. The procfs buffer grows to 32 KB on first use. Debian's `chromium` start script runs `grep -q sse3 /proc/cpuinfo`, which matches `ssse3`; every processor since 2006 has it, but the plain QEMU processor (`qemu64`) does not, exactly as on Linux (Debian bug 1018937), so QEMU needs `-cpu max` or `-cpu host` for it.
+
+Pseudo-terminals (`sys/linux/linux.c`, `pty_*`). `/dev/ptmx` opens a new pair (32 pairs, 16 KB in each direction), `/dev/pts/N` the other end, and `/dev/pts` can be listed. Supported: `TIOCGPTN`, `TIOCSPTLCK`, `TIOCGPTLCK`, `TIOCGPTPEER`, `TCGETS`/`TCSETS*` (also the `termios2` forms), `TIOCGWINSZ`/`TIOCSWINSZ` (a new size sends `SIGWINCH`), `TIOCSCTTY`, `TIOCNOTTY`, `TIOCGPGRP`/`TIOCSPGRP`, `TIOCGSID`, `FIONREAD`, `TCFLSH`. The line discipline does what programs expect from Linux: Enter becomes newline (`ICRNL`), newline becomes CR LF on output (`ONLCR`), line editing with erase, kill and word erase, echo (with `^C` style for control keys), `^D` as end of file, and `^C`, `^\` and `^Z` send `SIGINT`, `SIGQUIT` and `SIGTSTP` to the foreground process group. A session leader that opens a terminal without `O_NOCTTY` gets it as its controlling terminal. When every slave is closed the master reads `EIO`, and closing the master sends `SIGHUP`. `stat`, `ttyname` and `isatty` work, so glibc's `openpty`, `forkpty` and node-pty (VS Code's terminal) find what they need.
+
+Sound for Linux programs. The ALSA kernel interface: `/dev/snd/controlC0`, `/dev/snd/pcmC0D0p` and, when the machine has a microphone, `/dev/snd/pcmC0D0c`. The card offers what the NoovexOS sound driver plays: 16-bit stereo at the driver's rate (48000 Hz on HD Audio). `HW_REFINE` and `HW_PARAMS` work like the Linux kernel: the requested ranges are narrowed with the same interval rules (period and buffer size, bytes, time, rate) until nothing changes. Playback goes through a ring buffer in the kernel that `apcm_pump` feeds to the driver (also from `snd_poll`), keeping at most 80 ms in the device so `snd_pcm_delay` stays right; without a sound card the samples are taken at the real rate, so programs still run at the right speed. `SYNC_PTR`, `STATUS`, `DELAY`, `PREPARE`, `START`, `DROP`, `DRAIN`, `PAUSE`, `REWIND`, `FORWARD`, `WRITEI_FRAMES` and `READI_FRAMES` are supported; the status pages cannot be mapped, so libasound uses `SYNC_PTR`. `/etc/asound.conf` makes `default` a `plug` over `mmap_emul` over `hw:0,0`, so programs can ask for any rate, format and channel count and libasound converts. One program at a time can play (a second gets `EBUSY`); there is no PulseAudio, and programs that look for it fall back to ALSA. `nvx-sndtest` plays a tone through libasound and records from the microphone.
+
+Downloaded packages. `apt install ./file.deb` (any argument ending in `.deb`, up to 8) reads the package's `Depends`, installs what is missing from the configured sources and then the file itself. `dpkg -i` now also rebuilds `/etc/ld.so.cache`. The package file is copied before it is unpacked.
+
+Notifications. `/usr/bin/nvx-notify` is the `org.freedesktop.Notifications` service (started by D-Bus on demand, like the keyring, and it reuses the keyring's D-Bus code). `Notify` shows the summary and body (markup removed) as a NoovexOS notification by writing `nvx-notify:<title>` and the body to `/dev/kmsg`; `CloseNotification`, `GetCapabilities` and `GetServerInformation` are answered. A tray area for status icons (`StatusNotifierItem`) is not there yet.
+
+Chromium in multi-process mode (v10.45 findings). With `/etc/noovex/chromium-multiprocess` present, `nvx-xrun` leaves out `--single-process`. The browser, both zygotes, the network service and the page processes now start (the epoll generation fix and the new `/proc` files removed the earlier errors), but after 30 to 60 seconds the network service and the page processes log `ChildThreadImpl::EnsureConnected()` and exit with code 0: the browser's side of their Mojo connection has closed, the browser reports "Network service crashed" and starts a new one, and the page stays at "Loading". The exit dumps (`lxtrace ps`) show the child's I/O thread last receiving a normal 64-byte message and no read error on the child side, so the next step is to dump the browser's I/O thread at the moment it closes the connection (the browser does not exit, so this needs a trigger on `close` of a Unix socket that still has a peer). Until then programs based on Chromium keep `--single-process`, in which pages render (checked again with `st/p/v42.html`).
+
+
+## 6.26 Setup scripts, triggers and Electron programs (v10.46)
+
+apt and dpkg now run maintainer scripts. `deb_install` saves `postinst` and `triggers` from the control archive to `/var/lib/dpkg/info/<package>.postinst` and `.triggers`. After the command, `post_run` writes `/var/lib/dpkg/nvx-postinst.sh` and starts it with `jc_launch` as a normal program in the terminal: `postinst configure` for every package that was installed, then `postinst triggered <path>` for every installed package whose `.triggers` file has an `interest` line for a folder that one of the new packages wrote into (checked against the file lists in `/var/lib/nvpkg`). Scripts run with `DEBIAN_FRONTEND=noninteractive`; a script that fails is reported and the package stays installed. `preinst`, `prerm` and `postrm` are not run yet. `update-alternatives` is copied into the Linux files with `/etc/alternatives`.
+
+`nvx-xrun` recognizes a Chromium-based program when the program, a folder named in its start script, or one of the two folders above the resolved program contains `resources.pak` or `v8_context_snapshot.bin`. Programs with `resources/app/out/cli.js` (VS Code, VSCodium) started as root get `--user-data-dir=/root/.config/<name>`. With `/etc/noovex/chromium-multiprocess`, `--ipc-connection-timeout=120` replaces `--single-process`: Chromium's children end themselves (`ChildThreadImpl::EnsureConnected`) when the first exchange with the browser takes longer than the default limit, which happens in the emulator.
+
+Programs over 28 MB are loaded at 0x47000000000 (was 0x44000000000) so that the user area below keeps 448 GB in one piece; V8 in Electron and Node reserves about 256 GB for its sandbox. `clone3` (435) maps its argument structure to `clone`; `CLONE_PIDFD`, `set_tid` and cgroup placement return ENOSYS so glibc falls back to `clone`.
+
+## 6.28 LibreOffice inside the Linux files (v10.48)
+
+In v10.47 LibreOffice was a separate image, `/sysroot/APPS.BIN`, read by the kernel when LibreOffice was first opened. The kernel can read files from a USB stick or an installed disk but has no CD drive driver, so with the ISO attached to a virtual machine as a CD the file was never found (owner's photo: "the built-in programs file /sysroot/APPS.BIN is not on the boot disk"). An update from Settings did not replace it either.
+
+Since v10.48 LibreOffice is part of the normal Linux files (`/sysroot/<crc>.BIN`, about 165 MB). Both boot loaders read that file with the firmware (BIOS disk services or UEFI file protocol), which works for a CD, a USB stick and an installed disk alike.
+
+| Part | Change |
+|---|---|
+| Boot loaders | The file goes to `0x20000000` (512 MiB), at most `0x10000000` bytes (256 MiB): above the BIOS loader's kernel scratch area (`0x18000000`, up to 100 MiB) and below everything the kernel allocates. The UEFI loader keeps its own buffers out of this area (`in_kernel_area`) and warns when the firmware uses memory inside it. |
+| Kernel | `SR_SLOT` and `SR_SLOTMAX` in `include/nvx/fs/vfs/sysroot.h`. `heap_init` starts the heap at `sysroot_slot_end()` instead of `0x18000000`; `sysroot_init` uses the memory only when the heap starts above it and the CRC matches. The installer's memory check lists the new area. |
+| Build | `build.sh` copies the output of `tools/stage_libreoffice.sh` into the Linux files before `mksysroot.py`; `build/apps.bin`, the `APPS.BIN` file on the ISO, `nvx_apps_load`, `upd_put_apps_part` and the `nvx-apps:load` message are gone. The size check in step 6 allows 256 MiB. |
+| Start | `nvx-libreoffice` starts `soffice` straight away; when `/opt/libreoffice` is missing it says that the Linux files were not loaded. |
+
+The rest of section 6.27 (relocation, library folder, exception log, inode numbers) is unchanged. Booting reads about 120 MB more, and the Linux files take about 165 MB of RAM all the time.
+
+## 6.27 Built-in LibreOffice Writer and Calc (v10.47)
+
+LibreOffice Writer and Calc come with NoovexOS; no `apt install` is needed. They do not fit in the base Linux files (`/sysroot/<crc>.BIN`), which the boot loader puts in a fixed 50 MiB area (0x06600000 to 0x09800000), so they are a second image, `/sysroot/APPS.BIN`, on the boot partition. It is read only when LibreOffice is opened the first time.
+
+| Step | What happens |
+|---|---|
+| Build | `tools/stage_libreoffice.sh` copies the build machine's LibreOffice (`/usr/lib/libreoffice`, symbolic links followed) to `/opt/libreoffice`, removes links that point nowhere, makes the configuration relative (`BRAND_BASE_DIR=${ORIGIN}/..`, the registry from `share/registry`, no `dconf` layer, no `/etc/libreoffice/sofficerc`) and copies every library that LibreOffice needs and the Linux files lack to `/opt/libreoffice/nvxlib`. `tools/mksysroot.py` packs it into `build/apps.bin`; a hash of the file list keeps the 3 to 4 minute packing step from running again when nothing changed. `boot/mkhybrid.py` adds `build/apps.bin` as `/sysroot/APPS.BIN` (another file with `NVX_APPS`). |
+| Start | `/usr/bin/nvx-libreoffice` (in the base Linux files) writes `nvx-apps:load` to `/dev/kmsg` when `/opt/libreoffice/program/soffice.bin` is not there yet, waits for it, sets `LD_LIBRARY_PATH=/opt/libreoffice/nvxlib` and `SAL_USE_VCLPLUGIN=gen` and starts `soffice`. |
+| Load | `nvx_apps_load` (`core/update.c`) finds the boot partition like an update does (`up_find`: the installed boot partition or the USB stick); when that fails (an ISO started as a hard disk) it reads the system disk's partition table. It reads the file whole and adds it as the layer `apps` with `sysroot_add_layer`. A missing or damaged file is logged once and not retried. |
+| Install | The installer copies the loaded layer to the new boot partition (`upd_put_apps_part`, written and read back like the base files). |
+| Start menu | `nvx-libreoffice-writer.desktop` and `nvx-libreoffice-calc.desktop` with `Categories=Office` put both in the Office submenu; the icons are in `/usr/share/icons/hicolor/48x48/apps`. |
+
+`apps.bin` is about 112 MB (426 MB unpacked); while LibreOffice runs the image and the unpacked 8 MB blocks it uses stay in memory. An update from Settings replaces the kernel and the base files but not `APPS.BIN`. The LibreOffice license is kept in `/opt/libreoffice` (`LICENSE.html`, `NOTICE`, `CREDITS.fodt` and `COPYRIGHT-debian`).
+
+`usr/glibc/nvx-throwlog.c` (`/usr/lib/nvx/libnvx-throwlog.so`) replaces `__cxa_throw`: for every UNO exception (`com::sun::star::...`) it writes the type and the exception's message to standard error, at most 300 lines. `nvx-xrun` loads it for programs named `*libreoffice*`, `*soffice*` or `*openoffice*`, or with `NVX_THROWLOG=1`, and copies the last 40 lines of each failing program's output to the kernel log (`xrun <name>: ...`). This is how the relocation problem above was found: `DeploymentException: null process service factory` after `NoSuchElementException` for the registry.
+
+Inode numbers: files in the Linux files used a hash of the path as given, so `/opt/libreoffice/program/libmergedlo.so` and `/opt/libreoffice/program/../program/libmergedlo.so` had different inode numbers. glibc's loader decides by device and inode whether a library is already loaded, so LibreOffice's `dlopen` of the second spelling loaded its 85 MB main library a second time; the second copy had no UNO service manager and LibreOffice stopped with `DeploymentException: null process service factory` and exit code 134 (the same code as in the owner's photos). `sysroot_ino` hashes the normalized path of the node that `sr_walk` finds (with `..` and symbolic links resolved). After `nvx_apps_load` adds the layer, `sysroot_mkdirs` makes its folders known to `chdir` (LibreOffice's start script changes into `/opt/libreoffice/program`).
+
+Chromium started as root: `lx_execve` adds `--no-sandbox` when the program's file name is `chrome`, `chromium`, `chromium-browser`, `chromium-bin`, `brave`, `msedge`, `vivaldi-bin` or `opera` and the arguments have neither `--no-sandbox` nor `--type=` (Chromium's own helper processes). This works for any start script, also when the program is started from the Terminal and not through `nvx-xrun` (Debian's `/usr/bin/chromium` starts `/usr/lib/chromium/chromium`). `nvx-xrun` also retries once with `--no-sandbox` when a program's output contains "without --no-sandbox is not supported".
+
+Unpacking: `lib/compress/unpack.c` grows its output buffer by a quarter above 128 MB (it doubled before; a 600 MB package asked for 1.2 GB in one piece and failed).
+
+## 6.29 Ports and distro profiles (v10.58)
+
+Software that goes into the Linux files used to be added by more lines in `build.sh`. Since v10.58 each piece is a port, and a distro profile lists the ports of one NoovexOS variant. `ports/README.md` is the guide for writing ports.
+
+| Part | Where | What it is |
+|---|---|---|
+| Port | `ports/NAME/PORT` | `key=value`: `name`, `version`, `summary`, `kind` (`files`, `python` or `script`), `needs`, `packages`, `scripts`, `license`, `source` |
+| Files | `ports/NAME/files/` | copied over the Linux files as they are; any kind may have it |
+| Script | `ports/NAME/stage.sh` | `kind=script`: runs as `stage.sh ROOT BUILD` with `NVX_ROOT`, `NVX_BUILD`, `NVX_TOP`, `NVX_PORT` |
+| Profile | `distro/NAME.profile` | `name`, `id`, `pretty`, `url`, `version` (`auto` = `core/buildsig.c`), `ports` (installed), `repo` (packed as `noovex-port-NAME` .deb files into the built-in apt repository) |
+| Tool | `tools/nvxport.py` | `list`, `info NAME`, `check`, `new NAME --kind ...`, `stage --profile P --root R --build B` |
+
+`stage` sorts the ports by `needs` (a circle is an error), checks every recipe and the profile keys, stops with exit code 1 when a port fails or a Python package is found nowhere (`--keep-going` stages the rest but still ends with 1), stages each port and writes `/etc/os-release` and `/usr/lib/os-release` from the profile, the profile itself to `/usr/share/noovex/profile` and the list of ports to `/usr/share/noovex/ports.txt`. The kernel uses `/usr/lib/os-release` from the Linux files for `/etc/os-release` (`ac_etc_files`) and only writes its own text when there is none. A `repo` port's .deb depends only on other `repo` ports. `check.py` runs `nvxport.py check` in its static group.
+
+| Port | Kind | Contents |
+|---|---|---|
+| `desktop-scripts` | files | `nvx-xrun`, `nvx-firefox`, `nvx-libreoffice`, `nvx-session-bus`, `nvx-keyring`, `nvx-notify` (before v10.58 the first four were here-documents inside `build.sh` and the last two lived in `usr/x11/`) |
+| `python-pip`, `python-web`, `python-data` | python | section 6.17a |
+
+Profiles: `noovexos.profile` (the release: all four ports installed) and `noovexos-lite.profile` (pip installed; web and data libraries as apt packages, 2.8 MB and 17.6 MB). Build another variant with `NVX_PROFILE=distro/noovexos-lite.profile sh build.sh`.
+

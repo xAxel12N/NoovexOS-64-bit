@@ -1,0 +1,6 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function 'gqk' for 'sm_75'
+ptxas info    : Function properties for gqk
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 44 registers, used 0 barriers, 488 bytes cmem[0], 16 bytes cmem[2]
+ptxas info    : Compile time = 14.050 ms

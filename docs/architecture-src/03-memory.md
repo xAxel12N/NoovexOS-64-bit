@@ -546,7 +546,9 @@ Since v9.22 the low memory map is:
 | 192 - 224 MiB | frame pool (unchanged) |
 | 224 - 256 MiB | module area for the Doom WAD (unchanged) |
 | 256 - 384 MiB | kernel BSS (`. = 0x10000000`, at most `0x18000000`) |
-| 384 MiB - | heap (`heap_init` starts at `0x18000000`) |
+| 384 - 512 MiB | myboot stage2 scratch for the kernel file while booting; unused afterwards when the Linux files are loaded |
+| 512 - 768 MiB | Linux files (`SR_SLOT` 0x20000000, at most `SR_SLOTMAX` 256 MiB, since v10.48) |
+| end of the Linux files - | heap: `heap_init` starts at `sysroot_slot_end()` (the end of the Linux files rounded up to 2 MiB) when that leaves 128 MiB of RAM and the firmware marks the slot usable, otherwise at `0x18000000` as before |
 
 Loaders:
 
@@ -556,4 +558,37 @@ Loaders:
 | UEFI loader | `KERNEL_MAX` 100 MiB; the loader's own buffer is allocated outside the kernel areas (`alloc_safe`); the reserved-area table and the BSS bounds follow the new layout |
 | CD image (`mkhybrid.py`) | the El Torito UEFI FAT16 image doubles its sectors per cluster until it has fewer than 65,000 clusters; when it is larger than 65,535 sectors the catalog entry's sector count is 0, which UEFI firmware reads as "to the end of the disc" |
 
-The frame pool now needs 500 MiB of RAM, because the heap it grows from starts at 384 MiB.
+The frame pool now needs 500 MiB of RAM, because the heap it grows from starts at 384 MiB. Since v10.48 the Linux files (about 187 MB in v10.49, with LibreOffice and the face models) need about 1 GB of RAM: with less, the boot loader writes past the end of RAM, the CRC check in `sysroot_init` fails, the heap starts at `0x18000000` and NoovexOS runs without the Linux files.
+
+## 3.16 Kernel memory and firmware-reserved memory (v10.51)
+
+On the owner's Lenovo laptop (UEFI) the firmware keeps a block at `0x10000000`, inside the kernel BSS. The UEFI loader printed a warning and the kernel stopped right after "crash: function names are built in".
+
+Cause: `stk_guard_boot` (`core/crash.c`) splits the 2 MiB page that holds the boot stack into 4 KiB pages so that a guard page can be left unmapped. It wrote the virtual address of its page table (`g_cx_bsg_pt`, in the BSS) into the page directory as if it were the physical address. While BSS virtual and physical addresses are the same this works; once `early_remap` has moved BSS pages to other RAM, the entry points at the firmware's block and the next stack access fails. The fix converts the address with `kva_to_pa` and skips the guard if that fails.
+
+`early_remap` (`arch/x86_64/interrupts/early_fault.c`) moves every 2 MiB kernel page that overlaps memory the firmware has not given as usable (type other than 7 or 4) to free RAM. Target choice:
+
+1. The largest usable run above 4 GiB, when it is big enough.
+2. Otherwise the highest 2 MiB-aligned usable range between 768 MiB and 4 GiB that is not the Linux files (UEFI: the address at `0x5030`; BIOS: a scan for the `NVS2` magic).
+
+`kmain` prints the result right after "kmain entered": "N MB of kernel memory (a-b) is used by the firmware or is not RAM - moved to X", or a warning when no free RAM was found. Further early steps print one line each ("slab ok", "frame pool set up", "crash handler and stack guard ok"), so a photo of a stopped screen shows the last finished step. `sysroot_init` prints "linux files: found at X" or "linux files: not found in memory, looked at X".
+
+The BIOS loader (`boot/src/stage2.c`) now reads the E820 map at `0x1000` (count at `0xFF0`) before loading the Linux files. If no usable range covers `0x20000000` plus the file size, it loads them at the highest 2 MiB-aligned usable place below 4 GiB. The kernel finds them there by the `NVS2` magic (`sysroot_slot_base`), and the heap ends below them.
+
+Test hooks: building `uefiboot.c` or `stage2.c` with `-DNVX_TEST_RSV` makes the UEFI loader report `0x10000000-0x11800000` as reserved and makes stage2 move the Linux files, so both paths can be tried in QEMU.
+
+## 3.17 Memory numbers for programs (v10.51)
+
+`/proc/meminfo` used to report three quarters of RAM as free, always. It now uses `mem_summary` (`mem/heap_api.c`): used memory is the kernel heap in use (cached every 2 s by `crash_tick`), everything below the heap base, and the Linux files when they lie above the heap. `MemFree` and `MemAvailable` are RAM minus that; `KernelHeap` gives the heap in use. Swap and cache lines are 0.
+
+`/usr/bin/nvx-mem` (`rust/nvxmem`) is a Rust program on top of this: `nvx-mem` shows memory in use with a bar, `nvx-mem test [MB]` fills memory from several threads with seven patterns and checks it (exit code 1 on errors or when the memory cannot be had), `nvx-mem bench` measures copy and read speed and the time for 100,000 small allocations.
+
+## 3.18 Code pages and firmware data (v10.52)
+
+In QEMU's UEFI firmware (OVMF), 32 KB of ACPI NVS memory sits at `0x800000`, inside the kernel image. The loader copied the kernel over it, and the installer refused to run ("The firmware uses memory that NoovexOS also uses").
+
+`early_remap` now also moves 2 MiB pages of kernel code (`0x200000` up to `__text_end`, a new linker symbol) that overlap firmware memory. Code is never written to by devices, so the move is safe; pages that hold page tables are skipped.
+
+The UEFI loader saves the firmware's bytes before it overwrites them. Before ExitBootServices it allocates a buffer below 4 GiB (at most 8 MB) for every ACPI NVS, ACPI table and runtime code or data range that overlaps the kernel image, boot stack, module area or BSS. After ExitBootServices, and before copying the kernel, it fills the buffer. The buffer's address is at `0x5038` (offset 56 of the boot information), with the magic `NVXS`. After moving the pages, `early_remap` writes these bytes back to the original physical pages, which the kernel no longer uses. The boot log says "firmware data put back (N KB)", and `memmap` shows the same.
+
+Moved pages no longer count as conflicts: `mm_area_conflicts`, the start-up warning and `memmap` skip them (`early_remap_moved`), so the installer runs. The ACPI interpreter refuses memory reads and writes to moved pages, because those addresses now lead to the kernel's copy.

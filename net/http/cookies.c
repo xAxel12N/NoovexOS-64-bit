@@ -6,8 +6,9 @@
 #include "include/nvx/net/http/cookies.h"
 
 typedef struct {
-    char name[64];
-    char value[512];
+    char name[256];
+    char* value;
+    int vcap;
     char domain[128];
     char path[128];
     u64 expires;
@@ -15,7 +16,9 @@ typedef struct {
     u8 secure, httponly, hostonly, samesite, used;
 } cookie;
 
-#define CK_MAX 400
+#define CK_MAX 3000
+#define CK_PER_SITE 180
+#define CK_VMAX 4096
 static cookie* g_ck;
 static int g_ck_loaded, g_ck_dirty;
 static u64 g_ck_lastsave;
@@ -48,6 +51,22 @@ static void url_parts(const char* url, int* secure, char* host, int hcap, char* 
 }
 
 static u64 now_ms(void) { return k_realtime_ms(); }
+
+static int ck_val(cookie* c, const char* s, int n) {
+    if (n < 0) n = 0;
+    if (n > CK_VMAX) n = CK_VMAX;
+    if (!c->value || c->vcap < n + 1) {
+        int cap = n + 1 < 64 ? 64 : n + 1;
+        char* v = kmalloc((unsigned long)cap);
+        if (!v) return 0;
+        if (c->value) kfree(c->value);
+        c->value = v; c->vcap = cap;
+    }
+    for (int i = 0; i < n; i++) c->value[i] = s[i];
+    c->value[n] = 0;
+    return 1;
+}
+static const char* ck_site(const char* d) { int n = slen_(d), dots = 0; for (int i = n - 1; i >= 0; i--) if (d[i] == '.') { dots++; if (dots == 2) return d + i + 1; } return d; }
 
 static long long days_from_civil(int y, int m, int d) {
     y -= m <= 2;
@@ -85,13 +104,16 @@ static u64 parse_date(const char* s, int n) {
     return (u64)secs * 1000ULL;
 }
 
+void acct_profile_name(const char* base,char* out,int cap);
+static const char* ck_fname(void){ static char n[64]; acct_profile_name("cookies.txt",n,64); return n; }
+static const char* ws_fname(void){ static char n[64]; acct_profile_name("webstorage.txt",n,64); return n; }
 static void ck_save(void);
 static void ck_load(void) {
     if (g_ck_loaded) return;
     g_ck_loaded = 1;
-    if (!g_ck) { g_ck = kmalloc(sizeof(cookie) * CK_MAX); if (!g_ck) return; for (int i = 0; i < CK_MAX; i++) g_ck[i].used = 0; }
+    if (!g_ck) { g_ck = kmalloc(sizeof(cookie) * CK_MAX); if (!g_ck) return; for (unsigned long i = 0; i < sizeof(cookie) * CK_MAX; i++) ((u8*)g_ck)[i] = 0; }
     int slot = -1;
-    for (int i = 0; i < FS_N; i++) if (FS[i].used && streq(FS[i].name, "cookies.txt")) { slot = i; break; }
+    for (int i = 0; i < FS_N; i++) if (FS[i].used && streq(FS[i].name, ck_fname())) { slot = i; break; }
     if (slot < 0) return;
     const char* d = fsd(slot);
     int n = (int)FS[slot].len;
@@ -102,11 +124,11 @@ static void ck_load(void) {
         while (i < n && d[i] != '\n') i++;
         int le = i;
         if (i < n) i++;
-        const char* f[8];
-        int fl[8];
+        const char* f[9];
+        int fl[9];
         int nf = 0;
         int p = ls;
-        while (p <= le && nf < 8) { int s = p; while (p < le && d[p] != '\t') p++; f[nf] = d + s; fl[nf] = p - s; nf++; p++; }
+        while (p <= le && nf < 9) { int s = p; while (p < le && d[p] != '\t') p++; f[nf] = d + s; fl[nf] = p - s; nf++; p++; }
         if (nf < 8) continue;
         int k = -1;
         for (int q = 0; q < CK_MAX; q++) if (!g_ck[q].used) { k = q; break; }
@@ -121,16 +143,17 @@ static void ck_load(void) {
         for (int q = 0; q < fl[5]; q++) if (f[5][q] >= '0' && f[5][q] <= '9') e = e * 10 + (u64)(f[5][q] - '0');
         c->expires = e;
         cpyn(c->name, f[6], fl[6], sizeof(c->name));
-        cpyn(c->value, f[7], fl[7], sizeof(c->value));
-        c->samesite = 0;
-        c->created = now;
+        if (!ck_val(c, f[7], fl[7])) continue;
+        c->samesite = nf >= 9 && fl[8] > 0 && f[8][0] >= '0' && f[8][0] <= '3' ? (u8)(f[8][0] - '0') : 4;
+        c->created = now - (u64)(CK_MAX - k);
         c->used = (e == 0 || e > now) ? 1 : 0;
     }
 }
 
 static void ck_save(void) {
     if (!g_ck) return;
-    int cap = CK_MAX * 300 + 64;
+    int cap = 64;
+    for (int i = 0; i < CK_MAX; i++) if (g_ck[i].used) cap += slen_(g_ck[i].domain) + slen_(g_ck[i].path) + slen_(g_ck[i].name) + (g_ck[i].value ? slen_(g_ck[i].value) : 0) + 48;
     char* b = kmalloc((unsigned long)cap);
     if (!b) return;
     int o = 0;
@@ -138,9 +161,7 @@ static void ck_save(void) {
     for (int i = 0; i < CK_MAX; i++) {
         cookie* c = &g_ck[i];
         if (!c->used || c->expires == 0 || c->expires <= now) continue;
-        if (o + 900 > cap) break;
-        const char* parts[2] = { c->domain, 0 };
-        (void)parts;
+        if (!c->value) continue;
         for (const char* s = c->domain; *s; s++) b[o++] = *s;
         b[o++] = '\t'; b[o++] = c->hostonly ? '1' : '0'; b[o++] = '\t';
         for (const char* s = c->path; *s; s++) b[o++] = *s;
@@ -150,9 +171,10 @@ static void ck_save(void) {
         for (const char* s = c->name; *s; s++) b[o++] = *s;
         b[o++] = '\t';
         for (const char* s = c->value; *s; s++) if (*s != '\n' && *s != '\t') b[o++] = *s;
+        if (c->samesite <= 3) { b[o++] = '\t'; b[o++] = (char)('0' + c->samesite); }
         b[o++] = '\n';
     }
-    fs_save_bin("cookies.txt", (const u8*)b, o, 0);
+    fs_save_bin(ck_fname(), (const u8*)b, o, 0);
     kfree(b);
     g_ck_dirty = 0;
     g_ck_lastsave = now;
@@ -194,8 +216,8 @@ void cookie_set(const char* url, const char* line, int fromjs) {
     if (ve - vs >= 2 && *vs == '"' && ve[-1] == '"') { vs++; ve--; }
     cookie c;
     for (unsigned i = 0; i < sizeof(c); i++) ((u8*)&c)[i] = 0;
+    if ((ne - ns) + (ve - vs) > CK_VMAX || (ne - ns) >= (int)sizeof(c.name)) return;
     cpyn(c.name, ns, (int)(ne - ns), sizeof(c.name));
-    cpyn(c.value, vs, (int)(ve - vs), sizeof(c.value));
     c.hostonly = 1;
     cpyn(c.domain, host, slen_(host), sizeof(c.domain));
     int lastslash = 0;
@@ -249,19 +271,30 @@ void cookie_set(const char* url, const char* line, int fromjs) {
         return;
     }
     if (found < 0) {
-        for (int i = 0; i < CK_MAX; i++) if (!g_ck[i].used) { found = i; break; }
+        const char* site = ck_site(c.domain);
+        int ns_ = 0, so = -1; u64 sold = (u64)-1;
+        for (int i = 0; i < CK_MAX; i++) if (g_ck[i].used && streq(ck_site(g_ck[i].domain), site)) { ns_++; if (g_ck[i].created < sold) { sold = g_ck[i].created; so = i; } }
+        if (ns_ >= CK_PER_SITE && so >= 0) { if (g_ck[so].expires) g_ck_dirty = 1; g_ck[so].used = 0; found = so; }
+        if (found < 0) for (int i = 0; i < CK_MAX; i++) if (!g_ck[i].used) { found = i; break; }
         if (found < 0) {
             u64 oldest = (u64)-1;
             for (int i = 0; i < CK_MAX; i++) if (g_ck[i].created < oldest) { oldest = g_ck[i].created; found = i; }
+            if (g_ck[found].expires) g_ck_dirty = 1;
         }
         c.created = now;
     } else c.created = g_ck[found].created;
     c.used = 1;
+    c.value = g_ck[found].value; c.vcap = g_ck[found].vcap;
+    if (!ck_val(&c, vs, (int)(ve - vs))) { g_ck[found].value = c.value; g_ck[found].vcap = c.vcap; return; }
+    if (g_ck[found].used && g_ck[found].expires) g_ck_dirty = 1;
     g_ck[found] = c;
     if (c.expires) g_ck_dirty = 1;
 }
 
-int cookie_header(const char* url, int forjs, char* out, int cap) {
+int g_ck_samesite = 1;
+int cookie_header2(const char* url, int forjs, char* out, int cap, int cross, int topnav, int safe);
+int cookie_header(const char* url, int forjs, char* out, int cap) { return cookie_header2(url, forjs, out, cap, 0, 1, 1); }
+int cookie_header2(const char* url, int forjs, char* out, int cap, int cross, int topnav, int safe) {
     ck_load();
     out[0] = 0;
     if (!g_ck) return 0;
@@ -269,7 +302,8 @@ int cookie_header(const char* url, int forjs, char* out, int cap) {
     char host[128], path[512];
     url_parts(url, &secure, host, sizeof(host), path, sizeof(path));
     u64 now = now_ms();
-    int idx[CK_MAX];
+    int* idx = kmalloc(sizeof(int) * CK_MAX);
+    if (!idx) return 0;
     int n = 0;
     for (int i = 0; i < CK_MAX; i++) {
         cookie* c = &g_ck[i];
@@ -279,29 +313,37 @@ int cookie_header(const char* url, int forjs, char* out, int cap) {
         if (!path_match(path, c->path)) continue;
         if (c->secure && !secure) continue;
         if (forjs && c->httponly) continue;
+        if (!c->value) continue;
+        if (cross && g_ck_samesite && c->samesite != 3 && c->samesite != 4) {
+            if (c->samesite == 2) continue;
+            int lax = topnav && safe;
+            if (!lax && c->samesite == 0 && topnav && now - c->created < 120000ull) lax = 1;
+            if (!lax) continue;
+        }
         idx[n++] = i;
     }
-    for (int a = 1; a < n; a++) { int t = idx[a]; int b = a - 1; while (b >= 0 && slen_(g_ck[idx[b]].path) < slen_(g_ck[t].path)) { idx[b + 1] = idx[b]; b--; } idx[b + 1] = t; }
+    for (int a = 1; a < n; a++) { int t = idx[a]; int b = a - 1; while (b >= 0 && (slen_(g_ck[idx[b]].path) < slen_(g_ck[t].path) || (slen_(g_ck[idx[b]].path) == slen_(g_ck[t].path) && g_ck[idx[b]].created > g_ck[t].created))) { idx[b + 1] = idx[b]; b--; } idx[b + 1] = t; }
     int o = 0;
     for (int k = 0; k < n; k++) {
         cookie* c = &g_ck[idx[k]];
         int need = slen_(c->name) + slen_(c->value) + 3;
-        if (o + need >= cap) break;
+        if (o + need >= cap) continue;
         if (o) { out[o++] = ';'; out[o++] = ' '; }
         for (const char* s = c->name; *s; s++) out[o++] = *s;
         if (c->name[0]) out[o++] = '=';
         for (const char* s = c->value; *s; s++) out[o++] = *s;
     }
     out[o] = 0;
+    kfree(idx);
     return o;
 }
 
 void cookie_clear(void) {
     ck_load();
     if (!g_ck) return;
-    for (int i = 0; i < CK_MAX; i++) g_ck[i].used = 0;
+    for (int i = 0; i < CK_MAX; i++) { g_ck[i].used = 0; if (g_ck[i].value) kfree(g_ck[i].value); g_ck[i].value = 0; g_ck[i].vcap = 0; }
     g_ck_dirty = 0;
-    fs_save_bin("cookies.txt", (const u8*)"", 0, 0);
+    fs_save_bin(ck_fname(), (const u8*)"", 0, 0);
 }
 int cookie_count(void) { ck_load(); int n = 0; if (g_ck) for (int i = 0; i < CK_MAX; i++) if (g_ck[i].used) n++; return n; }
 int cookie_list(int idx, char* domain, int dcap, char* name, int ncap, char* value, int vcap, u64* expires, int* flags) {
@@ -314,7 +356,7 @@ int cookie_list(int idx, char* domain, int dcap, char* name, int ncap, char* val
         cookie* c = &g_ck[i];
         cpyn(domain, c->domain, slen_(c->domain), dcap);
         cpyn(name, c->name, slen_(c->name), ncap);
-        cpyn(value, c->value, slen_(c->value), vcap);
+        cpyn(value, c->value ? c->value : "", c->value ? slen_(c->value) : 0, vcap);
         *expires = c->expires;
         *flags = (c->secure ? 1 : 0) | (c->httponly ? 2 : 0) | (c->hostonly ? 4 : 0);
         return 0;
@@ -333,7 +375,7 @@ static void ws_load(void) {
     g_ws_loaded = 1;
     if (!g_ws) { g_ws = kmalloc(sizeof(wsent) * WS_MAX); if (!g_ws) return; for (int i = 0; i < WS_MAX; i++) g_ws[i].used = 0; }
     int slot = -1;
-    for (int i = 0; i < FS_N; i++) if (FS[i].used && streq(FS[i].name, "webstorage.txt")) { slot = i; break; }
+    for (int i = 0; i < FS_N; i++) if (FS[i].used && streq(FS[i].name, ws_fname())) { slot = i; break; }
     if (slot < 0) return;
     const char* d = fsd(slot);
     int n = (int)FS[slot].len;
@@ -385,7 +427,7 @@ static void ws_save(void) {
         for (int k = 0; k < e->vlen; k++) { char c = e->val[k]; if (c == '\n') { b[o++] = '\\'; b[o++] = 'n'; } else if (c == '\t') { b[o++] = '\\'; b[o++] = 't'; } else if (c == '\\') { b[o++] = '\\'; b[o++] = '\\'; } else b[o++] = c; }
         b[o++] = '\n';
     }
-    fs_save_bin("webstorage.txt", (const u8*)b, o, 0);
+    fs_save_bin(ws_fname(), (const u8*)b, o, 0);
     kfree(b);
     g_ws_dirty = 0;
 }
@@ -451,4 +493,11 @@ void cookies_flush(int force) {
     if (g_ck_dirty && (force || now - g_ck_lastsave > 3000)) ck_save();
     if (g_ws_dirty && force) ws_save();
     else if (g_ws_dirty) { static u64 last; if (now - last > 3000) { last = now; ws_save(); } }
+}
+void ck_profile_switch(void) {
+    if (g_ck_loaded && g_ck_dirty) ck_save();
+    if (g_ws_loaded && g_ws_dirty) ws_save();
+    if (g_ck) for (int i = 0; i < CK_MAX; i++) { if (g_ck[i].value) kfree(g_ck[i].value); g_ck[i].value = 0; g_ck[i].vcap = 0; g_ck[i].used = 0; }
+    if (g_ws) for (int i = 0; i < WS_MAX; i++) { if (g_ws[i].used && g_ws[i].val) kfree(g_ws[i].val); g_ws[i].val = 0; g_ws[i].used = 0; }
+    g_ck_loaded = 0; g_ck_dirty = 0; g_ws_loaded = 0; g_ws_dirty = 0;
 }

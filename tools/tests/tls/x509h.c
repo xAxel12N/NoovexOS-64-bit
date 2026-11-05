@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "lib/crypto/nvxcrypto.c"
 #include "lib/crypto/nvxtls.c"
 #include "lib/crypto/nvxcrypto2.c"
@@ -14,6 +18,11 @@ static u8* rd(const char* p,int* n){ FILE* f=fopen(p,"rb"); if(!f){ perror(p); e
 static u8* g_bufs[64]; static int g_nbuf;
 static u8* keep(u8* b){ if(g_nbuf<64)g_bufs[g_nbuf++]=b; return b; }
 static void release(void){ for(int i=0;i<g_nbuf;i++)free(g_bufs[i]); g_nbuf=0; }
+static int hexb(const char* h,u8* o){ int n=0; while(h[0]&&h[1]){ unsigned v; sscanf(h,"%2x",&v); o[n++]=(u8)v; h+=2; } return n; }
+static void phex(const u8* b,int n){ for(int i=0;i<n;i++)printf("%02x",b[i]); printf("\n"); }
+static int s_wr(void* c,const u8* b,int n){ return (int)write(*(int*)c,b,n); }
+static int s_rd(void* c,u8* b,int n){ return (int)read(*(int*)c,b,n); }
+static tls_io g_hio;
 int main(int argc,char** argv){
     setvbuf(stdout,0,_IONBF,0); atexit(release);
     if(argc<2)return 2;
@@ -34,5 +43,24 @@ int main(int argc,char** argv){
     if(!strcmp(argv[1],"cv")){
         int sl,gl,hl; u8* spki=keep(rd(argv[2],&sl)); int scheme=(int)strtol(argv[3],0,16); u8* sig=keep(rd(argv[4],&gl)); u8* th=keep(rd(argv[5],&hl));
         int r=tls13_verify_cv(spki,sl,scheme,sig,gl,th,hl); printf("%d\n",r); return 0; }
+    if(!strcmp(argv[1],"ecdh")){
+        u8 k[32],peer[65],out[65]; hexb(argv[2],k);
+        if(argc>3){ int pl=hexb(argv[3],peer); if(x509_p256_ecdh(k,peer,pl,out)){ printf("ERR\n"); return 0; } phex(out,32); }
+        else { if(x509_p256_ecdh(k,0,0,out)){ printf("ERR\n"); return 0; } phex(out,65); }
+        return 0; }
+    if(!strcmp(argv[1],"get")){
+        const char* host=argv[2]; int port=atoi(argv[3]); g_tls_insecure=1;
+        for(int i=6;i<argc;i++){ int pl; u8* pem=keep(rd(argv[i],&pl)); u8* z=keep(malloc(pl+1)); memcpy(z,pem,pl); z[pl]=0; const char* pp=(const char*)z; for(;;){ u8* der=keep(malloc(8192)); int n=x509_pem_next(&pp,der,8192); if(n<=0)break; if(x509_add_anchor_der(der,n)){ printf("anchor fail\n"); return 1; } } g_tls_insecure=0; }
+        int fd=socket(AF_INET,SOCK_STREAM,0); struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET; a.sin_port=htons(port); a.sin_addr.s_addr=inet_addr("127.0.0.1");
+        if(connect(fd,(struct sockaddr*)&a,sizeof a)){ printf("noconn\n"); return 1; }
+        g_hio.wr=s_wr; g_hio.rd=s_rd; g_hio.ctx=&fd;
+        u8 rnd[64]; FILE* r=fopen("/dev/urandom","rb"); if(fread(rnd,1,64,r)!=64)return 2; fclose(r);
+        static tls_sess ss; int rc=tls_connect_sess(&g_hio,host,(int)strlen(host),rnd,&ss);
+        printf("connect %d group-cipher %04x %s\n",rc,ss.cipher,g_tls_why); if(rc)return 1;
+        char req[256]; int rl=snprintf(req,sizeof req,"GET %s HTTP/1.0\r\nHost: %s\r\n\r\n",argc>4?argv[4]:"/",host);
+        tls_sess_write(&g_hio,&ss,(const u8*)req,rl);
+        static u8 buf[1<<20]; long tot=0; int n; while((n=tls_sess_read(&g_hio,&ss,buf+tot,(int)(sizeof buf-tot)))>0)tot+=n;
+        if(argc>5){ FILE* o=fopen(argv[5],"wb"); fwrite(buf,1,tot,o); fclose(o); }
+        printf("read %ld last %d\n",tot,n); close(fd); return 0; }
     return 2;
 }

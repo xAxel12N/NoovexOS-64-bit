@@ -22,13 +22,18 @@ int arp_auto_reply(const u8* f,int n){
     nd_tx2(o,60); return 1;
 }
 extern void (*g_wait_pump)(void);
+extern volatile int g_net_rx;
 static int nd_poll(u8* rx,int max,int ticks){ for(int k=0;k<ticks;k++){ if(g_wait_pump)g_wait_pump(); u16 a=pit_read(); for(;;){ int n=nd_rx(rx,max); if(n>0&&arp_auto_reply(rx,n))continue; if(n>0)return n; u16 b=pit_read(); if(((u16)(a-b))>=1193)break; } } return 0; }
+static void net_pass(u8* f,int n);
+static int g_net_busy=0;
+void net_idle_poll(void){ extern int sock_any_open(void); if(g_net_busy||sock_any_open())return; g_net_busy=1; static u8 rx[1600]; for(int i=0;i<32;i++){ int n=nd_rx(rx,1600); if(n<=0)break; if(arp_auto_reply(rx,n))continue; net_pass(rx,n); } g_net_busy=0; }
 int arp_resolve(u32 ip,u8* outmac){
     if(ip==gw_ip&&gw_known){ for(int i=0;i<6;i++)outmac[i]=gw_mac[i]; return 1; }
-    arp_request(ip); u8 rx[1600];
-    for(int tries=0;tries<20;tries++){ int n=nd_poll(rx,1600,1);
-        if(n>=42&&rd16(rx+12)==0x0806&&rd16(rx+20)==2){ if(rd32(rx+28)==ip){ for(int i=0;i<6;i++)outmac[i]=rx[22+i];
-            if(ip==gw_ip){ for(int i=0;i<6;i++)gw_mac[i]=outmac[i]; gw_known=1; } netlog("ARP reply received"); return 1; } } }
+    u8 rx[1600];
+    for(int round=0;round<4;round++){ arp_request(ip);
+        for(int tries=0;tries<(round?250:20);tries++){ int n=nd_poll(rx,1600,1); if(n>0&&rd16(rx+12)==0x0800){ net_pass(rx,n); continue; }
+            if(n>=42&&rd16(rx+12)==0x0806&&rd16(rx+20)==2){ if(rd32(rx+28)==ip){ for(int i=0;i<6;i++)outmac[i]=rx[22+i];
+                if(ip==gw_ip){ for(int i=0;i<6;i++)gw_mac[i]=outmac[i]; gw_known=1; } netlog("ARP reply received"); return 1; } } } }
     netlog("ARP no reply"); return 0;
 }
 int do_ping(u32 tip){
@@ -166,10 +171,12 @@ int dhcp_config(void){
 }
 
 int g_netdev_wifi=0;
+extern volatile u64 g_ticks; static u64 g_dhcp_last=0; static int g_dhcp_retry=0;
 int nic_up(void){
     if(g_netdev_wifi)return g_linkok&&g_linkok();
     int r=nic_up_raw();
-    if(r&&!g_dhcp_done){ g_dhcp_done=1; dhcp_config(); }
+    if(r&&!g_dhcp_done){ g_dhcp_done=1; dhcp_config(); g_dhcp_last=g_ticks; }
+    else if(r&&!g_dhcp_ok&&g_dhcp_retry<3&&g_ticks-g_dhcp_last>=300){ g_dhcp_retry++; netlog("DHCP retry"); dhcp_config(); g_dhcp_last=g_ticks; }
     return r;
 }
 
@@ -179,7 +186,7 @@ int dhcp_renew(void){
     return dhcp_config();
 }
 
-static int dns_skipname(const u8* p,int off){ while(p[off]!=0){ if((p[off]&0xC0)==0xC0)return off+2; off+=p[off]+1; } return off+1; }
+static int dns_skipname(const u8* p,int off,int dl){ while(off<dl&&p[off]!=0){ if((p[off]&0xC0)==0xC0)return off+2; off+=p[off]+1; } return off<dl?off+1:dl+1; }
 static int dns_build_query(const char* host,u16 txid,u8* q,int cap){
     if(cap<17)return -1;
     { int hl=0; while(host[hl]&&hl<256)hl++; if(hl>253)return -1; }
@@ -189,6 +196,9 @@ static int dns_build_query(const char* host,u16 txid,u8* q,int cap){
     q[qp++]=0; be16(q+qp,1); qp+=2; be16(q+qp,1); qp+=2;
     return qp;
 }
+extern void lxs_frame_ext(u8*,int) __attribute__((weak));
+static void net_pass(u8* f,int n){ if(lxs_frame_ext&&n>=34&&rd16(f+12)==0x0800)lxs_frame_ext(f,n); }
+static u32 g_dns_ttl;
 static int dns_try(const char* host,u32 dns,u32* out_ip){
     if(!nic_up())return -1;
     u32 droute=((dns&my_mask)==(my_ip&my_mask))?dns:gw_ip;
@@ -196,28 +206,32 @@ static int dns_try(const char* host,u32 dns,u32* out_ip){
     u16 txid=(u16)net_rand(); if(txid==0)txid=0x1234; u16 sport=(u16)(0xC000u|(net_rand()&0x3FFFu));
     u8 q[300]; int qp=dns_build_query(host,txid,q,(int)sizeof(q)); if(qp<0)return -1; int qsec=qp-12;
     udp_send(dns,sport,53,q,qp,dmac); netlog("DNS query sent"); u8 rx[1600]; int seen=0,ltx=0,lqn=0;
-    for(int tries=0;tries<1200;tries++){ int n=nd_poll(rx,1600,1);
-        if(n<42)continue; if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=17)continue; if(rd32(ip+12)!=dns)continue;
-        int ihl=(ip[0]&0x0F)*4; u8* udp=ip+ihl; if(rd16(udp+0)!=53||rd16(udp+2)!=sport)continue; u8* d=udp+8;
+    u64 dt0=g_ticks; int rs=0;
+    for(int tries=0;tries<20000&&g_ticks-dt0<150;tries++){ if((rs==0&&g_ticks-dt0>=50)||(rs==1&&g_ticks-dt0>=100)){ rs++; udp_send(dns,sport,53,q,qp,dmac); netlog("DNS query resent"); } int n=nd_poll(rx,1600,1);
+        if(n<42)continue; if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=17||rd32(ip+12)!=dns){ net_pass(rx,n); continue; }
+        int ihl=(ip[0]&0x0F)*4; u8* udp=ip+ihl; if(rd16(udp+0)!=53||rd16(udp+2)!=sport){ net_pass(rx,n); continue; } u8* d=udp+8;
         if(!seen){ netlog("DNS reply arrived"); seen=1; }
         if(rd16(d+0)!=txid){ if(!ltx){netlog("DNS txid mismatch");ltx=1;} continue; } if(!(rd16(d+2)&0x8000))continue; if(rd16(d+4)!=1)continue;
         int qm=1; for(int i=0;i<qsec;i++)if(d[12+i]!=q[12+i]){qm=0;break;} if(!qm){ if(!lqn){netlog("DNS qname mismatch");lqn=1;} continue; }
         int anc=rd16(d+6); if(anc==0){ netlog("DNS no answer"); return 0; }
-        int off=12; off=dns_skipname(d,off); off+=4;
-        for(int a=0;a<anc;a++){ off=dns_skipname(d,off); u16 type=rd16(d+off); off+=2; off+=2; off+=4; u16 rdl=rd16(d+off); off+=2;
-            if(type==1&&rdl==4){ *out_ip=rd32(d+off); netlog("DNS resolved"); return 1; } off+=rdl; }
+        int dl=n-(int)(d-rx); if(dl>512+1024)dl=512+1024;
+        int off=12; off=dns_skipname(d,off,dl); off+=4;
+        for(int a=0;a<anc&&a<64;a++){ off=dns_skipname(d,off,dl); if(off+10>dl)break; u16 type=rd16(d+off); off+=2; off+=2; u32 ttl=rd32(d+off); off+=4; u16 rdl=rd16(d+off); off+=2; if(off+rdl>dl)break;
+            if(type==1&&rdl==4){ *out_ip=rd32(d+off); g_dns_ttl=ttl; netlog("DNS resolved"); return 1; } off+=rdl; }
         return 0; }
     netlog(seen?"DNS reply invalid":"DNS no reply"); return 0;
 }
-#define DNSC_N 8
-static struct { char host[128]; u32 ip; int used; } dnsc[DNSC_N]; static int dnsc_next=0;
-static int dnsc_get(const char*host,u32*ip){ for(int i=0;i<DNSC_N;i++) if(dnsc[i].used&&seq(dnsc[i].host,host)){ *ip=dnsc[i].ip; return 1; } return 0; }
-static void dnsc_put(const char*host,u32 ip){ for(int i=0;i<DNSC_N;i++) if(dnsc[i].used&&seq(dnsc[i].host,host)){ dnsc[i].ip=ip; return; }
-    int s=dnsc_next; dnsc_next=(dnsc_next+1)%DNSC_N; int n=0; while(host[n]&&n<127){dnsc[s].host[n]=host[n];n++;} dnsc[s].host[n]=0; dnsc[s].ip=ip; dnsc[s].used=1; }
+#define DNSC_N 64
+static struct { char host[128]; u32 ip; int used; u64 exp; } dnsc[DNSC_N]; static int dnsc_next=0;
+static int dnsc_get(const char*host,u32*ip){ for(int i=0;i<DNSC_N;i++) if(dnsc[i].used&&seq(dnsc[i].host,host)){ if(g_ticks>dnsc[i].exp){ dnsc[i].used=0; return 0; } *ip=dnsc[i].ip; return 1; } return 0; }
+static void dnsc_put(const char*host,u32 ip){ u32 t=g_dns_ttl; if(t<60)t=60; if(t>3600)t=3600; u64 e=g_ticks+(u64)t*100ULL;
+    for(int i=0;i<DNSC_N;i++) if(dnsc[i].used&&seq(dnsc[i].host,host)){ dnsc[i].ip=ip; dnsc[i].exp=e; return; }
+    int s=-1; for(int i=0;i<DNSC_N;i++) if(!dnsc[i].used){ s=i; break; } if(s<0){ s=dnsc_next; dnsc_next=(dnsc_next+1)%DNSC_N; }
+    int n=0; while(host[n]&&n<127){dnsc[s].host[n]=host[n];n++;} dnsc[s].host[n]=0; dnsc[s].ip=ip; dnsc[s].used=1; dnsc[s].exp=e; }
 int dns_query(const char* host,u32* out_ip){
     if(dnsc_get(host,out_ip)){ netlog("DNS cache hit"); return 1; }
     u32 srv[4]={dns_ip,0x08080808u,0x01010101u,0x0A000203u};
-    for(int i=0;i<4;i++){ if(!srv[i])continue; if(i&&srv[i]==srv[0])continue; int r=dns_try(host,srv[i],out_ip); if(r==-1)return -1; if(r==1){ dnsc_put(host,*out_ip); return 1; } }
+    for(int round=0;round<2;round++) for(int i=0;i<4;i++){ if(!srv[i])continue; if(i&&srv[i]==srv[0])continue; int r=dns_try(host,srv[i],out_ip); if(r==-1)return -1; if(r==1){ dnsc_put(host,*out_ip); return 1; } }
     return 0;
 }
 
@@ -227,16 +241,16 @@ static u16 tcp_cksum(u32 sip,u32 dip,const u8* t,int len){
     for(int i=0;i+1<len;i+=2)s+=((u32)t[i]<<8)|t[i+1]; if(len&1)s+=(u32)t[len-1]<<8;
     while(s>>16)s=(s&0xFFFF)+(s>>16); return (u16)~s;
 }
-u16 g_tcp_wnd=8192;
+u16 g_tcp_wnd=8192; int g_tcp_syn_ws=-1;
 void tcp_send(u32 dip,u16 sp,u16 dp,const u8* dmac,u32 seq,u32 ack,u8 fl,const u8* data,int dl){
     int lo=lxs_is_lo(dip); u32 sip=lo&&(dip>>24)==127?dip:my_ip;
-    if((!lo&&!nd_up())||dl<0||dl>1460)return; u8 f[1600]; int op=(fl&TF_SYN)?4:0; int tot=34+20+op+dl; for(int i=0;i<tot&&i<1600;i++)f[i]=0;
+    if((!lo&&!nd_up())||dl<0||dl>1460)return; u8 f[1600]; int op=(fl&TF_SYN)?(g_tcp_syn_ws>=0?8:4):0; int tot=34+20+op+dl; for(int i=0;i<tot&&i<1600;i++)f[i]=0;
     int o=eth_hdr(f,dmac,0x0800); u8* ip=f+o; int iplen=20+20+op+dl;
     ip[0]=0x45; be16(ip+2,iplen); be16(ip+4,ipid++); ip[8]=64; ip[9]=6;
     be32(ip+12,sip); be32(ip+16,dip); u16 ick=cksum(ip,20); ip[10]=ick>>8; ip[11]=(u8)ick;
     u8* t=ip+20; be16(t+0,sp); be16(t+2,dp); be32(t+4,seq); be32(t+8,ack);
     t[12]=(u8)((5+op/4)<<4); t[13]=fl; be16(t+14,g_tcp_wnd);
-    if(op){ t[20]=2; t[21]=4; be16(t+22,1400); }
+    if(op){ t[20]=2; t[21]=4; be16(t+22,1400); if(op==8){ t[24]=1; t[25]=3; t[26]=3; t[27]=(u8)g_tcp_syn_ws; } }
     for(int i=0;i<dl;i++)t[20+op+i]=data[i];
     u16 ck=tcp_cksum(sip,dip,t,20+op+dl); t[16]=ck>>8; t[17]=(u8)ck; if(lo)lxs_lo_tx(f,o+iplen); else nd_tx(f,o+iplen);
 }
@@ -260,16 +274,16 @@ int tcp_get(u32 dip,u16 dport,const char* req,int reqlen,u8* out,int maxout){
     tcp_send(dip,sp,dport,dmac,snd,rcv,TF_ACK,0,0);
     u32 getseq=snd; tcp_send(dip,sp,dport,dmac,getseq,rcv,TF_PSH|TF_ACK,(const u8*)req,reqlen); snd=getseq+reqlen;
     netlog("HTTP GET sent");
-    int outlen=0,done=0,idle=0,rexmit=0;
+    int outlen=0,done=0,idle=0,rexmit=0; g_net_rx=0;
     while(!done&&outlen<maxout){ int n=nd_poll(rx,1600,1);
         if(n<=0){ if(++idle>1800)break; if(outlen==0&&(idle%450)==0&&rexmit<3){ tcp_send(dip,sp,dport,dmac,getseq,rcv,TF_PSH|TF_ACK,(const u8*)req,reqlen); rexmit++; } continue; }
         if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6)continue;
         int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=dport||rd16(t+2)!=sp)continue;
-        int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; if(dl<0)dl=0;
+        int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0;
         u32 seq=rd32(t+4); u8 fl=t[13];
         if(fl&TF_RST){ done=1; break; }
-        if(dl>0){ if(seq==rcv){ int cp=dl; if(outlen+cp>maxout)cp=maxout-outlen; for(int i=0;i<cp;i++)out[outlen+i]=t[thl+i]; outlen+=cp; rcv+=dl; }
+        if(dl>0){ if(seq==rcv){ int cp=dl; if(outlen+cp>maxout)cp=maxout-outlen; for(int i=0;i<cp;i++)out[outlen+i]=t[thl+i]; outlen+=cp; rcv+=dl; g_net_rx=outlen; }
             tcp_send(dip,sp,dport,dmac,snd,rcv,TF_ACK,0,0); idle=0; }
-        if(fl&TF_FIN){ rcv+=1; tcp_send(dip,sp,dport,dmac,snd,rcv,TF_FIN|TF_ACK,0,0); snd+=1; done=1; } }
+        if((fl&TF_FIN)&&seq+(u32)dl==rcv){ rcv+=1; tcp_send(dip,sp,dport,dmac,snd,rcv,TF_FIN|TF_ACK,0,0); snd+=1; done=1; } }
     netlog("HTTP done"); return outlen;
 }

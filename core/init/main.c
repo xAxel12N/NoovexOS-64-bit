@@ -1,3 +1,4 @@
+#include "include/nvx/core/crash.h"
 #include "include/nvx/base.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
 #include "include/nvx/mem/heap.h"
@@ -73,7 +74,7 @@ static void init_windows(void){
     WN[W_DOOM]   =(Win){ 180,44,648,436,0,0 };
     { int sw=(int)W-80<1000?(int)W-80:1000, sh=(int)H-120<800?(int)H-120:800; if(sw<760)sw=760; if(sh<560)sh=560; int sy=((int)H-88-sh)/2; if(sy<12)sy=12; WN[W_SETTINGS]=(Win){ ((int)W-sw)/2,sy,sw,sh,0,0 }; }
     WN[W_ABOUT]  =(Win){ 320,160,470,320,0,0 };
-    WN[W_CHATGPT]=(Win){ (int)W/2-240,90,480,520,0,0 };
+    WN[W_CHATGPT]=(Win){ (int)W/2-470,80,940,580,0,0 };
     WN[W_PPTX]   =(Win){ (int)W/2-320,90,640,470,0,0 };
     focus=W_WELCOME;
 }
@@ -169,7 +170,7 @@ static int g_bootlog_y=200;
 static void bootlog_line(const char* s){
     if(BYPP!=4||!FBB||g_bootlog_y+18>(int)H-60)return;
     fill_rect(40,g_bootlog_y,(int)W-80,16,0); dstr(40,g_bootlog_y,s,0x00C8D2DCu,1);
-    for(int y=g_bootlog_y;y<g_bootlog_y+16;y++){ u32* d=(u32*)(FBB+(u64)y*PITCHB); u32* sc=SCENE+(u64)y*SW; if(g_fb_rgb)copy_swap32(d,sc,(int)W); else for(u32 x=0;x<W;x++)d[x]=sc[x]; }
+    for(int y=g_bootlog_y;y<g_bootlog_y+16;y++){ u32* d=(u32*)(FBB+(u64)y*PITCHB); u32* sc=SCENE+(u64)y*SW; if(g_fb_rgb)copy_swap32(d,sc,(int)W); else for(u32 x=0;x<W;x++)d[x]=sc[x]; } { extern void fb_shadow_note(int,int,int,int); fb_shadow_note(0,g_bootlog_y,(int)W,16); }
     g_bootlog_y+=18;
 }
 volatile u32 g_ml_beat=0; volatile int g_ml_stage=0;
@@ -204,16 +205,18 @@ void kmain(void){
     }
     g_klog_hook=bootlog_line;
     g_ram_mb=detect_ram_mb();
-    klog_init(); klog("boot: kmain entered, fb ok"); power_init();
+    klog_init(); klog("boot: kmain entered, fb ok");
+    { extern u32 g_remap_n, g_remap_fail; extern u64 g_remap_lo, g_remap_badlo, g_remap_badhi; char rb[140],*q=rb;
+      if(g_remap_n){ q=scopy(q,"memory: "); q=udec(q,g_remap_n*2); q=scopy(q," MB of kernel memory (0x"); q=hx(q,(u32)g_remap_badlo,8); q=scopy(q,"-0x"); q=hx(q,(u32)g_remap_badhi,8); q=scopy(q,") is used by the firmware or is not RAM - moved to 0x"); q=hx(q,(u32)(g_remap_lo>>32),2); q=hx(q,(u32)g_remap_lo,8); { extern u32 g_remap_restored; if(g_remap_restored){ q=scopy(q,", firmware data put back ("); q=udec(q,g_remap_restored/1024); q=scopy(q," KB)"); } } *q=0; klog(rb); }
+      else if(g_remap_fail){ q=scopy(q,"memory: WARNING kernel memory overlaps firmware memory and no free RAM was found to move it"); *q=0; klog(q==rb?"":rb); } }
+    power_init();
     if(g_fb2_ok){ char sb[72],*q=sb; q=scopy(q,"display: second head "); q=udec(q,W2); q=scopy(q,"x"); q=udec(q,H2); q=scopy(q," (mirroring)"); *q=0; klog(sb); }
     heap_init((int)g_ram_mb); klog("boot: heap ok"); { extern int cxx_run_ctors(void); cxx_run_ctors(); }
-    { extern void slab_init(void); slab_init(); }   /* slab caches on top of the heap */            /* bring up the heap now that RAM size is known */
-    pframe_init();                      /* physical frame allocator (userspace foundation) */
+    { extern void slab_init(void); slab_init(); } klog("boot: slab ok");
+    pframe_init(); klog("boot: frame pool set up");
+    { extern void crash_init(void); extern void stk_guard_boot(void); crash_init(); stk_guard_boot(); } klog("boot: crash handler and stack guard ok");
     if(mm_known()){ klog(g_heap_mapped?"memory: firmware map received, heap limited to usable RAM":"memory: firmware map received"); if(mm_area_conflicts()){ klog("memory: WARNING the firmware uses memory inside a kernel area - run memmap"); extern void mm_conflicts_log(void); mm_conflicts_log(); } }
     { extern const char* dmw_where(void); extern u32 g_devbuf; char db[120],*dq=db; dq=scopy(dq,"memory: "); dq=scopy(dq,dmw_where()); dq=scopy(dq," at 0x"); dq=hx(dq,g_devbuf,8); *dq=0; klog(db); }
-    { extern u32 g_remap_n, g_remap_fail; extern u64 g_remap_lo, g_remap_badlo, g_remap_badhi; char rb[140],*q=rb;
-      if(g_remap_n){ q=scopy(q,"memory: "); q=udec(q,g_remap_n*2); q=scopy(q," MB of kernel memory (0x"); q=hx(q,(u32)g_remap_badlo,8); q=scopy(q,"-0x"); q=hx(q,(u32)g_remap_badhi,8); q=scopy(q,") is not RAM here - moved to 0x"); q=hx(q,(u32)(g_remap_lo>>32),2); q=hx(q,(u32)g_remap_lo,8); *q=0; klog(rb); }
-      else if(g_remap_fail){ q=scopy(q,"memory: kernel memory is not RAM here and no spare RAM above 4 GB was found to move it"); *q=0; klog(q==rb?"":rb); } }
     { char mb[96],*q=mb; q=scopy(q,"memory: "); q=udec(q,g_ram_mb); q=scopy(q," MB RAM, "); q=udec(q,pframe_free_count()); q=scopy(q," free frames, "); q=udec(q,pframe_hi_count()); q=scopy(q," above 4 GB"); *q=0; klog(mb); }
     klog(pf_ready?"boot: frame pool ON (>=500MB RAM)":"boot: frame pool OFF (<500MB RAM): userspace programs like ls/cat cannot run");
 
@@ -225,6 +228,7 @@ void kmain(void){
     notify("Welcome to NoovexOS 64","Press the Win key for notifications.");
     build_bg();
     arch_idt_init();
+    { extern void us_init(void); us_init(); }
     if(*(volatile u32*)0x502CULL==0x49464555u)apic_virtual_wire();
     { extern void ioapic_mask_all(void); extern int g_ioapic_n, g_ioapic_masked; ioapic_mask_all(); char ib[80],*ip=ib; ip=scopy(ip,"boot: I/O APIC lines masked: "); ip=udec(ip,(u32)g_ioapic_masked); ip=scopy(ip," of "); ip=udec(ip,(u32)g_ioapic_n); ip=scopy(ip," controllers"); *ip=0; klog(ib); }
     pic_remap(); pit_init(100); klog("boot: pic+pit ok");
@@ -232,36 +236,44 @@ void kmain(void){
     if(inb(0x64)==0xFF){ klog("boot: no PS/2 controller (USB keyboard/mouse only)"); }
     else { for(int i=0;i<64&&(inb(0x64)&1);i++) inb(0x60); mouse_init(); klog("boot: ps2 mouse ok"); }
     xhci_mouse_autoinit(); klog("boot: xhci probe done");
-    { extern void vm_mouse_init(void); vm_mouse_init(); }              /* auto-detect a USB mouse - no 'usb' command needed */
-    g_acpi_pwrbtn_cb=acpi_power_button; acpi_aml_init(); klog("boot: ACPI AML done");
-    { extern void laptop_init(void); laptop_init(); }
-    { extern void igpu_init(void); igpu_init(); }
-    tp_init(); klog("boot: touchpad probe done");
-    battery_init();                     /* read battery % via the Embedded Controller */
+    { extern void drv_boot_check(void); drv_boot_check(); }
+    if(drv_begin("vmmouse")){ extern void vm_mouse_init(void); vm_mouse_init(); } drv_end();
+    g_acpi_pwrbtn_cb=acpi_power_button; { extern void (*g_acpi_lid_cb)(int); extern void pm_lid_changed(int); g_acpi_lid_cb=pm_lid_changed; } if(drv_begin("acpi")){ acpi_aml_init(); klog("boot: ACPI AML done"); } drv_end();
+    if(drv_begin("laptop")){ extern void laptop_init(void); laptop_init(); } drv_end();
+    if(drv_begin("igpu")){ extern void igpu_init(void); igpu_init(); } drv_end();
+    if(drv_begin("amdgpio")){ extern void amdg_init(void); amdg_init(); } drv_end();
+    if(drv_begin("touchpad")){ tp_init(); klog("boot: touchpad probe done"); } drv_end();
+    if(drv_begin("battery")){ battery_init(); } drv_end();
+    if(drv_begin("cputemp")){ extern void ctemp_init(void); ctemp_init(); } drv_end();
     mx=(int)W/2; my=(int)H/2;
     klog("boot: splash start"); g_klog_hook=0; splash_boot(); klog("boot: splash done");                      /* Windows-style animated boot logo */
     g_sig_ok = sig_self_check(); klog(g_sig_ok?"boot: integrity check passed":g_sig_tampered?"boot: INTEGRITY CHECK FAILED - kernel code was modified":"boot: integrity check skipped (unstamped build)");
 
     { extern void live_init(void); extern void live_present(void); klog("boot: live_init start"); g_state=ST_LIVE; live_init(); klog("boot: live_init done");
       { extern int installed_boot(void); if(installed_boot())klog(g_state==ST_SETUP?"boot: installed system, first start - setup":"boot: installed system - login"); }
+      { extern void reg_boot(void); reg_boot(); }
+      { extern void progfiles_sync(int); progfiles_sync(1); } { extern void sysfiles_build(void); sysfiles_build(); } { extern void focus_boot(void); focus_boot(); }
+      { extern int live_lock_start(void); if(g_state==ST_LIVE&&live_lock_start())klog("boot: started from a USB stick - sign-in screen (turn off in Settings > Accounts)"); }
       if(g_state==ST_LIVE)live_present(); klog("boot: first frame presented"); }
     cpu_irq_on();
     { u64 t0=g_ticks; for(int i=0;i<3000000&&g_ticks==t0;i++) cpu_pause(); if(g_ticks==t0){ g_ticks_live=0; klog("boot: timer interrupts are not arriving - using a polled timer"); } }
     if(g_sig_enforce&&g_sig_tampered){ skull_screen(); klog("boot: waiting for R (restart) or C (continue)");
         for(;;){ if(xhid_n)xhci_mouse_poll(); int k=kpop(); if(k=='r'||k=='R')power_reboot(); if(k=='c'||k=='C'){ klog("boot: user chose to continue with a modified kernel"); break; } cpu_idle(); }
         { extern void live_invalidate(void); extern void live_present(void); live_invalidate(); live_present(); } }
-    { extern void smp_boot_auto_c(void); smp_boot_auto_c(); }
+    if(drv_begin("smp")){ extern void smp_boot_auto_c(void); smp_boot_auto_c(); } drv_end();
+    drv_boot_done();
     u64 last_frame=0, last_ns=0, frame_ns=16666667ULL; klog("boot: interrupts on, entering main loop");
     { extern void (*g_wait_pump)(void); extern void busy_pump(void); g_wait_pump=busy_pump; }
     for(;;){
         if(!g_ticks_live)pit_poll_tick();
         int ch=0;
-        { static u64 hb=0; if(g_ticks-hb>=500){ hb=g_ticks; klog(g_state==ST_LIVE?"alive: main loop running (live)":"alive: main loop running"); } }
+        int live3d=0; if(g_state==ST_DESKTOP&&WN[W_GPU3D].open&&!WN[W_GPU3D].min){ extern int gpu3d_live(void); live3d=gpu3d_live(); }
+        { static u64 hb=0; if(g_ticks-hb>=500){ hb=g_ticks; klog(g_state==ST_LIVE?"alive: main loop running (live)":"alive: main loop running"); { extern int g_lxtrace; static int psn; if(g_lxtrace==-4&&++psn%12==0){ extern void lx_ps_dump(void); lx_ps_dump(); } } } }
         g_ml_beat++; g_ml_stage=1; tp_poll(); g_ml_stage=2; etp_poll(); { extern void syn_poll(void); syn_poll(); } g_ml_stage=3; { extern void vm_mouse_poll(void); vm_mouse_poll(); }
-        g_ml_stage=4; { static u64 ap=0; if(g_ticks-ap>=2){ ap=g_ticks; acpi_poll(); g_ml_stage=5; snd_poll(); } }
+        g_ml_stage=4; { static u64 ap=0; if(g_ticks-ap>=2){ ap=g_ticks; acpi_poll(); g_ml_stage=5; snd_poll(); { extern void ctemp_poll(void); ctemp_poll(); } } }
         g_ml_stage=6;{ extern void uvc_poll(void); extern void bench_tick(void); extern int bench_busy(void); extern u32 uvc_frames; static u32 lf=0; uvc_poll(); bench_tick(); if(WN[W_CAMERA].open&&!WN[W_CAMERA].min&&uvc_frames!=lf){ lf=uvc_frames; ch=1; } if(WN[W_BENCH].open&&bench_busy())ch=1; { extern int recorder_tick(void); if(recorder_tick())ch=1; } { extern int g_quake_state; if(WN[W_QUAKE].open&&!WN[W_QUAKE].min&&g_quake_state<3)ch=1; } { extern int writer_blink(void); static u64 lbk=0; if(writer_blink()){ u64 ph=hr_ns()/530000000ULL; if(ph!=lbk){ lbk=ph; ch=1; } } } }
         if(xhid_n) xhci_mouse_poll();
-        else if(!jc_any_runnable()&&g_ticks_live){ int armed=0; if(g_state==ST_DESKTOP&&g_cursor_moved&&hr_precise())armed=hr_wake_at(last_ns+frame_ns); { int bd=bkl_drop(); cpu_halt(); bkl_take(bd); } if(armed)hr_wake_cancel(); }
+        else if(!jc_any_runnable()&&g_ticks_live){ int armed=0; if(g_state==ST_DESKTOP&&(g_cursor_moved||live3d)&&hr_precise())armed=hr_wake_at(last_ns+frame_ns); { int bd=bkl_drop(); extern int kpending(void); extern int in_mq_pending(void); extern volatile int g_gesture; cpu_irq_off(); if(!mouse_evt&&!in_mq_pending()&&!kpending()&&!g_gesture)cpu_idle(); else cpu_irq_on(); bkl_take(bd); } if(armed)hr_wake_cancel(); }
         if(bkl_held())g_bkl.depth=1; else bkl_lock();
         bkl_yield();
         if(g_fs_wb_pending&&g_ticks>=g_fs_wb_due)nvx3_sync_all();
@@ -273,17 +285,26 @@ void kmain(void){
         else if(g_state==ST_INSTALL) ch=ip_input();
         else if(g_state==ST_SETUP) ch=setup_input();
         else ch=login_input();
+        if(g_state!=ST_DESKTOP){ extern int in_mq_pending(void); extern void in_mq_clear(void); if(in_mq_pending())in_mq_clear(); }
         if(g_state==ST_DESKTOP){ ux_desktop_start(g_user); static u64 jlast=0; static unsigned jtg=0; int jr=jc_step(); if(jr&2) ch=1; else if((jr&1)&&(g_term_gen!=jtg||g_ticks-jlast>=50)){ jtg=g_term_gen; jlast=g_ticks; ch=1; } }
+        if(g_state!=ST_DESKTOP&&g_state!=ST_LIVE){ extern int fid_active(void); if(fid_active())jc_step(); }
         { static int prevst=-1; if(g_state==ST_LIVE&&prevst!=ST_LIVE){ live_invalidate(); ch=1; } prevst=g_state; }
         if(g_state==ST_LIVE){ static unsigned lg=0; static int lfg=0; jc_step();
             if(g_term_gen!=lg){ lg=g_term_gen; ch=1; }
             if((g_tty_fg!=0)!=lfg){ lfg=(g_tty_fg!=0); klog(lfg?"live: job took the terminal":"live: job finished, prompt back"); } }
+        { static int can=0; if(kdown[0x1D]&&kdown[0x38]&&kdown[0x31]){ if(!can){ extern void nvgsp_all_off(const char*); extern int nvgsp_off(void); extern int nvgsp_on(char*,int); extern void toast(const char*); if(nvgsp_off()){ char m[120]; nvgsp_on(m,120); toast(m); } else { nvgsp_all_off("turned off with Ctrl+Alt+N"); toast("NVIDIA drawing off - Ctrl+Alt+N turns it back on"); } ch=1; } can=1; } else can=0; }
+        { static int cap=0; extern int g_fps_overlay; if(kdown[0x1D]&&kdown[0x38]&&kdown[0x19]){ if(!cap){ g_fps_overlay^=1; ch=1; } cap=1; } else cap=0; }
         { static int cag=0; extern int g_gfx; extern void gfx_stop(const char*); if(kdown[0x1D]&&kdown[0x38]&&kdown[0x22]){ if(!cag&&g_gfx){ gfx_stop("turned off with Ctrl+Alt+G"); ch=1; if(g_state==ST_LIVE){ extern void live_invalidate(void); live_invalidate(); } } cag=1; } else cag=0; }
         { extern void xfull_tick(void); xfull_tick(); }
         { static int fbwas=0; if(g_fb0_open>0){ if(g_fb0_dirty){ g_fb0_dirty=0; blit_all(); } fbwas=1; ch=0; } else if(fbwas){ fbwas=0; ch=1; if(g_state==ST_LIVE) live_invalidate(); } }
         { extern void media_tick(void); media_tick(); }
-        g_ml_stage=8; usb_hotplug_poll(); g_ml_stage=9;
+        { extern int upd_tick(void); if(upd_tick())ch=1; }
+        { extern int crash_tick(void); if(crash_tick()){ ch=1; if(g_state==ST_LIVE){ extern void live_invalidate(void); live_invalidate(); } } }
+        g_ml_stage=8; usb_hotplug_poll(); { extern void svc_tick(void); svc_tick(); } { extern void sysfiles_tick(void); sysfiles_tick(); } { extern void focus_tick(void); focus_tick(); } { extern void wifi_mgr_tick(void); wifi_mgr_tick(); } g_ml_stage=9;
         if(g_state==ST_DESKTOP){ extern void firefox_tick(void); firefox_tick(); }
+        if(g_state==ST_DESKTOP){ extern void (*g_nv_progress)(int,const char*); extern void desk_nv_progress(int,const char*); extern void nvd_poll(void); g_nv_progress=desk_nv_progress; nvd_poll(); }
+        { extern void acct_idle_tick(void); acct_idle_tick(); }
+        { extern int fid_tick(void); if(fid_tick()&&g_state==ST_DESKTOP)ch=1; }
         if(g_state==ST_DESKTOP){ battery_tick();   /* USB insert/remove + battery % */
             if(g_usb_arrived){ open_win(W_FILES); g_files_usb=1; g_usb_arrived=0; notify("USB drive","Flash drive connected"); ch=1; } }
         if(g_state==ST_DESKTOP&&g_fb0_open<=0&&!ch){ extern int video_fast(void); extern int browser_media_fast(void); if(video_fast()) ch=1; else if(browser_media_fast()) ch=1; else { extern int xdisp_fast(void); extern int xover_tick(void); if(xdisp_fast()) ch=1; else if(xover_tick()) ch=1; } }
@@ -291,6 +312,7 @@ void kmain(void){
             u64 mt=(g_refresh_hz>=120)?1:(g_refresh_hz>=60)?2:3; frame_ns=1000000000ULL/(u64)(g_refresh_hz>0?g_refresh_hz:60);
             int due=hr_precise()?(hr_ns()-last_ns>=frame_ns):((g_ticks-last_frame)>=mt);
             { extern int gfx_anim_active(void); if(!ch&&due&&gfx_anim_active())ch=1; }
+            if(!ch&&due&&live3d){ extern int gpu3d_fast(void); if(gpu3d_fast()){ last_ns=hr_ns(); last_frame=g_ticks; } else ch=1; }
             if(ch){ last_frame=g_ticks; last_ns=hr_ns(); compose_present(); g_cursor_moved=0; }        /* real change -> full frame */
             else if((g_ticks-last_frame)>=50){ last_frame=g_ticks; last_ns=hr_ns();                    /* ~0.5s heartbeat */
                 int timebased = WN[W_DOOM].open || g_toast_cur>=0 || toast_t;         /* DOOM/toasts need full frames */

@@ -45,6 +45,8 @@ Since v9.83 the source tree is flat, with one top-level folder per part of the s
 | `third_party/` | other projects' code; `third_party/src/` holds the glibc, CPython and Tcl/Tk archives | `source/kernel/third_party/`, `source/third_party_src/` |
 | `tools/` | build helpers (`kbuild.py`, `nvz.py`, `mcc`, `rune`, ...), `check.py`, `emulate.py`, `tests/`, `wifi-tables/` | `source/kernel/tools/`, `source/tools/`, `wifi-tables/` |
 | `docs/` | `architecture-src/`, the parts this document is assembled from | same |
+| `ports/` | one folder per port (software staged into the Linux files): `PORT` recipe plus `files/` or `stage.sh` (section 6.29) | new in v10.58 |
+| `distro/` | distro profiles: which ports a NoovexOS variant contains (`noovexos.profile`, `noovexos-lite.profile`) | new in v10.58 |
 
 Every top-level folder has a short `README.md` saying what is in it. The build runs from the root: `bash build.sh`, output in `build/`.
 
@@ -75,7 +77,7 @@ boot/
 
 ### 2.2 Kernel source folders
 
-The kernel is every C, C++ and assembly unit listed in `units.list` (146 units, in link order, see section 3) plus the separately built modules in `build.sh` (`MODS`). The table in section 2 lists the folders; the files in them are described in the Part for each area. Two folders hold code that is not kernel units: `usr/` (programs and C libraries built for user space) and `tools/` (programs that run on the build machine). `kernel64.c` includes every unit in one file and is used only by host test harnesses and the analyzer.
+The kernel is every C, C++ and assembly unit listed in `units.list` (147 units, in link order, see section 3) plus the separately built modules in `build.sh` (`MODS`). The table in section 2 lists the folders; the files in them are described in the Part for each area. Two folders hold code that is not kernel units: `usr/` (programs and C libraries built for user space) and `tools/` (programs that run on the build machine). `kernel64.c` includes every unit in one file and is used only by host test harnesses and the analyzer.
 
 The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `boot/stage2.S` and `boot/cdboot.S` relative to the current directory; those files live in `arch/x86_64/boot/`, so the scripts do not run unchanged. `tools/splice.py` hard-codes `/mnt/user-data/...` paths.
 
@@ -84,6 +86,8 @@ The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `b
 | File | Purpose |
 |---|---|
 | `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `build/kernel64.bin` to `boot/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
+| `tools/splitc.py` | Splits a large C file into numbered pieces in `NAME_parts/` (`python3 tools/splitc.py 300 FILE...`), and `python3 tools/splitc.py expand FILE` prints the file with the pieces put back (section 3.5). |
+| `tools/nvxport.py` | Ports and distro profiles: `list`, `info`, `check`, `new`, `stage` (section 6.29). `build.sh` runs `stage` in step `[distro]`. |
 | `tools/emulate.py` | Boot emulation of an ISO: the BIOS path (builds the real `fat.c`/`config.c`/`string.c` as a 32-bit host program), the UEFI path (El Torito EFI entry, PE check, runs `BOOTX64.EFI` against simulated services) and `uefi_entry`. |
 | `tools/tests/` | Host harnesses and templates: `aml/` (ASL/AML samples), `drivers/drvsim.c`, `fs/`, `libc/` (`ltest.c`, `pfuzz.c`, `sfile.c`), `linux/` (`hh.c`, `lxfuzz.c`, host `cpu.h`/`io.h` stand-ins), `*_template.txt` for USB/ACPI/NVMe/HR/TP/MM tests, `fatck.py`, `isocheck.py`, `pecheck.py`, `bios_emu.c`, `entry_t.c`, `mark_t.c`, `gpu_t.c`. |
 
@@ -135,6 +139,29 @@ What stays private: anything a unit does not share remains `static` in the `.c` 
 
 The separately compiled `MODS` drivers (section 4.3) still see only `include/kapi.h` and `include/drivers.h`. They call the non-static `kapi_*` functions defined in `sys/native/kapi.c` and export probe functions (`e1000_probe`, `virtio_net_probe`, `hda_probe`, ...) that fill in `struct nvx_nic { name; mac[6]; send; recv; link; }` or `struct nvx_snd { name; rate; start; free_bytes; write; poll; stop; volume; }`, plus `virtio_blk_read`/`_write`/`_flush`. Lua, Doom and NTFS are also compiled on their own, each with its own flags (section 4.6).
 
+### 3.5 Large files split into pieces (v10.60)
+
+Twelve files were too long to read and change safely (up to 2,376 lines of dense code). Each now keeps its `#include` lines and then includes numbered pieces from a folder next to it, named after the first function in the piece:
+
+| File | Lines before | Pieces | Folder |
+|---|---|---|---|
+| `sys/linux/linux.c` | 2376 | 7 | `sys/linux/linux_parts/` |
+| `shell/commands.c` | 2240 | 6 | `shell/commands_parts/` |
+| `apps/internet/webglue.c` | 1818 | 6 | `apps/internet/webglue_parts/` |
+| `apps/internet/browser.c` | 1301 | 4 | `apps/internet/browser_parts/` |
+| `drivers/usb/xhci.c` | 1231 | 4 | `drivers/usb/xhci_parts/` |
+| `graphics/ui/desktop.c` | 1116 | 4 | `graphics/ui/desktop_parts/` |
+| `drivers/video/nvidia/nvgsp.c` | 1053 | 4 | `drivers/video/nvidia/nvgsp_parts/` |
+| `apps/system/file_explorer.c` | 945 | 3 | `apps/system/file_explorer_parts/` |
+| `core/proc/jobs.c` | 937 | 3 | `core/proc/jobs_parts/` |
+| `apps/system/settings.c` | 783 | 2 | `apps/system/settings_parts/` |
+| `core/init/installer.c` | 766 | 3 | `core/init/installer_parts/` |
+| `fs/pkg/apt.c` | 696 | 2 | `fs/pkg/apt_parts/` |
+
+The pieces are not separate units: the file is still one translation unit, so `static` functions and variables work as before, `units.list` is unchanged, and kbuild rebuilds the file when any piece changes (gcc `-MMD` lists the pieces). The compiled objects of all twelve files were byte-identical before and after the split (apart from the build time string). Cuts are made only where a function ends at the top level, or inside a very long command function before an `else if(` branch, so a piece may begin with `else if(`. The largest piece is 667 lines (`shell/commands_parts/04_cmd_ring3.c`, one long run of command branches). `tools/check.py` reads these files through `kexpand()`, so tests that extract functions from `xhci.c` or `nvgsp.c` see the full text.
+
+Next step (not done): turn pieces into real separate units with their own headers, starting with the ones that share little state (for example the USB camera and audio parts of `xhci.c`).
+
 ## 4. `build.sh`, step by step
 
 `build.sh` is a POSIX `sh` script with `set -e`. It runs from the repository root and writes everything under `B=build`. It first creates `build/`, `build/user/src`, `build/user/libc`, `build/lua/src` and `build/ntfs`.
@@ -177,6 +204,7 @@ CFLAGS="-m64 -Os -ffreestanding -fno-pie -fno-stack-protector \
 | `[web]` | `tools/js2c.py` for the prelude, QuickJS (cached in `build/web/`), musl `libm` (`libmk.a`), the `web/*.c` engine files, merged with `ld -r` and reduced to one global symbol, `nwe_entry` (Part 13) | `build/web_all.o` |
 | `[3b]` | `third_party/doom/build_doom.sh` | `build/doom_blob.o` |
 | `[3c]` | ntfs-3g library, glue and `mkntfs` | `build/ntfs/*.o` to `$NTFSOBJ` |
+| `[3d]` ... `[distro]` | glibc, CPython and the other Linux files; then `tools/nvxport.py stage --profile ${NVX_PROFILE:-distro/noovexos.profile}` adds the ports of the profile, `/etc/os-release` and `/usr/share/noovex/ports.txt` (section 6.29) | `build/sysroot-stage/`, `build/sysroot.bin` |
 | `[4/6]` | Final link with `arch/x86_64/kernel64.ld` | `build/kernel64.elf` |
 | `[5/6]` | `objcopy -O binary` | `build/kernel64.bin` |
 | `[6/6]` | Python post-processing: 8 MiB size check, size stamp at offset 24, build signature | `build/kernel64.bin` (patched in place) |
@@ -384,9 +412,10 @@ Usage: `mkhybrid.py boot.bin stage2.bin out.iso [VOLID] fatpath=hostfile ...` (s
 | 1..63 | stage2 (ISO "system area", unused by ISO9660) |
 | 2K-sectors 16..23 | ISO9660 PVD (16), El Torito boot record (17), terminator (18), boot catalog (19), path tables (20, 21), root dir (22), `README.TXT` (23) |
 | 2048.. | FAT32 partition (`build_fat32`): 1 sector/cluster, 32 reserved, 2 FATs, OEM `MYBOOT  `, label = VOLID, real subdirectories |
-| after FAT32 | FAT16 EFI image (`build_fat16`), present when both `BOOTX64.EFI` and `boot/kernel64.bin` are in the tree; contains `EFI/BOOT/BOOTX64.EFI` and `KERNEL64.BIN` |
+| after FAT32 | FAT16 EFI image (`build_fat16`), only with `NVX_EFI_FAT16=1` and when both `BOOTX64.EFI` and `boot/kernel64.bin` are in the tree; contains `EFI/BOOT/BOOTX64.EFI` and `KERNEL64.BIN` |
 
-- The FAT32 partition is sized to its contents + 8 MiB, with a minimum of 69632 sectors. The script asserts at least 65525 clusters ("UEFI would read it as FAT16").
+- The FAT32 partition is sized to its contents + 8 MiB plus the room for larger FATs, with a minimum of 69632 sectors. The script asserts at least 65525 clusters ("UEFI would read it as FAT16").
+- The FATs are sized for a partition of `NVX_GROW_SECTORS` sectors (default 1048576, 512 MiB), not for the partition in the image. This adds about 8 MiB to the ISO. On a USB stick the updater can then grow the partition into the unused part of the stick without moving any data (section 8.12).
 - The boot catalog's default entry is `0x88`, media `0x04` (hard-disk emulation of the whole image from RBA 0), system type `0x0C`. A final section header (`0x91`, platform `0xEF`) holds one no-emulation EFI entry that points at the FAT16 image (or, without it, at the FAT32 partition).
 - `build_fat16` asserts the image fits in an El Torito sector count (`<= 0xFFFF`) and that its cluster count is in the FAT16 range.
 
@@ -402,6 +431,19 @@ On CD, the result boots through El Torito (BIOS: HDD emulation to MBR to stage2;
 | `tools/mkvdi.py raw.img out.vdi [MB]` | Fixed VirtualBox VDI (signature `0xBEDA107F`, version 1.1, type 2 = fixed, default 16 MB). |
 | `mkuefi.py` | Not in the repository; it exists only as a document in the attached "noovex" project. It reads `BOOTX64.EFI` and writes `noovex7-uefi.img`: a GPT disk (protective MBR, primary + backup headers) with a 16 MiB FAT16 ESP at LBA 2048 holding `/EFI/BOOT/BOOTX64.EFI`, then re-parses the FAT to verify. |
 
+### 4.9 Rust
+
+Since v10.10 the build uses Rust in two places. Both are optional: without `cargo` the build prints a note and continues.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Layout library | `rust/nvxlayout` (crate), `third_party/taffy` (Taffy 0.15, MIT), `rust/shims/smallvec` | A `no_std` static library linked into the web engine (`build/web_all.o`). It exports `nvx_taffy_grid` (CSS Grid layout through Taffy) and `nvx_rust_version`. `tools/build_rust.sh` builds it with `cargo build --release --offline` and `RUSTFLAGS="-C no-redzone=yes -C relocation-model=static -C code-model=small -C panic=abort"`. |
+| Safety check | `tools/rust_check.py` | Links only the archive members the engine needs (`ld -r -u nvx_taffy_grid`), disassembles them and fails if any instruction uses memory below `%rsp` (the red zone, unsafe in the kernel because interrupts run on the same stack) or if an undefined symbol is not in the allowed list (`memcpy`, `memset`, `memmove`, `memcmp`, `bcmp`, a few `libm` functions and the `nvx_rs_*` callbacks). The precompiled `core`/`alloc` objects from the `x86_64-unknown-linux-gnu` toolchain pass this check today. |
+| Runtime for Rust | `web/layout2.c` | `nvx_rs_alloc`/`nvx_rs_free` (the engine heap, any alignment), `nvx_rs_abort` (a Rust panic becomes `nwe_fail`, so the page stops with an error instead of the kernel), `rust_eh_personality` and `_Unwind_Resume` stubs. `web/rust_stub.c` replaces the library when `cargo` is missing. |
+| Rust programs | `rust/rustinfo`, `tools/build_rust_apps.sh` | Normal `std` Rust programs, built for `x86_64-unknown-linux-gnu` with `-C target-feature=+crt-static` (static PIE, no shared libraries needed) and copied to `/usr/bin`. `rustinfo` prints the Rust version, the kernel, the CPU count, runs four threads and checks file input and output. `nvx-mem` (`rust/nvxmem`, since v10.51) shows memory use, tests memory and measures its speed (section 3.17). |
+
+The crates.io registry is not used: Taffy's only dependency for grid layout, `smallvec`, is replaced by a small local crate with the same API on top of `Vec`.
+
 ## 7. Toolchain requirements
 
 Derived from the commands the scripts run (`tools/README.md` lists Linux with gcc, binutils, Python 3 and GNU coreutils for the checker):
@@ -414,6 +456,8 @@ Derived from the commands the scripts run (`tools/README.md` lists Linux with gc
 | `python3` | Signature/size step, `mkhybrid.py`, `mkimage.py`, `check.py`, `emulate.py`. |
 | POSIX `sh` | `build.sh`, `build_doom.sh`, `tools/mcc`; `nproc` is optional (fallback 4). |
 | x86-64 Linux host | `tools/rune` is a dynamically linked x86-64 Linux ELF executable. |
+| `clang`, `lld`, `g++`, `cmake`, `ninja`, `perl`, `pkg-config`, `tic`/`infocmp` | The source ports (v10.07, `tools/build_ports2.sh`, `tools/build_netsurf.sh`, `tools/mcc-port`): clang compiles and links them against the ports sysroot, CMake builds libjpeg-turbo, libpng, FreeType and expat, `g++` builds the host gperf, `perl` runs NetSurf's code generators, `tic` builds the ncurses fallback entries. Generated `configure` scripts are already in `third_party`. mlibc also needs clang 18+, lld and ninja (v10.06). |
+| `cargo`, `rustc` (stable, 1.80 or newer) | Optional (v10.10): the Taffy grid layout in the web engine and the Rust programs (section 4.9). |
 | optional | `clang-tidy` (`check.py` analyze group), `qemu-system-i386` / `qemu-system-x86_64` + OVMF (Makefile `run` targets). |
 
 Full build sequence (what `check.py --build` does):

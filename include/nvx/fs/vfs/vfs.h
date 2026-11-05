@@ -19,6 +19,7 @@ int vfs_read(int fd,char* buf,int len);
 int vfs_write(int fd,const char* buf,int len);
 int vfs_lseek(int fd,int off,int whence);
 int vfs_close(int fd);
+const vfs_fs_ops* vfs_lookup_rw(const char* nm,int flags);
 int vfs_dup(int fd);
 int vfs_fstat(int fd);
 

@@ -62,7 +62,7 @@ void power_init(void){
     klog(g_acpi.have_s5?"acpi: ready - S5 power off available":"acpi: tables found but no _S5 object");
     if(g_acpi.have_s1)klog("acpi: S1 sleep available");
 }
-static void power_prepare(void){ klog("power: flushing filesystems"); if(nvxntfs_mounted())nvxntfs_umount(); if(vf_mounted())vf_umount(); }
+static void power_prepare(void){ { extern int nvgsp_shutdown(void); nvgsp_shutdown(); } klog("power: flushing filesystems"); if(nvxntfs_mounted())nvxntfs_umount(); if(vf_mounted())vf_umount(); }
 void acpi_enable_mode(void){
     if(!g_acpi.pm1a_cnt||!g_acpi.smi_cmd||!g_acpi.acpi_en)return;
     if(inw((u16)g_acpi.pm1a_cnt)&1)return;
@@ -77,7 +77,7 @@ static void power_safe_screen(const char* line){
     dstr(bx+40,by+23,line,rgb(20,24,34),1); blit_all();
 }
  
-void power_off(void){ if(g_gdisk_probed)gdisk_flush();
+void power_off(void){ { extern void nwk_webcache_tick(int) __attribute__((weak)); if(nwk_webcache_tick)nwk_webcache_tick(1); } if(g_gdisk_probed)gdisk_flush();
     power_prepare(); klog("power: shutting down");
     if(g_acpi.ok&&g_acpi.have_s5){
         if(g_acpi.hwred&&g_acpi.slp_addr){ acpi_gas_write8(g_acpi.slp_space,g_acpi.slp_addr,(u8)(((g_acpi.s5a&7)<<2)|0x20)); }
@@ -91,7 +91,7 @@ void power_off(void){ if(g_gdisk_probed)gdisk_flush();
     power_safe_screen("It is now safe to turn off your computer.");
     for(;;)cpu_stop();
 }
-void power_reboot(void){ if(g_gdisk_probed)gdisk_flush();
+void power_reboot(void){ { extern void nwk_webcache_tick(int) __attribute__((weak)); if(nwk_webcache_tick)nwk_webcache_tick(1); } if(g_gdisk_probed)gdisk_flush();
     power_prepare(); klog("power: restarting"); cpu_irq_off();
     if(g_acpi.ok&&g_acpi.rst_addr&&(g_acpi.rst_space==0||g_acpi.rst_space==1)){ acpi_gas_write8(g_acpi.rst_space,g_acpi.rst_addr,g_acpi.rst_val); for(int i=0;i<500000;i++)io_wait(); }
     outb(0xCF9,0x02); for(int i=0;i<1000;i++)io_wait(); outb(0xCF9,0x06); for(int i=0;i<500000;i++)io_wait();

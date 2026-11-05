@@ -9,9 +9,9 @@
 #include "include/nvx/fs/vfs/dirtree.h"
 #include "include/nvx/fs/vfs/ramfs.h"
 
-#define XA_MAX 32
+#define XA_MAX 64
 #define ICS 48
-typedef struct { char name[48]; char exec[160]; char icon[96]; int term; u32* pix; int pixok; } xapp;
+typedef struct { char name[48]; char exec[160]; char icon[96]; int term; int cat; u32* pix; int pixok; char path[100]; } xapp;
 static xapp g_xa[XA_MAX]; static int g_nxa; static int g_xa_files=-1;
 static u32* g_idle_pix; static int g_idle_ok;
 extern void x_launch(const char* prog);
@@ -33,17 +33,23 @@ static void find_icon(xapp* a){
     if(a->icon[0]=='/'){ a->pix=load_png_scaled(a->icon); return; }
     static const char* const dirs[]={"/usr/share/icons/hicolor/48x48/apps/","/usr/share/icons/hicolor/64x64/apps/","/usr/share/icons/hicolor/128x128/apps/","/usr/share/icons/hicolor/32x32/apps/","/usr/share/icons/hicolor/256x256/apps/","/usr/share/pixmaps/",0};
     for(int i=0;dirs[i]&&!a->pix;i++){ char p[200]; char* q=p; q=scopy(q,dirs[i]); q=scopy(q,a->icon); q=scopy(q,".png"); *q=0; a->pix=load_png_scaled(p); } }
+static int xs_word(const char* l,int n,const char* w){ int k=0; while(w[k])k++; for(int i=0;i+k<=n;i++){ if((i==0||l[i-1]==';'||l[i-1]=='=')&&(i+k==n||l[i+k]==';'||l[i+k]=='\r')){ int j=0; while(j<k&&l[i+j]==w[j])j++; if(j==k)return 1; } } return 0; }
+static int xs_cat(const char* l,int n){
+    static const char* const w[][7]={{"Office","WordProcessor","Spreadsheet","Presentation",0},{"Network","WebBrowser","Email","Chat","InstantMessaging",0},{"AudioVideo","Audio","Video","Graphics","Player","Music",0},{"Development","IDE","TextEditor",0},{"Game",0},{"System","Settings","Monitor","TerminalEmulator",0}};
+    for(int g=0;g<6;g++) for(int k=0;w[g][k];k++) if(xs_word(l,n,w[g][k]))return g;
+    return 6; }
 static void parse_desktop(const char* path){
     if(g_nxa>=XA_MAX)return; u32 L=0; const u8* d=anyread(path,&L); if(!d)return;
-    xapp a; for(int i=0;i<(int)sizeof(a);i++)((char*)&a)[i]=0; int in=0, nodisp=0, app=1;
+    xapp a; for(int i=0;i<(int)sizeof(a);i++)((char*)&a)[i]=0; a.cat=6; int in=0, nodisp=0, app=1;
     const char* s=(const char*)d; const char* e=s+L;
     while(s<e){ const char* l=s; while(s<e&&*s!='\n')s++; int n=(int)(s-l); if(s<e)s++; if(n<=0)continue;
         if(l[0]=='['){ in=(n>=15&&xs_pre(l,"[Desktop Entry]")); continue; } if(!in)continue;
         char* dst=0; int cap=0; int k=0;
         if(xs_pre(l,"Name=")){ dst=a.name; cap=48; k=5; } else if(xs_pre(l,"Exec=")){ dst=a.exec; cap=160; k=5; } else if(xs_pre(l,"Icon=")){ dst=a.icon; cap=96; k=5; }
-        else if(xs_pre(l,"NoDisplay=true"))nodisp=1; else if(xs_pre(l,"Terminal=true"))a.term=1; else if(xs_pre(l,"Type=")&&!xs_pre(l,"Type=Application"))app=0;
+        else if(xs_pre(l,"Categories="))a.cat=xs_cat(l,n); else if(xs_pre(l,"NoDisplay=true"))nodisp=1; else if(xs_pre(l,"Terminal=true"))a.term=1; else if(xs_pre(l,"Type=")&&!xs_pre(l,"Type=Application"))app=0;
         if(dst){ int o=0; for(int i=k;i<n&&o<cap-1;i++){ if(dst==a.exec&&l[i]=='%'&&i+1<n){ i++; continue; } dst[o++]=l[i]; } while(o>0&&(dst[o-1]==' '||dst[o-1]=='\r'))o--; dst[o]=0; } }
     if(!a.name[0]||!a.exec[0]||nodisp||!app)return;
+    { int o=0; for(;path[o]&&o<99;o++)a.path[o]=path[o]; a.path[o]=0; }
     for(int i=0;i<g_nxa;i++){ int same=1; for(int k=0;;k++){ if(g_xa[i].name[k]!=a.name[k]){ same=0; break; } if(!a.name[k])break; } if(same)return; }
     g_xa[g_nxa++]=a; }
 void xapps_refresh(void){
@@ -55,6 +61,8 @@ void xapps_refresh(void){
     { int t=0; for(int i=0;i<256&&k_readdir_at("/usr/share/applications",i,nm,&t)==1;i++){ int L=xs_len(nm); if(t==4||L<9)continue; if(!xs_pre(nm+L-8,".desktop"))continue; if(xs_pre(nm,"python3-ide"))continue;
         char p[160]; char* q=p; q=scopy(q,"/usr/share/applications/"); q=scopy(q,nm); *q=0; parse_desktop(p); } } }
 int xapps_count(void){ xapps_refresh(); return g_nxa; }
+int xapps_get(int i,const char** name,const char** exec,const char** icon,const char** path){ if(i<0||i>=g_nxa)return 0; *name=g_xa[i].name; *exec=g_xa[i].exec; *icon=g_xa[i].icon; *path=g_xa[i].path; return 1; }
+int app_cat(int id){ if(id>=1100&&id<1100+g_nxa)return g_xa[id-1100].cat; return 3; }
 const char* app_name(int id){ if(id==1000)return "Python IDE"; if(id==1001)return "IDLE (Python 3.13)"; if(id>=1100&&id<1100+g_nxa)return g_xa[id-1100].name; return "?"; }
 static u32* app_pix(int id){
     if(id==1001){ if(!g_idle_ok){ g_idle_ok=1; g_idle_pix=load_png_scaled("/usr/lib/python3.13/idlelib/Icons/idle_48.png"); } return g_idle_pix; }
@@ -79,6 +87,7 @@ static char* ff_where(char* p,u64 a){
     p=scopy(p," in "); p=scopy(p,g_mapn[hit].nm); p=scopy(p," +"); return ux(p,a-base); }
 static const char g_scn[]="0 read,1 write,2 open,3 close,4 stat,5 fstat,6 lstat,7 poll,8 lseek,9 mmap,10 mprotect,11 munmap,12 brk,13 rt_sigaction,14 rt_sigprocmask,15 rt_sigreturn,16 ioctl,17 pread64,18 pwrite64,19 readv,20 writev,21 access,22 pipe,23 select,24 sched_yield,25 mremap,26 msync,27 mincore,28 madvise,29 shmget,30 shmat,31 shmctl,32 dup,33 dup2,35 nanosleep,39 getpid,41 socket,42 connect,44 sendto,45 recvfrom,46 sendmsg,47 recvmsg,49 bind,50 listen,51 getsockname,52 getpeername,53 socketpair,54 setsockopt,55 getsockopt,56 clone,57 fork,59 execve,61 wait4,62 kill,63 uname,67 shmdt,72 fcntl,73 flock,77 ftruncate,79 getcwd,80 chdir,82 rename,83 mkdir,87 unlink,89 readlink,90 chmod,95 umask,96 gettimeofday,97 getrlimit,98 getrusage,99 sysinfo,102 getuid,110 getppid,112 setsid,131 sigaltstack,137 statfs,138 fstatfs,140 getpriority,141 setpriority,144 sched_setscheduler,149 mlock,157 prctl,158 arch_prctl,160 setrlimit,165 mount,166 umount2,186 gettid,187 readahead,200 tkill,202 futex,203 sched_setaffinity,204 sched_getaffinity,213 epoll_create,217 getdents64,218 set_tid_address,221 fadvise64,228 clock_gettime,229 clock_getres,230 clock_nanosleep,231 exit_group,232 epoll_wait,233 epoll_ctl,234 tgkill,237 mbind,239 get_mempolicy,247 waitid,253 inotify_add_watch,254 inotify_rm_watch,257 openat,258 mkdirat,262 newfstatat,263 unlinkat,267 readlinkat,270 pselect6,271 ppoll,272 unshare,273 set_robust_list,280 utimensat,281 epoll_pwait,282 signalfd,283 timerfd_create,284 eventfd,285 fallocate,286 timerfd_settime,288 accept4,289 signalfd4,290 eventfd2,291 epoll_create1,292 dup3,293 pipe2,294 inotify_init1,302 prlimit64,308 setns,315 sched_getattr,317 seccomp,318 getrandom,319 memfd_create,324 membarrier,332 statx,334 rseq,425 io_uring_setup,434 pidfd_open,435 clone3,438 pidfd_getfd,439 faccessat2,441 epoll_pwait2,";
 static const char* sc_name(u32 n){ static char out[24]; const char* q=g_scn; while(*q){ u32 v=0; while(*q>='0'&&*q<='9')v=v*10+(u32)(*q++-'0'); q++; int k=0; while(*q&&*q!=','){ if(v==n&&k<23)out[k++]=*q; q++; } if(*q)q++; if(v==n){ out[k]=0; return out; } } return 0; }
+const char* lx_scname(u32 n){ return sc_name(n); }
 static char* g_rp; static int g_rpn, g_rpcap;
 static void rp(const char* t){ term_puts(t); if(!g_rp)return; while(*t&&g_rpn<g_rpcap-1)g_rp[g_rpn++]=*t++; }
 static const char* gap_kind(u32 k){ switch(k){ case 1: return "Unix socket type"; case 2: return "socket family"; case 3: return "internet socket type"; case 4: return "ioctl request"; case 5: return "fcntl command"; case 6: return "prctl option"; case 7: return "clone flags"; case 8: return "socketpair type"; } return "option"; }

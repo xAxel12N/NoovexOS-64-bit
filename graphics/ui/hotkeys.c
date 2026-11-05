@@ -60,7 +60,8 @@ void hk_do(int id){
     else if(id==17){ extern void snd_rec_gain(int); extern int g_mic_gain; if(!hk_micmute){ hk_prev_mic=g_mic_gain?g_mic_gain:70; snd_rec_gain(0); hk_micmute=1; osd_show(3,0,"Microphone muted"); } else { snd_rec_gain(hk_prev_mic); hk_micmute=0; osd_show(3,hk_prev_mic,"Microphone on"); } }
     else if(id==18){ g_airplane^=1; osd_show(4,-1,g_airplane?"Airplane mode on":"Airplane mode off"); }
     else if(id==19){ g_lap_tp_off^=1; osd_show(7,g_lap_tp_off?0:-1,g_lap_tp_off?"Touchpad off":"Touchpad on"); if(!g_lap_tp_off)g_osd_val=-1; }
-    else if(id==20){ g_state=ST_LOGIN; extern char login_pass[]; extern int login_pl; login_pass[0]=0; login_pl=0; }
+    else if(id==20){ extern void acct_ui_lock(void); acct_ui_lock(); }
     else if(id==21){ open_win(W_VIDEO); }
+    else if(id>=28&&id<=30){ extern void ss_open(int,int); if(id==28)ss_open(0,0); else if(id==29)ss_open(2,1); else ss_open(1,1); }
 }
 int hk_poll(void){ int any=0; while(g_hk_r!=g_hk_w){ int id=g_hk_q[g_hk_r]; g_hk_r=(g_hk_r+1)&31; if(g_state==ST_DESKTOP||id<=3||id==13||id==14)hk_do(id); any=1; } return any; }

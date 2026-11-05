@@ -256,7 +256,7 @@ static const char* sattr(node* n, const char* name, char* buf, int cap) {
     return attr_get(n, name);
 }
 
-typedef struct { unsigned fill, stroke; float sw, op, fop, sop; int evenodd; int nofill, nostroke; } sstate;
+typedef struct { unsigned fill, stroke; float sw, op, fop, sop; int evenodd; int nofill, nostroke; float fs; int anchor, wt, it, base; const char* fam; } sstate;
 
 static unsigned resolve_col(const char* v, node* n, unsigned def, int* none) {
     *none = 0;
@@ -304,6 +304,8 @@ static void draw_el(node* n, mat m, sstate s, int depth);
 
 static float fat(node* n, const char* a) { const char* v = attr_get(n, a); return v ? parse_float(v, 0) : 0; }
 
+static void draw_el(node* n, mat m, sstate s, int depth);
+static sstate inherit_state(node* n, sstate s);
 static void shape(node* n, mat m, sstate* s) {
     poly p = { 0 };
     g_m = m;
@@ -358,6 +360,48 @@ static void shape(node* n, mat m, sstate* s) {
         }
         stroke_poly(&p, s->sw * scale, ((unsigned)(((s->stroke >> 24) * s->op * s->sop)) << 24) | (s->stroke & 0xFFFFFF), closed);
     }
+    if ((t == T_PATH || t == T_LINE || t == T_POLYLINE || t == T_POLYGON) && p.n >= 2) {
+        static const char* MK[3] = { "marker-start", "marker-end", "marker-mid" };
+        for (int w = 0; w < 2; w++) {
+            char buf[160];
+            const char* v = sattr(n, MK[w], buf, sizeof(buf));
+            if (!v) continue;
+            const char* h = strstr(v, "url(");
+            if (!h) continue;
+            h += 4; while (*h == ' ' || *h == '\'' || *h == '"') h++;
+            if (*h != '#') continue;
+            char id[128]; int k = 0; h++;
+            while (*h && *h != ')' && *h != '\'' && *h != '"' && k < 127) id[k++] = *h++;
+            id[k] = 0;
+            node* mk = find_id(G.doc, id);
+            if (!mk || !mk->name || !ieq(mk->name, "marker")) continue;
+            int i1, i0;
+            if (w == 1) { i1 = p.n - 1; i0 = i1 - 1; while (i0 > 0 && fabsf(p.xy[i0 * 2] - p.xy[i1 * 2]) < 0.01f && fabsf(p.xy[i0 * 2 + 1] - p.xy[i1 * 2 + 1]) < 0.01f) i0--; }
+            else { i1 = 0; i0 = 1; while (i0 < p.n - 1 && fabsf(p.xy[i0 * 2] - p.xy[0]) < 0.01f && fabsf(p.xy[i0 * 2 + 1] - p.xy[1]) < 0.01f) i0++; }
+            float ex = p.xy[i1 * 2], ey = p.xy[i1 * 2 + 1];
+            float dx = w == 1 ? ex - p.xy[i0 * 2] : p.xy[i0 * 2] - ex, dy = w == 1 ? ey - p.xy[i0 * 2 + 1] : p.xy[i0 * 2 + 1] - ey;
+            float ang = atan2f(dy, dx);
+            const char* orient = attr_get(mk, "orient");
+            if (!orient || (!istarts(orient, "auto"))) { float deg = orient ? parse_float(orient, 0) : 0; ang = deg * 3.14159265f / 180; if (m.d < 0 || m.a < 0) {} }
+            else if (w == 0 && istarts(orient, "auto-start-reverse")) ang += 3.14159265f;
+            const char* mu = attr_get(mk, "markerUnits");
+            float unit = (mu && ieq(mu, "userSpaceOnUse")) ? scale : scale * (s->sw > 0 ? s->sw : 1);
+            float mw = attr_get(mk, "markerWidth") ? fat(mk, "markerWidth") : 3, mh = attr_get(mk, "markerHeight") ? fat(mk, "markerHeight") : 3;
+            float kk = 1;
+            const char* vb = attr_get(mk, "viewBox");
+            if (vb) { float vv[4] = { 0, 0, 0, 0 }; const char* q = vb; for (int i = 0; i < 4 && q; i++) q = num(q, &vv[i]); if (vv[2] > 0 && vv[3] > 0) kk = fminf(mw / vv[2], mh / vv[3]); }
+            float rx = fat(mk, "refX"), ry = fat(mk, "refY");
+            float c = cosf(ang), sn = sinf(ang), u = unit * kk;
+            mat M = { c * u, sn * u, -sn * u, c * u, 0, 0 };
+            M.e = ex - (M.a * rx + M.c * ry);
+            M.f = ey - (M.b * rx + M.d * ry);
+            sstate ms = *s;
+            ms.op = s->op;
+            ms.fill = 0xFF000000; ms.nofill = 0; ms.nostroke = 1; ms.sw = 1;
+            ms = inherit_state(mk, ms);
+            for (node* ch = mk->first; ch; ch = ch->next) draw_el(ch, M, ms, 1);
+        }
+    }
 }
 
 static sstate inherit_state(node* n, sstate s) {
@@ -375,42 +419,95 @@ static sstate inherit_state(node* n, sstate s) {
     if ((v = sattr(n, "fill-rule", buf, sizeof(buf)))) s.evenodd = ieq(v, "evenodd");
     if ((v = sattr(n, "display", buf, sizeof(buf))) && ieq(v, "none")) s.op = 0;
     if ((v = sattr(n, "visibility", buf, sizeof(buf))) && ieq(v, "hidden")) s.op = 0;
+    if ((v = sattr(n, "font-size", buf, sizeof(buf)))) { float f = parse_float(v, 0); if (strstr(v, "em")) f *= s.fs; if (f > 0) s.fs = f; }
+    else if (n->st && n->parent && n->parent->st && n->st->fsize != n->parent->st->fsize) s.fs = n->st->fsize;
+    if ((v = sattr(n, "text-anchor", buf, sizeof(buf)))) s.anchor = ieq(v, "middle") ? 1 : ieq(v, "end") ? 2 : 0;
+    if ((v = sattr(n, "font-weight", buf, sizeof(buf)))) { if (ieq(v, "bold") || ieq(v, "bolder")) s.wt = 700; else if (ieq(v, "normal")) s.wt = 400; else { float f = parse_float(v, 0); if (f > 0) s.wt = (int)f; } }
+    else if (n->st && n->parent && n->parent->st && n->st->fweight != n->parent->st->fweight) s.wt = n->st->fweight;
+    if ((v = sattr(n, "font-style", buf, sizeof(buf)))) s.it = ieq(v, "italic") || ieq(v, "oblique");
+    if ((v = sattr(n, "font-family", buf, sizeof(buf)))) s.fam = nstrdup(v);
+    else if (n->st && n->st->ffamily && n->parent && n->parent->st && n->st->ffamily != n->parent->st->ffamily) s.fam = n->st->ffamily;
+    if ((v = sattr(n, "dominant-baseline", buf, sizeof(buf))) || (v = sattr(n, "alignment-baseline", buf, sizeof(buf)))) s.base = (ieq(v, "middle") || ieq(v, "central")) ? 1 : (ieq(v, "hanging") || ieq(v, "text-before-edge")) ? 2 : 0;
     return s;
 }
+static float flen(node* n, const char* a, float fs, int* has) { const char* v = attr_get(n, a); if (has) *has = v != 0; if (!v) return 0; float f = parse_float(v, 0); if (strstr(v, "em")) f *= fs; return f; }
 
 
 extern int css_face_for(const char* fam, int weight, int italic);
 typedef struct { char s[1024]; int n; } tbuf;
 static void tcollect(node* n, tbuf* b, int d) { if (d > 8) return; for (node* c = n->first; c; c = c->next) { if (c->type == NT_TEXT) { for (int i = 0; i < c->tlen && b->n < 1023; i++) { char ch = c->text[i]; if (ch == '\n' || ch == '\t' || ch == '\r') ch = ' '; if (ch == ' ' && b->n && b->s[b->n - 1] == ' ') continue; b->s[b->n++] = ch; } } else if (c->type == NT_ELEM) tcollect(c, b, d + 1); } }
+typedef struct { const char* t; int n; float x, y; int newchunk; int face; float size; unsigned col; float w; } tpiece;
+static void put_col(sstate* st, unsigned* out) { unsigned col = st->fill; float a = ((col >> 24) & 255) / 255.0f * st->op * st->fop; *out = (col & 0xFFFFFF) | ((unsigned)(a * 255.0f + 0.5f) << 24); }
+static void svg_text_walk(node* n, sstate st, float* px, float* py, tpiece* P, int* np, int cap, float sc, int depth, int first) {
+    if (depth > 8) return;
+    for (node* c = n->first; c && *np < cap; c = c->next) {
+        if (c->type == NT_TEXT) {
+            int s0 = 0, e = c->tlen; const char* t = c->text;
+            while (s0 < e && (t[s0] == ' ' || t[s0] == '\n' || t[s0] == '\t' || t[s0] == '\r')) s0++;
+            while (e > s0 && (t[e - 1] == ' ' || t[e - 1] == '\n' || t[e - 1] == '\t' || t[e - 1] == '\r')) e--;
+            if (e <= s0) continue;
+            tpiece* q = &P[(*np)++];
+            q->t = t + s0; q->n = e - s0; q->x = *px; q->y = *py; q->newchunk = first; first = 0;
+            q->face = css_face_for(st.fam, st.wt, st.it); q->size = st.fs * sc;
+            if (st.nofill) q->col = 0; else put_col(&st, &q->col);
+            q->w = text_width(q->face, q->size, q->t, q->n, 0) / (sc > 0 ? sc : 1);
+            *px += q->w + (c->next ? st.fs * 0.28f : 0);
+        } else if (c->type == NT_ELEM && (ieq(c->name, "tspan") || ieq(c->name, "a") || ieq(c->name, "textPath"))) {
+            sstate s2 = inherit_state(c, st);
+            if (s2.op <= 0) continue;
+            int hx, hy;
+            float nx = flen(c, "x", s2.fs, &hx), ny = flen(c, "y", s2.fs, &hy);
+            if (hx) *px = nx;
+            if (hy) *py = ny;
+            *px += flen(c, "dx", s2.fs, 0);
+            *py += flen(c, "dy", s2.fs, 0);
+            svg_text_walk(c, s2, px, py, P, np, cap, sc, depth + 1, hx || first);
+            first = 0;
+        }
+    }
+}
 static void svg_text(node* n, mat m, sstate* st) {
+    static tpiece P[256];
+    int np = 0;
+    float sc = sqrtf(fabsf(m.a * m.d - m.b * m.c));
+    if (sc <= 0) return;
+    float x = flen(n, "x", st->fs, 0) + flen(n, "dx", st->fs, 0), y = flen(n, "y", st->fs, 0) + flen(n, "dy", st->fs, 0);
+    svg_text_walk(n, *st, &x, &y, P, &np, 256, sc, 0, 1);
+    for (int i = 0; i < np;) {
+        int j = i + 1;
+        while (j < np && !P[j].newchunk) j++;
+        float tw = P[j - 1].x + P[j - 1].w - P[i].x;
+        float off = st->anchor == 1 ? -tw / 2 : st->anchor == 2 ? -tw : 0;
+        for (int k = i; k < j; k++) {
+            tpiece* q = &P[k];
+            if (!q->col || q->size < 1 || q->size > 2000) continue;
+            float lx = q->x + off, ly = q->y;
+            if (st->base == 1) ly += q->size / sc * 0.35f; else if (st->base == 2) ly += q->size / sc * 0.8f;
+            float px = m.a * lx + m.c * ly + m.e, py = m.b * lx + m.d * ly + m.f;
+            font_draw(FB, STR, CX0, CY0, CX1, CY1, q->face, q->size, px, py, q->t, q->n, q->col, 0);
+        }
+        i = j;
+    }
+}
+static void svg_fo(node* n, mat m, sstate* st) {
     tbuf b; b.n = 0;
     tcollect(n, &b, 0);
-    if (!b.n) return;
-    char buf[128]; const char* v;
-    float fs = n->st ? n->st->fsize : 16;
-    if ((v = sattr(n, "font-size", buf, sizeof(buf)))) { float f = parse_float(v, 0); if (f > 0) fs = f; }
-    int wt = n->st ? n->st->fweight : 400;
-    if ((v = sattr(n, "font-weight", buf, sizeof(buf)))) { if (ieq(v, "bold") || ieq(v, "bolder")) wt = 700; else if (ieq(v, "normal")) wt = 400; else { float f = parse_float(v, 0); if (f > 0) wt = (int)f; } }
-    int it = n->st ? n->st->fstyle : 0;
-    if ((v = sattr(n, "font-style", buf, sizeof(buf)))) it = ieq(v, "italic") || ieq(v, "oblique");
-    const char* fam = n->st ? n->st->ffamily : 0;
-    char fb[128];
-    if ((v = sattr(n, "font-family", fb, sizeof(fb)))) fam = v;
-    int face = css_face_for(fam, wt, it);
-    float x = fat(n, "x"), y = fat(n, "y");
+    int s0 = 0, e = b.n; while (s0 < e && b.s[s0] == ' ') s0++; while (e > s0 && b.s[e - 1] == ' ') e--;
+    if (e <= s0) return;
     float sc = sqrtf(fabsf(m.a * m.d - m.b * m.c));
+    node* inner = n->first; while (inner && inner->type != NT_ELEM) inner = inner->next;
+    style* is = inner ? inner->st : n->st;
+    for (node* q = inner; q; ) { node* k = q->first; while (k && k->type != NT_ELEM) k = k->next; if (!k) break; if (k->st) is = k->st; q = k; }
+    float fs = is ? is->fsize : st->fs;
+    int face = is ? is->face : css_face_for(st->fam, st->wt, st->it);
+    unsigned col = is ? (is->color | 0xFF000000u) : 0xFF000000u;
     float size = fs * sc;
     if (size < 1 || size > 2000) return;
-    int s0 = 0, e = b.n; while (s0 < e && b.s[s0] == ' ') s0++; while (e > s0 && b.s[e - 1] == ' ') e--;
-    float tw = text_width(face, size, b.s + s0, e - s0, 0);
-    float px = m.a * x + m.c * y + m.e, py = m.b * x + m.d * y + m.f;
-    if ((v = sattr(n, "text-anchor", buf, sizeof(buf)))) { if (ieq(v, "middle")) px -= tw / 2; else if (ieq(v, "end")) px -= tw; }
-    if ((v = sattr(n, "dominant-baseline", buf, sizeof(buf)))) { if (ieq(v, "middle") || ieq(v, "central")) py += size * 0.35f; else if (ieq(v, "hanging")) py += size * 0.8f; }
-    if (st->nofill) return;
-    unsigned col = st->fill;
-    float a = ((col >> 24) & 255) / 255.0f * st->op * st->fop;
-    unsigned c2 = (col & 0xFFFFFF) | ((unsigned)(a * 255.0f + 0.5f) << 24);
-    font_draw(FB, STR, CX0, CY0, CX1, CY1, face, size, px, py, b.s + s0, e - s0, c2, 0);
+    float w = fat(n, "width"), h = fat(n, "height");
+    float tw = text_width(face, size, b.s + s0, e - s0, 0) / sc;
+    float lx = fat(n, "x") + (w > tw ? (w - tw) / 2 : 0), ly = fat(n, "y") + (h > 0 ? h / 2 + fs * 0.35f : fs);
+    float px = m.a * lx + m.c * ly + m.e, py = m.b * lx + m.d * ly + m.f;
+    font_draw(FB, STR, CX0, CY0, CX1, CY1, face, size, px, py, b.s + s0, e - s0, col, 0);
 }
 static void draw_el(node* n, mat m, sstate s, int depth) {
     if (depth > 30 || n->type != NT_ELEM) return;
@@ -446,6 +543,7 @@ static void draw_el(node* n, mat m, sstate s, int depth) {
         return;
     }
     if (ieq(nm, "text")) { svg_text(n, m, &s); return; }
+    if (ieq(nm, "foreignObject")) { svg_fo(n, m, &s); return; }
     if (n->tag == T_PATH || n->tag == T_RECT || n->tag == T_CIRCLE || n->tag == T_ELLIPSE || n->tag == T_LINE || n->tag == T_POLYLINE || n->tag == T_POLYGON) { sstate s2 = s; shape(n, m, &s2); return; }
     if (n->tag == T_SVG && depth > 0) {
         mat t = { 1, 0, 0, 1, fat(n, "x"), fat(n, "y") };
@@ -472,8 +570,9 @@ void svg_paint(node* n, float x, float y, float w, float h, float op, unsigned* 
     mat m;
     if (par && istarts(par, "none")) { mat t = { kx, 0, 0, ky, x - v[0] * kx, y - v[1] * ky }; m = t; }
     else { float k = fminf(kx, ky); mat t = { k, 0, 0, k, x - v[0] * k + (w - v[2] * k) / 2, y - v[1] * k + (h - v[3] * k) / 2 }; m = t; }
-    sstate s = { n->st ? n->st->color : 0xFF000000, 0xFF000000, 1, op, 1, 1, 0, 0, 1 };
+    sstate s = { n->st ? n->st->color : 0xFF000000, 0xFF000000, 1, op, 1, 1, 0, 0, 1, 16, 0, 400, 0, 0, 0 };
     s.fill = 0xFF000000;
+    if (n->st) { s.fs = n->st->fsize; s.wt = n->st->fweight; s.it = n->st->fstyle; s.fam = n->st->ffamily; }
     g_tol = 0.3f;
     draw_el(n, m, s, 0);
 }

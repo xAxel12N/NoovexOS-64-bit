@@ -37,11 +37,14 @@ node* node_new(int type) {
     G.nodecount++;
     return n;
 }
+node* g_ce_pend[4096];
+int g_ce_npend, g_ce_over;
 node* elem_new(const char* name) {
     node* n = node_new(NT_ELEM);
     n->name = nstrdup(name);
     for (char* p = n->name; *p; p++) *p = (char)lc((unsigned char)*p);
     n->tag = tag_id(n->name);
+    if (strchr(n->name, '-')) { if (g_ce_npend < 4096) g_ce_pend[g_ce_npend++] = n; else g_ce_over = 1; }
     return n;
 }
 node* text_new(const char* s, int len) {
@@ -50,14 +53,35 @@ node* text_new(const char* s, int len) {
     n->tlen = len;
     return n;
 }
+unsigned g_dom_gen;
 int g_mut_on;
 int g_dom_parsing;
 void (*g_mut_hook)(int, node*, node*, node*, node*, const char*, const char*);
 static void mut(int k, node* t, node* c, node* pv, node* nx, const char* nm, const char* old) { if (g_mut_on && g_mut_hook && !g_dom_parsing) g_mut_hook(k, t, c, pv, nx, nm, old); }
 void dom_mut_text(node* t, const char* old) { mut(4, t, 0, 0, 0, 0, old); }
+void unstyle_tree(node* r) {
+    node* stk[512];
+    int sp = 0;
+    stk[sp++] = r;
+    while (sp > 0) {
+        node* x = stk[--sp];
+        x->st = 0; x->st_before = 0; x->st_after = 0;
+        if (x->shadow && sp < 512) stk[sp++] = x->shadow;
+        for (node* k = x->first; k; k = k->next) {
+            if (sp < 512) stk[sp++] = k;
+            else unstyle_tree(k);
+        }
+    }
+}
+unsigned g_id_gen = 1;
+node* g_rm_parent;
 void node_remove(node* c) {
     node* p = c->parent;
     if (!p) return;
+    g_rm_parent = p;
+    unstyle_tree(c);
+    g_dom_gen++;
+    if (c->type != NT_TEXT && c->type != NT_COMMENT) g_id_gen++;
     node* pv = c->prev;
     node* nx = c->next;
     if (c->prev) c->prev->next = c->next; else p->first = c->next;
@@ -71,6 +95,8 @@ void node_insert_before(node* p, node* c, node* ref) {
         return;
     }
     if (c->parent) node_remove(c);
+    g_dom_gen++;
+    if (c->type != NT_TEXT && c->type != NT_COMMENT) g_id_gen++;
     if (!ref || ref->parent != p) {
         c->parent = p;
         c->prev = p->last;
@@ -91,10 +117,20 @@ void node_append(node* p, node* c) { node_insert_before(p, c, 0); }
 
 const char* attr_get(node* n, const char* name) {
     if (!n || n->type != NT_ELEM) return 0;
-    for (int i = 0; i < n->nattrs; i++) if (ieq(n->attrs[i].name, name)) return n->attrs[i].val;
+    int c0 = lc((unsigned char)name[0]);
+    for (int i = 0; i < n->nattrs; i++) { const char* an = n->attrs[i].name; if (lc((unsigned char)an[0]) == c0 && ieq(an, name)) return n->attrs[i].val; }
     return 0;
 }
+
+unsigned g_on_bits[8];
+unsigned on_hash(const char* t) { unsigned h = 2166136261u; for (; *t; t++) h = (h ^ (unsigned)lc((unsigned char)*t)) * 16777619u; return h & 255; }
+void details_exclusive(node* n);
 void attr_set(node* n, const char* name, const char* val) {
+    g_dom_gen++;
+    if ((name[0] | 32) == 'i' && (name[1] | 32) == 'd' && !name[2]) g_id_gen++;
+    if ((name[0] | 32) == 'o' && (name[1] | 32) == 'n' && name[2]) { unsigned b = on_hash(name + 2); g_on_bits[b >> 5] |= 1u << (b & 31); }
+    const char* ov5 = 0; int m5 = g_mut_on && !g_dom_parsing && n->name && strchr(n->name, '-');
+    if (m5) ov5 = attr_get(n, name);
     if (g_mut_on && !g_dom_parsing) { const char* ov = attr_get(n, name); mut(3, n, 0, 0, 0, name, ov); }
     for (int i = 0; i < n->nattrs; i++) if (ieq(n->attrs[i].name, name)) { n->attrs[i].val = nstrdup(val); goto done; }
     if (n->nattrs >= n->cattrs) {
@@ -112,14 +148,31 @@ done:
     if (ieq(name, "style")) { n->idecl = 0; n->idecl_src = 0; }
     if (ieq(name, "value") && (n->tag == T_INPUT) && !n->dirtyval) { n->value = 0; }
     if (ieq(name, "checked") && !(n->flags & NF_INLINEDIRTY)) n->checked = 1;
+    if (m5) mut(5, n, 0, 0, 0, name, ov5);
+    if (n->tag == T_DETAILS && ieq(name, "open")) details_exclusive(n);
+}
+void details_exclusive(node* n) {
+    const char* gn = attr_get(n, "name");
+    if (!gn || !gn[0]) return;
+    node* r = n; while (r->parent) r = r->parent;
+    node* stack[512]; int sp = 0; stack[sp++] = r;
+    while (sp > 0) {
+        node* x = stack[--sp];
+        if (x != n && x->type == NT_ELEM && x->tag == T_DETAILS && attr_get(x, "open")) { const char* xn = attr_get(x, "name"); if (xn && !strcmp(xn, gn)) attr_del(x, "open"); }
+        for (node* c = x->last; c; c = c->prev) if (c->type == NT_ELEM && sp < 512) stack[sp++] = c;
+    }
 }
 void attr_del(node* n, const char* name) {
+    g_dom_gen++;
+    if ((name[0] | 32) == 'i' && (name[1] | 32) == 'd' && !name[2]) g_id_gen++;
     if (g_mut_on && !g_dom_parsing && attr_get(n, name)) mut(3, n, 0, 0, 0, name, attr_get(n, name));
     for (int i = 0; i < n->nattrs; i++) if (ieq(n->attrs[i].name, name)) {
+        const char* dv = n->attrs[i].val;
         for (int j = i; j < n->nattrs - 1; j++) n->attrs[j] = n->attrs[j + 1];
         n->nattrs--;
         if (ieq(name, "style")) { n->idecl = 0; n->idecl_src = 0; }
         if (ieq(name, "checked") && !(n->flags & NF_INLINEDIRTY)) n->checked = 0;
+        if (g_mut_on && !g_dom_parsing && n->name && strchr(n->name, '-')) mut(5, n, 0, 0, 0, name, dv);
         return;
     }
 }
@@ -140,15 +193,63 @@ static node* child_tag(node* p, int tag) { for (node* c = p ? p->first : 0; c; c
 node* doc_elem(void) { return child_tag(G.doc, T_HTML); }
 node* doc_head(void) { return child_tag(doc_elem(), T_HEAD); }
 node* doc_body(void) { return child_tag(doc_elem(), T_BODY); }
-node* find_id(node* root, const char* id) {
+static node* find_id_walk(node* root, const char* id) {
     for (node* c = root ? root->first : 0; c; c = c->next) {
         if (c->type != NT_ELEM) continue;
+        nwe_check_stop();
         const char* v = attr_get(c, "id");
         if (v && !strcmp(v, id)) return c;
-        node* r = find_id(c, id);
+        node* r = find_id_walk(c, id);
         if (r) return r;
     }
     return 0;
+}
+typedef struct { unsigned gen; node* root; node* res; char id[48]; } idc_ent;
+static idc_ent g_idc[64];
+typedef struct { const char* id; node* n; unsigned h; } idx_ent;
+static idx_ent* g_idx; static int g_idx_cap, g_idx_n; static node* g_idx_root; static unsigned g_idx_gen;
+void find_id_reset(void) { for (int i = 0; i < 64; i++) g_idc[i].root = 0; g_idx = 0; g_idx_cap = 0; g_idx_n = 0; g_idx_root = 0; }
+static unsigned id_hash(const char* s) { unsigned h = 2166136261u; for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; } return h ? h : 1; }
+static void idx_put(const char* id, node* n) {
+    unsigned h = id_hash(id); int m = g_idx_cap - 1;
+    for (int i = (int)(h & (unsigned)m);; i = (i + 1) & m) {
+        if (!g_idx[i].id) { g_idx[i].id = id; g_idx[i].n = n; g_idx[i].h = h; g_idx_n++; return; }
+        if (g_idx[i].h == h && !strcmp(g_idx[i].id, id)) return;
+    }
+}
+static int idx_build(node* root) {
+    int cnt = 0;
+    for (node* x = root->first; x;) { if (x->type == NT_ELEM) { const char* v = attr_get(x, "id"); if (v && v[0]) cnt++; } if (x->first) { x = x->first; continue; } while (x && x != root && !x->next) x = x->parent; if (!x || x == root) break; x = x->next; }
+    int cap = 64; while (cap < cnt * 2 + 8) cap *= 2;
+    int pv = pool_suspend();
+    if (cap > g_idx_cap) { if (g_idx) nfree(g_idx); g_idx = nalloc(sizeof(idx_ent) * (size_t)cap); g_idx_cap = cap; }
+    pool_resume(pv);
+    memset(g_idx, 0, sizeof(idx_ent) * (size_t)g_idx_cap); g_idx_n = 0;
+    for (node* x = root->first; x;) { nwe_check_stop(); if (x->type == NT_ELEM) { const char* v = attr_get(x, "id"); if (v && v[0]) idx_put(v, x); } if (x->first) { x = x->first; continue; } while (x && x != root && !x->next) x = x->parent; if (!x || x == root) break; x = x->next; }
+    return 1;
+}
+node* find_id(node* root, const char* id) {
+    if (!root || !id) return 0;
+    if (root->type == NT_DOC && id[0]) {
+        if (g_idx_root != root || g_idx_gen != g_id_gen) {
+            g_idx_root = 0;
+            if (idx_build(root)) { g_idx_root = root; g_idx_gen = g_id_gen; }
+        }
+        if (g_idx_root == root) {
+            unsigned h = id_hash(id); int m = g_idx_cap - 1;
+            for (int i = (int)(h & (unsigned)m);; i = (i + 1) & m) { if (!g_idx[i].id) return 0; if (g_idx[i].h == h && !strcmp(g_idx[i].id, id)) return g_idx[i].n; }
+        }
+    }
+    size_t l = strlen(id);
+    if (l >= 48) return find_id_walk(root, id);
+    unsigned h = 2166136261u;
+    for (size_t i = 0; i < l; i++) { h ^= (unsigned char)id[i]; h *= 16777619u; }
+    h ^= (unsigned)((uintptr_t)root >> 4);
+    idc_ent* e = &g_idc[h & 63];
+    if (e->root == root && e->gen == g_dom_gen && !strcmp(e->id, id)) return e->res;
+    node* r = find_id_walk(root, id);
+    e->root = root; e->gen = g_dom_gen; e->res = r; memcpy(e->id, id, l + 1);
+    return r;
 }
 int node_contains(node* a, node* b) { while (b) { if (b == a) return 1; b = b->parent; } return 0; }
 
@@ -553,6 +654,8 @@ static void parse_run(pstate* P, const char* s, int n) {
             nm[nl] = 0;
             node* el = elem_new(nm);
             if (P->in_svg || el->tag == T_SVG) { memcpy(el->name, nm, (size_t)nl + 1); }
+            if (el->tag == T_SVG) el->flags |= NF_SVG;
+            else if (P->in_svg && P->sp > 0) { node* pr = cur(P); if (pr && (pr->flags & NF_SVG) && !(pr->name && ieq(pr->name, "foreignObject"))) el->flags |= NF_SVG; }
             int selfclose = 0;
             i = e;
             for (;;) {
@@ -582,7 +685,7 @@ static void parse_run(pstate* P, const char* s, int n) {
                         decode_text(s + vs, i - vs, &tb);
                     }
                 }
-                if (!attr_get(el, an)) attr_set(el, an, tb.s ? sb_str(&tb) : "");
+                if (!attr_get(el, an)) attr_set(el, an, tb.s && tb.n ? sb_str(&tb) : "");
             }
             if (el->tag == T_TEXTAREA || el->tag == T_PRE) { if (i < n && s[i] == '\n') i++; else if (i + 1 < n && s[i] == '\r' && s[i + 1] == '\n') i += 2; }
             int raw = is_raw(el->tag) && !P->in_svg;

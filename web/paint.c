@@ -1,4 +1,6 @@
 #include "web/layout.h"
+int g_prog_indet;
+node* g_ishift_n; float g_ishift;
 
 typedef struct { int x0, y0, x1, y1; } clipr;
 static unsigned* FB;
@@ -317,6 +319,9 @@ static void paint_bg_border(box* b, float dx, float dy, float op, clipr* c) {
     style* s = b->st;
     float x = b->x + dx, y = b->y + dy, w = b->w, h = b->h;
     if (b->kind == BX_ROW || b->kind == BX_ROWGROUP) { if ((s->bgcolor >> 24)) rect(x, y, w, h, with_alpha(s->bgcolor, op), c); return; }
+    box* lg = 0;
+    if (b->kind == BX_TABLE) { float cb = -1; for (box* q = b->first; q; q = q->next) if (q->kind == BX_CAPTION) cb = q->y + q->h + q->m[2]; if (cb > b->y) { float off = cb - b->y; if (off < h) { y += off; h -= off; } } }
+    if (b->n && b->n->tag == T_FIELDSET) { box* L = b->first; while (L && !in_flow(L)) L = L->next; if (L && L->n && L->n->tag == T_LEGEND) { float off = L->y + L->h / 2 - b->y - b->b[0] / 2; if (off > 0 && off < h) { y += off; h -= off; lg = L; } } }
     float r[4];
     resolve_radius(s, w, h, r);
     if (s->hasshadow && !s->sinset) shadow(s, x, y, w, h, r, op, c);
@@ -341,7 +346,11 @@ static void paint_bg_border(box* b, float dx, float dy, float op, clipr* c) {
         if (bs == BS_INSET || bs == BS_GROOVE) col[i] = shade(col[i], (i == 0 || i == 3) ? 0.6f : 1.15f);
         if (bs == BS_OUTSET || bs == BS_RIDGE) col[i] = shade(col[i], (i == 0 || i == 3) ? 1.15f : 0.6f);
     }
-    if (bt > 0) border_side_draw(x, y, w, bt, s->bstyle[0], col[0], 1, c);
+    if (bt > 0 && lg) {
+        float gx0 = lg->x + dx - 2, gx1 = lg->x + dx + lg->w + 2;
+        if (gx0 > x) border_side_draw(x, y, gx0 - x, bt, s->bstyle[0], col[0], 1, c);
+        if (gx1 < x + w) border_side_draw(gx1, y, x + w - gx1, bt, s->bstyle[0], col[0], 1, c);
+    } else if (bt > 0) border_side_draw(x, y, w, bt, s->bstyle[0], col[0], 1, c);
     if (bb > 0) border_side_draw(x, y + h - bb, w, bb, s->bstyle[2], col[2], 1, c);
     if (bl > 0) border_side_draw(x, y + bt, bl, h - bt - bb, s->bstyle[3], col[3], 0, c);
     if (br > 0) border_side_draw(x + w - br, y + bt, br, h - bt - bb, s->bstyle[1], col[1], 0, c);
@@ -393,9 +402,20 @@ static void input_text(box* b, float dx, float dy, float op, clipr* c, int texta
         float base = y + (h - (m.ascent + m.descent)) / 2 + m.ascent;
         float tw = text_width(s->face, s->fsize, v, vl, s->lspace);
         float shift = 0;
-        if (focused && n->value && tw > w - 2) shift = tw - w + 2;
+        if (focused && n->value && tw > w - 2) {
+            int cq = n->caret > n->vlen ? n->vlen : n->caret;
+            float cx0 = pw ? font_adv(s->face, s->fsize, 0x2022) * cq : text_width(s->face, s->fsize, n->value, cq, s->lspace);
+            shift = cx0 - (w - 2);
+            if (shift < 0) shift = 0;
+            if (shift > tw - w + 2) shift = tw - w + 2;
+        }
+        if (focused) { g_ishift_n = n; g_ishift = shift > 0 ? shift : 0; }
         if (b->st->talign == TA_CENTER && tw < w) shift = -(w - tw) / 2;
         if (b->st->talign == TA_RIGHT && tw < w) shift = -(w - tw);
+        if (focused && n->value && n->sela && !pw && vl) {
+            int sa = n->sela - 1, sb = n->caret; if (sa > n->vlen) sa = n->vlen; if (sb > n->vlen) sb = n->vlen;
+            if (sa != sb) { int a = sa < sb ? sa : sb, bb = sa < sb ? sb : sa; float xa = text_width(s->face, s->fsize, n->value, a, s->lspace), xb = text_width(s->face, s->fsize, n->value, bb, s->lspace); rect(x - shift + xa, base - m.ascent, xb - xa, m.ascent + m.descent, with_alpha(0xFF9CC3F5u, op), &cc); }
+        }
         draw_text(v, vl, x - shift, base, s, op, &cc, col);
         if (focused && ((nwk_ms() / 530) & 1) == 0) {
             int cp = n->caret;
@@ -423,6 +443,12 @@ static void input_text(box* b, float dx, float dy, float op, clipr* c, int texta
                 if (cpp == ' ') lastsp = i;
                 lw += aw;
                 i += k;
+            }
+            if (focused && n->value && n->sela) {
+                int sa = n->sela - 1, sb = n->caret; if (sa > vl) sa = vl; if (sb > vl) sb = vl;
+                int a = sa < sb ? sa : sb, bb = sa < sb ? sb : sa;
+                int la = a > st0 ? a : st0, lb = bb < i ? bb : i;
+                if (a != bb && la < lb) { float xa = text_width(s->face, s->fsize, v + st0, la - st0, 0), xb = text_width(s->face, s->fsize, v + st0, lb - st0, 0); rect(x + xa, yy - m.ascent, xb - xa, m.ascent + m.descent, with_alpha(0xFF9CC3F5u, op), &cc); }
             }
             draw_text(v + st0, i - st0, x, yy, s, op, &cc, col);
             if (!seen && cp >= st0 && cp <= i) { caretx = x + text_width(s->face, s->fsize, v + st0, cp - st0, 0); carety = yy - m.ascent; seen = 1; }
@@ -468,7 +494,10 @@ static void paint_replaced(box* b, float dx, float dy, float op, clipr* c) {
                 font_metrics(s->face, s->fsize, &m);
                 clipr cc = *c;
                 if ((int)(x + w) < cc.x1) cc.x1 = (int)(x + w);
-                draw_text(alt, (int)strlen(alt), x + 2, y + m.ascent, s, op, &cc, s->color);
+                if ((int)(y + h) < cc.y1) cc.y1 = (int)(y + h);
+                int framed = w >= 16 && h >= 16 && h > m.ascent + m.descent + 4;
+                if (framed) { unsigned fc = with_alpha(0xFFC0C0C0, op); rect(x, y, w, 1, fc, c); rect(x, y + h - 1, w, 1, fc, c); rect(x, y, 1, h, fc, c); rect(x + w - 1, y, 1, h, fc, c); }
+                draw_text(alt, (int)strlen(alt), x + (framed ? 4 : 2), y + (framed ? 3 : 0) + m.ascent, s, op, &cc, s->color);
             }
         }
         return;
@@ -529,6 +558,33 @@ static void paint_replaced(box* b, float dx, float dy, float op, clipr* c) {
         return;
     }
     if (t == T_TEXTAREA) { input_text(b, dx, dy, op, c, 1); return; }
+    if (t == T_SELECT && sel_listbox_rows(n) > 0) {
+        int rows = sel_listbox_rows(n);
+        node* it[256]; int ni = sel_items(n, it, 256);
+        float ih = sel_item_h(s);
+        int multi = attr_get(n, "multiple") != 0;
+        int oi = 0, first_sel = -1;
+        for (int i = 0; i < ni; i++) { if (it[i]->tag != T_OPTION) continue; int on = multi ? attr_get(it[i], "selected") != 0 : (n->selidx >= 0 ? oi == n->selidx : attr_get(it[i], "selected") != 0); if (on && first_sel < 0) first_sel = i; oi++; }
+        int top = first_sel >= rows ? first_sel - rows + 1 : 0;
+        fontm m; font_metrics(s->face, s->fsize, &m);
+        clipr cc = *c; if ((int)(x + w) < cc.x1) cc.x1 = (int)(x + w); if ((int)(y + h) < cc.y1) cc.y1 = (int)(y + h); if ((int)x > cc.x0) cc.x0 = (int)x; if ((int)y > cc.y0) cc.y0 = (int)y;
+        int foc = G.focus == n;
+        oi = 0;
+        for (int i = 0; i < ni; i++) { if (it[i]->tag == T_OPTION && i < top) oi++; }
+        for (int i = top; i < ni && i < top + rows; i++) {
+            node* o = it[i]; float iy = y + (i - top) * ih;
+            sbuf tb = { 0, 0, 0 };
+            if (o->tag == T_OPTGROUP) { const char* lb = attr_get(o, "label"); draw_text(lb ? lb : "", lb ? (int)strlen(lb) : 0, x + 3, iy + (ih - (m.ascent + m.descent)) / 2 + m.ascent, s, op, &cc, s->color); continue; }
+            int on = multi ? attr_get(o, "selected") != 0 : (n->selidx >= 0 ? oi == n->selidx : attr_get(o, "selected") != 0);
+            oi++;
+            int dis = attr_get(o, "disabled") != 0;
+            if (on) rect(x, iy, w, ih, with_alpha(foc ? 0xFF1A73E8 : 0xFFCECECE, op), &cc);
+            text_content(o, &tb);
+            int ingrp = o->parent && o->parent->tag == T_OPTGROUP;
+            draw_text(tb.s ? tb.s : "", tb.n, x + (ingrp ? 14 : 3), iy + (ih - (m.ascent + m.descent)) / 2 + m.ascent, s, op, &cc, on && foc ? 0xFFFFFFFF : dis ? 0xFF999999 : s->color);
+        }
+        return;
+    }
     if (t == T_SELECT) {
         node* sel = 0;
         int idx = 0;
@@ -562,17 +618,57 @@ static void paint_replaced(box* b, float dx, float dy, float op, clipr* c) {
         float rr[4] = { 3, 3, 3, 3 };
         rrect(x, y, w, h, rr, with_alpha(0xFFE6E6E6, op), c);
         const char* vs = attr_get(n, "value");
+        if (t == T_PROGRESS && !vs) {
+            extern int g_prog_indet; g_prog_indet = 1;
+            float seg = w * 0.3f; float ph = (float)(nwk_ms() % 1600) / 1600.0f; float sx = x - seg + (w + seg) * ph;
+            float a0 = sx < x ? x : sx, a1 = sx + seg > x + w ? x + w : sx + seg;
+            if (a1 > a0) rrect(a0, y, a1 - a0, h, rr, with_alpha(s->accent ? s->accent : 0xFF0075FF, op), c);
+            return;
+        }
         float mx = attr_get(n, "max") ? (float)atof(attr_get(n, "max")) : 1;
+        float mn = t == T_METER && attr_get(n, "min") ? (float)atof(attr_get(n, "min")) : 0;
         float v = vs ? (float)atof(vs) : 0;
-        float t2 = mx > 0 ? v / mx : 0;
+        float t2 = mx > mn ? (v - mn) / (mx - mn) : 0;
         if (t2 > 1) t2 = 1;
         if (t2 < 0) t2 = 0;
-        rrect(x, y, w * t2, h, rr, with_alpha(t == T_METER ? 0xFF2E9E3E : (s->accent ? s->accent : 0xFF0075FF), op), c);
+        unsigned mcol = 0xFF2E9E3E;
+        if (t == T_METER) {
+            const char* a1 = attr_get(n, "low"); const char* a2 = attr_get(n, "high"); const char* a3 = attr_get(n, "optimum");
+            float lo = a1 ? (float)atof(a1) : mn, hi = a2 ? (float)atof(a2) : mx;
+            if (lo < mn) lo = mn; if (hi > mx) hi = mx; if (hi < lo) hi = lo;
+            float opt = a3 ? (float)atof(a3) : (mn + mx) / 2;
+            int ro = opt < lo ? 0 : opt > hi ? 2 : 1, rv = v < lo ? 0 : v > hi ? 2 : 1;
+            int d = ro > rv ? ro - rv : rv - ro;
+            if (ro == 1 && rv != 1) d = 1;
+            mcol = d == 0 ? 0xFF2E9E3E : d == 1 ? 0xFFF2B600 : 0xFFD93025;
+        }
+        rrect(x, y, w * t2, h, rr, with_alpha(t == T_METER ? mcol : (s->accent ? s->accent : 0xFF0075FF), op), c);
         return;
     }
     if (t == T_VIDEO || t == T_AUDIO) { wm_paint(n, x, y, w, h, c->x0, c->y0, c->x1, c->y1, op, FB, STR); return; }
     if (t == T_VIDEO || t == T_IFRAME || t == T_CANVAS || t == T_OBJECT || t == T_EMBED) {
-        if (t == T_CANVAS) return;
+        if (t == T_CANVAS) { if (n->img && n->img->state == 2) draw_image(n->img, x, y, w, h, op, c, 0); return; }
+        if (t == T_IFRAME) {
+            const char* src = attr_get(n, "src");
+            const char* sd = attr_get(n, "srcdoc");
+            char full[2048];
+            full[0] = 0;
+            if (src && *src) url_resolve(G.base, src, full, sizeof(full));
+            if ((full[0] || (sd && *sd)) && nwk_frame_paint(full, sd, (int)x, (int)y, (int)w, (int)h, c->x0, c->y0, c->x1, c->y1, FB, STR)) return;
+            if ((full[0] || (sd && *sd)) && w > 120 && h > 40) {
+                char why[200]; int st = nwk_frame_status(full, sd, why, sizeof(why));
+                const char* l1 = st == 1 ? "Loading..." : st == 2 ? "Loading..." : st == 3 ? (why[0] ? why : "Could not load the page") : "Waiting for a free frame place";
+                rect(x, y, w, h, with_alpha(0xFFF2F2F2, op), c);
+                float tw1 = text_width(F_SANS, 13, l1, (int)strlen(l1), 0);
+                font_draw(FB, STR, c->x0, c->y0, c->x1, c->y1, F_SANS, 13, x + (w - tw1 > 8 ? (w - tw1) / 2 : 4), y + h / 2 - 4, l1, (int)strlen(l1), with_alpha(st == 3 ? 0xFFB3261E : 0xFF606060, op), 0);
+                const char* l2 = full[0] ? full : "about:srcdoc"; int n2 = (int)strlen(l2); char sh[96];
+                if (n2 > 90) { memcpy(sh, l2, 87); memcpy(sh + 87, "...", 4); l2 = sh; n2 = 90; }
+                while (n2 > 4 && text_width(F_SANS, 11, l2, n2, 0) > w - 8) n2--;
+                float tw2 = text_width(F_SANS, 11, l2, n2, 0);
+                font_draw(FB, STR, c->x0, c->y0, c->x1, c->y1, F_SANS, 11, x + (w - tw2) / 2, y + h / 2 + 14, l2, n2, with_alpha(0xFF909090, op), 0);
+                return;
+            }
+        }
         rect(x, y, w, h, with_alpha(t == T_VIDEO ? 0xFF101010 : 0xFFF2F2F2, op), c);
         const char* lbl = t == T_VIDEO ? "Video" : t == T_IFRAME ? "Embedded page" : "Plugin content";
         fontm m;
@@ -636,6 +732,71 @@ static void paint_children_ctx(box* b, float dx, float dy, float op, clipr* c, p
 }
 static void paint_children(box* b, float dx, float dy, float op, clipr* c, plist2* pos, int depth) { paint_children_ctx(b, dx, dy, op, c, pos, depth, b->inl); }
 
+static void flt_blur(unsigned* px, int w, int h, int r) {
+    if (r < 1 || w < 2 || h < 2) return;
+    if (r > 40) r = 40;
+    unsigned* t = malloc((size_t)w * (size_t)h * 4);
+    if (!t) return;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int y = 0; y < h; y++) {
+            unsigned* row = px + (size_t)y * w; unsigned* o = t + (size_t)y * w;
+            int sr = 0, sg = 0, sb = 0, n = 0;
+            for (int x = -r; x <= r; x++) { int xx = x < 0 ? 0 : x >= w ? w - 1 : x; unsigned v = row[xx]; sr += (v >> 16) & 255; sg += (v >> 8) & 255; sb += v & 255; n++; }
+            for (int x = 0; x < w; x++) {
+                o[x] = ((unsigned)(sr / n) << 16) | ((unsigned)(sg / n) << 8) | (unsigned)(sb / n);
+                int xa = x - r < 0 ? 0 : x - r, xb = x + r + 1 >= w ? w - 1 : x + r + 1;
+                unsigned va = row[xa], vb = row[xb];
+                sr += (int)((vb >> 16) & 255) - (int)((va >> 16) & 255); sg += (int)((vb >> 8) & 255) - (int)((va >> 8) & 255); sb += (int)(vb & 255) - (int)(va & 255);
+            }
+        }
+        for (int x = 0; x < w; x++) {
+            int sr = 0, sg = 0, sb = 0, n = 0;
+            for (int y = -r; y <= r; y++) { int yy = y < 0 ? 0 : y >= h ? h - 1 : y; unsigned v = t[(size_t)yy * w + x]; sr += (v >> 16) & 255; sg += (v >> 8) & 255; sb += v & 255; n++; }
+            for (int y = 0; y < h; y++) {
+                px[(size_t)y * w + x] = ((unsigned)(sr / n) << 16) | ((unsigned)(sg / n) << 8) | (unsigned)(sb / n);
+                int ya = y - r < 0 ? 0 : y - r, yb = y + r + 1 >= h ? h - 1 : y + r + 1;
+                unsigned va = t[(size_t)ya * w + x], vb = t[(size_t)yb * w + x];
+                sr += (int)((vb >> 16) & 255) - (int)((va >> 16) & 255); sg += (int)((vb >> 8) & 255) - (int)((va >> 8) & 255); sb += (int)(vb & 255) - (int)(va & 255);
+            }
+        }
+    }
+    free(t);
+}
+static void flt_matrix(int f, float a, float* m) {
+    for (int i = 0; i < 9; i++) m[i] = (i % 4 == 0) ? 1 : 0;
+    if (a < 0) a = 0;
+    if (f == 3 || f == 7) { if (a > 1) a = 1; }
+    if (f == 3) { float k = 1 - a; float g[9] = { 0.2126f + 0.7874f * k, 0.7152f - 0.7152f * k, 0.0722f - 0.0722f * k, 0.2126f - 0.2126f * k, 0.7152f + 0.2848f * k, 0.0722f - 0.0722f * k, 0.2126f - 0.2126f * k, 0.7152f - 0.7152f * k, 0.0722f + 0.9278f * k }; for (int i = 0; i < 9; i++) m[i] = g[i]; }
+    else if (f == 7) { float k = 1 - a; float g[9] = { 0.393f + 0.607f * k, 0.769f - 0.769f * k, 0.189f - 0.189f * k, 0.349f - 0.349f * k, 0.686f + 0.314f * k, 0.168f - 0.168f * k, 0.272f - 0.272f * k, 0.534f - 0.534f * k, 0.131f + 0.869f * k }; for (int i = 0; i < 9; i++) m[i] = g[i]; }
+    else if (f == 6) { float g[9] = { 0.213f + 0.787f * a, 0.715f - 0.715f * a, 0.072f - 0.072f * a, 0.213f - 0.213f * a, 0.715f + 0.285f * a, 0.072f - 0.072f * a, 0.213f - 0.213f * a, 0.715f - 0.715f * a, 0.072f + 0.928f * a }; for (int i = 0; i < 9; i++) m[i] = g[i]; }
+    else if (f == 8) { float r = a * 0.01745329f, cs = cosf(r), sn = sinf(r); float g[9] = { 0.213f + cs * 0.787f - sn * 0.213f, 0.715f - cs * 0.715f - sn * 0.715f, 0.072f - cs * 0.072f + sn * 0.928f, 0.213f - cs * 0.213f + sn * 0.143f, 0.715f + cs * 0.285f + sn * 0.140f, 0.072f - cs * 0.072f - sn * 0.283f, 0.213f - cs * 0.213f - sn * 0.787f, 0.715f - cs * 0.715f + sn * 0.715f, 0.072f + cs * 0.928f + sn * 0.072f }; for (int i = 0; i < 9; i++) m[i] = g[i]; }
+}
+static void flt_apply(style* s, int x0, int y0, int x1, int y1, const unsigned* before) {
+    int w = x1 - x0, h = y1 - y0;
+    for (int k = 0; k < s->nflt; k++) {
+        int f = s->flt_t[k]; float a = s->flt_v[k];
+        if (f == 0) { if (a >= 0.5f) { unsigned* tmp = malloc((size_t)w * (size_t)h * 4); if (!tmp) continue; for (int y = 0; y < h; y++) memcpy(tmp + (size_t)y * w, FB + (size_t)(y0 + y) * STR + x0, (size_t)w * 4); flt_blur(tmp, w, h, (int)(a * 0.85f + 0.5f)); for (int y = 0; y < h; y++) memcpy(FB + (size_t)(y0 + y) * STR + x0, tmp + (size_t)y * w, (size_t)w * 4); free(tmp); } continue; }
+        float m[9]; flt_matrix(f, a, m);
+        for (int y = 0; y < h; y++) {
+            unsigned* row = FB + (size_t)(y0 + y) * STR + x0; const unsigned* br = before + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                unsigned v = row[x] & 0xFFFFFF, bv = br[x] & 0xFFFFFF;
+                if (v == bv) continue;
+                float r = (float)((v >> 16) & 255), g = (float)((v >> 8) & 255), b = (float)(v & 255), nr, ng, nb;
+                if (f == 1) { nr = r * a; ng = g * a; nb = b * a; }
+                else if (f == 2) { nr = (r - 127.5f) * a + 127.5f; ng = (g - 127.5f) * a + 127.5f; nb = (b - 127.5f) * a + 127.5f; }
+                else if (f == 4) { float t = a > 1 ? 1 : a; nr = r + (255 - 2 * r) * t; ng = g + (255 - 2 * g) * t; nb = b + (255 - 2 * b) * t; }
+                else if (f == 5) { float t = a > 1 ? 1 : a; float or_ = (float)((bv >> 16) & 255), og = (float)((bv >> 8) & 255), ob = (float)(bv & 255); nr = or_ + (r - or_) * t; ng = og + (g - og) * t; nb = ob + (b - ob) * t; }
+                else { nr = m[0] * r + m[1] * g + m[2] * b; ng = m[3] * r + m[4] * g + m[5] * b; nb = m[6] * r + m[7] * g + m[8] * b; }
+                int ir = (int)(nr + 0.5f), ig = (int)(ng + 0.5f), ib = (int)(nb + 0.5f);
+                if (ir < 0) ir = 0; if (ir > 255) ir = 255; if (ig < 0) ig = 0; if (ig > 255) ig = 255; if (ib < 0) ib = 0; if (ib > 255) ib = 255;
+                row[x] = ((unsigned)ir << 16) | ((unsigned)ig << 8) | (unsigned)ib;
+            }
+        }
+    }
+}
+
+static void paint_box_inner(box* b, float bdx, float bdy, float nop, clipr* c, plist2* pos, int depth);
 static void paint_box(box* b, float dx, float dy, float op, clipr* c, plist2* pos, int depth) {
     if (b->st && b->st->clipall) return;
     if (b->st && b->st->ovx != OV_VISIBLE && b->w <= 1.5f && b->h <= 1.5f) return;
@@ -644,6 +805,7 @@ static void paint_box(box* b, float dx, float dy, float op, clipr* c, plist2* po
     if (!s) return;
     float nop = op * s->opacity;
     if (nop <= 0.003f) return;
+    if (b->n && b->n->tag == T_DIALOG && attr_get(b->n, "nvx-modal") && attr_get(b->n, "open")) rect((float)c->x0, (float)c->y0, (float)(c->x1 - c->x0), (float)(c->y1 - c->y0), 0x1A000000u, c);
     float bdx = dx + b->ox, bdy = dy + b->oy;
     if (s->position == P_STICKY && s->inset[0].k == LK_VAL && b->parent) {
         float top = lres(s->inset[0], (float)g_vh);
@@ -658,15 +820,27 @@ static void paint_box(box* b, float dx, float dy, float op, clipr* c, plist2* po
         }
     }
     if (b->y + bdy > c->y1 + 2000 && !b->first) return;
+    unsigned* fbefore = 0; int fx0 = 0, fy0 = 0, fx1 = 0, fy1 = 0;
+    if (s->nflt && b->kind != BX_INLINE && b->kind != BX_ANON) {
+        float br = 0; for (int k = 0; k < s->nflt; k++) if (s->flt_t[k] == 0 && s->flt_v[k] * 3 > br) br = s->flt_v[k] * 3;
+        fx0 = (int)floorf(b->x + bdx - br); fy0 = (int)floorf(b->y + bdy - br); fx1 = (int)ceilf(b->x + bdx + b->w + br); fy1 = (int)ceilf(b->y + bdy + b->h + br);
+        if (fx0 < c->x0) fx0 = c->x0; if (fy0 < c->y0) fy0 = c->y0; if (fx1 > c->x1) fx1 = c->x1; if (fy1 > c->y1) fy1 = c->y1;
+        if (fx1 > fx0 && fy1 > fy0 && (long)(fx1 - fx0) * (fy1 - fy0) < 16000000L) { fbefore = malloc((size_t)(fx1 - fx0) * (size_t)(fy1 - fy0) * 4); if (fbefore) for (int y = fy0; y < fy1; y++) memcpy(fbefore + (size_t)(y - fy0) * (fx1 - fx0), FB + (size_t)y * STR + fx0, (size_t)(fx1 - fx0) * 4); }
+    }
+    if (fbefore) { paint_box_inner(b, bdx, bdy, nop, c, pos, depth); flt_apply(s, fx0, fy0, fx1, fy1, fbefore); free(fbefore); return; }
+    paint_box_inner(b, bdx, bdy, nop, c, pos, depth);
+}
+static void paint_box_inner(box* b, float bdx, float bdy, float nop, clipr* c, plist2* pos, int depth) {
+    style* s = b->st;
     if (!s->visibility && b->kind != BX_INLINE && b->kind != BX_ANON) paint_bg_border(b, bdx, bdy, nop, c);
     if (b->kind == BX_REPLACED) { if (!s->visibility) paint_replaced(b, bdx, bdy, nop, c); return; }
     clipr cc;
     clip_children(b, bdx, bdy, c, &cc);
     if (cc.x0 >= cc.x1 || cc.y0 >= cc.y1) return;
-    float sdy = bdy - b->sy;
-    paint_frags(b, bdx, sdy, nop, &cc, 0);
-    paint_children(b, bdx, sdy, nop, &cc, pos, depth);
-    paint_frags(b, bdx, sdy, nop, &cc, 1);
+    float sdy = bdy - b->sy, sdx = bdx - b->sx;
+    paint_frags(b, sdx, sdy, nop, &cc, 0);
+    paint_children(b, sdx, sdy, nop, &cc, pos, depth);
+    paint_frags(b, sdx, sdy, nop, &cc, 1);
     if (b->contenth > 0 && (s->ovy == OV_AUTO || s->ovy == OV_SCROLL) && b->parent) {
         float inner = b->h - b->b[0] - b->b[2];
         float total = b->contenth + b->p[0] + b->p[2];
@@ -690,6 +864,16 @@ static void paint_marker(frag* f, float dx, float dy, float op, clipr* c) {
     float r[4] = { sz / 2, sz / 2, sz / 2, sz / 2 };
     if (f->n == LS_CIRCLE) { rring(x, y, sz, sz, r, 1, 1, 1, 1, col, c); return; }
     if (f->n == LS_NONE) return;
+    if (f->n == LS_DCLOSED || f->n == LS_DOPEN) {
+        float t = s->fsize * 0.5f, x0 = f->x + dx, yc = f->base + dy - s->fsize * 0.35f;
+        int n = (int)(t + 0.5f); if (n < 3) n = 3;
+        for (int i = 0; i < n; i++) {
+            float k = (float)i / (float)n;
+            if (f->n == LS_DCLOSED) { float hh = t * (1.0f - k); rect(x0 + i, yc - hh / 2, 1, hh, col, c); }
+            else { float ww = t * (1.0f - k); rect(x0 + (t - ww) / 2, yc - t / 2 + i, ww, 1, col, c); }
+        }
+        return;
+    }
     rrect(x, y, sz, sz, r, col, c);
 }
 
@@ -741,6 +925,16 @@ static void paint_frags(box* b, float dx, float dy, float op, clipr* c, int phas
                     continue;
                 }
             }
+            {
+                extern unsigned g_hsel_gen; extern int g_hsel_on; extern node* g_hs_node; extern int g_hs_off; extern node* g_he_node; extern int g_he_off;
+                node* tn = f->b ? f->b->n : 0;
+                if (g_hsel_on && tn && tn->type == NT_TEXT && tn->selgen == g_hsel_gen && tn->text && f->s >= tn->text) {
+                    int fo = (int)(f->s - tn->text);
+                    int a = tn == g_hs_node ? g_hs_off : 0, z = tn == g_he_node ? g_he_off : tn->tlen;
+                    int la = a > fo ? a - fo : 0, lb = z < fo + f->n ? z - fo : f->n;
+                    if (la < lb) { float xa = la ? text_width(s->face, s->fsize, f->s, la, s->lspace) : 0, xb = text_width(s->face, s->fsize, f->s, lb, s->lspace); if (lb == f->n && (tn != g_he_node || z > fo + f->n) && i + 1 < b->nfr && fabsf(b->fr[i + 1].y - f->y) < 1 && b->fr[i + 1].x > f->x + xb && b->fr[i + 1].x - f->x - xb < s->fsize) xb = b->fr[i + 1].x - f->x; rect(f->x + dx + xa, f->y + dy, xb - xa, f->h, with_alpha(0xFFB4D5FEu, o2), c); }
+                }
+            }
             draw_text(f->s, f->n, f->x + dx, f->base + dy, s, o2, c, s->color);
             if (s->tdec) {
                 float th = s->fsize / 14;
@@ -784,20 +978,52 @@ static void sub_bounds(box* b, float dx, float dy, float* bb, int depth, int* cn
     if (y0 < bb[1]) bb[1] = y0;
     if (x1 > bb[2]) bb[2] = x1;
     if (y1 > bb[3]) bb[3] = y1;
-    for (int i = 0; i < b->nfr; i++) { frag* f = &b->fr[i]; float fx0 = f->x + bdx, fy0 = f->y + bdy - b->sy; if (fx0 < bb[0]) bb[0] = fx0; if (fy0 < bb[1]) bb[1] = fy0; if (fx0 + f->w > bb[2]) bb[2] = fx0 + f->w; if (fy0 + f->h > bb[3]) bb[3] = fy0 + f->h; }
+    for (int i = 0; i < b->nfr; i++) { frag* f = &b->fr[i]; float fx0 = f->x + bdx - b->sx, fy0 = f->y + bdy - b->sy; if (fx0 < bb[0]) bb[0] = fx0; if (fy0 < bb[1]) bb[1] = fy0; if (fx0 + f->w > bb[2]) bb[2] = fx0 + f->w; if (fy0 + f->h > bb[3]) bb[3] = fy0 + f->h; }
     if (b->st->ovx != OV_VISIBLE && b->st->ovy != OV_VISIBLE && depth > 0) return;
-    for (box* k = b->first; k; k = k->next) sub_bounds(k, bdx, bdy - b->sy, bb, depth + 1, cnt);
+    for (box* k = b->first; k; k = k->next) sub_bounds(k, bdx - b->sx, bdy - b->sy, bb, depth + 1, cnt);
+}
+static void k_m4(box* k, float* M) {
+    tf_matrix4(k->st, k->w, k->h, M);
+    box* pb = k->parent;
+    if (!pb || !pb->st || pb->st->persp <= 0) return;
+    float plx = pb->x + lres(pb->st->pox, pb->w), ply = pb->y + lres(pb->st->poy, pb->h);
+    float elx = k->x + k->ox - k->btx + lres(k->st->tox, k->w), ely = k->y + k->oy - k->bty + lres(k->st->toy, k->h);
+    float ex = plx - elx, ey = ply - ely, ip = -1.0f / pb->st->persp;
+    float R[16];
+    for (int j = 0; j < 4; j++) {
+        float m0 = M[j], m1 = M[4 + j], m2 = M[8 + j], m3 = M[12 + j];
+        float w = ip * m2 + m3;
+        R[j] = m0 - ex * m3 + ex * w;
+        R[4 + j] = m1 - ey * m3 + ey * w;
+        R[8 + j] = m2;
+        R[12 + j] = w;
+    }
+    memcpy(M, R, sizeof R);
+}
+static void m4_h(const float* M, float* H) { H[0] = M[0]; H[1] = M[1]; H[2] = M[3]; H[3] = M[4]; H[4] = M[5]; H[5] = M[7]; H[6] = M[12]; H[7] = M[13]; H[8] = M[15]; }
+static float h_det(const float* H) { return H[0] * (H[4] * H[8] - H[5] * H[7]) - H[1] * (H[3] * H[8] - H[5] * H[6]) + H[2] * (H[3] * H[7] - H[4] * H[6]); }
+static int bf_hidden(box* k) {
+    float sgn = 1;
+    if (k->st->hastransform) { float M[16], H[9]; k_m4(k, M); m4_h(M, H); if (h_det(H) < 0) sgn = -sgn; }
+    for (box* p = k->parent; p && p->st && p->st->p3d; p = p->parent) {
+        if (!p->st->hastransform) continue;
+        float M[16], H[9]; k_m4(p, M); m4_h(M, H); if (h_det(H) < 0) sgn = -sgn;
+    }
+    return sgn < 0;
 }
 static void paint_stack(box* b, float dx, float dy, float op, clipr* c, int depth);
 static void paint_transformed(box* k, float dx, float dy, float op, clipr* c, int depth) {
     style* s = k->st;
-    float m[6];
-    tf_matrix(s, k->w, k->h, m);
+    float m[6], M4[16], H[9];
+    k_m4(k, M4); m4_h(M4, H);
+    int proj = fabsf(H[6]) > 1e-7f || fabsf(H[7]) > 1e-7f || fabsf(H[8] - 1) > 1e-6f;
+    if (!proj) { m[0] = H[0]; m[1] = H[3]; m[2] = H[1]; m[3] = H[4]; m[4] = H[2]; m[5] = H[5]; }
+    else { if (H[8] <= 0) return; m[0] = H[0] / H[8]; m[1] = H[3] / H[8]; m[2] = H[1] / H[8]; m[3] = H[4] / H[8]; m[4] = H[2] / H[8]; m[5] = H[5] / H[8]; }
     float ddx = m[4] - k->btx, ddy = m[5] - k->bty;
-    int lin = fabsf(m[0] - 1) > 1e-4f || fabsf(m[1]) > 1e-4f || fabsf(m[2]) > 1e-4f || fabsf(m[3] - 1) > 1e-4f;
+    int lin = proj || fabsf(m[0] - 1) > 1e-4f || fabsf(m[1]) > 1e-4f || fabsf(m[2]) > 1e-4f || fabsf(m[3] - 1) > 1e-4f;
     if (!lin) { paint_stack(k, dx + ddx, dy + ddy, op, c, depth); return; }
-    float det = m[0] * m[3] - m[1] * m[2];
-    if (fabsf(det) < 1e-6f) return;
+    float det = proj ? h_det(H) : m[0] * m[3] - m[1] * m[2];
+    if (fabsf(det) < 1e-9f) return;
     float px0 = dx - k->btx, py0 = dy - k->bty;
     float bb[4] = { 1e30f, 1e30f, -1e30f, -1e30f };
     int cnt = 0;
@@ -816,8 +1042,11 @@ static void paint_transformed(box* k, float dx, float dy, float op, clipr* c, in
     float dminx = 1e30f, dminy = 1e30f, dmaxx = -1e30f, dmaxy = -1e30f;
     for (int i = 0; i < 4; i++) {
         float ux = qx[i] - ox, uy = qy[i] - oy;
+        if (proj) { float w = H[6] * ux + H[7] * uy + H[8]; if (w < 0.02f) w = 0.02f; cx[i] = ox + (H[0] * ux + H[1] * uy + H[2]) / w; cy[i] = oy + (H[3] * ux + H[4] * uy + H[5]) / w; }
+        else {
         cx[i] = ox + m[0] * ux + m[2] * uy + m[4];
         cy[i] = oy + m[1] * ux + m[3] * uy + m[5];
+        }
         if (cx[i] < dminx) dminx = cx[i];
         if (cy[i] < dminy) dminy = cy[i];
         if (cx[i] > dmaxx) dmaxx = cx[i];
@@ -861,13 +1090,29 @@ static void paint_transformed(box* k, float dx, float dy, float op, clipr* c, in
         B0[i] = ((unsigned)a << 24) | (b & 0xFFFFFF);
     }
     float ia = m[3] / det, ib = -m[1] / det, ic = -m[2] / det, id = m[0] / det;
+    float Hi[9];
+    if (proj) {
+        Hi[0] = (H[4] * H[8] - H[5] * H[7]) / det; Hi[1] = (H[2] * H[7] - H[1] * H[8]) / det; Hi[2] = (H[1] * H[5] - H[2] * H[4]) / det;
+        Hi[3] = (H[5] * H[6] - H[3] * H[8]) / det; Hi[4] = (H[0] * H[8] - H[2] * H[6]) / det; Hi[5] = (H[2] * H[3] - H[0] * H[5]) / det;
+        Hi[6] = (H[3] * H[7] - H[4] * H[6]) / det; Hi[7] = (H[1] * H[6] - H[0] * H[7]) / det; Hi[8] = (H[0] * H[4] - H[1] * H[3]) / det;
+    }
     for (int y = dy0; y < dy1; y++) {
         unsigned* row = FB + (size_t)y * (size_t)STR;
         float vy = (float)y + 0.5f - oy - m[5];
         for (int x = dx0; x < dx1; x++) {
             float vx = (float)x + 0.5f - ox - m[4];
-            float sx = ia * vx + ic * vy + ox - (float)rx0 - 0.5f;
-            float sy = ib * vx + id * vy + oy - (float)ry0 - 0.5f;
+            float sx, sy;
+            if (proj) {
+                float px = (float)x + 0.5f - ox, py = (float)y + 0.5f - oy;
+                float hw = Hi[6] * px + Hi[7] * py + Hi[8];
+                if (fabsf(hw) < 1e-9f) continue;
+                float u = (Hi[0] * px + Hi[1] * py + Hi[2]) / hw, v = (Hi[3] * px + Hi[4] * py + Hi[5]) / hw;
+                if (H[6] * u + H[7] * v + H[8] <= 0) continue;
+                sx = u + ox - (float)rx0 - 0.5f; sy = v + oy - (float)ry0 - 0.5f;
+            } else {
+                sx = ia * vx + ic * vy + ox - (float)rx0 - 0.5f;
+                sy = ib * vx + id * vy + oy - (float)ry0 - 0.5f;
+            }
             if (sx < -1 || sy < -1 || sx >= rw || sy >= rh) continue;
             int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
             float fx = sx - x0, fy = sy - y0;
@@ -918,18 +1163,25 @@ static void paint_stack(box* b, float dx, float dy, float op, clipr* c, int dept
             box* cb = k->cb;
             if (k->st->position == P_ABSOLUTE) {
                 float ax = 0, ay = 0;
-                for (box* q = cb; q; q = q->parent) { ax += q->ox; ay += q->oy - q->sy; }
+                for (box* q = cb; q; q = q->parent) { ax += q->ox - q->sx; ay += q->oy - q->sy; }
                 if (cb) { for (box* q = cb; q; q = q->parent) if (q->st && q->st->position == P_FIXED) { ay += g_scroll; break; } }
                 kdx = (float)g_vx + ax;
                 kdy = (float)g_vy - g_scroll + ay;
             }
         }
+        if (k->st->bfhide && bf_hidden(k)) continue;
         if (k->st->hastransform && (k->st->hasmatrix || k->st->nanim || k->st->ntrans)) paint_transformed(k, kdx, kdy, p->op, &kc, depth + 1);
         else paint_stack(k, kdx, kdy, p->op, &kc, depth + 1);
     }
 }
 
+void paint_all_in(unsigned* fb, int stride, int fbw, int fbh, int vx, int vy, int vw, int vh, float scroll);
 void paint_all(unsigned* fb, int stride, int fbw, int fbh, int vx, int vy, int vw, int vh, float scroll) {
+    unsigned long long t0 = nwk_us();
+    paint_all_in(fb, stride, fbw, fbh, vx, vy, vw, vh, scroll);
+    g_nwe_perf.paint_us += nwk_us() - t0;
+}
+void paint_all_in(unsigned* fb, int stride, int fbw, int fbh, int vx, int vy, int vw, int vh, float scroll) {
     FB = fb;
     STR = stride;
     int svp = g_pool;
@@ -976,7 +1228,7 @@ void paint_all(unsigned* fb, int stride, int fbw, int fbh, int vx, int vy, int v
     if (G.focus && G.focus->box && G.focus->st) {
         box* fb2 = G.focus->box;
         float ax = 0, ay = 0;
-        for (box* q = fb2; q; q = q->parent) { ax += q->ox; ay += q->oy - (q != fb2 ? q->sy : 0); }
+        for (box* q = fb2; q; q = q->parent) { ax += q->ox - (q != fb2 ? q->sx : 0); ay += q->oy - (q != fb2 ? q->sy : 0); }
         if (G.focus->tag == T_INPUT || G.focus->tag == T_TEXTAREA || G.focus->tag == T_SELECT) {
             if (G.focus->st->ostyle != BS_NONE || 1) {
                 style* s = G.focus->st;

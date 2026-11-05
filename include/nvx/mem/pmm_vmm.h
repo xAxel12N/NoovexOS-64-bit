@@ -15,6 +15,16 @@ typedef struct { u64 s,e; u32 t; } mmreg;
 #define PTE_LAZY 0x400ULL
 #define PTE_SHR  0x800ULL
 #define PTE_ADDR 0x000FFFFFFFFFF000ULL
+#define PTE_PRO  0x0010000000000000ULL
+#define PTE_PNO  0x0020000000000000ULL
+#define PTE_NX   0x8000000000000000ULL
+#define PTE_PBITS (PTE_PRO|PTE_PNO|PTE_NX)
+extern int g_nx_on;
+u64 vm_prot_bits(int prot);
+u64 vm_live(u64 pa,u64 old);
+u64 vm_pflags(u64 base,u64 bits);
+int vm_map_lazy_p(u64 pml4,u64 v,u64 bits);
+void cpu_nx_init(void);
 u64 kva_to_pa(u64 va);
 
 extern mmreg g_mmr[MMR_MAX];

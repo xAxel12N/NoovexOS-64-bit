@@ -278,7 +278,7 @@ static int ux_perm_ok(int k,int want){            /* want: 4=r 2=w 1=x */
 | Directory `DT[k]` | `10000 + k` | size 4096; `nlink` = 2 + number of child directories; `o[9] = 1` |
 | `/dev` device | `20000 + dev_id` | mode `0020666`, nlink 1 |
 | `/mnt/usb` file `fi` | `21000 + fi` | mode `0100644`, size from `ufs[fi].size` |
-| Built-in program (`jc_find_prog`) under `/bin`, `/sbin`, `/usr`, or a bare name | `22000` | mode `0100755`, size = image length |
+| Built-in program (`jc_find_prog`) whose directory is `/bin`, `/sbin`, `/usr/bin` or `/usr/sbin` (relative names are made absolute with the current directory first) | `22000` | mode `0100755`, size = image length. Before v10.07 any bare name matched, so `stat("vim")` succeeded in every directory and nvxbox `mkdir vim` said "File exists" |
 
 `k_readdir_at` reports type 4 for directories, 10 for symlinks and 8 for files. `k_readdir_extra` then appends:
 
@@ -792,3 +792,26 @@ With `extract`:
 3. Each file is synced, then `dt_save()` is called.
 
 Without `extract`, only the file count and total size (`g_pkg_nfiles`, `g_pkg_total`) are computed.
+
+## 7.11 Stepwise sync for large files (`fs/nvx/nvx4.c`) (v10.32)
+
+`fs_store_nosync` (`sys/native/syscall.c`) replaces a file's contents in memory like `fs_save_bin` but does not sync. `fs_sync_step(k, maxblk)` then writes the file to an NVX4 disk in pieces: the first call resizes the extents (`n4_resize`), takes the dirty range, marks the file clean and remembers the slot and position; each call writes at most `maxblk` blocks with `n4_write_range` and returns 0 while there is more; the last call writes the indirect extent block if needed and commits the metadata (`n4_commit`) and returns 1. On a write error the file is marked dirty again and -1 is returned. Other file systems (root file systems, lazy files) fall back to `nvx3_sync` in one call. Only one file can be in progress at a time.
+
+Because the metadata is committed only at the end, a power cut in the middle leaves the old metadata on the disk; the data blocks of a file that keeps its size may already hold new bytes. Callers that need all-or-nothing contents keep a checksum in the file (the web cache does, section 13.55). The file-system harness checks a 6 MB save in 128 KB steps, a second save and a power cut in the middle.
+
+## 7.12 Accounts, passwords and access (`core/auth/accounts.c`) (v10.40)
+
+Files. Accounts live in the Linux files: `/etc/passwd` (name, uid, gid, full name, home, shell), `/etc/group` (`admin` 10 and `sudo` 27 for administrators, `users` 100, a personal group per account with gid = uid, `guest` 999) and `/etc/shadow` (mode 0600, owned by root: name, hash, then `lastchg:0:99999:7:::`). `acct_reload` parses all three into tables of 64 entries (`ac_AP`, `ac_AG`, `ac_AS`); every change edits the tables and `ac_db_save` writes the files back through `ux_write_text` (`fs/vfs/unixfs.c`, creates or replaces a file and syncs it to the disk).
+
+Hashes. `lib/crypto/sha512crypt.c` is SHA-512 crypt as in glibc (`$6$` with a 16-character salt from the ChaCha20 generator, 5000 rounds, `rounds=N` accepted); `sha512_crypt_check` compares in constant time. An empty hash means "no password", `!` or `*` means locked. Shadow lines from v10.39 and older (`name:hex`, a 32-bit FNV hash) become `$nvx$hex` and are replaced by a SHA-512 hash after the first correct password.
+
+Operations. `acct_create` (uid from 1000 up, home 0750 with six folders), `acct_delete` (optionally with the home folder; not root, not the signed-in account, not the last administrator), `acct_set_password`, `acct_set_locked`, `acct_set_admin`, `acct_set_full`, `acct_group_add`/`del`, `acct_setup_primary` (renames the uid-1000 account made at the first start, moves the files from `/home` into the new home, sets the root password and the computer name), `acct_check`, `acct_gids` (used by the Linux `getgroups` call). `g_acct_err` holds the reason when something is refused.
+
+Boot. `acct_boot` (from `ux_core_start`, after the folder layout) creates the standard folders (`fhs_layout`), the `/etc` files (`etc_files`, `/etc/os-release` from the build version), migrates old files (`migrate`), empties `/home/guest` and writes a `boot` line to `/var/log/wtmp`. `/etc/sudoers` sets `g_sudo_min` from `timestamp_timeout`.
+
+Sessions. `acct_login` sets `g_uid`, `g_gid`, `g_user`, `g_fullname`, `g_home`, `g_home_dir` (the folder new files go into, used by `fs_newslot`), the working folder and `HOME`, `USER`, `LOGNAME`, and writes `login` to wtmp and a line to `/var/log/auth.log` (both trimmed to about 12 KB). `acct_profile_name` gives per-account file names for browser data (`cookies.anna.txt`); uid 1000 keeps the old names.
+
+Access. `ux_perm_ok` checks owner, group and other bits; `perm_dir` (create or delete in a folder) no longer lets administrators write everywhere; `ux_dir_ok(d, want)` checks `want` on the folder and search permission on every folder above it, and is called from `vfs_open`, `ux_stat2`, `k_readdir_at`, the Linux `open` of folders and `chdir`, the native `chdir`, `cd` and the Files app. Root (uid 0) passes every check. Only the primary group counts.
+
+Tests. `tools/tests/accounts/ac_glue.c` builds the whole kernel as one host object (like the file-system tests) and runs 29 checks; `tools/check.py --only accounts`.
+

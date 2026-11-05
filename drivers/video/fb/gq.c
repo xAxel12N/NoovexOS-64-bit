@@ -54,7 +54,9 @@ static void addr(grc* l,int* n,grc r){ if(*n<GQ_NR){ l[(*n)++]=r; return; } grc 
 static void rclamp(grc* r,int s){ int w=(int)g_gs[s].w, h=(int)g_gs[s].h; if(w<1)w=1; if(h<1)h=1;
     r->x0=clampi(r->x0,0,w-1); r->y0=clampi(r->y0,0,h-1); r->x1=clampi(r->x1,1,w); r->y1=clampi(r->y1,1,h); if(r->x1<=r->x0)r->x1=r->x0+1; if(r->y1<=r->y0)r->y1=r->y0+1; }
 static void batch_begin(void){
-    rp=0; nops=0; bpix=0; dep_clear(); u64 S=g_gqhw.st_g, K=g_gqhw.kern_g;
+    rp=0; nops=0; bpix=0; dep_clear();
+    if(g_gqhw.op){ inbatch=1; g_gq_inb=1; g_gq_batches++; return; }
+    u64 S=g_gqhw.st_g, K=g_gqhw.kern_g;
     pc((1u<<20)|(1u<<12)|(1u<<5)); w32(0x69040302u);
     w32(0x61010011u); w32(1); w32(0); w32(0); w32((u32)S|1u); w32((u32)(S>>32)); w32((u32)S|1u); w32((u32)(S>>32)); w32(1); w32(0); w32((u32)K|1u); w32((u32)(K>>32));
     w32(0xFFFFF001u); w32(0xFFFFF001u); w32(0xFFFFF001u); w32(0xFFFFF001u); w32(1); w32(0); w32(0xFFFFF000u);
@@ -64,8 +66,8 @@ static void batch_begin(void){
     inbatch=1; g_gq_inb=1; g_gq_batches++; }
 static int bsubmit(void){
     if(!inbatch)return 0; inbatch=0; g_gq_inb=0; if(!nops)return 0;
-    pc((1u<<20)|(1u<<12)|(1u<<5));
-    if(g_gqhw.flush){ g_gqhw.flush(g_gqhw.st+0x1000/4,(u64)nops*32); g_gqhw.flush(g_gqhw.st+0x10000/4,(u64)nops*128); }
+    if(!g_gqhw.op)pc((1u<<20)|(1u<<12)|(1u<<5));
+    if(g_gqhw.flush&&g_gqhw.st){ g_gqhw.flush(g_gqhw.st+0x1000/4,(u64)nops*32); g_gqhw.flush(g_gqhw.st+0x10000/4,(u64)nops*128); }
     g_gq_syncs++; g_gq_submits++; u64 tw0=g_gqhw.now?g_gqhw.now():0; int r=g_gqhw.submit(rp); if(g_gqhw.now)g_gq_wait_ns+=g_gqhw.now()-tw0;
     if(r){ g_gq_fail++; g_gq_mode=GQM_OFF; return -1; }
     for(int i=1;i<GQ_MAXS;i++)dep[i].hasd=0;
@@ -79,9 +81,11 @@ static void gpu_rec(const gop* o){
     int uses=(o->k==GK_COPY||o->k==GK_COPYM||o->k==GK_BLURH||o->k==GK_BLURV||o->k==GK_OVER||o->k==GK_OVERM), usem=(o->k==GK_MASK||o->k==GK_COPYM||o->k==GK_OVERM);
     rclamp(&sr,o->s); rclamp(&mr,o->m);
     int conflict=hits(dep[o->d].w,dep[o->d].nw,wr)||hits(dep[o->d].r,dep[o->d].nr,wr)||(uses&&hits(dep[o->s].w,dep[o->s].nw,sr))||(usem&&hits(dep[o->m].w,dep[o->m].nw,mr));
-    if(conflict||(g_gq_serial&&nops>0)){ pc((1u<<20)|(1u<<5)); dep_clear(); g_gq_stalls++; }
+    if(conflict||(g_gq_serial&&nops>0)){ if(!g_gqhw.op)pc((1u<<20)|(1u<<5)); dep_clear(); g_gq_stalls++; }
     addr(dep[o->d].w,&dep[o->d].nw,wr); if(uses)addr(dep[o->s].r,&dep[o->s].nr,sr); if(usem)addr(dep[o->m].r,&dep[o->m].nr,mr);
     { grc* dd=&dep[o->d].dirty; if(!dep[o->d].hasd){ *dd=wr; dep[o->d].hasd=1; } else { if(wr.x0<dd->x0)dd->x0=wr.x0; if(wr.y0<dd->y0)dd->y0=wr.y0; if(wr.x1>dd->x1)dd->x1=wr.x1; if(wr.y1>dd->y1)dd->y1=wr.y1; } }
+    if(g_gqhw.op){ gqop_t t; t.k=o->k; t.x=(u32)o->x; t.y=(u32)o->y; t.w=(u32)o->w; t.h=(u32)o->h; t.sdx=o->sdx; t.sdy=o->sdy; t.mdx=o->mdx; t.mdy=o->mdy; t.c0=o->c0; t.c1=o->c1; t.a=o->a; t.inv=o->inv; t.key=o->key; t.goff=o->goff; t.d=o->d; t.s=o->s; t.m=o->m;
+        int w=conflict||(g_gq_serial&&nops>0); if(g_gqhw.op(&t,w)){ g_gq_fail++; g_gq_mode=GQM_OFF; inbatch=0; g_gq_inb=0; nops=0; return; } nops++; return; }
     u32 n=nops++; u32 bt=0x1000u+n*32u, idd=0x10000u+n*128u, cb=idd+64u; u32* st=g_gqhw.st;
     st[bt/4]=(u32)o->d*64u; st[bt/4+1]=(u32)o->s*64u; st[bt/4+2]=(u32)o->m*64u;
     u32* I=st+idd/4; for(int k=0;k<8;k++)I[k]=0; I[0]=g_gqhw.koff[o->k]&~63u; I[2]=1u<<18; I[4]=bt&0xFFE0u; I[5]=2u<<16; I[6]=1;
@@ -260,7 +264,8 @@ int gq_log_find(int x,int y,char* out,int max){ int i=lg_n-1; for(;i>=0;i--){ gl
     char* p=out; char* e=out+max-1; const char* t; if(i<0){ t="no operation"; while(*t&&p<e)*p++=*t++; *p=0; return -1; }
     glog* L=&lgb[i]; char b[120]; char* q=b; q=wtxt(q,gk_name(L->k)); q=wtxt(q," #"); q=wdec(q,L->i); *q++=' '; q=wdec(q,L->x); *q++=','; q=wdec(q,L->y); *q++=' '; q=wdec(q,L->w); *q++='x'; q=wdec(q,L->h); q=wtxt(q," from "); q=wdec(q,L->s); *q++='/'; q=wdec(q,L->m); *q=0;
     t=b; while(*t&&p<e)*p++=*t++; *p=0; return L->i; }
-void gq_surf_free(int s){ if(s<=0||s>=GQ_MAXS)return; g_gs[s].used=0; g_gs[s].px=0; g_gs[s].gfx=0; }
+void (*g_gq_free_hook)(int s)=0;
+void gq_surf_free(int s){ if(s<=0||s>=GQ_MAXS)return; if(g_gs[s].used&&g_gq_free_hook)g_gq_free_hook(s); g_gs[s].used=0; g_gs[s].px=0; g_gs[s].gfx=0; }
 void gq_frame_mark(void){ g_gq_frame_ops=g_gq_ops-f_ops0; g_gq_frame_stalls=g_gq_stalls-f_stalls0; g_gq_frame_syncs=g_gq_syncs-f_syncs0; f_ops0=g_gq_ops; f_stalls0=g_gq_stalls; f_syncs0=g_gq_syncs; }
 static u32 st_rng;
 static u32 RNDv(void){ st_rng^=st_rng<<13; st_rng^=st_rng>>17; st_rng^=st_rng<<5; return st_rng; }

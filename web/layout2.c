@@ -1,4 +1,13 @@
 #include "web/layout.h"
+static int grid_stretch_ctl(box* c) {
+    if (c->kind != BX_REPLACED || !c->n || !c->st || c->st->width.k == LK_VAL) return 0;
+    int t = c->n->tag;
+    if (t == T_SELECT || t == T_TEXTAREA) return 1;
+    if (t != T_INPUT) return 0;
+    const char* ty = attr_get(c->n, "type");
+    if (ty && (ieq(ty, "checkbox") || ieq(ty, "radio") || ieq(ty, "image") || ieq(ty, "hidden"))) return 0;
+    return 1;
+}
 
 static float pxonly(L l) { return l.k == LK_VAL && l.pct == 0 ? l.px : 0; }
 
@@ -165,6 +174,13 @@ float layout_flex(box* b, float cx, float cy, float cw, float ch) {
         } else if (msz.k == LK_VAL && !(msz.pct != 0 && mainsz < 0)) {
             base = lres(msz, mainsz < 0 ? 0 : mainsz);
             if (cs->boxsizing) base -= f->mpb;
+        } else if (row && cs->aspect > 0 && c->kind != BX_REPLACED && (cs->height.k == LK_VAL || (ch >= 0 && ((cs->alignself == AL_AUTO ? s->alignitems : cs->alignself) == AL_STRETCH || (cs->alignself == AL_AUTO ? s->alignitems : cs->alignself) == AL_NORMAL)))) {
+            float hh;
+            if (cs->height.k == LK_VAL) { hh = lres(cs->height, ch < 0 ? 0 : ch); if (!cs->boxsizing) hh += f->mpb; }
+            else hh = ch - f->mm0 - f->mm1;
+            float cpb = c->p[1] + c->p[3] + c->b[1] + c->b[3];
+            base = cs->boxsizing ? hh * cs->aspect - cpb : (hh - f->mpb) * cs->aspect;
+            if (base < 0) base = 0;
         } else if (row) {
             float mn, mx;
             if (c->kind == BX_REPLACED) { float h; mx = replaced_size(c, cw, ch, &h, -1); }
@@ -195,6 +211,14 @@ float layout_flex(box* b, float cx, float cy, float cw, float ch) {
             if (msz.k == LK_VAL && msz.pct == 0) { float sz = msz.px - (cs->boxsizing ? f->mpb : 0); if (sz < mn) mn = sz; }
         }
         if (mxl.k == LK_VAL && !(mxl.pct != 0 && mainsz < 0)) { mx = lres(mxl, mainsz < 0 ? 0 : mainsz); if (cs->boxsizing) mx -= f->mpb; }
+        if (row && (mnl.k == LK_MINC || mnl.k == LK_MAXC || mnl.k == LK_FITC || mxl.k == LK_MINC || mxl.k == LK_MAXC || mxl.k == LK_FITC)) {
+            extern void intrinsic_content(box*, float*, float*);
+            float a, z; intrinsic_content(c, &a, &z);
+            float av = mainsz >= 0 ? mainsz - f->mm0 - f->mm1 : z;
+            float fit = z < av ? z : (a > av ? a : av);
+            if (mnl.k == LK_MINC || mnl.k == LK_MAXC || mnl.k == LK_FITC) mn = (mnl.k == LK_MINC ? a : mnl.k == LK_MAXC ? z : fit) - f->mpb;
+            if (mxl.k == LK_MINC || mxl.k == LK_MAXC || mxl.k == LK_FITC) mx = (mxl.k == LK_MINC ? a : mxl.k == LK_MAXC ? z : fit) - f->mpb;
+        }
         if (mn < 0) mn = 0;
         f->minm = mn;
         f->maxm = mx;
@@ -409,6 +433,123 @@ static void expand_tracks(style* s, float cw, gtrack** out, int* nout) {
 typedef struct { box* b; int r0, c0, rs, cs; } gitem;
 static int span_of(int v) { return v <= -1000 ? -1000 - v : 0; }
 
+
+typedef struct { unsigned char k, mink, p0, p1; float v, minv; } nvt_track;
+typedef struct { int ncols, nrows; const nvt_track* cols; const nvt_track* rows; nvt_track autorow; float colgap, rowgap, w, h; int jc, ac, ji, ai, flow; float minh, maxh; } nvt_grid;
+typedef struct { int cs, ce, rs, re; float w, h; float m[4]; int mauto, js, as_, replaced; float ox, oy, ow, oh; } nvt_item;
+int nvx_taffy_grid(const nvt_grid* g, nvt_item* items, int n, void* ctx, float* outh);
+void nwe_fail(const char* why);
+int g_taffy_grid = 1;
+void* nvx_rs_alloc(size_t size, size_t align) {
+    if (align < 16) align = 16;
+    unsigned char* p = malloc(size + align + 16);
+    if (!p) nwe_fail("out of memory in the layout engine");
+    uintptr_t a = ((uintptr_t)p + 16 + align - 1) & ~(uintptr_t)(align - 1);
+    ((void**)a)[-1] = p;
+    return (void*)a;
+}
+void nvx_rs_free(void* p) { if (p) free(((void**)p)[-1]); }
+void nvx_rs_abort(void) { nwe_fail("layout engine (Rust) stopped"); for (;;) {} }
+void rust_eh_personality(void) {}
+void _Unwind_Resume(void) { nvx_rs_abort(); }
+typedef struct { box** b; float cw; } nvt_ctx;
+void nvx_grid_measure(void* ctx, int idx, float kw, float kh, float aw, float ah, float* out) {
+    (void)ah;
+    nvt_ctx* g = ctx;
+    box* c = g->b[idx];
+    float w = kw;
+    if (c->kind == BX_REPLACED) {
+        float h;
+        float base = kw >= 0 ? kw : aw >= 0 ? aw : g->cw;
+        float rw = replaced_size(c, base, -1, &h, kw >= 0 ? kw : -1);
+        out[0] = kw >= 0 ? kw : rw;
+        out[1] = kh >= 0 ? kh : h;
+        return;
+    }
+    if (w < 0) {
+        float mn, mx;
+        intrinsic(c, &mn, &mx);
+        if (aw == -2) w = mn;
+        else if (aw == -3) w = mx;
+        else { w = aw < mx ? aw : mx; if (w < mn) w = mn; }
+    }
+    if (kh >= 0) { out[0] = w; out[1] = kh; return; }
+    box_edges(c, w);
+    lay(c, 0, 0, w, -1, 0, w, -1);
+    out[0] = w;
+    out[1] = c->h;
+}
+static int taffy_grid(box* b, gitem* it, int n, float cx, float cy, float cw, float ch, float* result) {
+    style* s = b->st;
+    gtrack* cols;
+    int nc;
+    expand_tracks(s, cw, &cols, &nc);
+    nvt_track* tc = nalloc(sizeof(nvt_track) * (size_t)(nc + 1));
+    for (int i = 0; i < nc; i++) { tc[i].k = cols[i].k; tc[i].mink = cols[i].mink & 0x7F; tc[i].v = cols[i].v; tc[i].minv = cols[i].minv; tc[i].p0 = tc[i].p1 = 0; }
+    int nr = s->ngrows > 0 ? s->ngrows : 0;
+    nvt_track* tr = nalloc(sizeof(nvt_track) * (size_t)(nr + 1));
+    for (int i = 0; i < nr; i++) { tr[i].k = s->grows[i].k; tr[i].mink = s->grows[i].mink & 0x7F; tr[i].v = s->grows[i].v; tr[i].minv = s->grows[i].minv; tr[i].p0 = tr[i].p1 = 0; }
+    nvt_grid g;
+    memset(&g, 0, sizeof g);
+    g.ncols = s->ngcols ? nc : 0;
+    g.cols = tc;
+    g.nrows = nr;
+    g.rows = tr;
+    g.autorow.k = s->gautorow.k;
+    g.autorow.mink = s->gautorow.mink & 0x7F;
+    g.autorow.v = s->gautorow.v;
+    g.autorow.minv = s->gautorow.minv;
+    g.colgap = lres(s->gcolgap, cw);
+    g.rowgap = lres(s->growgap, cw);
+    g.w = cw;
+    g.h = ch;
+    g.jc = s->justify;
+    g.ac = s->aligncontent;
+    g.ji = s->justifyitems;
+    g.ai = s->alignitems;
+    g.flow = ((s->gautoflow & 1) ? 1 : 0) | ((s->gautoflow & 2) ? 2 : 0);
+    g.minh = -1;
+    g.maxh = -1;
+    if (ch < 0 && s->minh.k == LK_VAL && s->minh.pct == 0) { float m = lres(s->minh, 0); if (s->boxsizing) m -= b->p[0] + b->p[2] + b->b[0] + b->b[2]; if (m > 0) g.minh = m; }
+    if (ch < 0 && s->maxh.k == LK_VAL && s->maxh.pct == 0) { float m = lres(s->maxh, 0); if (s->boxsizing) m -= b->p[0] + b->p[2] + b->b[0] + b->b[2]; if (m >= 0) g.maxh = m; }
+    nvt_item* ti = nzalloc(sizeof(nvt_item) * (size_t)n);
+    box** bl = nalloc(sizeof(box*) * (size_t)n);
+    for (int i = 0; i < n; i++) {
+        box* c = it[i].b;
+        style* cs = c->st;
+        bl[i] = c;
+        box_edges(c, cw);
+        ti[i].cs = cs->gcs; ti[i].ce = cs->gce; ti[i].rs = cs->grs; ti[i].re = cs->gre;
+        for (int k = 0; k < 4; k++) ti[i].m[k] = cs->margin[k].k == LK_AUTO ? 0 : lres(cs->margin[k], cw);
+        ti[i].mauto = (cs->margin[0].k == LK_AUTO ? 1 : 0) | (cs->margin[1].k == LK_AUTO ? 2 : 0) | (cs->margin[2].k == LK_AUTO ? 4 : 0) | (cs->margin[3].k == LK_AUTO ? 8 : 0);
+        ti[i].replaced = c->kind == BX_REPLACED && !grid_stretch_ctl(c);
+        ti[i].w = -1;
+        ti[i].h = -1;
+        if (c->kind != BX_REPLACED && cs->width.k == LK_VAL) ti[i].w = clamp_w(c, lres(cs->width, cw) + (cs->boxsizing ? 0 : c->p[1] + c->p[3] + c->b[1] + c->b[3]), cw);
+        if (c->kind != BX_REPLACED && cs->height.k == LK_VAL && (cs->height.pct == 0 || ch >= 0)) ti[i].h = lres(cs->height, ch >= 0 ? ch : 0) + (cs->boxsizing ? 0 : c->p[0] + c->p[2] + c->b[0] + c->b[2]);
+        ti[i].js = cs->justifyself == AL_NORMAL ? AL_AUTO : cs->justifyself;
+        ti[i].as_ = cs->alignself == AL_NORMAL ? AL_AUTO : cs->alignself;
+    }
+    nvt_ctx ctx = { bl, cw };
+    float oh = 0;
+    if (!nvx_taffy_grid(&g, ti, n, &ctx, &oh)) return 0;
+    for (int i = 0; i < n; i++) {
+        box* c = it[i].b;
+        style* cs = c->st;
+        float w = ti[i].ow, h = ti[i].oh;
+        if (!(w == w) || !(h == h) || w < 0 || h < 0) return 0;
+        box_edges(c, w);
+        if (c->kind == BX_REPLACED) { float rh; replaced_size(c, w, -1, &rh, w); }
+        lay(c, 0, 0, w, -1, 0, w, -1);
+        if (cs->height.k != LK_VAL && c->kind != BX_REPLACED && h > c->h + 0.5f) {
+            if (c->kind == BX_FLEX || c->kind == BX_GRID) lay(c, 0, 0, w, h, 0, w, h);
+            else c->h = h;
+        }
+        shift_box(c, cx + ti[i].ox - c->x, cy + ti[i].oy - c->y);
+    }
+    *result = ch >= 0 ? ch : oh;
+    return 1;
+}
 float layout_grid(box* b, float cx, float cy, float cw, float ch) {
     style* s = b->st;
     gtrack* cols;
@@ -422,6 +563,7 @@ float layout_grid(box* b, float cx, float cy, float cw, float ch) {
     int k = 0;
     for (box* c = b->first; c; c = c->next) if (in_flow(c)) { it[k].b = c; k++; }
     for (int i = 1; i < n; i++) { gitem t = it[i]; int j = i - 1; while (j >= 0 && it[j].b->st->order > t.b->st->order) { it[j + 1] = it[j]; j--; } it[j + 1] = t; }
+    if (g_taffy_grid) { float r; if (taffy_grid(b, it, n, cx, cy, cw, ch, &r)) return r; }
     int col_flow = (s->gautoflow & 1) != 0;
     int maxr = 2048;
     int ncap = nc;
@@ -555,7 +697,8 @@ float layout_grid(box* b, float cx, float cy, float cw, float ch) {
         box_edges(c, aw);
         int js = cs->justifyself == AL_AUTO ? s->justifyitems : cs->justifyself;
         float w;
-        if (c->kind == BX_REPLACED) { float h; w = replaced_size(c, aw, -1, &h, -1); }
+        if (c->kind == BX_REPLACED && !(grid_stretch_ctl(c) && js != AL_START && js != AL_END && js != AL_CENTER)) { float h; w = replaced_size(c, aw, -1, &h, -1); }
+        else if (c->kind == BX_REPLACED) w = clamp_w(c, aw - c->m[1] - c->m[3], aw);
         else if (cs->width.k == LK_VAL) w = clamp_w(c, lres(cs->width, aw) + (cs->boxsizing ? 0 : c->p[1] + c->p[3] + c->b[1] + c->b[3]), aw);
         else if (js == AL_START || js == AL_END || js == AL_CENTER) w = clamp_w(c, shrink_fit(c, aw - c->m[1] - c->m[3]), aw);
         else w = clamp_w(c, aw - c->m[1] - c->m[3], aw);
@@ -700,12 +843,16 @@ float layout_table(box* b, float cx, float cy, float cw, float ch) {
     style* s = b->st;
     float sx = s->bcollapse ? 0 : s->bspacingx, sy = s->bcollapse ? 0 : s->bspacingy;
     float y = cy;
+    float capy = cy - b->b[0] - b->p[0];
+    int ncap = 0;
     for (box* cap = b->first; cap; cap = cap->next) {
         if (cap->kind != BX_CAPTION) continue;
         box_edges(cap, cw);
-        lay(cap, cx + cap->m[3], y + cap->m[0], cw, -1, 0, cw - cap->m[1] - cap->m[3], -1);
-        y = cap->y + cap->h + cap->m[2];
+        lay(cap, cx + cap->m[3], capy + cap->m[0], cw, -1, 0, cw - cap->m[1] - cap->m[3], -1);
+        capy = cap->y + cap->h + cap->m[2];
+        ncap++;
     }
+    if (ncap) y = capy + b->b[0] + b->p[0];
     tgrid g;
     table_grid(b, &g);
     int nc;
@@ -728,10 +875,12 @@ float layout_table(box* b, float cx, float cy, float cw, float ch) {
         }
     } else if (total >= summx) {
         float extra = total - summx;
-        int nz = 0;
-        for (int c = 0; c < nc; c++) if (mx[c] > 0) nz++;
-        for (int c = 0; c < nc; c++) w[c] = mx[c] + (summx > 0 ? extra * mx[c] / summx : extra / nc);
-        (void)nz;
+        char* fx = nzalloc((size_t)nc + 1);
+        for (int i = 0; i < g.ncells; i++) { tcell* tc = &g.cells[i]; style* cs = tc->cell->st; if (tc->cs == 1 && cs->width.k == LK_VAL && cs->width.pct == 0) fx[tc->c] = 1; }
+        int nauto = 0; float amx = 0;
+        for (int c = 0; c < nc; c++) if (!fx[c]) { nauto++; amx += mx[c]; }
+        if (nauto > 0) { for (int c = 0; c < nc; c++) w[c] = mx[c] + (fx[c] ? 0 : (amx > 0 ? extra * mx[c] / amx : extra / nauto)); }
+        else for (int c = 0; c < nc; c++) w[c] = mx[c] + (summx > 0 ? extra * mx[c] / summx : extra / nc);
     } else if (total >= summn && summx > summn) {
         for (int c = 0; c < nc; c++) w[c] = mn[c] + (mx[c] - mn[c]) * (total - summn) / (summx - summn);
     } else {

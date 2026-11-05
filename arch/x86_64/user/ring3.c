@@ -17,6 +17,7 @@ extern void lsys_entry(void);
 static void lsys_init(void){
     lsys_kstack=(u64)(g_kstack+sizeof(g_kstack));
     cpu_wrmsr(0xC0000080,cpu_rdmsr(0xC0000080)|1ULL);
+    { extern void cpu_nx_init(void); cpu_nx_init(); }
     cpu_wrmsr(0xC0000081,(0x08ULL<<32)|(0x10ULL<<48));
     cpu_wrmsr(0xC0000082,(u64)lsys_entry);
     cpu_wrmsr(0xC0000084,0x47700ULL);

@@ -1,9 +1,9 @@
 #include "kernel64.c"
 u64 hk_setup(void){
-    percpu_init_bsp();
+    percpu_init_bsp(); g_srb=0x20000000ULL;
     heap_base=0x10000000ULL; heap_cur=heap_base; heap_top=heap_base+0x4000000ULL; heap_head=0;
     for(u32 i=0;i<sizeof(pf_bitmap);i++)pf_bitmap[i]=0; pf_used=0; pf_ready=1; g_ram_mb=512;
-    g_us_ready=1; fd_init(); dt_init(); env_init(); vfs_init(); g_capture=1; g_cap_n=0; g_cap[0]=0; disk_ok=0;
+    cpu_nx_init(); g_us_ready=1; fd_init(); dt_init(); env_init(); vfs_init(); g_capture=1; g_cap_n=0; g_cap[0]=0; disk_ok=0;
     return pframe_alloc();
 }
 int hk_spawn(const char* args){
@@ -41,6 +41,10 @@ void hk_delfile(int k){ if(k>=0&&k<FS_N&&FS[k].used){ FS[k].used=0; fs_slot_free
 int hk_readfile(const char* p,char* out,int cap){ int isd=0; int k=ux_lookup(p,&isd,1); if(k<0||isd)return -1; int n=FS[k].len<cap?FS[k].len:cap; const char* sd=fsd(k); for(int i=0;i<n;i++)out[i]=sd[i]; return n; }
 int hk_exists(const char* p){ int isd=0; return ux_lookup(p,&isd,1)>=0; }
 int hk_pf(u64 va,int wr){ if(!g_js_running||g_jcur<0)return -1; return vm_fault_user(cpu_get_pt(),va,wr); }
+int hk_pf2(u64 va,u64 err){ if(!g_js_running||g_jcur<0)return -1;
+    struct jproc* p=&g_jp[g_jcur]; p->flt_addr=va; p->flt_code=(err&1)?2:1; p->flt_err=(u32)err;
+    if(err&0x10){ u64* xe=vm_walk(cpu_get_pt()&~0xFFFULL,va&~0xFFFULL,0); if(xe&&(*xe&1)&&(*xe&PTE_NX)){ p->flt_code=2; return -1; } }
+    return vm_fault_user(cpu_get_pt(),va,(int)((err>>1)&1)); }
 u32 hk_frame_refs_total(void){ u32 n=0; for(u32 i=0;i<PF_N;i++) if(pf_bitmap[i>>3]&(1u<<(i&7)))n+=pf_ref[i]; return n; }
 int hk_dns_build(const char* host,unsigned char* out,int cap){ return dns_build_query(host,0x1234,out,cap); }
 void hk_udp_big(void){ int save=net_ok; net_ok=1; static u8 pl[4000]; u8 mac[6]={0}; udp_send(0x0A000001u,1,2,pl,4000,mac); net_ok=save; }
