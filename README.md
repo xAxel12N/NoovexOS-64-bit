@@ -20,7 +20,7 @@ This repository contains kernel code, build scripts, and documentation to run No
 - 64-bit x86_64 kernel
 - Minimal bootloader to enter long mode
 - Basic serial console output for debugging
-- Simple VGA text-mode output
+- Simple gpu gui-mode output
 - Educational examples and documentation for OS concepts
 
 
