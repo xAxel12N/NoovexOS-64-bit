@@ -84,7 +84,7 @@ static void run_cmd_one(char*s){
         term_puts("/bin: ls cat grep wc head tail echo mkdir rmdir rm mv cp touch ln chmod chown stat pwd hostname whoami id uname date sleep mount umount readlink tee sort\n");
         term_puts("pkg (read .deb/.apk)   nvidia/gpu (GPU info)\n"); tcol(WHT);
         term_puts("help clear echo neofetch ver cpu mem time date uptime ls cat edit\n");
-        term_puts("net dhcp wifi usb usbdisk usbcat usbwrite usbrm ec acpi battery brightness timers timertest utest ring3 run app posix mem sched fork threads preempt ipc wm compositor cores smpstart smpwork lua ping dns http https netlog pci disks colors settings reboot panic\n");
+        term_puts("net usbnet dhcp wifi usb usbdisk usbcat usbwrite usbrm ec acpi battery brightness timers timertest utest ring3 run app posix mem sched fork threads preempt ipc wm compositor cores smpstart smpwork lua ping dns http https netlog pci disks colors settings reboot panic\n");
         term_puts("browse <url> www desktop  (web browser: HTML, CSS, JavaScript, cookies)   qjs [-e code] [file.js]  (QuickJS)\n"); term_puts("browser [netbg|csp|samesite] [on|off]  (browser switches for testing)\n");
         term_puts("play <file|URL>  (fullscreen player: space pause, arrows seek, q quit; -b benchmark)   video <file|URL>  (Video Player window)\n");
         term_puts("fatinfo fatls fatcat  (read files from an IDE/FAT disk)\n");
@@ -117,9 +117,9 @@ static void run_cmd_one(char*s){
           p=b;p=scopy(p,"  CSPRNG   ");p=scopy(p,diff?"PASS ":"FAIL ");for(int i=0;i<4;i++)p=hx(p,r1[i],2);*p=0; tcol(diff?GREEN:RED); term_puts(b); term_putc('\n'); tcol(WHT); }
         p=b;p=scopy(p,"  ");p=udec(p,(u32)pass);*p++='/';p=udec(p,(u32)tot);p=scopy(p," self-tests passed");*p=0; tcol(pass==tot?GREEN:RED); term_puts(b); term_putc('\n'); tcol(WHT);
     }
-    else if(seq(cmd,"install")){ if(!need_root(cmd))return; ip_open(ST_DESKTOP); }
+    else if(seq(cmd,"install")){ if(!need_root(cmd))return; if(arg[0]=='c')ip_open(g_state==ST_LIVE?ST_LIVE:ST_DESKTOP); else inst_launch(g_state==ST_LIVE?ST_LIVE:ST_DESKTOP); }
     else if(seq(cmd,"diskmgr")||seq(cmd,"partitions")){ if(!need_root(cmd))return; dm_open(g_state==ST_LIVE?ST_LIVE:ST_DESKTOP); }
-    else if(seq(cmd,"noovexos_install")){ if(!need_root(cmd))return; ip_open(ST_LIVE); }
+    else if(seq(cmd,"noovexos_install")){ if(!need_root(cmd))return; inst_launch(ST_LIVE); }
     else if(seq(cmd,"firefox-mode")){ const char* a=arg; while(*a==' ')a++;
         if(a[0]=='m'){ static char c1[]="bash -c 'mkdir -p /root/.nvx-firefox && touch /root/.nvx-firefox/.nvx-multiprocess'"; run_cmd(c1); term_puts("Firefox will start in multi-process mode (4 content processes) next time. Undo with: firefox-mode single\n"); }
         else if(a[0]=='s'){ static char c2[]="bash -c 'rm -f /root/.nvx-firefox/.nvx-multiprocess'"; run_cmd(c2); term_puts("Firefox will start in single-process mode next time.\n"); }
@@ -132,7 +132,7 @@ static void run_cmd_one(char*s){
         if(g_state==ST_LIVE){ if(!g_user[0]){ g_user[0]='r';g_user[1]='o';g_user[2]='o';g_user[3]='t';g_user[4]=0; } g_state=ST_DESKTOP; }
         if(g_xfb_live){ if(full){ term_puts("startx: switching to the full-screen X session (F12 or Ctrl+Alt+Backspace returns)\n"); xfull_enter(); } else { term_puts("startx: the X server is already running on :0\n"); if(!g_xover)open_win(W_XDISP); } }
         else { dt_init(); { int t=dt_child(0,"tmp"); if(t<0)dt_mkdir_at(0,"tmp"); } { int v=dt_child(0,"var"); if(v<0)v=dt_mkdir_at(0,"var"); int l=dt_child(v,"lib"); if(l<0)l=dt_mkdir_at(v,"lib"); if(dt_child(l,"xkb")<0)dt_mkdir_at(l,"xkb"); }
-            static char xl[200]; char* p=xl; p=scopy(p,"Xvfb :0 -screen 0 "); if(!inwin){ p=udec(p,W); *p++='x'; p=udec(p,H); } else p=scopy(p,"800x600"); p=scopy(p,full||inwin?"x24 -retro":"x24"); p=scopy(p," -fbdir /tmp -fp built-ins -listen tcp -nolisten unix -nolisten local -ac -xkbdir /usr/share/X11/xkb > /tmp/Xvfb.log 2>&1 &"); *p=0;
+            static char xl[200]; char* p=xl; p=scopy(p,"Xvfb :0 -screen 0 "); if(!inwin){ p=udec(p,W); *p++='x'; p=udec(p,H); } else p=scopy(p,"800x600"); p=scopy(p,full||inwin?"x24 -retro":"x24"); p=scopy(p," -dumbSched -fbdir /tmp -fp built-ins -listen tcp -listen unix -nolisten local -ac -xkbdir /usr/share/X11/xkb > /tmp/Xvfb.log 2>&1 &"); *p=0;
             env_set("DISPLAY","127.0.0.1:0"); tcol(GREY); term_puts("starting the X.Org X11 server on :0 (DISPLAY=127.0.0.1:0, log in /tmp/Xvfb.log)\n"); if(full)term_puts("full-screen X session: F12 or Ctrl+Alt+Backspace returns to the NoovexOS desktop\n"); tcol(WHT);
             { extern int x_spawned; x_spawned=1; } run_cmd(xl); { static char xi[]="nvx-xinput > /tmp/nvx-xinput.log 2>&1 &"; run_cmd(xi); static char xw[]="nvxwm > /tmp/nvxwm.log 2>&1 &"; run_cmd(xw); if(!full&&!inwin){ static char xp[]="bash -c 'sleep 4; for f in /usr/lib/firefox-esr/libxul.so /usr/lib/firefox-esr/omni.ja /usr/lib/firefox-esr/browser/omni.ja; do [ -e $f ] && cat $f > /dev/null; done' > /dev/null 2>&1 &"; run_cmd(xp); } } if(full){ static char xr[]="bash -c 'sleep 3; bash /root/.xinitrc' > /tmp/xinitrc.log 2>&1 &"; static char xd[]="xdemo > /tmp/xdemo.log 2>&1 &"; run_cmd(k_find_file("/root/.xinitrc")>=0?xr:xd); }
             if(full){ extern int g_xfull_pending; g_xfull_pending=1; } else if(inwin) open_win(W_XDISP); else { g_xover=1; if(g_state==ST_LIVE){ if(!g_user[0]){ g_user[0]='r';g_user[1]='o';g_user[2]='o';g_user[3]='t';g_user[4]=0; } g_state=ST_DESKTOP; } } } }
@@ -169,7 +169,7 @@ static void run_cmd_one(char*s){
     else if(seq(cmd,"nvgsp")){ extern int nvgsp_cmd(const char*); extern char g_nv_log[]; const char* a=arg; while(*a==' ')a++;
         if(a[0]=='a'&&a[1]=='u'&&a[2]=='t'&&a[3]=='o'){ extern int g_nvd_auto; extern void nvd_set_auto(int); const char* m=a+4; while(*m==' ')m++; if(m[0]=='o'&&m[1]=='n')nvd_set_auto(1); else if(m[0]=='o'&&m[1]=='f')nvd_set_auto(0); term_puts(g_nvd_auto?"nvgsp auto: on - the NVIDIA GPU starts by itself after boot\n":"nvgsp auto: off - press G in Gears or run nvgsp all\n"); return; }
         if(!a[0]||seq(a,"help")){ tcol(CYAN); term_puts("nvgsp: NVIDIA Turing (GTX 16 / RTX 20) driver through NVIDIA's GSP firmware\n"); tcol(WHT);
-            term_puts("  nvgsp vram      VRAM size, reserved layout and allocator (read only, safe)\n  nvgsp boot      FWSEC, booter, GSP-RM, static info, BAR1/BAR2 windows\n  nvgsp objects   client, device, subdevice, address space, channels, 3D/compute/copy objects, copy test\n  nvgsp all       boot + objects + screen through the copy engine\n  nvgsp present on|off   desktop frames through the NVIDIA copy engine or the CPU\n  nvgsp status    current state\n  nvgsp log       print the last log again (saved as nvgsp-log.txt in Files and NVGSPLOG.TXT on the USB stick)\n  nvgsp unload    stop GSP-RM and tear down WPR2 so it can be started again\n");
+            term_puts("  nvgsp vram      VRAM size, reserved layout and allocator (read only, safe)\n  nvgsp boot      FWSEC, booter, GSP-RM, static info, BAR1/BAR2 windows\n  nvgsp objects   client, device, subdevice, address space, channels, 3D/compute/copy objects, copy test\n  nvgsp all       boot + objects + screen through the copy engine\n  nvgsp present on|off   desktop frames through the NVIDIA copy engine or the CPU\n  nvgsp monitors  outputs, connected monitors and their native modes (read only)\n  nvgsp mode      second screen on: native mode, same picture as the first screen\n  nvgsp mode all  the same, and the first screen is set to its native mode too\n  nvgsp mode off  screens set by nvgsp mode off again\n  nvgsp 3d        3D engine test: triangles with depth, read back and checked (needed before Gears draws on the GPU)\n  nvgsp status    current state\n  nvgsp log       print the last log again (saved as nvgsp-log.txt in Files and NVGSPLOG.TXT on the USB stick)\n  nvgsp unload    stop GSP-RM and tear down WPR2 so it can be started again\n");
             tcol(rgb(230,160,60)); term_puts("  boot can turn off the picture of a screen connected to the NVIDIA card. The log is saved to Files either way.\n"); tcol(WHT); }
         if(a[0]&&!seq(a,"help")){ if(!seq(a,"log")&&!seq(a,"status")&&!seq(a,"vram")&&!(a[0]=='p'&&a[1]=='r')){ term_puts("nvgsp: working - this can take up to 30 seconds\n"); } int r=nvgsp_cmd(a); term_puts(g_nv_log); tcol(r>0?rgb(120,220,120):rgb(240,120,120)); term_puts(r>0?"nvgsp: done\n":"nvgsp: stopped - see the step above (log saved as nvgsp-log.txt)\n"); tcol(WHT); } }
     else if(seq(cmd,"nvidia")||(seq(cmd,"gpu")&&!(arg[0]=='f'||arg[0]=='b'||arg[0]=='i'||arg[0]=='r'||arg[0]=='d'||!arg[0])&&nv_probe())){
@@ -235,6 +235,19 @@ static void run_cmd_one(char*s){
                 if(g_mode_ok){ p=b; p=scopy(p,"  native mode: "); p=udec(p,g_mode.hact); *p++='x'; p=udec(p,g_mode.vact); p=scopy(p,"  pclk "); p=udec(p,g_mode.pclk_khz/1000); p=scopy(p," MHz"); *p=0; term_puts(b); term_putc('\n'); } }
             else { tcol(rgb(230,160,60)); term_puts("  EDID: not read (needs real GPU + a connected display; i2c port mapping may differ per board)\n"); tcol(WHT); }
         } }
+    else if(seq(cmd,"pagecache")){
+        extern void sysroot_pc_stats(u64*,u64*,u64*,u64*,u64*); extern u64 g_vm_file_faults, g_elf_lazy_pages, g_elf_copy_pages, g_lx_fmaps, g_lx_fmap_pages;
+        u64 fi=0,fl=0,hi=0,ns=0,by=0; sysroot_pc_stats(&fi,&fl,&hi,&ns,&by);
+        char b[160],*p;
+        tcol(rgb(120,200,255)); term_puts("  Linux files: page cache and unpacking\n"); tcol(WHT);
+        p=b; p=scopy(p,"  files with cached pages  "); p=udec(p,(u32)fi); p=scopy(p,"\n"); *p=0; term_puts(b); klog(b);
+        p=b; p=scopy(p,"  pages read into cache    "); p=udec(p,(u32)fl); p=scopy(p," ("); p=udec(p,(u32)(fl/256)); p=scopy(p," MB), reused "); p=udec(p,(u32)hi); p=scopy(p," times\n"); *p=0; term_puts(b); klog(b);
+        p=b; p=scopy(p,"  page faults from files   "); p=udec(p,(u32)g_vm_file_faults); p=scopy(p,"\n"); *p=0; term_puts(b); klog(b);
+        p=b; p=scopy(p,"  mapped files (mmap)      "); p=udec(p,(u32)g_lx_fmaps); p=scopy(p,", "); p=udec(p,(u32)(g_lx_fmap_pages/256)); p=scopy(p," MB reserved\n"); *p=0; term_puts(b); klog(b);
+        p=b; p=scopy(p,"  program pages at start   "); p=udec(p,(u32)g_elf_lazy_pages); p=scopy(p," on demand, "); p=udec(p,(u32)g_elf_copy_pages); p=scopy(p," copied\n"); *p=0; term_puts(b); klog(b);
+        p=b; p=scopy(p,"  unpacked                 "); p=udec(p,(u32)(by>>20)); p=scopy(p," MB in "); p=udec(p,(u32)(ns/1000000ULL)); p=scopy(p," ms\n"); *p=0; term_puts(b); klog(b); }
+    else if(seq(cmd,"security")||seq(cmd,"secureboot")){
+        tcol(rgb(120,200,255)); term_puts("  NoovexOS signed boot\n"); tcol(WHT); secboot_report(term_puts); }
     else if(seq(cmd,"sig")){
         tcol(rgb(120,200,255)); term_puts("  NoovexOS build signature\n"); tcol(WHT);
         char b[96],*p;

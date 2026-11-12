@@ -87,6 +87,7 @@ The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `b
 |---|---|
 | `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `build/kernel64.bin` to `boot/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
 | `tools/splitc.py` | Splits a large C file into numbered pieces in `NAME_parts/` (`python3 tools/splitc.py 300 FILE...`), and `python3 tools/splitc.py expand FILE` prints the file with the pieces put back (section 3.5). |
+| `tools/nvxsign.py` | Signing key and kernel signatures for signed boot: `newkey`, `pub`, `sign`, `verify`, `info` (section 2.15). |
 | `tools/nvxport.py` | Ports and distro profiles: `list`, `info`, `check`, `new`, `stage` (section 6.29). `build.sh` runs `stage` in step `[distro]`. |
 | `tools/emulate.py` | Boot emulation of an ISO: the BIOS path (builds the real `fat.c`/`config.c`/`string.c` as a 32-bit host program), the UEFI path (El Torito EFI entry, PE check, runs `BOOTX64.EFI` against simulated services) and `uefi_entry`. |
 | `tools/tests/` | Host harnesses and templates: `aml/` (ASL/AML samples), `drivers/drvsim.c`, `fs/`, `libc/` (`ltest.c`, `pfuzz.c`, `sfile.c`), `linux/` (`hh.c`, `lxfuzz.c`, host `cpu.h`/`io.h` stand-ins), `*_template.txt` for USB/ACPI/NVMe/HR/TP/MM tests, `fatck.py`, `isocheck.py`, `pecheck.py`, `bios_emu.c`, `entry_t.c`, `mark_t.c`, `gpu_t.c`. |

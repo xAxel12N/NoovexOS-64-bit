@@ -8,7 +8,7 @@ static u8* g_estack;
 static int g_in_engine;
 static int g_web_ok;
 
-const char* WEB_UA = "Mozilla/5.0 (X11; NoovexOS x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Noovex/10.60";
+const char* WEB_UA = "Mozilla/5.0 (X11; NoovexOS x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Noovex/10.86";
 
 int web_init(void) {
     if (g_web_ok) return 1;

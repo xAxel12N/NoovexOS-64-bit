@@ -37,7 +37,7 @@ static int gr_end(int flush_l2){
             return 0; } cpu_pause(); }
     g_gr_busy=0; return 1; }
 static void s_dst(const nv2d_surf* d){ gm(3,0x0200,2); g_grpb[g_gpn++]=d->fmt; g_grpb[g_gpn++]=1; gm(3,0x0214,5); g_grpb[g_gpn++]=d->pitch; g_grpb[g_gpn++]=d->w; g_grpb[g_gpn++]=d->h; g_grpb[g_gpn++]=(u32)(d->va>>32); g_grpb[g_gpn++]=(u32)d->va; }
-static void s_src(const nv2d_surf* s){ gm(3,0x0230,2); g_grpb[g_gpn++]=s->fmt; g_grpb[g_gpn++]=1; gm(3,0x0244,5); g_grpb[g_gpn++]=s->pitch; g_grpb[g_gpn++]=s->w; g_grpb[g_gpn++]=s->h; g_grpb[g_gpn++]=(u32)(s->va>>32); g_grpb[g_gpn++]=(u32)s->va; }
+static void s_src(const nv2d_surf* s){ gm(3,0x0230,2); g_grpb[g_gpn++]=s->fmt; g_grpb[g_gpn++]=s->bl?0u:1u; if(s->bl){ g1(0x0238,(s->bl-1u)<<4); g1(0x023C,1); g1(0x0240,2); } gm(3,0x0244,5); g_grpb[g_gpn++]=s->pitch; g_grpb[g_gpn++]=s->w; g_grpb[g_gpn++]=s->h; g_grpb[g_gpn++]=(u32)(s->va>>32); g_grpb[g_gpn++]=(u32)s->va; }
 static void s_op(u32 alpha){ if(alpha==NV2D_COPY){ g1(0x02AC,3); return; } u32 b=alpha==NV2D_OVER?255u:(alpha>255u?255u:alpha); g1(0x02A8,(b<<24)|(b<<16)|(b<<8)|b); g1(0x02AC,6); }
 static int r_ok(const nv2d_surf* s,int x,int y,int w,int h){ return s&&s->va&&w>0&&h>0&&x>=0&&y>=0&&(u32)(x+w)<=s->w&&(u32)(y+h)<=s->h; }
 static void q_fill(const nv2d_surf* d,int x,int y,int w,int h,u32 c,u32 alpha){
@@ -57,14 +57,14 @@ int nv2d_fill(const nv2d_surf* d,int x,int y,int w,int h,u32 c,u32 alpha){
 int nv2d_blit(const nv2d_surf* d,int dx,int dy,int dw,int dh,const nv2d_surf* s,int sx,int sy,int sw,int sh,u32 alpha){
     if(!nv2d_ready()||!r_ok(d,dx,dy,dw,dh)||!r_ok(s,sx,sy,sw,sh)||!gr_begin())return 0;
     q_blit(d,dx,dy,dw,dh,s,sx,sy,sw,sh,alpha); return gr_end(!d->vram); }
-int nv2d_screen(nv2d_surf* out){ if(!g_sc.ok||g_sc_wrong||!nv2d_ready())return 0; out->va=g_sc.va; out->pitch=g_sc.pitch; out->w=g_sc.pitch/4; out->h=g_sc.h; out->fmt=0xE6u; out->vram=1; return 1; }
+int nv2d_screen(nv2d_surf* out){ if(!g_sc.ok||g_sc_wrong||!nv2d_ready())return 0; out->va=g_sc.va; out->pitch=g_sc.pitch; out->w=g_sc.pitch/4; out->h=g_sc.h; out->fmt=0xE6u; out->vram=1; out->bl=0; return 1; }
 static u64 g_ts_va=0, g_ts_len=0; static u32 g_ts_gen=0;
 int nv2d_to_screen(const u32* src,u32 spitch_px,int sw,int sh,int dx,int dy,int scale,u64* src_va,const void** src_ptr){
     nv2d_surf sc; if(scale<1||sw<=0||sh<=0||(u32)sw>spitch_px||!nv2d_screen(&sc))return 0;
     u64 need=(u64)spitch_px*(u32)sh*4;
     if(g_ts_gen!=g_ce_gen){ g_ts_gen=g_ce_gen; g_ts_va=0; g_ts_len=0; }
     if(*src_ptr!=(const void*)src||!*src_va||*src_va!=g_ts_va||need>g_ts_len){ if(g_ts_va)nvgsp_ce_unmap(g_ts_va,g_ts_len); g_ts_va=0; g_ts_len=0; *src_va=nvgsp_ce_map((u64)src,need); *src_ptr=src; if(!*src_va)return 0; g_ts_va=*src_va; g_ts_len=need; }
-    nv2d_surf s; s.va=*src_va; s.pitch=spitch_px*4; s.w=spitch_px; s.h=(u32)sh; s.fmt=0xE6u; s.vram=0;
+    nv2d_surf s; s.va=*src_va; s.pitch=spitch_px*4; s.w=spitch_px; s.h=(u32)sh; s.fmt=0xE6u; s.vram=0; s.bl=0;
     if(!nv2d_blit(&sc,dx,dy,sw*scale,sh*scale,&s,0,0,sw,sh,256))return 0;
     g_2d_frames++; return 1; }
 void nv2d_stats(u32* ops,u32* subs,u32* timeouts,u32* frames){ if(ops)*ops=g_2d_ops; if(subs)*subs=g_2d_subs; if(timeouts)*timeouts=g_2d_timeouts; if(frames)*frames=g_2d_frames; }
@@ -264,7 +264,7 @@ static int log_build(int r,const char* cmd){
     else if(r>0){ const char* t="all steps passed"; while(*t&&h<he)*h++=*t++; if(G.state>=7){ t=nvgsp_present_on()?" (screen through the copy engine)":" (screen still copied by the CPU, see step 16)"; while(*t&&h<he)*h++=*t++;  { extern int g_nvd_on; t=g_nvd_on?", desktop drawn by the GPU":nvc_ready()?", compute shaders work":", no GPU drawing (see step 18)"; while(*t&&h<he)*h++=*t++; } } }
     else { const char* t="FAILED at step "; while(*t&&h<he)*h++=*t++; char d[12]; int n=0; u32 v=(u32)g_nv_step; do{ d[n++]=(char)('0'+v%10); v/=10; }while(v); while(n&&h<he)*h++=d[--n]; *h++=':'; *h++=' '; t=g_nv_why; while(*t&&h<he)*h++=*t++; }
     *h++='\n'; *h=0;
-    o=lo_wrap(o,hd); o=lo_s(o,"driver: NoovexOS 64 v10.60\n"); o=lo_s(o,"state reached: "); o=lo_s(o,g_stname[G.state<8?G.state:0]); o=lo_s(o,"\n----------------------------------------------------------------\n");
+    o=lo_wrap(o,hd); o=lo_s(o,"driver: NoovexOS 64 v10.86\n"); o=lo_s(o,"state reached: "); o=lo_s(o,g_stname[G.state<8?G.state:0]); o=lo_s(o,"\n----------------------------------------------------------------\n");
     o=lo_wrap(o,g_nv_log);
     *o=0; return (int)(o-g_logout); }
 void (*g_nv_progress)(int step,const char* what)=0;
@@ -284,7 +284,7 @@ static void run_hook(const char* s){
 void nvgsp_all_off(const char* why){
     int any=g_sc.on||g_2d_ok||g_cp_ok||!g_nv_disabled; g_nv_disabled=G.state>=7; g_sc.on=0; g_2d_ok=0; g_cp_ok=0; g_cpn=0; g_cpi=0;
     { extern void nvd_halt(const char*); nvd_halt(why); }
-    if(any){ char* q=g_off_why; q=scopy(q,why); *q=0; g_off_t=hr_ns(); g_off_count++; char b[140],*p=b; p=scopy(p,"nvgsp: all NVIDIA drawing paths off, the CPU draws - "); p=scopy(p,why); *p=0; klog(b); } }
+    if(any){ int n=0; while(why[n]&&n<95){ g_off_why[n]=why[n]; n++; } g_off_why[n]=0; g_off_t=hr_ns(); g_off_count++; char b[200],*p=b; p=scopy(p,"nvgsp: all NVIDIA drawing paths off, the CPU draws - "); for(int k=0;why[k]&&k<140;k++)*p++=why[k]; *p=0; klog(b); } }
 static int run_check(void){ if(!g_run_dead)return 0; if(g_run_step<1)g_run_step=1; return nv_fail(g_run_step,g_run_dead==1?"the card stopped answering register reads":"the start-up took longer than 90 s"); }
 static void save_log(int r,const char* cmd){
     extern int fs_save_bin(const char*,const u8*,int,int); extern void nvx3_sync_all(void);
@@ -299,6 +299,8 @@ int nvgsp_cmd(const char* a){
         if(was){ gfx_stop("switching where the work buffers live"); nvd_request(); }
         nvl_s(on?"GPU-only work buffers go into the card's memory":"all desktop images stay in normal RAM"); nvl_s(was?" - GPU drawing restarts":""); nvl_nl(); return 1; }
     if(seq(a,"monitors")){ nvl_reset(); nvl_s("nvgsp monitors"); nvl_nl(); int r3=nvgsp_monitors(); save_log(r3?1:0,a); return r3; }
+    if(seq(a,"3d")){ nvl_reset(); nvl_s("nvgsp 3d"); nvl_nl(); int r3=nv3d_selftest(); if(!r3&&!g_nv_why[0]){ char* q=g_nv_why; const char* w=nv3d_why(); int k=0; while(w[k]&&k<158){ q[k]=w[k]; k++; } q[k]=0; } save_log(r3?1:0,a); return r3; }
+    if(seq(a,"mode")||seq(a,"mode all")||seq(a,"mode off")){ nvl_reset(); nvl_s("nvgsp "); nvl_s(a); nvl_nl(); int isoff=a[4]&&a[5]=='o'; int r3=isoff?nvgsp_mode_off():nvgsp_mode(a[4]!=0); { extern void nvd_mode_remember(int) __attribute__((weak)); if(nvd_mode_remember&&r3)nvd_mode_remember(!isoff); } if(!r3&&!g_nv_why[0]){ nvgsp_mode_t mi; nvgsp_mode_info(&mi); char* q=g_nv_why; const char* w=mi.why; int k=0; while(w[k]&&k<158){ q[k]=w[k]; k++; } q[k]=0; } save_log(r3?1:0,a); return r3; }
     if(seq(a,"on")){ g_nv_log_n=0; g_nv_log[0]=0; char m[120]; int r2=nvgsp_on(m,120); nvl_s(m); nvl_nl(); return r2; }
     if(seq(a,"off")){ g_nv_log_n=0; g_nv_log[0]=0; if(G.state<7){ nvl_s("the NVIDIA card is not running"); nvl_nl(); return 0; } nvgsp_all_off("turned off with nvgsp off"); nvl_s("NVIDIA drawing off - the CPU draws (nvgsp on or Ctrl+Alt+N turns it back on)"); nvl_nl(); return 1; }
     if(seq(a,"present on")||seq(a,"present off")){ g_nv_log_n=0; g_nv_log[0]=0; int on=a[9]=='n';

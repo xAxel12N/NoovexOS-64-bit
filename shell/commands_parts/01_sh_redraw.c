@@ -1,6 +1,7 @@
+void kidle(void);
 static void sh_redraw(void){ if(g_state==ST_LIVE)live_present(); else if(g_state==ST_DESKTOP)compose_present(); }
 static int sh_readpw(char* pw,int cap){ int n=0; sh_redraw();
-    for(;;){ int c=kpop(); if(c<0){ cpu_idle(); continue; }
+    for(;;){ int c=kpop(); if(c<0){ kidle(); continue; }
         if(c=='\n'){ term_putc('\n'); sh_redraw(); break; }
         if(c==3){ term_puts("^C\n"); sh_redraw(); pw[0]=0; return -1; }
         if(c=='\b'||c==127){ if(n>0){ n--; term_putc('\b'); } }
@@ -9,7 +10,7 @@ static int sh_readpw(char* pw,int cap){ int n=0; sh_redraw();
     pw[n]=0; return n; }
 void sh_flush(void){ sh_redraw(); }
 int sh_yesno(int def){ sh_redraw(); char b[8]; int n=0;
-    for(;;){ int c=kpop(); if(c<0){ cpu_idle(); continue; }
+    for(;;){ int c=kpop(); if(c<0){ kidle(); continue; }
         if(c=='\n'){ term_putc('\n'); sh_redraw(); break; }
         if(c==3){ term_puts("^C\n"); sh_redraw(); return 0; }
         if(c=='\b'||c==127){ if(n>0){ n--; term_putc('\b'); } }

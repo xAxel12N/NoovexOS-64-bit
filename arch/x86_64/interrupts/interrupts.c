@@ -56,7 +56,7 @@ struct vfile;
 
 static void isr_body(regs_t*r){
     if(r->vector==14&&vm_user_pf(r))return;
-    if(r->vector==13&&g_msr_probe&&(r->cs&3)==0){ const u8* ip=(const u8*)r->rip; if(ip[0]==0x0F&&(ip[1]==0x32||ip[1]==0x30)){ g_msr_fault=1; g_msr_faults++; r->rip+=2; return; } }
+    if(r->vector==13&&g_msr_probe&&(r->cs&3)==0){ const u8* ip=(const u8*)r->rip; if(ip[0]==0x0F&&(ip[1]==0x32||ip[1]==0x30)){ g_msr_fault=1; r->rsi=1; g_msr_faults++; r->rip+=2; return; } }
     if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } { extern int wk_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&wk_fault_redirect(&r->rip,&r->rsp))return; } { extern int web_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&web_fault_redirect(&r->rip,&r->rsp))return; } panic(r,0); return; }        /* exception -> RSOD */
     if(r->vector==HR_LAPIC_VEC){ hr_lapic_isr(); return; }
     int irq=(int)r->vector-32;
@@ -88,8 +88,11 @@ void isr_dispatch(regs_t*r){
     if(v==HR_LAPIC_VEC&&cpu_id()!=0){ ap_timer(r,user); return; }
     if(v==HR_LAPIC_VEC&&!user){ hr_lapic_isr(); return; }
     if(v==32)g_ticks++;
-    bkl_lock(); isr_body(r); bkl_unlock();
+    if(v==33||v==44){ extern void ps2_byte_fast(void); ps2_byte_fast(); pic_eoi((int)v-32); if(!bkl_try())return; extern void ps2_drain(void); ps2_drain(); bkl_unlock(); return; }
+    bkl_lock(); { extern void ps2_drain(void); ps2_drain(); } isr_body(r); bkl_unlock();
 }
  
-void lsys_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; linux_syscall(r); bkl_unlock(); }
+u64 g_sc_maxns[336], g_sc_totns[336]; u32 g_sc_calls[336]; u64 g_pf_maxns, g_pf_totns; u32 g_pf_calls;
+static const u64 g_sc_kick[6]={(1ULL<<1)|(1ULL<<3)|(1ULL<<18)|(1ULL<<20)|(1ULL<<33)|(1ULL<<42)|(1ULL<<44)|(1ULL<<46)|(1ULL<<48)|(1ULL<<62),0,0,(1ULL<<(200-192))|(1ULL<<(234-192)),(1ULL<<(292-256))|(1ULL<<(296-256))|(1ULL<<(307-256)),0};
+void lsys_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; u64 n=r->rax; u64 t=hr_ns(); linux_syscall(r); u64 d=hr_ns()-t; if(n<336){ if(d>g_sc_maxns[n])g_sc_maxns[n]=d; g_sc_totns[n]+=d; g_sc_calls[n]++; } if(d>150000000ULL){ extern void lx_slow_note(u32,u64,u64,u64); lx_slow_note((u32)n,r->rdi,r->rsi,d); } if((long)r->rax>=0&&n<336&&(g_sc_kick[n>>6]>>(n&63)&1)){ extern void jc_kick_waiters(void); jc_kick_waiters(); } bkl_unlock(); }
 void isr128_c(struct sysregs* r){ bkl_lock(); PCPU->syscalls++; syscall_dispatch(r); bkl_unlock(); }

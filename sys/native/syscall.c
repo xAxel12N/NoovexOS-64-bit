@@ -92,6 +92,7 @@ void syscall_dispatch(struct sysregs* r){
         case 0: if(g_curproc>=0){ g_proc[g_curproc].exit_status=(int)r->rbx; g_proc[g_curproc].zombie=1; }
                 if(g_preempt_on){ g_proc[g_curproc].alive=0; g_proc[g_curproc].used=0; int live=0; for(int i=0;i<MAXPROC;i++) if(g_proc[i].used&&g_proc[i].alive)live++; if(live==0){ g_preempt_on=0; cpu_set_pt(g_kern_cr3); k_longjmp(g_preempt_kern,1); } cpu_irq_on(); for(;;)cpu_halt(); } else if(g_sched_active) sched_exit_now(); else k_longjmp(g_kjmp,1); break;   /* exit */
         case 20: if(g_sched_active) sched_yield_now(); break;                            /* yield */
+        case 200: case 201: case 202: case 203: case 204: case 205: case 206: case 207: case 208: case 209: case 210: { extern long inst_syscall(u64,u64,u64,u64); r->rax=(u64)inst_syscall(r->rax,r->rbx,r->rcx,r->rdx); } break;
         case 2: r->rax=(u64)do_fork(r); break;                                           /* fork */
         case 5: r->rax=(u64)(long)sys_spawn((const char*)r->rbx); break;                  /* spawn(path)->pid */
         case 6: r->rax=(u64)(long)sys_waitpid((int)r->rbx); break;                        /* waitpid(pid)->status */
@@ -121,7 +122,7 @@ void syscall_dispatch(struct sysregs* r){
         case 45: blit_all(); break;                                                      /* fb_present */
         /* ---- input ---- */
         case 50: { int k=kpop(); r->rax=(u64)(long)k; } break;                           /* getkey (non-blocking, -1) */
-        case 51: { extern volatile int g_frz_hold; int hold=g_frz_hold; g_frz_hold=1; int k; while((k=kpop())<0){ cpu_idle(); } g_frz_hold=hold; r->rax=(u64)(long)k; } break;  /* waitkey */
+        case 51: { extern volatile int g_frz_hold; int hold=g_frz_hold; g_frz_hold=1; int k; while((k=kpop())<0){ extern void kidle(void); kidle(); } g_frz_hold=hold; r->rax=(u64)(long)k; } break;  /* waitkey */
         case 52: { int* xp=(int*)r->rbx,*yp=(int*)r->rcx,*bp=(int*)r->rdx; if(xp)*xp=mx; if(yp)*yp=my; if(bp)*bp=mouse_btn; } break; /* getmouse */
         /* ---- memory: sbrk (grow the user heap) ---- */
         case 61: r->rax=(u64)thread_create_k(r->rbx); break;                             /* thread_create(fn) */

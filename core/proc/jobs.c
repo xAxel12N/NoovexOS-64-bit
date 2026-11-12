@@ -24,6 +24,7 @@
 #include "include/nvx/sys/native/syscall.h"
 #include "include/nvx/arch/x86_64/smp/smp_sched.h"
 #include "include/nvx/core/proc/jobs.h"
+#include "include/nvx/arch/x86_64/time/hrtimer.h"
 #include "include/nvx/fs/nvx/nvx4.h"
 #include "include/nvx/fs/vfs/unixfs.h"
 #include "include/nvx/shell/commands.h"

@@ -58,19 +58,38 @@ static int asnd_refine(u8* hp,int choose){
     *(u32*)(hp+520)=0x100u|0x10000u|0x80000u|0x10u;
     *(u32*)(hp+524)=16; *(u32*)(hp+528)=R; *(u32*)(hp+532)=1; *(u64*)(hp+536)=0;
     return 0; }
-struct lx_apcm { int used, stream, state, nb; u32 rate; u64 psize, bsize, hw, appl, boundary, avail_min, start_th, stop_th; u8* ring; u64 tlast; u64 trig; };
-static struct lx_apcm g_apcm[2];
+struct lx_apcm { int used, stream, state, nb, owner; u32 rate; u64 psize, bsize, hw, appl, boundary, avail_min, start_th, stop_th; u8* ring; u64 tlast; u64 trig; u64 tdrain; };
+#define APCM_N 11
+static struct lx_apcm g_apcm[APCM_N];
 static u64 g_apcm_devcap;
 static u64 apcm_devq(void){ if(!snd_init())return 0; int fb=g_snd.free_bytes(); if(fb<0)fb=0; if((u64)fb>g_apcm_devcap)g_apcm_devcap=(u64)fb; return (g_apcm_devcap-(u64)fb)/4; }
 static u64 apcm_queued(struct lx_apcm* a){ return (a->appl+a->boundary-a->hw)%a->boundary; }
 static u64 apcm_avail(struct lx_apcm* a){ if(a->stream==0)return a->bsize-apcm_queued(a); u64 av=(u64)snd_cap_avail()/4; return av>a->bsize?a->bsize:av; }
 static volatile int g_apcm_busy;
 static void apcm_pump2(struct lx_apcm* a);
+u32 g_apcm_mixed, g_apcm_maxs;
+static void apcm_mix(void){
+    u64 now=hr_ns(); struct lx_apcm* st[APCM_N]; u64 qs[APCM_N]; int ns=0; u64 mq=0;
+    for(int i=0;i<APCM_N;i++){ struct lx_apcm* a=&g_apcm[i]; if(!a->used||a->stream!=0||!a->bsize||!a->boundary||!a->ring||(a->state!=3&&a->state!=5))continue; u64 q=apcm_queued(a); if(!q){ if(a->state==5&&(!apcm_devq()||now>=a->tdrain))a->state=1; a->tlast=now; continue; } st[ns]=a; qs[ns]=q; if(q>mq)mq=q; ns++; }
+    if(!ns)return;
+    if((u32)ns>g_apcm_maxs)g_apcm_maxs=(u32)ns;
+    g_snd.start(); int fb=g_snd.free_bytes(); if(fb<0)fb=0; if((u64)fb>g_apcm_devcap)g_apcm_devcap=(u64)fb; u64 fill=(g_apcm_devcap-(u64)fb)/4; u64 lim=(u64)st[0]->rate*80/1000; u64 can=fill<lim?lim-fill:0; if(can>(u64)fb/4)can=(u64)fb/4;
+    if(can>mq)can=mq;
+    u64 done=0; static short out[512];
+    while(done<can){ u64 n=can-done; if(n>256)n=256; int mixd[512];
+        for(u64 k=0;k<n*2;k++)mixd[k]=0;
+        for(int j=0;j<ns;j++){ struct lx_apcm* a=st[j]; if(qs[j]<=done)continue; u64 m=qs[j]-done; if(m>n)m=n;
+            for(u64 k=0;k<m;k++){ u64 pos=(a->hw+done+k)%a->bsize; const short* f=(const short*)(a->ring+pos*4); mixd[k*2]+=f[0]; mixd[k*2+1]+=f[1]; } }
+        for(u64 k=0;k<n*2;k++){ int v=mixd[k]; out[k]=(short)(v>32767?32767:v<-32768?-32768:v); }
+        int w=g_snd.write((u8*)out,(int)(n*4)); if(w<=0)break; done+=(u64)w/4; if((u64)w<n*4)break; }
+    for(int j=0;j<ns;j++){ struct lx_apcm* a=st[j]; u64 adv=qs[j]<done?qs[j]:done; a->hw=(a->hw+adv)%a->boundary; a->tlast=now; if(adv&&apcm_queued(a)==0)a->tdrain=now+(fill+adv)*1000000000ULL/(a->rate?a->rate:48000); }
+    if(ns>1)g_apcm_mixed++; }
 static void apcm_pump(struct lx_apcm* a){ if(__sync_lock_test_and_set(&g_apcm_busy,1))return; apcm_pump2(a); __sync_lock_release(&g_apcm_busy); }
 static void apcm_pump2(struct lx_apcm* a){
     if(!a->used||!a->bsize||!a->boundary)return;
     if(a->stream==1){ if(a->state==3){ u64 av=(u64)snd_cap_avail()/4; if(av>a->bsize){ u64 drop=av-a->bsize; u8 junk[512]; while(drop){ u64 k=drop>128?128:drop; snd_cap_read(junk,(int)k*4); drop-=k; } } a->hw=(a->appl+(av>a->bsize?a->bsize:av))%a->boundary; } return; }
     if(a->state!=3&&a->state!=5)return;
+    if(snd_init()){ apcm_mix(); return; }
     u64 q=apcm_queued(a);
     u64 now=hr_ns();
     if(!q){ if(a->state==5&&!apcm_devq())a->state=1; a->tlast=now; return; }
@@ -83,15 +102,17 @@ static void apcm_pump2(struct lx_apcm* a){
         if(snd_init()){ int w=g_snd.write(a->ring+pos*4,(int)(run*4)); if(w<=0)break; done+=(u64)w/4; if((u64)w<run*4)break; } else done+=run; }
     a->hw=(a->hw+done)%a->boundary; a->tlast=now;
     if(apcm_queued(a)==0&&a->state==5&&!apcm_devq())a->state=1; }
-void apcm_tick(void){ for(int i=0;i<2;i++) if(g_apcm[i].used)apcm_pump(&g_apcm[i]); }
+void apcm_tick(void){ for(int i=0;i<APCM_N;i++) if(g_apcm[i].used)apcm_pump(&g_apcm[i]); }
 static int asnd_open(const char* p,int flags){
     int k=-1; if(lx_streq(p,"/dev/snd/controlC0"))k=2; else if(lx_streq(p,"/dev/snd/pcmC0D0p"))k=0; else if(lx_streq(p,"/dev/snd/pcmC0D0c"))k=snd_rec_avail()?1:-2; else return -9999;
     if(k==-2)return -LX_ENOENT;
-    if(k<2){ if(g_apcm[k].used)return -LX_EBUSY; lx_zero((u8*)&g_apcm[k],sizeof g_apcm[k]); g_apcm[k].used=1; g_apcm[k].stream=k; g_apcm[k].state=0; g_apcm[k].rate=asnd_rate(); }
-    int vi=jc_newvf(k==2?LX_SNDCTL:LX_SNDPCM,k,flags&~0x80000); if(vi<0){ if(k<2)g_apcm[k].used=0; return -LX_EMFILE; }
+    int stream=k; if(k==0){ k=-1; for(int i=0;i<APCM_N;i++){ if(i==1||i==2)continue; if(!g_apcm[i].used){ k=i; break; } } if(k<0)return -LX_EBUSY; }
+    if(k!=2){ if(g_apcm[k].used)return -LX_EBUSY; lx_zero((u8*)&g_apcm[k],sizeof g_apcm[k]); g_apcm[k].used=1; g_apcm[k].stream=stream; g_apcm[k].state=0; g_apcm[k].rate=asnd_rate(); g_apcm[k].owner=g_jcur>=0?g_jp[g_jp[g_jcur].tg].tgid:0; }
+    int vi=jc_newvf(k==2?LX_SNDCTL:LX_SNDPCM,k,flags&~0x80000); if(vi<0){ if(k!=2)g_apcm[k].used=0; return -LX_EMFILE; }
     int q=0; for(;p[q]&&q<127;q++)g_vf[vi].vpath[q]=p[q]; g_vf[vi].vpath[q]=0;
     int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
-void asnd_close(int dev,int k){ if(dev!=LX_SNDPCM||k<0||k>1)return; struct lx_apcm* a=&g_apcm[k]; if(a->stream==1)snd_rec_stop(); if(a->ring)kfree(a->ring); lx_zero((u8*)a,sizeof *a); }
+int asnd_owner(int tg){ int id=g_jp[tg].tgid; if(!id)return 0; for(int i=0;i<APCM_N;i++) if(g_apcm[i].used&&g_apcm[i].owner==id&&g_apcm[i].stream==0)return 1; return 0; }
+void asnd_close(int dev,int k){ if(dev!=LX_SNDPCM||k<0||k>=APCM_N||k==2)return; struct lx_apcm* a=&g_apcm[k]; if(a->stream==1)snd_rec_stop(); if(a->ring)kfree(a->ring); lx_zero((u8*)a,sizeof *a); }
 static int asnd_stat(const char* p,u32* o,u64* rd){
     int t=-1; if(lx_streq(p,"/dev/snd"))t=0; else if(lx_streq(p,"/dev/snd/controlC0"))t=1; else if(lx_streq(p,"/dev/snd/pcmC0D0p"))t=2; else if(lx_streq(p,"/dev/snd/pcmC0D0c")&&snd_rec_avail())t=3; else return 0;
     for(int i=0;i<10;i++)o[i]=0; o[3]=1; o[6]=o[7]=o[8]=1760000000u; o[2]=29;
@@ -184,19 +205,20 @@ static long asnd_pcm_ioctl(struct sysregs* r,struct vfile* v,u32 req,u64 arg){
 #define UN_CAP 262144
 #define UN_FQ 64
 struct fbatch { u64 at; int nf,vf[64]; };
-struct unsock { int used,state,peer,klen,rxn,rd_shut,wr_shut,backlog,qn,fqh,fqt,seq,rlh,rlt,cpid,passcred; u8 key[108]; u8* rx; u64 rcons; int q[16]; struct fbatch* fq; int rl[64]; };
+struct unsock { int used,state,peer,klen,rxn,rd_shut,wr_shut,backlog,qn,fqh,fqt,seq,rlh,rlt,cpid,passcred,cuid,cgid,dg,dklen; u8 key[108]; u8 dkey[108]; u8* rx; u64 rcons; int q[16]; struct fbatch* fq; int rl[64]; u8* rkey; };
+#define UN_RK 116
 static struct unsock g_un[UN_MAX];
 static struct unsock* un_get(int i){ return (i>=0&&i<UN_MAX&&g_un[i].used)?&g_un[i]:0; }
 static char* un_desc(char* q,int i){ struct unsock* s=un_get(i); if(!s)return scopy(q,"un gone"); q=scopy(q,"un st "); q=udec(q,(u32)s->state); q=scopy(q," rx "); q=udec(q,(u32)s->rxn); q=scopy(q," rl "); q=udec(q,(u32)(s->rlt-s->rlh)); q=scopy(q," fq "); q=udec(q,(u32)(s->fqt-s->fqh)); q=scopy(q," shut "); q=udec(q,(u32)(s->rd_shut*2+s->wr_shut)); struct unsock* pr=un_get(s->peer); if(pr&&s->state==4){ q=scopy(q," peer "); q=udec(q,(u32)s->peer); q=scopy(q," prx "); q=udec(q,(u32)pr->rxn); q=scopy(q," prl "); q=udec(q,(u32)(pr->rlt-pr->rlh)); } return q; }
 static int un_keyeq(struct unsock* s,const u8* k,int kl){ if(s->klen!=kl||kl<=0)return 0; for(int i=0;i<kl;i++) if(s->key[i]!=k[i])return 0; return 1; }
-static int un_new(void){ for(int i=0;i<UN_MAX;i++) if(!g_un[i].used){ struct unsock* s=&g_un[i]; u8* z=(u8*)s; for(int k=0;k<(int)sizeof *s;k++)z[k]=0; s->rx=(u8*)kmalloc(UN_CAP); if(!s->rx)return -12; s->fq=(struct fbatch*)kmalloc(sizeof(struct fbatch)*UN_FQ); if(!s->fq){ kfree(s->rx); s->rx=0; return -12; } s->used=1; s->state=1; s->peer=-1; s->cpid=g_jcur>=0?jc_lead(&g_jp[g_jcur])->pid:0; return i; } return -24; }
+static int un_new(void){ for(int i=0;i<UN_MAX;i++) if(!g_un[i].used){ struct unsock* s=&g_un[i]; u8* z=(u8*)s; for(int k=0;k<(int)sizeof *s;k++)z[k]=0; s->rx=(u8*)kmalloc(UN_CAP); if(!s->rx)return -12; s->fq=(struct fbatch*)kmalloc(sizeof(struct fbatch)*UN_FQ); if(!s->fq){ kfree(s->rx); s->rx=0; return -12; } s->used=1; s->state=1; s->peer=-1; s->cpid=g_jcur>=0?jc_lead(&g_jp[g_jcur])->pid:0; s->cuid=g_uid; s->cgid=g_gid; return i; } return -24; }
 static void un_drop_fds(struct unsock* s){ while(s->fqh!=s->fqt){ struct fbatch* b=&s->fq[s->fqh%UN_FQ]; for(int k=0;k<b->nf;k++)vf_unref(b->vf[k]); s->fqh++; } }
 void un_close(int i){ struct unsock* s=un_get(i); if(!s)return;
     { extern int g_lxtrace; if(g_lxtrace==-4&&s->state==4&&s->peer>=0&&un_get(s->peer)&&g_jcur>=0){ extern void lx_sc_dump(u32,int); char b[160],*q=b; q=scopy(q,"lx un close: pid "); q=udec(q,(u32)g_jp[g_jcur].pid); q=scopy(q," tg "); q=udec(q,(u32)jc_lead(&g_jp[g_jcur])->pid); q=scopy(q," sock "); q=udec(q,(u32)i); q=scopy(q," "); q=un_desc(q,i); *q=0; klog(b); lx_sc_dump((u32)g_jp[g_jcur].pid,24); } }
     un_drop_fds(s);
     if(s->peer>=0){ struct unsock* pr=un_get(s->peer); if(pr&&pr->peer==i){ pr->peer=-1; pr->rd_shut=0; } }
     for(int k=0;k<s->qn;k++){ struct unsock* c=un_get(s->q[k]); if(c){ c->peer=-1; c->state=5; } }
-    if(s->rx)kfree(s->rx); s->rx=0; if(s->fq)kfree(s->fq); s->fq=0; s->used=0; }
+    if(s->rx)kfree(s->rx); s->rx=0; if(s->fq)kfree(s->fq); s->fq=0; if(s->rkey)kfree(s->rkey); s->rkey=0; s->used=0; }
 static int un_bind(int i,const u8* key,int kl){ struct unsock* s=un_get(i); if(!s)return -9; if(s->state!=1)return -22; if(kl<=0||kl>108)return -22;
     for(int j=0;j<UN_MAX;j++) if(g_un[j].used&&(g_un[j].state==2||g_un[j].state==3)&&un_keyeq(&g_un[j],key,kl))return -98;
     for(int k=0;k<kl;k++)s->key[k]=key[k]; s->klen=kl; s->state=2; return 0; }
@@ -205,10 +227,22 @@ static int un_connect(int i,const u8* key,int kl){ struct unsock* s=un_get(i); i
     int L=-1; for(int j=0;j<UN_MAX;j++) if(g_un[j].used&&g_un[j].state==3&&un_keyeq(&g_un[j],key,kl)){ L=j; break; }
     if(L<0)return -111; struct unsock* lsn=&g_un[L]; if(lsn->qn>=lsn->backlog)return JS_BLOCK;
     int sv=un_new(); if(sv<0)return sv; struct unsock* gv=&g_un[sv]; gv->state=4; gv->peer=i; gv->klen=lsn->klen; for(int k=0;k<lsn->klen;k++)gv->key[k]=lsn->key[k];
-    gv->seq=lsn->seq; gv->passcred=lsn->passcred; gv->cpid=lsn->cpid; s->seq=lsn->seq; s->peer=sv; s->state=4; lsn->q[lsn->qn++]=sv; return 0; }
+    gv->seq=lsn->seq; gv->passcred=lsn->passcred; gv->cpid=lsn->cpid; gv->cuid=lsn->cuid; gv->cgid=lsn->cgid; s->seq=lsn->seq; s->peer=sv; s->state=4; lsn->q[lsn->qn++]=sv; return 0; }
 static int un_accept(int i){ struct unsock* s=un_get(i); if(!s)return -9; if(s->state!=3)return -22; if(!s->qn)return JS_BLOCK;
     int c=s->q[0]; for(int k=1;k<s->qn;k++)s->q[k-1]=s->q[k]; s->qn--; return c; }
-static int un_send(int i,const u8* b,int n,const int* vf,int nfds){ struct unsock* s=un_get(i); if(!s)return -9; if(s->state!=4||s->wr_shut)return -32;
+static int g_un_rkl, g_un_rpid, g_un_rtrunc; static u8 g_un_rk[108];
+static int un_dfind(const u8* key,int kl){ for(int j=0;j<UN_MAX;j++) if(g_un[j].used&&g_un[j].dg&&g_un[j].state==2&&un_keyeq(&g_un[j],key,kl))return j; return -1; }
+static int un_dsend(int i,const u8* key,int kl,const u8* b,int n,const int* vf,int nfds){
+    struct unsock* s=un_get(i); if(!s)return -9; if(s->wr_shut)return -32;
+    if(!key){ if(!s->dklen)return -107; key=s->dkey; kl=s->dklen; }
+    int t=un_dfind(key,kl); if(t<0)return key[0]=='/'?-2:-111;
+    struct unsock* pr=&g_un[t]; if(pr->rd_shut)return -32;
+    if(!pr->rkey){ pr->rkey=(u8*)kmalloc(64*UN_RK); if(!pr->rkey)return -12; }
+    if(n>UN_CAP)return -90; if(UN_CAP-pr->rxn<n||pr->rlt-pr->rlh>=64)return JS_BLOCK;
+    if(nfds>0){ if(pr->fqt+1-pr->fqh>UN_FQ)return JS_BLOCK; struct fbatch* fb=&pr->fq[pr->fqt%UN_FQ]; fb->at=pr->rcons+(u64)pr->rxn; fb->nf=nfds>64?64:nfds; for(int k=0;k<fb->nf;k++){ fb->vf[k]=vf[k]; vf_ref(vf[k]); } pr->fqt++; }
+    u8* rk=pr->rkey+(pr->rlt%64)*UN_RK; *(int*)rk=s->state==2?s->klen:0; *(int*)(rk+4)=s->cpid; for(int k=0;k<s->klen&&k<108;k++)rk[8+k]=s->key[k];
+    pr->rl[pr->rlt%64]=n; pr->rlt++; for(int k=0;k<n;k++)pr->rx[pr->rxn+k]=b[k]; pr->rxn+=n; return n; }
+static int un_send(int i,const u8* b,int n,const int* vf,int nfds){ struct unsock* s=un_get(i); if(!s)return -9; if(s->dg&&s->state!=4)return un_dsend(i,0,0,b,n,vf,nfds); if(s->state!=4||s->wr_shut)return -32;
     struct unsock* pr=un_get(s->peer); if(!pr||pr->rd_shut)return -32;
     int room=UN_CAP-pr->rxn;
     if(nfds>0&&pr->fqt+1-pr->fqh>UN_FQ)return JS_BLOCK;
@@ -219,7 +253,9 @@ static int un_send(int i,const u8* b,int n,const int* vf,int nfds){ struct unsoc
 static void un_shift(struct unsock* s,int c){ int left=s->rxn-c; u8* d=s->rx; const u8* q=s->rx+c; int k=0;
     if(c>=8){ for(;k+8<=left;k+=8)*(u64*)(d+k)=*(const u64*)(q+k); }
     for(;k<left;k++)d[k]=q[k]; s->rxn=left; s->rcons+=(u64)c; }
-static int un_recv(int i,u8* b,int n,int peek,int* ovf,int maxf,int* onf){ struct unsock* s=un_get(i); if(!s)return -9; if(onf)*onf=0;
+static int un_recv(int i,u8* b,int n,int peek,int* ovf,int maxf,int* onf){ struct unsock* s=un_get(i); if(!s)return -9; if(onf)*onf=0; g_un_rkl=-1; g_un_rtrunc=0;
+    if(s->dg&&s->state!=4&&s->rlh==s->rlt)return s->rd_shut?0:JS_BLOCK;
+    if(s->seq&&s->rlh!=s->rlt){ g_un_rtrunc=s->rl[s->rlh%64]>n; if(s->dg&&s->rkey){ u8* rk=s->rkey+(s->rlh%64)*UN_RK; g_un_rkl=*(int*)rk; g_un_rpid=*(int*)(rk+4); for(int k=0;k<g_un_rkl&&k<108;k++)g_un_rk[k]=rk[8+k]; } }
     if(s->seq?s->rlh==s->rlt:s->rxn==0){ struct unsock* pr=un_get(s->peer); if(s->rd_shut||s->peer<0||!pr)return 0; return (n||s->seq)?JS_BLOCK:0; }
     int rec=s->seq?s->rl[s->rlh%64]:s->rxn; int c=rec<n?rec:n;
     for(int k=0;k<c;k++)b[k]=s->rx[k];
@@ -230,6 +266,7 @@ static int un_recv(int i,u8* b,int n,int peek,int* ovf,int maxf,int* onf){ struc
     return c; }
 static int un_poll(int i){ struct unsock* s=un_get(i); if(!s)return 0x20; int re=0;
     if(s->state==3)return s->qn?1:0;
+    if(s->dg&&s->state!=4){ if(s->rlh!=s->rlt)re|=1; if(s->rd_shut)re|=1; int t=s->dklen?un_dfind(s->dkey,s->dklen):-1; if(t<0||(UN_CAP-g_un[t].rxn>0&&g_un[t].rlt-g_un[t].rlh<64))re|=4; return re; }
     struct unsock* pr=un_get(s->peer);
     if(s->rxn>0||(s->seq&&s->rlh!=s->rlt))re|=1; if(s->rd_shut||s->peer<0||!pr)re|=1|0x10;
     if(pr&&!pr->rd_shut&&UN_CAP-pr->rxn>0)re|=4; else if(!pr)re|=0x10;
@@ -262,12 +299,12 @@ static u64 tm_now(int clk){ return (clk==0||clk==8)?lx_now_ns():hr_ns(); }
 static void tm_update(struct tmfd* t){ if(!t->next)return; u64 now=tm_now(t->clk); if(now<t->next)return;
     if(t->ival){ u64 n=1+(now-t->next)/t->ival; t->exp+=n; t->next+=n*t->ival; } else { t->exp+=1; t->next=0; } }
 void evtm_close(int dev,int i){ if(dev==LX_EVFD&&i>=0&&i<EV_MAX)g_ev[i].used=0; if(dev==LX_TMFD&&i>=0&&i<TM_MAX)g_tm[i].used=0; }
-static long lx_eventfd(u64 initval,int flags){ int i=-1; for(int k=0;k<EV_MAX;k++) if(!g_ev[k].used){ i=k; break; } if(i<0)return -LX_EMFILE;
+static long lx_eventfd(u64 initval,int flags){ if(flags&~(1|0x800|0x80000))return -LX_EINVAL; int i=-1; for(int k=0;k<EV_MAX;k++) if(!g_ev[k].used){ i=k; break; } if(i<0)return -LX_EMFILE;
     g_ev[i].used=1; g_ev[i].cnt=(u32)initval; g_ev[i].sema=(flags&1)!=0;
     int vi=jc_newvf(LX_EVFD,i,O_RDWR|(flags&0x800)); if(vi<0){ g_ev[i].used=0; return -LX_EMFILE; } int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
 static int ev_read(int i,u64 buf,u64 len){ if(len<8)return -LX_EINVAL; struct evfd* e=&g_ev[i]; if(!e->cnt)return JS_BLOCK; u64 v=e->sema?1:e->cnt; e->cnt-=v; if(lx_put(buf,&v,8))return -LX_EFAULT; return 8; }
 static int ev_write(int i,u64 buf,u64 len){ if(len<8)return -LX_EINVAL; u64 v; if(lx_get(&v,buf,8))return -LX_EFAULT; if(v==~0ULL)return -LX_EINVAL; struct evfd* e=&g_ev[i]; if(e->cnt+v<e->cnt||e->cnt+v>0xFFFFFFFFFFFFFFFEULL)return JS_BLOCK; e->cnt+=v; return 8; }
-static long lx_timerfd_create(int clk,int flags){ if(clk!=0&&clk!=1&&clk!=7&&clk!=8&&clk!=9)return -LX_EINVAL; int i=-1; for(int k=0;k<TM_MAX;k++) if(!g_tm[k].used){ i=k; break; } if(i<0)return -LX_EMFILE;
+static long lx_timerfd_create(int clk,int flags){ if(flags&~(0x800|0x80000))return -LX_EINVAL; if(clk!=0&&clk!=1&&clk!=7&&clk!=8&&clk!=9)return -LX_EINVAL; int i=-1; for(int k=0;k<TM_MAX;k++) if(!g_tm[k].used){ i=k; break; } if(i<0)return -LX_EMFILE;
     g_tm[i].used=1; g_tm[i].clk=clk; g_tm[i].next=0; g_tm[i].ival=0; g_tm[i].exp=0;
     int vi=jc_newvf(LX_TMFD,i,O_RDWR|(flags&0x800)); if(vi<0){ g_tm[i].used=0; return -LX_EMFILE; } int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
 static long lx_timerfd_get(struct tmfd* t,u64 out){ tm_update(t); u64 o[4]={0,0,0,0}; o[0]=t->ival/1000000000ULL; o[1]=t->ival%1000000000ULL; if(t->next){ u64 now=tm_now(t->clk); u64 r=t->next>now?t->next-now:1; o[2]=r/1000000000ULL; o[3]=r%1000000000ULL; } return lx_put(out,o,32); }

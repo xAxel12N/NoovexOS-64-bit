@@ -263,6 +263,13 @@ static void tb_btn(int x,int y,int w,int h,int on){ int hov=(mx>=x&&mx<x+w&&my>=
 static void ic_launcher(int cx,int cy){ static const u32 C[6]={0xF0506E,0xF5A623,0x7ED321,0x2FB8F0,0x5B6CF0,0xC86DD7};
     fill_circle(cx,cy,14,rgb(250,250,252)); for(int k=0;k<6;k++){ int dx[6]={0,7,7,0,-7,-7}, dy[6]={-8,-4,4,8,4,-4}; fill_circle(cx+dx[k],cy+dy[k],4,C[k]); } fill_circle(cx,cy,3,rgb(250,250,252)); }
 static void draw_dock(void);
+void bat_tip(int cx,int by,int dark){
+    extern int g_acb_pct, g_acb_charging, g_acb_mins; extern int g_ac_online; char t[64],*p=t; int pc=g_acb_pct>=0?g_acb_pct:bat_pct;
+    p=udec(p,(u32)(pc<0?0:pc)); *p++='%';
+    if(g_acb_mins>=0){ p=scopy(p,g_acb_charging?" - full in ":" - "); int h=g_acb_mins/60, m=g_acb_mins%60; if(h){ p=udec(p,(u32)h); p=scopy(p," h "); } p=udec(p,(u32)m); p=scopy(p,g_acb_charging?" min":" min left"); }
+    else if(g_acb_charging)p=scopy(p," - charging"); else if(g_ac_online==1)p=scopy(p," - plugged in"); *p=0;
+    int tw=(int)slen(t)*8+16, tx=cx-tw/2, ty=by-24; if(tx+tw>(int)W-4)tx=(int)W-4-tw; if(tx<4)tx=4;
+    if(dark){ fill_round(tx,ty,tw,22,6,15,rgb(28,32,44)); dstr(tx+8,ty+3,t,rgb(236,240,248),1); } else { fill_rect(tx,ty,tw,22,rgb(255,255,225)); fill_rect(tx,ty,tw,1,rgb(0,0,0)); fill_rect(tx,ty+21,tw,1,rgb(0,0,0)); fill_rect(tx,ty,1,22,rgb(0,0,0)); fill_rect(tx+tw-1,ty,1,22,rgb(0,0,0)); dstr(tx+8,ty+3,t,rgb(0,0,0),1); } }
 static void draw_topbar(void){ draw_dock(); }
 #define TB_SEP rgb(92,90,122)
 static void tb_sep(int x){ fill_rect(x,g_tby+18,1,g_tbh-36,TB_SEP); }
@@ -280,9 +287,10 @@ static void draw_tray(void){ if(!g_gm_ready)gmetrics();
     int sx=x-10-slot;
     g_qsx=sx+12; tb_btn(sx,cy-17,slot-2,34,g_qs); for(int r=0;r<3;r++){ int yy=cy-6+r*5; fill_rect(g_qsx,yy,14,2,tc); int kx=g_qsx+((r*5)%9); fill_rect(kx,yy-1,3,4,ACC); }
     sx-=slot; g_wifix=sx+5; tb_btn(sx,cy-17,slot-2,34,g_wifipop); wifi_icon_glyph(sx+(slot-2)/2,cy+6, g_apn>0?tc:rgb(160,164,190));
-    if(bat_present){ sx-=slot; tb_btn(sx,cy-17,slot-2,34,0); draw_battery(sx+6,cy-6); }
+    if(bat_present){ sx-=slot; tb_btn(sx,cy-17,slot-2,34,0); draw_battery(sx+6,cy-6); if(mx>=sx&&mx<sx+slot-2&&my>=g_tby){ extern void bat_tip(int,int,int); bat_tip(sx+(slot-2)/2,g_tby-8,1); } }
     sx-=slot; { tb_btn(sx,cy-17,slot-2,34,0); int vx=sx+9; fill_rect(vx,cy-3,4,6,tc); for(int k=0;k<5;k++)fill_rect(vx+4+k,cy-3-k,1,6+2*k,tc); for(int k=0;k<3;k++) fill_rect(vx+12+k*3,cy-2-k*2,1,4+k*4,tc); }
     g_wsx=-1000; g_tray_left=sx-10; tb_sep(g_tray_left);
+    { extern int xtray_bar(int,int,int,int); g_tray_left=xtray_bar(g_tray_left-2,g_tby,g_tbh,1); }
     { extern int dl_active(void); extern int dl_progress(char*,int); if(dl_active()){ char nm[48]; int pc=dl_progress(nm,sizeof nm); int pw2=200, px=g_tray_left-pw2-10, py=cy-15;
         fill_round(px,py,pw2,30,10,15,rgb(40,44,60)); pdstr(px+10,py+3,nm,tc,1);
         int bw=pw2-20; fill_round(px+10,py+21,bw,5,2,15,rgb(70,76,96)); if(pc>=0){ fill_round(px+10,py+21,pc*bw/100,5,2,15,ACC); } else { int t=(int)(g_ticks/2%(u64)(bw-40)); fill_round(px+10+t,py+21,40,5,2,15,ACC); }

@@ -51,7 +51,7 @@ static long lx_utimens(const char* p,u64 times){
 }
 static long lx_chdir_node(int d){ if(d<0)return -LX_ENOENT; if(!ux_dir_ok(d,1))return -LX_EACCES; g_dcwd=d; return 0; }
 static long lx_getcwd(u64 buf,u64 sz){
-    char pb[256]; dt_path(g_dcwd,pb); u64 L=(u64)lx_slen(pb)+1;
+    char pb[256]; dt_path(g_dcwd,pb); if(lxn_on()){ char vb[256]; lxn_unmap(pb,vb,256); for(int i=0;i<256;i++){ pb[i]=vb[i]; if(!vb[i])break; } } u64 L=(u64)lx_slen(pb)+1;
     if(sz<L)return -LX_ERANGE; if(lx_put(buf,pb,L))return -LX_EFAULT; return (long)L;
 }
 static long lx_fchmod(int fd,int mode){
@@ -95,7 +95,8 @@ static long lx_shmdt(u64 addr){ struct jproc* p=&g_jp[g_jcur]; u64 cr3=p->cr3&~0
     for(int i=0;i<256;i++){ struct lx_sha* a=&g_sha[i]; if(a->len&&a->cr3==cr3&&a->va==addr){ u64 len=a->len; int id=a->id; a->len=0; lx_unmap_range(addr,addr+len); struct lx_shm* s=&g_lxshm[id]; if(s->used&&--s->natt<=0){ s->natt=0; if(s->rm)lx_shm_free(id); } return 0; } }
     return -LX_EINVAL; }
 static long lx_shmctl(int id,int cmd,u64 buf){ cmd&=0xFF;
-    if(cmd==3||cmd==14){ if(buf){ u8 z[128]; lx_zero(z,128); if(lx_put(buf,z,cmd==3?64:56))return -LX_EFAULT; } return 63; }
+    if(cmd==3||cmd==14){ int hi=0, nu=0; u64 tot=0; for(int i=0;i<64;i++) if(g_lxshm[i].used){ hi=i; nu++; tot+=(g_lxshm[i].size+0xFFFULL)>>12; }
+        if(buf){ u64 z[16]; lx_zero((u8*)z,128); if(cmd==3){ z[0]=0x40000000ULL; z[1]=1; z[2]=64; z[3]=64; z[4]=0x40000000ULL>>12; } else { z[0]=(u64)(u32)nu; z[1]=tot; z[2]=tot; } if(lx_put(buf,z,cmd==3?64:48))return -LX_EFAULT; } return hi; }
     if(id<0||id>=64||!g_lxshm[id].used)return -LX_EINVAL; struct lx_shm* s=&g_lxshm[id];
     if(cmd==0){ s->rm=1; if(s->natt<=0)lx_shm_free(id); return 0; }
     if(cmd==2||cmd==13){ if(!buf)return -LX_EFAULT; u8 d[112]; lx_zero(d,112); *(int*)(d+0)=s->key; *(u32*)(d+4)=(u32)g_uid; *(u32*)(d+8)=(u32)g_gid; *(u32*)(d+12)=(u32)g_uid; *(u32*)(d+16)=(u32)g_gid; *(u16*)(d+20)=0777; *(u64*)(d+48)=s->size; *(u32*)(d+80)=s->cpid; *(u64*)(d+88)=(u64)s->natt; if(lx_put(buf,d,112))return -LX_EFAULT; return cmd==13?id:0; }
@@ -110,15 +111,29 @@ u16 g_lastsc[JMAX]; u32 g_sccount[JMAX]; u16 g_cursc[JMAX]; u64 g_cura1[JMAX];
 void lx_ps_dump(void){ for(int i=0;i<JMAX;i++){ struct jproc* p=&g_jp[i]; if(p->state==S_FREE||p->state==S_TDEAD||!p->lx)continue; if(p->tg!=i)continue;
         int nt=0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_TDEAD&&g_jp[j].tg==i)nt++;
         char b[240],*q=b; q=scopy(q,"ps "); q=udec(q,(u32)p->pid); q=scopy(q," ppid "); q=udec(q,(u32)p->ppid); q=scopy(q," st "); q=udec(q,(u32)p->state); q=scopy(q," thr "); q=udec(q,(u32)nt); q=scopy(q," last "); q=udec(q,(u32)g_lastsc[i]); *q++=' '; for(int k=0;p->cmd[k]&&k<47;k++)*q++=p->cmd[k]; *q=0; klog(b);
-        for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_TDEAD&&g_jp[j].tg==i){ q=b; q=scopy(q,"   t"); q=udec(q,(u32)g_jp[j].pid); q=scopy(q," st "); q=udec(q,(u32)g_jp[j].state); q=scopy(q," in "); q=udec(q,(u32)g_cursc[j]); q=scopy(q," a1 "); q=udec(q,(u32)g_cura1[j]);
+        for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_TDEAD&&g_jp[j].tg==i){ q=b; q=scopy(q,"   t"); q=udec(q,(u32)g_jp[j].pid); q=scopy(q," st "); q=udec(q,(u32)g_jp[j].state); q=scopy(q," cpu "); q=udec(q,(u32)g_jp[j].cputicks); q=scopy(q," sc "); q=udec(q,g_sccount[j]); q=scopy(q," in "); q=udec(q,(u32)g_cursc[j]); q=scopy(q," a1 "); q=udec(q,(u32)g_cura1[j]);
             u32 sc=g_cursc[j]; if(sc==0||sc==1||sc==7||sc==23||sc==44||sc==45||sc==46||sc==47||sc==232||sc==281||sc==270||sc==271){ int fd=(int)g_cura1[j]; struct jproc* L=jc_lead(&g_jp[j]); if(sc!=7&&sc!=23&&sc!=270&&sc!=271&&fd>=0&&fd<FDMAX&&L->fd[fd]>=0){ struct vfile* v=&g_vf[L->fd[fd]]; q=scopy(q," dev "); q=udec(q,(u32)v->dev); q=scopy(q," idx "); q=udec(q,(u32)v->fs_idx); if(v->dev==LX_AFU){ q=scopy(q," "); q=un_desc(q,v->fs_idx); } } }
-            *q=0; klog(b); } } }
+            *q=0; klog(b); } }
+    extern u64 g_sc_maxns[336], g_sc_totns[336]; extern u32 g_sc_calls[336]; extern u64 g_pf_maxns, g_pf_totns; extern u32 g_pf_calls;
+    { extern u64 g_bklw[16], g_bklh[16]; extern u32 g_bklc[16]; extern volatile int g_ncpu; u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL;
+      for(int c=0;c<g_ncpu&&c<16;c++){ char b[120],*q=b; q=scopy(q,"lat: bkl cpu "); q=udec(q,(u32)c); q=scopy(q," waits "); q=udec(q,g_bklc[c]); q=scopy(q," total "); q=udec(q,(u32)(g_bklw[c]*1000ULL/hz)); q=scopy(q," ms, longest hold "); q=udec(q,(u32)(g_bklh[c]*1000000ULL/hz)); q=scopy(q," us"); *q=0; klog(b); g_bklh[c]=0; } }
+    { extern u64 g_ml_cyc[20]; u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; char b[200],*q=b; q=scopy(q,"lat: main loop ms by stage:"); for(int k=0;k<20;k++){ if(!g_ml_cyc[k])continue; *q++=' '; q=udec(q,(u32)k); *q++='='; q=udec(q,(u32)(g_ml_cyc[k]*1000ULL/hz)); g_ml_cyc[k]=0; if(q-b>180)break; } *q=0; klog(b); { extern u32 g_ch_src[20]; q=b; q=scopy(q,"lat: redraw reasons by stage:"); for(int k=0;k<20;k++){ if(!g_ch_src[k])continue; *q++=' '; q=udec(q,(u32)k); *q++='='; q=udec(q,g_ch_src[k]); g_ch_src[k]=0; } *q=0; klog(b); } }
+    { extern u32 g_gap_kind[40], g_gap_ct[40]; extern u64 g_gap_val[40]; extern int g_gap_n; extern u32 g_enosys_nr[48]; extern int g_enosys_n;
+      for(int i=0;i<g_gap_n;i++){ char b[96],*q=b; q=scopy(q,"gap: kind "); q=udec(q,g_gap_kind[i]); q=scopy(q," value 0x"); q=lx_hx(q,g_gap_val[i],1); q=scopy(q," x"); q=udec(q,g_gap_ct[i]); *q=0; klog(b); }
+      for(int i=0;i<g_enosys_n&&i<48;i++){ char b[64],*q=b; q=scopy(q,"gap: missing syscall "); q=udec(q,g_enosys_nr[i]); *q=0; klog(b); } }
+    { char b[160],*q=b; q=scopy(q,"lat: page faults "); q=udec(q,g_pf_calls); q=scopy(q," total "); q=udec(q,(u32)(g_pf_totns/1000000ULL)); q=scopy(q," ms max "); q=udec(q,(u32)(g_pf_maxns/1000ULL)); q=scopy(q," us"); *q=0; klog(b); }
+    u8 done[336]; for(int i=0;i<336;i++)done[i]=0;
+    for(int k=0;k<10;k++){ int bi=-1; for(int i=0;i<336;i++) if(!done[i]&&g_sc_calls[i]&&(bi<0||g_sc_maxns[i]>g_sc_maxns[bi]))bi=i; if(bi<0)break; done[bi]=1;
+        char b[160],*q=b; q=scopy(q,"lat: syscall "); q=udec(q,(u32)bi); q=scopy(q," calls "); q=udec(q,g_sc_calls[bi]); q=scopy(q," total "); q=udec(q,(u32)(g_sc_totns[bi]/1000000ULL)); q=scopy(q," ms max "); q=udec(q,(u32)(g_sc_maxns[bi]/1000ULL)); q=scopy(q," us"); *q=0; klog(b); } }
 extern int g_lxtrace;
 static void lx_trace(u32 nr,u32 pid,u64 a1,u64 a2,long v){
     char b[240],*q=b; q=scopy(q,"T "); q=udec(q,pid); *q++=' '; const char* nm=0; { extern const char* lx_scname(u32); nm=lx_scname(nr); } if(nm)q=scopy(q,nm); else q=udec(q,nr); *q++='(';
     u64 sp=0; if(nr==2||nr==4||nr==6||nr==21||nr==59||nr==80||nr==83||nr==84||nr==87||nr==89||nr==90||nr==92||nr==137||nr==76||nr==82)sp=a1; else if(nr==257||nr==262||nr==263||nr==267||nr==268||nr==269||nr==332||nr==258||nr==260||nr==280||nr==439||nr==264||nr==316||nr==322)sp=a2;
     if(sp&&jc_umapped(sp,1)){ *q++='"'; for(int i=0;i<120;i++){ if(!jc_umapped(sp+i,1))break; char c=*(const char*)(sp+i); if(!c)break; *q++=(c>=32&&c<127)?c:'?'; } *q++='"'; *q++=','; *q++=' '; }
     *q++='0'; *q++='x'; q=lx_hx(q,a1,1); *q++=','; *q++=' '; *q++='0'; *q++='x'; q=lx_hx(q,a2,1); q=scopy(q,") = "); if(v<0&&v>-4096){ *q++='-'; q=udec(q,(u32)(-v)); } else { *q++='0'; *q++='x'; q=lx_hx(q,(u64)v,1); } *q=0; klog(b); }
+static void lx_sr_warm(int fd){ extern const vfs_fs_ops SYSROOTFS; struct vfile* v=lx_vf(fd); if(!v||v->dev!=100||v->vfs!=&SYSROOTFS)return;
+    char pth[128]; int i=0; for(;v->vpath[i]&&i<127;i++)pth[i]=v->vpath[i]; pth[i]=0; u32 l=0; (void)sysroot_get_unlocked(pth,&l,0); }
+void lx_slow_note(u32 nr,u64 a1,u64 a2,u64 ns){ static int n; if(n>=40||g_jcur<0)return; n++; char b[64],*q=b; q=scopy(q,"slow: "); q=udec(q,(u32)(ns/1000000ULL)); q=scopy(q," ms"); *q=0; klog(b); lx_trace(nr,(u32)g_jp[g_jcur].pid,a1,a2,0); }
 static void lx_sc_note(u32 nr,u32 pid,u64 a1,u64 a2,long v){
     if(g_lxtrace==-1||(g_lxtrace==-2&&(nr==59||nr==322||nr==231||nr==60||(nr==257&&v==-2)||(nr==2&&v==-2)||(nr==21&&v==-2)))||(g_lxtrace==-3&&v<0&&v>-4096&&v!=-11&&v!=-4&&v!=-110&&v!=-2&&!(nr==89&&v==-22)&&nr!=61))lx_trace(nr,pid,a1,a2,v);
     if(g_jcur>=0&&g_jcur<JMAX){ g_lastsc[g_jcur]=(u16)nr; g_sccount[g_jcur]++; }
@@ -127,6 +142,24 @@ static void lx_sc_note(u32 nr,u32 pid,u64 a1,u64 a2,long v){
     if(v>=0||v<-4095)return; u32 e=(u32)(-v); if(e==2||e==11||e==4||e==38||e==110||e==25||e==17||e==20)return;
     for(int i=0;i<g_scf_n;i++) if(g_scf_nr[i]==nr&&g_scf_err[i]==e){ g_scf_ct[i]++; g_scf_a1[i]=a1; g_scf_a2[i]=a2; return; }
     if(g_scf_n<40){ g_scf_nr[g_scf_n]=nr; g_scf_err[g_scf_n]=e; g_scf_ct[g_scf_n]=1; g_scf_a1[g_scf_n]=a1; g_scf_a2[g_scf_n]=a2; g_scf_n++; } }
+static struct jproc* lx_task(int pid){ if(pid==0)return &g_jp[g_jcur]; for(int j=0;j<JMAX;j++){ struct jproc* q=&g_jp[j]; if(q->state!=S_FREE&&q->state!=S_ZOMB&&q->state!=S_TDEAD&&q->pid==pid)return q; } return 0; }
+static int lx_prio_match(struct jproc* q,int which,int who){ if(q->state==S_FREE||q->state==S_ZOMB||q->state==S_TDEAD)return 0;
+    if(which==0)return who==0?q==&g_jp[g_jcur]:q->pid==who;
+    if(which==1){ int pg=who?who:g_jp[g_jp[g_jcur].tg].pgid; return g_jp[q->tg].pgid==pg; }
+    if(which==2){ int u=who?who:g_uid; return q->uid==u; } return 0; }
+static long lx_getprio(int which,int who){ if(which<0||which>2)return -LX_EINVAL; int best=99; for(int j=0;j<JMAX;j++){ struct jproc* q=&g_jp[j]; if(lx_prio_match(q,which,who)&&q->nice<best)best=q->nice; } if(best==99)return -LX_ESRCH; return 20-best; }
+static long lx_setprio(int which,int who,long v){ if(which<0||which>2)return -LX_EINVAL; if(v<-20)v=-20; if(v>19)v=19; int any=0; long err=0;
+    for(int j=0;j<JMAX;j++){ struct jproc* q=&g_jp[j]; if(!lx_prio_match(q,which,who))continue; any=1;
+        if(g_uid!=0&&q->uid!=g_uid){ err=-LX_EPERM; continue; } if(g_uid!=0&&v<q->nice){ err=-LX_EACCES; continue; } q->nice=(int)v; }
+    if(!any)return -LX_ESRCH; return err; }
+static long lx_setsched(int pid,int pol,int prio,int nice,int setnice){
+    struct jproc* q=lx_task(pid); if(!q)return -LX_ESRCH; pol&=~0x40000000;
+    if(pol!=0&&pol!=1&&pol!=2&&pol!=3&&pol!=5)return -LX_EINVAL;
+    if(pol==1||pol==2){ if(prio<1||prio>99)return -LX_EINVAL; if(g_uid!=0)return -LX_EPERM; } else if(prio!=0)return -LX_EINVAL;
+    if(g_uid!=0&&q->uid!=g_uid)return -LX_EPERM;
+    if(setnice&&(pol==0||pol==3||pol==5)){ if(nice<-20)nice=-20; if(nice>19)nice=19; if(g_uid!=0&&nice<q->nice)return -LX_EPERM; q->nice=nice; }
+    if((q->policy==1||q->policy==2||q->policy==5)&&pol!=q->policy){ if(q->vrt<g_min_vrt)q->vrt=g_min_vrt; }
+    q->policy=pol; q->rtprio=prio; return 0; }
 static long lx_dispatch(struct sysregs* r){
     struct jproc* p=&g_jp[g_jcur];
     u64 nr=r->rax, a1=r->rdi, a2=r->rsi, a3=r->rdx, a4=r->r10, a5=r->r8, a6=r->r9;
@@ -134,7 +167,7 @@ static long lx_dispatch(struct sysregs* r){
     #define PATH1(fd,u,emp) do{ e=lx_path((fd),(u),pa,(emp)); if(e<0)return e; }while(0)
     #define PATH2(fd,u) do{ e=lx_path((fd),(u),pb,0); if(e<0)return e; }while(0)
     switch(nr){
-    case 0: return lx_read(r,(int)a1,a2,a3);
+    case 0: lx_sr_warm((int)a1); return lx_read(r,(int)a1,a2,a3);
     case 1: return lx_write(r,(int)a1,a2,a3);
     case 2: return lx_open(LX_AT_FDCWD,a1,(int)a2,(int)a3);
     case 3: return lx_close((int)a1);
@@ -154,10 +187,10 @@ static long lx_dispatch(struct sysregs* r){
     case 13: return lx_sigaction((int)a1,a2,a3,a4);
     case 14: return lx_sigprocmask((int)a1,a2,a3,a4);
     case 15: lx_sigreturn(r);
-    case 16: { struct vfile* iv=lx_vf((int)a1); if(iv&&iv->dev==LX_SNDPCM&&(u32)a2!=0x5451u&&(u32)a2!=0x5450u&&(u32)a2!=0x5421u)return asnd_pcm_ioctl(r,iv,(u32)a2,a3); return lx_ioctl((int)a1,a2,a3); }
-    case 17: return lx_prw((int)a1,a2,a3,(long)a4,0);
+    case 16: { struct vfile* iv=lx_vf((int)a1); if(iv&&iv->dev==LX_BLKD)return dx_ioctl(iv->fs_idx,(u32)a2,a3); if(iv&&iv->dev==LX_SNDPCM&&(u32)a2!=0x5451u&&(u32)a2!=0x5450u&&(u32)a2!=0x5421u)return asnd_pcm_ioctl(r,iv,(u32)a2,a3); return lx_ioctl((int)a1,a2,a3); }
+    case 17: lx_sr_warm((int)a1); return lx_prw((int)a1,a2,a3,(long)a4,0);
     case 18: return lx_prw((int)a1,a2,a3,(long)a4,1);
-    case 19: return lx_rwv(r,(int)a1,a2,(int)a3,0);
+    case 19: lx_sr_warm((int)a1); return lx_rwv(r,(int)a1,a2,(int)a3,0);
     case 20: return lx_rwv(r,(int)a1,a2,(int)a3,1);
     case 21: PATH1(LX_AT_FDCWD,a1,0); return lx_access(pa,(int)a2);
     case 22: return lx_pipe(a1,0);
@@ -169,8 +202,8 @@ static long lx_dispatch(struct sysregs* r){
     case 31: return lx_shmctl((int)a1,(int)a2,a3);
     case 67: return lx_shmdt(a1);
     case 26: { if(a1&0xFFF)return -LX_EINVAL; lx_fm_msync(p->cr3,a1,a1+a2); return 0; }
-    case 27: return -LX_ENOSYS;
     case 28: return lx_madvise(a1,a2,(int)a3);
+    case 167: case 168: { char sp[LX_PATH]; if(g_uid!=0)return -LX_EPERM; int n=lx_path(LX_AT_FDCWD,a1,sp,0); if(n<0)return n; if(!lx_streq(sp,"/dev/zram0"))return -LX_EINVAL; extern long swap_onoff(int on); return swap_onoff(nr==167); }
     case 187: return 0;
     case 32: { if(!lx_vf((int)a1))return -LX_EBADF; int vi=fdt()[(int)a1]; int n=lx_fd_install(vi,0,0); if(n>=0)vf_ref(vi); return n; }
     case 33: return lx_dup3((int)a1,(int)a2,-1);
@@ -204,10 +237,10 @@ static long lx_dispatch(struct sysregs* r){
         int fb=lx_fd_install(vb,cl,0); if(fb<0){ fdt()[fa]=-1; vf_unref(va); vf_unref(vb); return fb; }
         int sv[2]={fa,fb}; if(lx_put(a4,sv,8)){ fdt()[fa]=-1; fdt()[fb]=-1; vf_unref(va); vf_unref(vb); return -LX_EFAULT; }
         return 0; }
-    case 54: { struct vfile* vu=lx_vf((int)a1); if(vu&&vu->dev==LX_AFU){ if((int)a2==1&&(int)a3==16&&a4&&a5>=4){ int x=0; if(lx_get(&x,a4,4))return -LX_EFAULT; struct unsock* us=un_get(vu->fs_idx); if(us)us->passcred=x!=0; } return 0; } struct vfile* v; int sid=lx_sockfd((int)a1,&v); return sid<0?sid:0; }
+    case 54: { struct vfile* vu=lx_vf((int)a1); if(vu&&vu->dev==LX_AFU){ if((int)a2==1&&(int)a3==16&&a4&&a5>=4){ int x=0; if(lx_get(&x,a4,4))return -LX_EFAULT; struct unsock* us=un_get(vu->fs_idx); if(us)us->passcred=x!=0; } return 0; } return lx_setsockopt((int)a1,(int)a2,(int)a3,a4,a5); }
     case 55: { struct vfile* vu=lx_vf((int)a1); if(vu&&vu->dev==LX_AFU){ int lvl=(int)a2,opt=(int)a3,x=0;
-            if(lvl==1&&opt==17){ struct unsock* us=un_get(vu->fs_idx); struct unsock* pu=us?un_get(us->peer):0; u32 uc[3]={(u32)(pu?pu->cpid:us?us->cpid:1),(u32)g_uid,(u32)g_gid}; if(!a4||!a5)return -LX_EFAULT; u32 L; if(lx_get(&L,a5,4))return -LX_EFAULT; if(L>12)L=12; if(lx_put(a4,uc,L))return -LX_EFAULT; return lx_put(a5,&L,4); }
-            if(lvl==1){ if(opt==3)x=1; else if(opt==7||opt==8)x=UN_CAP; else if(opt==39)x=1; else if(opt==30){ struct unsock* us=un_get(vu->fs_idx); x=us&&us->state==3; } }
+            if(lvl==1&&opt==17){ struct unsock* us=un_get(vu->fs_idx); struct unsock* pu=us?un_get(us->peer):0; u32 uc[3]={(u32)(pu?pu->cpid:us?us->cpid:1),(u32)(pu?pu->cuid:g_uid),(u32)(pu?pu->cgid:g_gid)}; if(!a4||!a5)return -LX_EFAULT; u32 L; if(lx_get(&L,a5,4))return -LX_EFAULT; if(L>12)L=12; if(lx_put(a4,uc,L))return -LX_EFAULT; return lx_put(a5,&L,4); }
+            if(lvl==1){ struct unsock* us0=un_get(vu->fs_idx); if(opt==3)x=us0&&us0->dg?2:us0&&us0->seq?5:1; else if(opt==16)x=us0&&us0->passcred; else if(opt==7||opt==8)x=UN_CAP; else if(opt==39)x=1; else if(opt==30){ struct unsock* us=un_get(vu->fs_idx); x=us&&us->state==3; } }
             if(!a4||!a5)return -LX_EFAULT; u32 L; if(lx_get(&L,a5,4))return -LX_EFAULT; if(L>4)L=4; if(lx_put(a4,&x,L))return -LX_EFAULT; return lx_put(a5,&L,4); }
         return lx_getsockopt((int)a1,(int)a2,(int)a3,a4,a5); }
     case 319: return lx_memfd((int)a2);
@@ -227,23 +260,28 @@ static long lx_dispatch(struct sysregs* r){
         if((ca[0]&0x1000ULL)||(ca[0]>>32)||ca[9]||ca[4]>63)return -LX_ENOSYS;
         u64 st=ca[5]?ca[5]+ca[6]:0; return lx_clone(r,(ca[0]&~0xFFULL)|ca[4],st,ca[3],ca[2],ca[7]); }
     case 57: case 58: return lx_clone(r,0,0,0,0,0);
-    case 59: return lx_execve(r,a1,a2,a3);
+    case 59: { char ep[128]; if(lx_str(a1,ep,128)>0&&ep[0]=='/'){ u32 l=0; (void)sysroot_get_unlocked(ep,&l,0); } return lx_execve(r,a1,a2,a3); }
     case 61: return lx_wait4(r,(int)a1,a2,(int)a3,a4);
     case 200: case 234: case 297: { int tg3=nr==234||nr==297; int tid=(int)(tg3?a2:a1), sig=(int)(tg3?a3:a2);
         if(sig==6||sig==11||sig==4||sig==5||sig==7||sig==8){ static int nk; if(nk<16){ nk++; char b[96],*q=b; q=scopy(q,"lx tgkill: pid "); q=udec(q,(u32)g_jp[g_jcur].pid); q=scopy(q," -> "); q=udec(q,(u32)tid); q=scopy(q," sig "); q=udec(q,(u32)sig); *q=0; klog(b); } }
         if(sig<0||sig>64||tid<=0)return -LX_EINVAL; int t=jc_idx(tid); if(t<0||g_jp[t].state==S_ZOMB||g_jp[t].state==S_TDEAD)return -LX_ESRCH;
         if(tg3&&g_jp[t].tgid!=(int)a1)return -LX_ESRCH;
         if(g_uid!=0&&g_jp[t].uid!=g_uid)return -LX_EPERM;
-        if(sig>=32||!sig)return 0;
-        if(sig==9||sig==19)jc_signal_proc(t,sig); else { g_jp[t].sicode[sig]=-6; jc_signal_thread(t,sig); } return 0; }
+        if(!sig)return 0;
+        int code=-6; u64 val=0; if(nr==297){ u8 qi[32]; if(lx_get(qi,a4,32))return -LX_EFAULT; code=*(int*)(qi+8); val=*(u64*)(qi+24); if(code>=0&&g_jp[t].tg!=p->tg)return -LX_EPERM; }
+        jc_sig_set_info(code,jc_lead(p)->pid,g_uid,val);
+        if(sig==9||sig==19)jc_signal_proc(t,sig); else jc_signal_thread(t,sig); return 0; }
     case 62: case 129: { int pid=(int)a1, sig=(int)a2;
         if(sig==6||sig==11||sig==4||sig==5||sig==7||sig==8||sig==9){ static int nk2; if(nk2<16){ nk2++; char b[96],*q=b; q=scopy(q,"lx kill: pid "); q=udec(q,(u32)g_jp[g_jcur].pid); q=scopy(q," -> "); q=udec(q,(u32)pid); q=scopy(q," sig "); q=udec(q,(u32)sig); *q=0; klog(b); } }
-        if(sig<0||sig>64)return -LX_EINVAL; if(sig>=32)return 0;
+        if(sig<0||sig>64)return -LX_EINVAL;
+        if(nr==129&&pid<=0)return -LX_ESRCH;
+        { int code=0; u64 val=0; if(nr==129){ u8 qi[32]; if(lx_get(qi,a3,32))return -LX_EFAULT; code=*(int*)(qi+8); val=*(u64*)(qi+24); if(code>=0&&pid!=jc_lead(p)->pid)return -LX_EPERM; } if(sig)jc_sig_set_info(code,jc_lead(p)->pid,g_uid,val); }
         g_kill_check=1; int rv=jc_kill(pid,sig,g_jcur); g_kill_check=0;
         if(rv<0)return g_kill_denied?-LX_EPERM:-LX_ESRCH; return 0; }
     case 128: { static u64 stw[JMAX]; static int stwp[JMAX]; if(stwp[g_jcur]!=g_jp[g_jcur].pid){ stwp[g_jcur]=g_jp[g_jcur].pid; stw[g_jcur]=0; } if(a4!=8)return -LX_EINVAL; u64 set; if(lx_get(&set,a1,8))return -LX_EFAULT; struct jproc* p=&g_jp[g_jcur]; struct jproc* L=jc_lead(p);
-        for(int sg=1;sg<32;sg++){ if(!((set>>(sg-1))&1))continue; u32 bit=1u<<sg; struct jproc* w=(p->sigpend&bit)?p:(L->sigpend&bit)?L:0; if(!w)continue;
-            w->sigpend&=~bit; stw[g_jcur]=0; if(a2){ u8 si[128]; lx_zero(si,128); *(int*)si=sg; int sc=w->sicode[sg]; *(int*)(si+8)=sc<0?sc:0; if(lx_put(a2,si,128))return -LX_EFAULT; } return sg; }
+        { u64 want=lx_l2k(set); int sg=jc_sig_first((p->sigpend|L->sigpend)&want);
+          if(sg){ struct jproc* w=(p->sigpend&SB(sg))?p:L; struct jsinfo in; jc_sig_take(w,sg,&in); stw[g_jcur]=0;
+            if(a2){ u8 si[128]; lx_zero(si,128); *(int*)si=sg; *(int*)(si+8)=in.code; *(int*)(si+16)=in.pid; *(int*)(si+20)=in.uid; *(u64*)(si+24)=in.val; if(lx_put(a2,si,128))return -LX_EFAULT; } return sg; } }
         if(a3){ u64 ts[2]; if(lx_get(ts,a3,16))return -LX_EFAULT; if(!ts[0]&&!ts[1]){ stw[g_jcur]=0; return -LX_EAGAIN; }
             if(!stw[g_jcur])stw[g_jcur]=g_ticks+ts[0]*100+ts[1]/10000000ULL+1; if(g_ticks>=stw[g_jcur]){ stw[g_jcur]=0; return -LX_EAGAIN; } }
         if(jc_deliverable(p)){ stw[g_jcur]=0; return -LX_EINTR; }
@@ -266,7 +304,7 @@ static long lx_dispatch(struct sysregs* r){
     case 224: return lx_timer_get((int)a1,a2);
     case 225: { struct lxptimer* t=lxpt_of((int)a1); return t?t->over:-LX_EINVAL; }
     case 226: { struct lxptimer* t=lxpt_of((int)a1); if(!t)return -LX_EINVAL; t->used=0; return 0; }
-    case 247: { int idt=(int)a1, id=(int)a2, op=(int)a4; if(idt<0||idt>2)return -LX_EINVAL; if(!(op&(4|2|8)))return -LX_EINVAL; if(!lx_okw(a3,128))return -LX_EFAULT;
+    case 247: { int idt=(int)a1, id=(int)a2, op=(int)a4; if(idt==3){ id=lxm_pidfd_pid((int)a2); if(id<0)return id; idt=1; } if(idt<0||idt>2)return -LX_EINVAL; if(!(op&(4|2|8)))return -LX_EINVAL; if(!lx_okw(a3,128))return -LX_EFAULT;
         int pid=idt==0?-1:idt==1?id:(id?-id:0); int o=(op&1)|((op&2)?2:0)|((op&8)?8:0);
         int v=jc_waitpid(r,pid,a3,o); if(v<0)return -LX_ECHILD; if(v==0){ lx_zero((void*)a3,128); return 0; }
         int st=*(int*)a3; u8 si[128]; lx_zero(si,128); *(int*)si=17; int code, val;
@@ -288,8 +326,10 @@ static long lx_dispatch(struct sysregs* r){
     case 251: return 0;
     case 252: return 0;
     case 277: case 306: return lx_vf((int)a1)?0:-LX_EBADF;
-    case 314: return 0;
-    case 315: { if(a3<48)return -LX_EINVAL; u8 at[56]; lx_zero(at,56); *(u32*)at=48; return lx_put(a2,at,48); }
+    case 314: { if(a3)return -LX_EINVAL; u8 at[56]; lx_zero(at,56); u32 sz=0; if(lx_get(&sz,a2,4))return -LX_EFAULT; if(sz==0)sz=48; if(sz<48)return -7; if(lx_get(at,a2,48))return -LX_EFAULT; u32 pol=*(u32*)(at+4); u64 fl=*(u64*)(at+8); int nv=*(int*)(at+16); u32 pr=*(u32*)(at+20);
+        if(fl&~0x18ULL)return -LX_EINVAL; if(pol==6)return -LX_EINVAL; struct jproc* q=lx_task((int)a1); if(!q)return -LX_ESRCH;
+        if(fl&0x08)pol=(u32)q->policy; if(fl&0x10){ pr=(u32)q->rtprio; nv=q->nice; } return lx_setsched((int)a1,(int)pol,(int)pr,nv,!(fl&0x10)); }
+    case 315: { if(a3<48)return -LX_EINVAL; struct jproc* q=lx_task((int)a1); if(!q)return -LX_ESRCH; u8 at[56]; lx_zero(at,56); *(u32*)at=48; *(u32*)(at+4)=(u32)q->policy; *(int*)(at+16)=q->nice; *(u32*)(at+20)=(u32)q->rtprio; return lx_put(a2,at,48); }
     case 325: return 0;
     case 79: return lx_getcwd(a1,a2);
     case 80: PATH1(LX_AT_FDCWD,a1,0); { int d=dt_resolve_dir(pa); if(d<0)return lx_exists(pa)?-LX_ENOTDIR:lx_noent(pa); return lx_chdir_node(d); }
@@ -301,7 +341,7 @@ static long lx_dispatch(struct sysregs* r){
     case 86: PATH1(LX_AT_FDCWD,a1,0); PATH2(LX_AT_FDCWD,a2); { int L=lx_slen(pb), c=0; while(L>0&&pb[L-1]!='/'){ L--; c++; } if(c>51)return -LX_ENAMETOOLONG; } if(!lx_exists(pa))return -LX_ENOENT; if(lx_exists(pb))return -LX_EEXIST; return ux_link(pa,pb)?-LX_EPERM:0;
     case 87: PATH1(LX_AT_FDCWD,a1,0); return lx_unlink(pa);
     case 88: { int n=lx_str(a1,pa,LX_PATH); if(n<0)return n; PATH2(LX_AT_FDCWD,a2); if(lx_exists(pb))return -LX_EEXIST; return ux_symlink(pa,pb)?-LX_ENOSPC:0; }
-    case 89: { char t[64]; if(lx_str(a1,t,64)>0){ int pe=lx_proc_exe(t,a2,a3); if(pe!=-9999)return pe; } } PATH1(LX_AT_FDCWD,a1,0); { if((long)a3<=0)return -LX_EINVAL; if(!lx_okw(a2,a3))return -LX_EFAULT; int n=ux_readlink(pa,(char*)a2,(int)(a3>LX_PATH?LX_PATH:a3)); if(n<0)return lx_exists(pa)?-LX_EINVAL:-LX_ENOENT; return n; }
+    case 89: { char t[64]; if(lx_str(a1,t,64)>0){ int pe=lx_proc_exe(t,a2,a3); if(pe!=-9999)return pe; } } { char sp[LX_PATH]; if(lx_path(LX_AT_FDCWD,a1,sp,0)>=0&&sp[0]=='/'&&sp[1]=='s'&&sp[2]=='y'&&sp[3]=='s'&&(sp[4]=='/'||!sp[4])){ if((long)a3<=0)return -LX_EINVAL; char lb[200]; int ln=sx_readlink(sp,lb,200); if(ln!=-9999){ if(ln<0)return ln; if((u64)ln>a3)ln=(int)a3; return lx_put(a2,lb,(u64)ln)?-LX_EFAULT:ln; } } } PATH1(LX_AT_FDCWD,a1,0); { if((long)a3<=0)return -LX_EINVAL; if(!lx_okw(a2,a3))return -LX_EFAULT; int n=ux_readlink(pa,(char*)a2,(int)(a3>LX_PATH?LX_PATH:a3)); if(n<0)return lx_exists(pa)?-LX_EINVAL:-LX_ENOENT; return n; }
     case 90: PATH1(LX_AT_FDCWD,a1,0); if(!lx_exists(pa))return -LX_ENOENT; return ux_chmod(pa,(unsigned)a2)?-LX_EPERM:0;
     case 91: return lx_fchmod((int)a1,(int)a2);
     case 92: case 94: PATH1(LX_AT_FDCWD,a1,0); if(!lx_exists(pa)){ int isd; if(ux_lookup(pa,&isd,0)<0)return -LX_ENOENT; } return ux_chown(pa,(int)a2,(int)a3,nr==92)?-LX_EPERM:0;
@@ -328,27 +368,35 @@ static long lx_dispatch(struct sysregs* r){
     case 112: { struct jproc* P=jc_lead(p); if(P->pgid==P->pid)return -LX_EPERM; P->sid=P->pid; P->pgid=P->pid; jc_tg_sync_ids(p->tg); return P->pid; }
     case 121: { int pid=(int)a1?(int)a1:jc_lead(p)->pid; int t=jc_idx(pid); return t<0?-LX_ESRCH:jc_lead(&g_jp[t])->pgid; }
     case 124: { int pid=(int)a1?(int)a1:jc_lead(p)->pid; int t=jc_idx(pid); return t<0?-LX_ESRCH:jc_lead(&g_jp[t])->sid; }
-    case 127: { u64 o=lx_k2l(p->sigpend&p->sigmask); return lx_put(a1,&o,8); }
+    case 127: { u64 o=lx_k2l((p->sigpend|jc_lead(p)->sigpend)&p->sigmask); return lx_put(a1,&o,8); }
     case 130: { if(a2!=8)return -LX_EINVAL; u64 m; if(lx_get(&m,a1,8))return -LX_EFAULT;
-        p->suspold=p->sigmask; p->susp=1; p->sigmask=lx_l2k(m)&~((1u<<9)|(1u<<19));
+        p->suspold=p->sigmask; p->susp=1; p->sigmask=lx_l2k(m)&~SB_KS;
         r->rax=(u64)-LX_EINTR; jc_block(r,S_SLEEP,g_ticks+0x7FFFFFFFFFFFULL); }
     case 131: return lx_sigaltstack(r,a1,a2);
     case 132: PATH1(LX_AT_FDCWD,a1,0); return lx_utimens(pa,0);
-    case 133: return -LX_EPERM;
     case 135: return 0;
     case 137: PATH1(LX_AT_FDCWD,a1,0); if(!lx_exists(pa))return -LX_ENOENT; return lx_statfs(a2);
     case 138: if(!lx_vf((int)a1))return -LX_EBADF; return lx_statfs(a2);
-    case 140: return 20;
-    case 141: return 0;
-    case 142: case 144: case 145: case 146: case 147: return 0;
-    case 143: { int z=0; return lx_put(a2,&z,4); }
-    case 148: return -LX_ENOSYS;
+    case 140: return lx_getprio((int)a1,(int)a2);
+    case 141: return lx_setprio((int)a1,(int)a2,(long)(int)a3);
+    case 142: { int pr=0; if(lx_get(&pr,a2,4))return -LX_EFAULT; struct jproc* q=lx_task((int)a1); if(!q)return -LX_ESRCH; return lx_setsched((int)a1,q->policy,pr,0,0); }
+    case 143: { struct jproc* q=lx_task((int)a1); if(!q)return -LX_ESRCH; int z=q->rtprio; return lx_put(a2,&z,4); }
+    case 144: { int pr=0; if(lx_get(&pr,a3,4))return -LX_EFAULT; return lx_setsched((int)a1,(int)a2,pr,0,0); }
+    case 145: { struct jproc* q=lx_task((int)a1); if(!q)return -LX_ESRCH; return q->policy; }
+    case 146: return (a1==1||a1==2)?99:(a1==0||a1==3||a1==5)?0:-LX_EINVAL;
+    case 147: return (a1==1||a1==2)?1:(a1==0||a1==3||a1==5)?0:-LX_EINVAL;
+    case 148: { if(!lx_task((int)a1))return -LX_ESRCH; u64 ts[2]={0,20000000ULL}; return lx_put(a2,ts,16); }
     case 149: case 150: case 151: case 152: return 0;
-    case 157: if(a1==15){ int n=lx_str(a2,pa,16); if(n<0)return n; int i=0; for(;pa[i]&&i<15;i++)p->cmd[i]=pa[i]; p->cmd[i]=0; return 0; }
+    case 157: { long pv=lxm_prctl(a1,a2,a3,a4,a5); if(pv!=LXM_NO)return pv; } if(a1==15){ int n=lx_str(a2,pa,16); if(n<0)return n; int i=0; for(;pa[i]&&i<15;i++)p->cmd[i]=pa[i]; p->cmd[i]=0; return 0; }
         if(a1==16){ char nm[16]; lx_zero(nm,16); for(int i=0;p->cmd[i]&&i<15;i++)nm[i]=p->cmd[i]; return lx_put(a2,nm,16); }
         if(a1==2||a1==37||a1==39){ int z=0; if(a1==39)return 0; return lx_put(a2,&z,4); }
         if(a1==3)return 1;
         if(a1==30)return 50000;
+        if(a1==27)return 0;
+        if(a1==9){ int z=0; return lx_put(a2,&z,4); }
+        if(a1==40){ u64 ct=p->ctid; return lx_put(a2,&ct,8); }
+        if(a1==25){ int one=1; return lx_put(a2,&one,4); }
+        if(a1==24||a1==26||a1==28||a1==10||a1==31||a1==32||a1==41)return 0;
         if(a1==1||a1==4||a1==7||a1==8||a1==21||a1==23||a1==29||a1==36||a1==38||a1==47||a1==52||a1==0x59616d61ULL||a1==0x53564d41ULL)return 0;
         lx_gap(6,a1); return -LX_EINVAL;
     case 158: if(a1==0x1002){ if(a2>=0x800000000000ULL)return -LX_EPERM; p->fsbase=a2; lsys_fsbase=a2; cpu_set_fsbase(a2); return 0; }
@@ -403,7 +451,7 @@ static long lx_dispatch(struct sysregs* r){
     case 264: case 316: if(nr==316&&a5)return -LX_EINVAL; PATH1((int)a1,a2,0); PATH2((int)a3,a4); return lx_rename(pa,pb);
     case 265: PATH1((int)a1,a2,0); PATH2((int)a3,a4); { int L=lx_slen(pb), c=0; while(L>0&&pb[L-1]!='/'){ L--; c++; } if(c>51)return -LX_ENAMETOOLONG; } if(!lx_exists(pa))return -LX_ENOENT; if(lx_exists(pb))return -LX_EEXIST; return ux_link(pa,pb)?-LX_EPERM:0;
     case 266: { int n=lx_str(a1,pa,LX_PATH); if(n<0)return n; PATH2((int)a2,a3); if(lx_exists(pb))return -LX_EEXIST; return ux_symlink(pa,pb)?-LX_ENOSPC:0; }
-    case 267: { char t[64]; if(lx_str(a2,t,64)>0){ int pe=lx_proc_exe(t,a3,a4); if(pe!=-9999)return pe; } } PATH1((int)a1,a2,0); { if((long)a4<=0)return -LX_EINVAL; if(!lx_okw(a3,a4))return -LX_EFAULT; int n=ux_readlink(pa,(char*)a3,(int)(a4>LX_PATH?LX_PATH:a4)); if(n<0)return lx_exists(pa)?-LX_EINVAL:-LX_ENOENT; return n; }
+    case 267: { char t[64]; if(lx_str(a2,t,64)>0){ int pe=lx_proc_exe(t,a3,a4); if(pe!=-9999)return pe; } } { char sp[LX_PATH]; if(lx_path((int)a1,a2,sp,0)>=0&&sp[0]=='/'&&sp[1]=='s'&&sp[2]=='y'&&sp[3]=='s'&&(sp[4]=='/'||!sp[4])){ if((long)a4<=0)return -LX_EINVAL; char lb[200]; int ln=sx_readlink(sp,lb,200); if(ln!=-9999){ if(ln<0)return ln; if((u64)ln>a4)ln=(int)a4; return lx_put(a3,lb,(u64)ln)?-LX_EFAULT:ln; } } } PATH1((int)a1,a2,0); { if((long)a4<=0)return -LX_EINVAL; if(!lx_okw(a3,a4))return -LX_EFAULT; int n=ux_readlink(pa,(char*)a3,(int)(a4>LX_PATH?LX_PATH:a4)); if(n<0)return lx_exists(pa)?-LX_EINVAL:-LX_ENOENT; return n; }
     case 268: PATH1((int)a1,a2,0); if(!lx_exists(pa))return -LX_ENOENT; return ux_chmod(pa,(unsigned)a3)?-LX_EPERM:0;
     case 269: case 439: PATH1((int)a1,a2,0); return lx_access(pa,(int)a3);
     case 270: { long ms=-1; if(a5){ u64 ts[2]; if(lx_get(ts,a5,16))return -LX_EFAULT; if((i64)ts[0]<0||ts[1]>=1000000000ULL)return -LX_EINVAL; if(ts[0]>100000000ULL)ts[0]=100000000ULL; ms=(long)(ts[0]*1000+ts[1]/1000000); } return lx_select(r,(int)a1,a2,a3,a4,ms); }
@@ -422,6 +470,7 @@ static long lx_dispatch(struct sysregs* r){
     case 334: return -LX_ENOSYS;
     case 436: { u32 lo=(u32)a1, hi=(u32)a2; if(lo>hi)return -LX_EINVAL; for(u32 f=lo;f<=hi&&f<FDMAX;f++){ if(!lx_vf((int)f))continue; if(a3&4)fdce()[f]=1; else lx_close((int)f); } return 0; }
     }
+    { long mv=lx_more(r,nr,a1,a2,a3,a4,a5,a6); if(mv!=LXM_NO)return mv; }
     enosys_note(nr);
     return -LX_ENOSYS;
     #undef PATH1
@@ -454,12 +503,16 @@ void linux_syscall(struct sysregs* r){
         if(r->rax==1&&(r->rdi==1||r->rdi==2)&&r->rdx<4096&&jc_umapped(r->rsi,r->rdx)){ const char* s=(const char*)r->rsi; u64 n=r->rdx; for(u64 i=0;i<n&&g_r3out_n<255;i++)g_r3out[g_r3out_n++]=s[i]; g_r3out[g_r3out_n]=0; r->rax=n; return; }
         r->rax=(u64)-LX_ENOSYS; return; }
     struct jproc* p=&g_jp[g_jcur]; p->lx=1;
+    g_lxr=r; g_kb_n=0; if(g_kio_vi>=0){ if(!g_kio_nb&&g_kio_vi<VMAXOPEN)g_vf[g_kio_vi].flags&=~0x800; g_kio_vi=-1; }
     if(PCPU->tlb_pending){ PCPU->tlb_pending=0; cpu_set_pt(cpu_get_pt()); }
     struct jproc* P=jc_lead(p);
     g_dcwd=P->cwd; g_umask=P->umask; g_ubrk=P->brk; g_mmap_next=P->mmnext;
     u64 tnr=r->rax, ta1=r->rdi, ta2=r->rsi;
     g_cursc[g_jcur]=(u16)tnr; g_cura1[g_jcur]=ta1;
-    long v=g_ino_any?lx_dispatch_ino(r):lx_dispatch(r);
+    long v=LXM_NO; if(p->sc_mode)v=lxm_seccomp_check(r,p);
+    if(v==LXM_NO)v=lxn_hook_pre(r);
+    if(v==LXM_NO)v=g_ino_any?lx_dispatch_ino(r):lx_dispatch(r);
+    v=lxn_hook_post(r,tnr,v);
     lx_sc_note((u32)tnr,g_jp[g_jcur].pid,ta1,ta2,v);
     if(g_lxtrace>0){ g_lxtrace--; char b[120],*q=b; q=scopy(q,"sc "); q=udec(q,(u32)tnr); q=scopy(q," "); q=uhex(q,ta1,8); q=scopy(q," "); q=uhex(q,ta2,8); q=scopy(q," = "); if(v<0){ *q++='-'; q=udec(q,(u32)(-v)); } else q=uhex(q,(u64)v,8); *q=0; klog(b); }
     p=&g_jp[g_jcur]; P=jc_lead(p);

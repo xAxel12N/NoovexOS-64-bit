@@ -112,6 +112,7 @@ void tp_poll(void){
     tpdev* t=&g_tp; if(!t->ok)return;
     { extern int g_lap_tp_off; if(g_lap_tp_off)return; }
     if(t->eng.pulse){ tpout o; tpe_frame(&t->eng,t->cont,0,t->btn,ih_ms(),&o); ih_apply(t,&o); }
+    { tpout o; if(tpe_coast(&t->eng,&o))ih_apply(t,&o); }
     { u64 now=g_ticks; if(!t->rate_t0)t->rate_t0=now; if(now-t->rate_t0>=100){ t->rate=t->rate_cnt*100u/(u32)(now-t->rate_t0); t->rate_cnt=0; t->rate_t0=now; } }
     int pin=t->gpio_ok||igp_ready()||ih_amdg_ready();
     for(int round=0;round<6;round++){

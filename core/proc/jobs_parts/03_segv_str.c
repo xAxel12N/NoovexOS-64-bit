@@ -17,7 +17,9 @@ int vm_user_pf(regs_t* r){
     u64 va=cpu_cr2(); { struct jproc* fp=&g_jp[g_jcur]; fp->flt_addr=va; fp->flt_code=(r->errcode&1)?2:1; fp->flt_err=(u32)r->errcode; }
     if(!jc_uok(va,1)){ segv_rec(r,va); return 0; }
     if(r->errcode&0x10){ u64* xe=vm_walk(cpu_get_pt()&~0xFFFULL,va&~0xFFFULL,0); if(xe&&(*xe&1)&&(*xe&PTE_NX)){ g_jp[g_jcur].flt_code=2; segv_rec(r,va); return 0; } }
+    extern int g_sr_nolock[64]; extern u64 g_pf_maxns, g_pf_totns; extern u32 g_pf_calls; extern u64 hr_ns(void); u64 t0=hr_ns(); g_sr_nolock[cpu_id()&63]=(r->cs&3)==3;
     int rc=vm_fault_user(cpu_get_pt(),va,(int)((r->errcode>>1)&1));
+    g_sr_nolock[cpu_id()&63]=0; { u64 d=hr_ns()-t0; if(d>g_pf_maxns)g_pf_maxns=d; g_pf_totns+=d; g_pf_calls++; }
     if(rc==-1){ extern int lx_res_fault(u64,u64); if(lx_res_fault(cpu_get_pt(),va)==0)rc=vm_fault_user(cpu_get_pt(),va,(int)((r->errcode>>1)&1)); }
     if(rc==0)return 1;
     if(rc==-1)segv_rec(r,va);
@@ -30,14 +32,15 @@ void jc_fault(regs_t* rr){
     p->flt_sig=s; p->flt_trap=v; if(v!=14){ p->flt_err=(u32)rr->errcode; p->flt_addr=(v==13||v==12)?0:rr->rip; p->flt_code=v==0?1:v==16?7:v==19?7:v==6?2:v==3?1:v==1?2:v==17?1:0x80; }
     { static int nlog; if(p->lx&&nlog<24){ extern void klog(const char*); char b[260],*q=b; nlog++; q=scopy(q,"lx fault: pid "); q=udec(q,(u32)p->pid); q=scopy(q," sig "); q=udec(q,(u32)s); q=scopy(q," vec "); q=udec(q,(u32)v); q=scopy(q," rip "); q=uhex(q,rr->rip,12); q=scopy(q," addr "); q=uhex(q,p->flt_addr,12); q=scopy(q," err "); q=uhex(q,rr->errcode,4); q=scopy(q," rsp "); q=uhex(q,rr->rsp,12); { extern char* lx_addr_name(char*,u64,u64); q=lx_addr_name(q,p->cr3,rr->rip); } q=scopy(q,p->sighand[s]>1?" handled ":" fatal ");
         if(jc_umapped(rr->rip,8)){ for(int i=0;i<8;i++){ q=uhex(q,((const u8*)rr->rip)[i],2); *q++=' '; } } *q=0; klog(b); { extern void lx_sc_dump(u32,int); lx_sc_dump((u32)p->pid,16); } } }
-    if(p->sighand[s]<=1||(p->sigmask&(1u<<s))){ jc_finish(g_jcur,s); }
-    else { p->sigpend|=(1u<<s); }
+    if(p->sighand[s]<=1||(p->sigmask&SB(s))){ jc_finish(g_jcur,s); }
+    else { p->sigpend|=SB(s); }
     jc_leave();
 }
 static u64 jc_now(void){ return cpu_id()==0?g_ticks:PCPU->ticks; }
 void jc_preempt(regs_t* rr){ struct jproc* p=&g_jp[g_jcur]; memcpy(&p->ctx,rr,sizeof(p->ctx)); jc_leave(); }
 void jc_timer(regs_t* rr){
-    if(g_ticks-g_js_slice<2)return;
+    extern volatile int mouse_evt; extern int kpending(void);
+    if(g_ticks-g_js_slice<((mouse_evt||kpending())?1u:2u))return;
     struct jproc* p=&g_jp[g_jcur]; memcpy(&p->ctx,rr,sizeof(p->ctx));
     pic_eoi(0); jc_leave();
 }
@@ -50,19 +53,33 @@ static void jc_itimer(int i){
     if(p->it_int){ while(p->it_next<=g_ticks)p->it_next+=p->it_int; } else p->it_next=0;
     jc_signal_proc(i,14);
 }
+static int jc_wdl_due(struct jproc* p){ if(!p->wdl)return 0; if(p->state==S_SLEEP||p->pollwake||p->fx_wait)return hr_ns()>=p->wdl; p->wdl=0; return 0; }
+u64 jc_next_wdl(int kick){
+    u64 best=0, now=hr_ns(); int due=0;
+    for(int i=0;i<JMAX;i++){ struct jproc* p=&g_jp[i]; if((p->state!=S_WAIT&&p->state!=S_SLEEP)||!p->wdl||p->runcpu)continue; if(!(p->state==S_SLEEP||p->pollwake||p->fx_wait))continue; if(p->wdl<=now){ due++; continue; } if(!best||p->wdl<best)best=p->wdl; }
+    if(due&&kick){ extern void smp_kick_idle(void); smp_kick_idle(); }
+    return due?now:best; }
+u32 g_jkick_n, g_jkick_w;
+void jc_kick_waiters(void){
+    int c=0; for(int i=0;i<JMAX;i++){ struct jproc* q=&g_jp[i]; if(q->state==S_WAIT&&!q->fx_wait&&q->wake>g_ticks&&!q->runcpu){ q->wake=0; c++; } }
+    g_jkick_n++; if(c){ g_jkick_w+=(u32)c; extern void smp_kick_idle(void); smp_kick_idle(); extern volatile int g_bsp_idle; if(g_bsp_idle&&cpu_id()!=0){ extern void smp_kick(int); smp_kick(0); } } }
+volatile int g_jc_frozen;
 static int jc_runnable(int i){
     struct jproc* p=&g_jp[i];
+    if(g_jc_frozen)return 0;
     jc_itimer(i);
     if(p->runcpu)return 0;
+    { extern int lxn_cpu_hold(int) __attribute__((weak)); if(lxn_cpu_hold&&lxn_cpu_hold(i))return 0; }
     if(p->state==S_RUN)return 1;
-    if((p->state==S_WAIT||p->state==S_SLEEP)&&(p->wake<=g_ticks||jc_deliverable(p))){ if(p->state==S_SLEEP&&!jc_deliverable(p))p->ctx.rax=0; return 1; }
-    if(p->state==S_STOP&&(p->sigpend&(1u<<9)))return 1;
+    if((p->state==S_WAIT||p->state==S_SLEEP)&&(p->wake<=g_ticks||jc_deliverable(p)||jc_wdl_due(p))){ if(p->state==S_SLEEP&&!jc_deliverable(p))p->ctx.rax=0; return 1; }
+    if(p->state==S_STOP&&(p->sigpend&SB(9)))return 1;
     return 0;
 }
 int jc_any_runnable(void){ for(int i=0;i<JMAX;i++) if(g_jp[i].state!=S_FREE&&g_jp[i].state!=S_ZOMB&&jc_runnable(i))return 1; return 0; }
 void jc_enter(int i){
     struct jproc* p=&g_jp[i];
-    if(p->state==S_SLEEP&&p->wake>g_ticks)p->ctx.rax=(u64)-4;
+    if(p->state==S_SLEEP&&p->wake>g_ticks&&!(p->wdl&&hr_ns()>=p->wdl))p->ctx.rax=(u64)-4;
+    if(p->state==S_SLEEP)p->wdl=0;
     if(p->state==S_WAIT||p->state==S_SLEEP)p->state=S_RUN;
     g_kern_cr3=cpu_get_pt();
     if(jc_deliverable(p)){ jc_deliver(i); if(p->state!=S_RUN)return; }
@@ -73,7 +90,7 @@ void jc_enter(int i){
     { struct jproc* l=jc_lead(p); g_dcwd=l->cwd; g_uid=p->uid; g_gid=p->gid; g_umask=l->umask; g_ubrk=l->brk; g_mmap_next=l->mmnext; }
     g_jcur=i; g_tss.rsp0=(u64)(g_jkstack+sizeof(g_jkstack)); lsys_kstack=g_tss.rsp0; lsys_fsbase=p->fsbase; cpu_wrmsr(0xC0000102u,p->gsbase); g_js_slice=jc_now();
     p->runcpu=cpu_id()+1; p->lastcpu=cpu_id(); PCPU->switches++;
-    volatile u64 t0=jc_now();
+    volatile u64 t0=jc_now(); volatile u64 n0=hr_ns();
     cpu_irq_off();
     volatile int bd=0;
     if(k_setjmp(g_js_kern)==0){
@@ -87,20 +104,45 @@ void jc_enter(int i){
     bkl_take(bd);
     g_js_running=0; PCPU->ucr3=0;
     g_jp[g_jcur].runcpu=0; g_jp[g_jcur].cputicks+=jc_now()-t0;
+    { struct jproc* a=&g_jp[g_jcur]; u64 dn=hr_ns()-n0; a->runns+=dn; a->vrt+=dn*1024ULL/(u64)jc_weight(a); }
     cpu_set_pt(g_kern_cr3);
     struct jproc* q=&g_jp[g_jcur];
     if(q->state!=S_FREE&&q->state!=S_ZOMB){ q->uid=g_uid; q->gid=g_gid; if(!q->lx){ struct jproc* ql=jc_lead(q); ql->cwd=g_dcwd; ql->umask=g_umask; ql->brk=g_ubrk; ql->mmnext=g_mmap_next; } }
     g_dcwd=kd; g_uid=ku; g_gid=kg; g_umask=km; g_ubrk=kb; g_mmap_next=kmm; g_jcur=-1;
     cpu_irq_on();
 }
-int jc_pick(void){ for(int k=1;k<=JMAX;k++){ int j=(g_js_rr+k)%JMAX; if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB&&jc_runnable(j)){ g_js_rr=j; return j; } } return -1; }
+static const int g_nicew[40]={88761,71755,56483,46273,36291,29154,23254,18705,14949,11916,9548,7620,6100,4904,3906,3121,2501,1991,1586,1277,1024,820,655,526,423,335,272,215,172,137,110,87,70,56,45,36,29,23,18,15};
+u64 g_min_vrt;
+static int jc_name_is(const char* n,const char* w){ int sl=-1; for(int k=0;n[k];k++) if(n[k]=='/')sl=k; n+=sl+1; int i=0; while(w[i]&&n[i]==w[i])i++; return !w[i]&&(!n[i]||n[i]==' '); }
+int jc_boost(const struct jproc* p){
+    extern int asnd_owner(int tg); if(asnd_owner(p->tg))return -10;
+    const struct jproc* L=&g_jp[p->tg]; const char* n=L->exe[0]?L->exe:L->cmd;
+    if(L->uid==0&&(jc_name_is(n,"Xvfb")||jc_name_is(n,"Xorg")||jc_name_is(n,"nvxwm")||jc_name_is(n,"nvx-xinput")))return -5;
+    return 0; }
+int jc_weight(const struct jproc* p){ if(p->policy==5)return 3; int n=p->nice+jc_boost(p); if(n<-20)n=-20; if(n>19)n=19; return g_nicew[n+20]; }
+#define JC_SLEEP_BONUS 6000000ULL
+static u32 g_rt_turn[64];
+int jc_pick(void){
+    int best=-1, brt=-1; u64 bv=~0ULL, mrun=~0ULL; u64 floor=g_min_vrt>JC_SLEEP_BONUS?g_min_vrt-JC_SLEEP_BONUS:0;
+    int skiprt=(++g_rt_turn[cpu_id()&63]%20u)==0;
+    for(int k=1;k<=JMAX;k++){ int j=(g_js_rr+k)%JMAX; struct jproc* q=&g_jp[j];
+        if(q->state==S_FREE||q->state==S_ZOMB)continue;
+        int rt=(q->policy==1||q->policy==2)&&!skiprt;
+        if(q->runcpu){ if(!rt&&q->vrt<mrun)mrun=q->vrt; continue; }
+        if(rt){ if(q->rtprio>brt&&jc_runnable(j)){ brt=q->rtprio; best=j; } continue; }
+        if(brt>=0)continue;
+        u64 v=q->vrt<floor?floor:q->vrt; if(v<bv&&jc_runnable(j)){ bv=v; best=j; } }
+    if(best<0)return -1;
+    if(brt<0){ struct jproc* q=&g_jp[best]; if(q->vrt<bv)q->vrt=bv; u64 nm=bv<mrun?bv:mrun; if(nm!=~0ULL&&nm>g_min_vrt)g_min_vrt=nm; }
+    g_js_rr=best; return best; }
+int jc_bsp_off(void){ extern volatile int g_smp_on, g_cores_online; extern int smp_sched_on(void); return g_smp_on&&smp_sched_on()&&g_cores_online>=3; }
 static int jc_run(void){
-    if(!pf_ready)return 0;
+    if(!pf_ready||jc_bsp_off())return 0;
     u64 start=g_ticks; int ran=0;
     for(int n=0;n<JMAX*2;n++){
         int pick=jc_pick();
         if(pick<0)break; jc_enter(pick); ran=1;
-        if(g_ticks-start>=2)break;
+        { extern volatile int mouse_evt; extern int kpending(void); if(g_ticks-start>=((mouse_evt||kpending())?1u:2u))break; }
     }
     return ran;
 }

@@ -411,7 +411,7 @@ void stage2_main(void){
            the framebuffer + the DOOM WAD as mods[0]. */
         boot_animation(e, ksz, cfg.bootlog);
         struct mb_info* mbi = mb_build_info(e->cmdline);
-        if(graphics) mb_set_fb(mbi, &g_fb);
+        if(graphics){ mb_set_fb(mbi, &g_fb); vbe_edid_handoff(); }
         { uint32_t want = rd32(scratch + 20), crc = rd32(scratch + 16), got = 0;
           uint32_t dest = 0x20000000u;
           { const volatile uint32_t* cp = (const volatile uint32_t*)0x0FF0u; const uint8_t* ep = (const uint8_t*)0x1000u; uint32_t n = *cp; if(n > 64) n = 64;
@@ -425,10 +425,10 @@ void stage2_main(void){
             ok512 = 0;
 #endif
             if(!ok512 && best) dest = (uint32_t)best; }
-          if(want && want <= 0x10000000u){
+          if(want && want <= 0x18000000u){
               char sp[24] = "/sysroot/00000000.BIN";
               for(int i = 0; i < 8; i++){ uint32_t v = (crc >> ((7 - i) * 4)) & 15u; sp[9 + i] = (char)(v < 10 ? '0' + v : 'A' + v - 10); }
-              if(fat_read_file(sp, (uint8_t*)dest, 0x10000000, &got) != 0 || got != want) vga_puts("Linux files not found on the boot disk\n");
+              if(fat_read_file(sp, (uint8_t*)dest, 0x18000000, &got) != 0 || got != want) vga_puts("Linux files not found on the boot disk\n");
           } }
         { uint32_t wsz = 0;
           if(fat_read_file("/doom/DOOM1.WAD", (uint8_t*)0x0E000000, 32u*1024u*1024u, &wsz) == 0 && wsz > 1000000u)
@@ -449,7 +449,7 @@ void stage2_main(void){
         vga_puts(" MB\nMode:    64-bit long mode\nEntry:   ");
         vga_puthex((uint32_t)entry64);
         vga_puts("\nHanding off...\n");
-        if(graphics) mb_set_fb(mbi, &g_fb);
+        if(graphics){ mb_set_fb(mbi, &g_fb); vbe_edid_handoff(); }
         enter_long_mode((uint32_t)entry64, (uint32_t)(entry64 >> 32), (uint32_t)(uint32_t*)mbi);
         fail("kernel returned");
     } else {
@@ -461,7 +461,7 @@ void stage2_main(void){
         vga_puts(" MB\nMode:    32-bit protected mode\nEntry:   ");
         vga_puthex(entry);
         vga_puts("\nHanding off...\n");
-        if(graphics) mb_set_fb(mbi, &g_fb);
+        if(graphics){ mb_set_fb(mbi, &g_fb); vbe_edid_handoff(); }
         mb_jump(entry, (uint32_t)(uint32_t*)mbi);
         fail("kernel returned");
     }

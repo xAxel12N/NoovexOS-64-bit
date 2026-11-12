@@ -139,7 +139,16 @@ static int hda_rec_read(u8* d,int len){
     in_rd=(in_rd+(u32)len)%sz; return len; }
 static void hda_rec_stop(void){ if(!irun)return; w8((int)si(0),0); irun=0; }
 static u32 hwpos(void){ return r32((int)sd(0x04)); }
-static void hda_poll(void){ if(running)sring_hw(&ring,hwpos()%(NBUF*BSZ)); }
+static u64 jk_t; static int jk_hp=-1;
+static void hda_jack(void){
+    int hp=-1, sp=-1; for(int i=0;i<npaths;i++){ if(pdev[i]==2&&(param(ppin[i],0x0C)&(1u<<2)))hp=i; else if(pdev[i]==1)sp=i; }
+    if(hp<0||sp<0)return;
+    if(param(ppin[hp],0x0C)&(1u<<1)){ cmd(ppin[hp],0x709,0); kapi_delay_us(100); }
+    u32 ps=cmd(ppin[hp],0xF09,0); int in=(int)((ps>>31)&1); if(in==jk_hp)return; jk_hp=in;
+    for(int i=0;i<npaths;i++) if(pdev[i]==1){ u32 pc=cmd(ppin[i],0xF07,0)&0xFF; cmd(ppin[i],0x707,(int)(in?(pc&~0x40u):(pc|0x40u))); }
+    kapi_log(in?"hda: headphones plugged in - speakers off":"hda: headphones removed - speakers on"); }
+static void hda_sync(void){ if(running)sring_hw(&ring,hwpos()%(NBUF*BSZ)); }
+static void hda_poll(void){ hda_sync(); u64 t=kapi_ns(); if(codec>=0&&t-jk_t>300000000ULL){ jk_t=t; hda_jack(); } }
 static int hda_start(void){
     if(running)return 1;
     w8((int)sd(0),1); for(int t=0;t<1000&&!(r8((int)sd(0))&1);t++)kapi_delay_us(10);
@@ -154,8 +163,8 @@ static int hda_start(void){
     w8((int)sd(0),0x02);
     running=1; return 1;
 }
-static int hda_free(void){ hda_poll(); return running?sring_free(&ring):0; }
-static int hda_write(const u8* d,int len){ hda_poll(); return running?sring_write(&ring,d,len):0; }
+static int hda_free(void){ hda_sync(); return running?sring_free(&ring):0; }
+static int hda_write(const u8* d,int len){ hda_sync(); return running?sring_write(&ring,d,len):0; }
 static void hda_stop(void){ if(!running)return; w8((int)sd(0),0); running=0; }
 static void hda_volume(int pct){
     if(pct<0)pct=0; if(pct>100)pct=100;

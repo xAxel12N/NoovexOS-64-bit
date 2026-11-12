@@ -25,7 +25,7 @@ struct desc { volatile u32 opts1, opts2; volatile u64 addr; };
 static u16 io;
 static struct desc* rx; static struct desc* tx;
 static u8* rxb; static u8* txb;
-static int rxi, txi;
+static int rxi, txi, is8125;
 static void o32(int r,u32 v){ kapi_outl(io+r,v); }
 static int r69_send(const u8* d,int len){
     if(len>BUFSZ)return -1;
@@ -37,7 +37,7 @@ static int r69_send(const u8* d,int len){
     kapi_mb();
     t->opts1=OWN|FS|LS|(txi==NTX-1?EOR:0)|(u32)len;
     kapi_mb();
-    kapi_outb(io+R_TPOLL,0x40);
+    if(is8125)kapi_outw(io+0x90,1); else kapi_outb(io+R_TPOLL,0x40);
     txi=(txi+1)%NTX;
     return len;
 }
@@ -50,13 +50,15 @@ static int r69_recv(u8* out,int max){
     kapi_mb();
     r->opts1=OWN|(rxi==NRX-1?EOR:0)|BUFSZ;
     rxi=(rxi+1)%NRX;
-    kapi_outw(io+R_ISR,0xFFFF);
+    if(is8125)o32(0x3C,0xFFFFFFFFu); else kapi_outw(io+R_ISR,0xFFFF);
     return n;
 }
 static int r69_link(void){ return (kapi_inb(io+R_PHYS)&0x02)!=0; }
 int rtl8169_probe(struct nvx_nic* out){
     static const u16 ids[]={0x8161,0x8168,0x8169,0x8136,0x8167,0x2600,0x2502,0};
-    int b,d,f; if(!kapi_pci_find(0x10EC,ids,0,&b,&d,&f))return 0;
+    static const u16 ids25[]={0x8125,0x8126,0x3000,0};
+    int b,d,f; is8125=0;
+    if(!kapi_pci_find(0x10EC,ids,0,&b,&d,&f)){ if(!kapi_pci_find(0x10EC,ids25,0,&b,&d,&f))return 0; is8125=1; }
     u32 bar=kapi_pci_rd32(b,d,f,0x10); if(!(bar&1))return 0;
     io=(u16)(bar&0xFFFC); if(!io)return 0;
     kapi_pci_enable(b,d,f);
@@ -70,20 +72,19 @@ int rtl8169_probe(struct nvx_nic* out){
     for(int i=0;i<NTX;i++){ tx[i].opts1=(i==NTX-1?EOR:0); tx[i].opts2=0; tx[i].addr=0; }
     kapi_mb();
     kapi_outb(io+R_9346,0xC0);
-    kapi_outw(io+R_IMR,0);
-    kapi_outw(io+R_ISR,0xFFFF);
-    o32(R_RCR,0x0000E70Fu);
+    if(is8125){ o32(0x38,0); o32(0x3C,0xFFFFFFFFu); kapi_outb(io+0x34,0); o32(R_RCR,(8u<<27)|(7u<<8)|0x0Fu); }
+    else { kapi_outw(io+R_IMR,0); kapi_outw(io+R_ISR,0xFFFF); o32(R_RCR,0x0000E70Fu); }
     kapi_outb(io+R_CMD,0x04);
-    o32(R_TCR,0x03000700u);
+    o32(R_TCR,is8125?0x03000780u:0x03000700u);
     kapi_outw(io+R_RMS,BUFSZ-1);
-    kapi_outb(io+R_MTPS,0x3B);
+    if(!is8125)kapi_outb(io+R_MTPS,0x3B);
     o32(R_TNPDS,(u32)kapi_phys(tx)); o32(R_TNPDS+4,(u32)(kapi_phys(tx)>>32));
     o32(R_RDSAR,(u32)kapi_phys(rx)); o32(R_RDSAR+4,(u32)(kapi_phys(rx)>>32));
     kapi_outb(io+R_CMD,0x0C);
     kapi_outb(io+R_9346,0x00);
     rxi=0; txi=0;
     for(int i=0;i<6;i++)out->mac[i]=kapi_inb(io+R_IDR+i);
-    out->name="Realtek RTL8111/8168/8169"; out->send=r69_send; out->recv=r69_recv; out->link=r69_link;
+    out->name=is8125?"Realtek RTL8125 2.5G":"Realtek RTL8111/8168/8169"; out->send=r69_send; out->recv=r69_recv; out->link=r69_link;
     kapi_log("rtl8169: up");
     return 1;
 }

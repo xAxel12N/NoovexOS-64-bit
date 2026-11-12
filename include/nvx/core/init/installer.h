@@ -21,5 +21,11 @@ void ip_present(void);
 int ip_input(void);
 void bootmenu_present(void);
 int bootmenu_input(void);
+long inst_syscall(u64 n,u64 a,u64 b,u64 c);
+int inst_launch(int ret);
+int inst_app_tick(void);
+extern const u8* g_inst_img;
+extern u32 g_inst_len;
+extern int g_inst_pid;
 
 #endif

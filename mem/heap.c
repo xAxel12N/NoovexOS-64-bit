@@ -44,9 +44,19 @@ static void hb_report(const char* what,hblk* b,u64 who){
     if(b){ const char* s=" (block of "; while(*s)*p++=*s++; char d[24]; int n=0; unsigned long v=b->req; do{ d[n++]=(char)('0'+v%10); v/=10; }while(v&&n<20); while(n)*p++=d[--n]; s=" bytes from "; while(*s)*p++=*s++; if(g_heap_namefn)p+=g_heap_namefn(p,64,b->caller); *p++=')'; }
     if(who){ const char* s=" called by "; while(*s)*p++=*s++; if(g_heap_namefn)p+=g_heap_namefn(p,64,who); }
     *p=0; if(g_heap_log)g_heap_log(t); }
+#define HFL 48
+typedef struct { hblk* fnext; hblk* fprev; } hfree;
+static hblk* g_fl[HFL]; static hblk* g_tail; static hblk* g_flhead;
+static hfree* hf(hblk* b){ return (hfree*)((u8*)b+sizeof(hblk)); }
+static int hcls(unsigned long n){ int c=0; while(n>1&&c<HFL-1){ n>>=1; c++; } return c; }
+static void fl_reset(void){ for(int i=0;i<HFL;i++)g_fl[i]=0; g_tail=0; g_flhead=heap_head; }
+static void fl_add(hblk* b){ int c=hcls(b->size); hfree* f=hf(b); f->fprev=0; f->fnext=g_fl[c]; if(g_fl[c])hf(g_fl[c])->fprev=b; g_fl[c]=b; }
+static void fl_del(hblk* b){ int c=hcls(b->size); hfree* f=hf(b); if(f->fprev)hf(f->fprev)->fnext=f->fnext; else if(g_fl[c]==b)g_fl[c]=f->fnext; if(f->fnext)hf(f->fnext)->fprev=f->fprev; f->fnext=f->fprev=0; }
+static int hadj(hblk* a,hblk* b){ return b&&(u8*)b==(u8*)a+sizeof(hblk)+a->size; }
 static void* heap_place(unsigned long long at,unsigned long n){
-    hblk* b=(hblk*)at; b->size=n; b->used=1; b->next=0; b->magic=HBLK_MAGIC; b->caller=0; b->req=0xFFFFFFFFu;
-    if(!heap_head)heap_head=b; else { hblk* t=heap_head; int g2=0; while(hblk_ok(t->next)){t=t->next; if(++g2>1000000)break;} t->next=b; }
+    hblk* b=(hblk*)at; b->size=n; b->used=1; b->next=0; b->magic=HBLK_MAGIC; b->caller=0; b->req=0xFFFFFFFFu; b->prev=0; b->spare=0;
+    if(!heap_head){ heap_head=b; g_tail=b; g_flhead=b; }
+    else { if(!g_tail||g_tail->next){ hblk* t=g_tail?g_tail:heap_head; int g2=0; while(hblk_ok(t->next)){ t=t->next; if(++g2>1000000)break; } g_tail=t; } g_tail->next=b; b->prev=g_tail; g_tail=b; }
     return (u8*)b+sizeof(hblk); }
 static void* kmalloc_raw(unsigned long n);
 void* kmalloc(unsigned long n){
@@ -58,10 +68,13 @@ void* kmalloc(unsigned long n){
     else if(g_heap_oom++<32){ char t[160],*q=t; const char* s="heap: out of memory for "; while(*s)*q++=*s++; char d[24]; int k=0; unsigned long v=req; do{ d[k++]=(char)('0'+v%10); v/=10; }while(v&&k<20); while(k)*q++=d[--k]; s=" bytes requested by "; while(*s)*q++=*s++; if(g_heap_namefn)q+=g_heap_namefn(q,64,who); *q=0; if(g_heap_log)g_heap_log(t); }
     return p; }
 static void* kmalloc_raw(unsigned long n){
-    int g=0;
-    for(hblk* b=heap_head; hblk_ok(b); b=b->next){ if(++g>1000000)break; if(!b->used && b->size>=n){ b->used=1;
-        if(b->size >= n+sizeof(hblk)+32){ hblk* nb=(hblk*)((u8*)b+sizeof(hblk)+n); nb->size=b->size-n-sizeof(hblk); nb->used=0; nb->magic=HBLK_MAGIC; nb->next=b->next; b->next=nb; b->size=n; }
-        return (u8*)b+sizeof(hblk); } }
+    if(g_flhead!=heap_head||!heap_head)fl_reset();
+    for(int c=hcls(n);c<HFL;c++){ int g=0;
+        for(hblk* b=g_fl[c]; b; b=hf(b)->fnext){ if(!hblk_ok(b)||b->used){ g_fl[c]=0; break; } if(b->size>=n){ fl_del(b); b->used=1;
+                if(b->size>=n+sizeof(hblk)+32){ hblk* nb=(hblk*)((u8*)b+sizeof(hblk)+n); nb->size=b->size-n-sizeof(hblk); nb->used=0; nb->magic=HBLK_MAGIC; nb->caller=0; nb->req=0xFFFFFFFFu; nb->spare=0;
+                    nb->next=b->next; nb->prev=b; if(b->next)b->next->prev=nb; else if(g_tail==b)g_tail=nb; b->next=nb; b->size=n; fl_add(nb); }
+                return (u8*)b+sizeof(hblk); }
+            if(++g>64)break; } }
     unsigned long long need=sizeof(hblk)+n;
     if(heap_cur+need<=heap_top){ unsigned long long at=heap_cur; heap_cur+=need; return heap_place(at,n); }
     for(int i=0;i<g_nex;i++) if(g_ex[i].cur+need<=g_ex[i].top){ unsigned long long at=g_ex[i].cur; g_ex[i].cur+=need; return heap_place(at,n); }
@@ -77,8 +90,10 @@ void kfree(void* p){ if(!p)return; hblk* b=(hblk*)((u8*)p-sizeof(hblk)); u64 who
     if(g_heap_poison){ u8* q=(u8*)p; for(unsigned long i=0;i<b->size;i++)q[i]=0xDB; }
     if(g_heap_busy)g_heap_reent++;
     g_heap_busy=1; b->used=0;
-    int g=0; for(hblk* c=heap_head; hblk_ok(c); c=c->next){ if(++g>1000000)break; int gg=0;
-        while(hblk_ok(c->next) && !c->used && !c->next->used && (u8*)c->next==(u8*)c+sizeof(hblk)+c->size){ c->size+=sizeof(hblk)+c->next->size; c->next=c->next->next; if(++gg>1000000)break; } }
+    if(g_flhead!=heap_head)fl_reset();
+    hblk* nx=b->next; if(hblk_ok(nx)&&!nx->used&&hadj(b,nx)){ fl_del(nx); b->size+=sizeof(hblk)+nx->size; b->next=nx->next; if(b->next)b->next->prev=b; else if(g_tail==nx)g_tail=b; nx->magic=0; }
+    hblk* pv=b->prev; if(hblk_ok(pv)&&!pv->used&&pv->next==b&&hadj(pv,b)){ fl_del(pv); pv->size+=sizeof(hblk)+b->size; pv->next=b->next; if(pv->next)pv->next->prev=pv; else if(g_tail==b)g_tail=pv; b->magic=0; b=pv; }
+    fl_add(b);
     g_heap_busy=0; }
 void* krealloc(void* p,unsigned long n){ if(!p)return kmalloc(n); if(n==0){kfree(p);return 0;} hblk* b=(hblk*)((u8*)p-sizeof(hblk));
     if(!hblk_ok(b)||!b->used){ if(g_heap_badfree++<16)hb_report("heap: realloc of a pointer that is not a live heap block",0,(u64)__builtin_return_address(0)); return 0; }

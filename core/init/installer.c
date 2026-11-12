@@ -30,7 +30,9 @@
 #include "include/nvx/core/init/installer.h"
 #include "include/nvx/core/init/setup.h"
 #include "include/nvx/core/init/main.h"
-/* ================= Disk Manager (graphical partition editor + installer) ================= */
+#include "include/nvx/core/secboot.h"
+#include "include/nvx/arch/x86_64/cpu/percpu.h"
+#include "include/nvx/core/proc/jobs.h"
 static int g_dm_open=0, g_dm_sel=-1, g_dm_editname=0, g_dm_ret=ST_BOOTMENU; static void ip_open_preset(int ret,int mode,int part); static char g_dm_name[16]="NoovexOS";
 static u8 g_dm_mbr[512]; static int g_dm_msg=0; static const char* g_dm_msgtext=""; static int g_dm_confirm=0; static char g_dm_ctext[120];
 #define DM_ROWS 8
@@ -43,3 +45,4 @@ static u8 g_dm_ghdr[512]; static u8* g_dm_gent=0; static u32 g_dm_gn=0, g_dm_gsz
 #include "core/init/installer_parts/01_dm_crc32.c"
 #include "core/init/installer_parts/02_ip_mem_verify.c"
 #include "core/init/installer_parts/03_ip_pick_disk.c"
+#include "core/init/installer_parts/04_inst_svc.c"

@@ -20,13 +20,15 @@ int gfx_app_surf(u32** px, int w, int h);
 int desk_win_exposed(int i);
 void present_rect(int x, int y, int w, int h);
 void fb_shadow_note(int x, int y, int w, int h);
+void fb_shadow_invalidate(void);
+int nvgsp_cmd(const char* arg);
 extern u32* SCENE_NC;
 }
 
 namespace {
 
 enum class Present { Cpu, CpuScaled, Intel, Nvidia };
-enum class Fast { None, Cpu, Gpu2d };
+enum class Fast { None, Cpu, Gpu2d, Gpu3d };
 
 enum Key : int {
     K_MINUS = 0x0C, K_PLUS = 0x0D, K_UP = 0x48, K_LEFT = 0x4B, K_RIGHT = 0x4D, K_DOWN = 0x50
@@ -95,6 +97,8 @@ private:
     void message(int x, int y, int w, int h, const char* a, const char* b);
     void step_time();
     void render(u32* target, int rw, int rh, int pitch);
+    r3d_view view() const;
+    bool gpu_frame(int x0, int y0, int s);
     void overlay_text(u32* target, int pitch, int rw, int rh, int scale);
 
     u32 magic_;
@@ -124,6 +128,8 @@ private:
     u64 nv2d_va_ = 0;
     const void* nv2d_ptr_ = 0;
     u32 nv2d_gen_ = 0;
+    bool gpu3d_ = false, gpu3d_dirty_ = false;
+    u32 gpu3d_tris_ = 0;
 };
 
 Gpu3dApp g_app;
@@ -176,6 +182,13 @@ void Gpu3dApp::key(int c) {
     case ' ': paused_ = !paused_; break;
     case 'r': reset_view(); break;
     case 'g': if(!gpu_req_) gpu_req_ = 1; break;
+    case 't':
+        if(gpu3d_) { gpu3d_ = false; *scopy(gpu_msg_, "NVIDIA 3D off - the CPU draws the scene") = 0; break; }
+        if(!nvgsp_ce_ready()) { *scopy(gpu_msg_, "NVIDIA 3D needs the card running - press G first") = 0; break; }
+        if(nv3d_ready() || nvgsp_cmd("3d") > 0) { gpu3d_ = true; *scopy(gpu_msg_, "NVIDIA 3D on: triangles drawn by the 3D engine (per-vertex lighting, no shadows)") = 0; }
+        else { TextLine m; m << "NVIDIA 3D test failed: " << nv3d_why(); int i = 0; for(; i < 95 && m.str()[i]; ++i) gpu_msg_[i] = m.str()[i]; gpu_msg_[i] = 0; }
+        klog(gpu_msg_);
+        break;
     case '+': case '=': dist_mm_ = nvx::max(dist_mm_ - 400, 2500); break;
     case '-': dist_mm_ = nvx::min(dist_mm_ + 400, 30000); break;
     default: break;
@@ -266,9 +279,10 @@ void Gpu3dApp::info_bar(int x, int y, int w) {
         }
     }
     if(nvgsp_present_on()) b << "   desktop: copy engine";
-    if(fast_frames_) b << "   window frames: " << (fast_path_ == Fast::Gpu2d ? "NVIDIA 2D engine" : "CPU");
+    if(fast_frames_) b << "   window frames: " << (fast_path_ == Fast::Gpu3d ? "NVIDIA 3D engine" : fast_path_ == Fast::Gpu2d ? "NVIDIA 2D engine" : "CPU");
+    if(gpu3d_) b << "   3D on (" << gpu3d_tris_ << " triangles on the GPU)";
     dstr(x + 10, y + 24, b.str(), path_ == Present::Nvidia ? rgb(118, 185, 0) : rgb(154, 163, 184), 1);
-    if(w >= 800) dstr(x + 10, y + 42, "1 gears  2 3 4 more scenes | W wire | S shadows | H half | Space pause | arrows + - camera | R reset | G NVIDIA", rgb(100, 109, 132), 1);
+    if(w >= 1040) dstr(x + 10, y + 42, "1 gears  2 3 4 more scenes | W wire | S shadows | H half | Space pause | arrows + - camera | R reset | G NVIDIA | T NVIDIA 3D", rgb(100, 109, 132), 1);
 }
 
 void Gpu3dApp::draw(int win) {
@@ -281,6 +295,7 @@ void Gpu3dApp::draw(int win) {
     if(!constructed()) { message(cx, cy, cw, ch, "C++ constructors did not run", "cxx_run_ctors() was not called at boot"); return; }
     if(!ensure_init()) { message(cx, cy, cw, ch, "Not enough memory for the 3D scene", 0); return; }
 
+    if(gpu3d_dirty_) { gpu3d_dirty_ = false; fb_shadow_invalidate(); }
     if(gpu_req_ == 1) {
         message(cx, cy, cw, ch, "Starting the NVIDIA card...", "nvgsp all: FWSEC, booter, GSP-RM, channels. This can take up to 30 seconds.");
         gpu_req_ = 2;
@@ -290,8 +305,8 @@ void Gpu3dApp::draw(int win) {
     if(gpu_req_ == 3) {
         int r = 0;
         if(nvd_run_state(&r)) { message(cx, cy, cw, ch, "Starting the NVIDIA card...", "nvgsp all: FWSEC, booter, GSP-RM, channels. This can take up to 30 seconds."); return; }
-        if(r > 0) scopy(gpu_msg_, nv2d_ready() ? "NVIDIA card ready: copy engine and 2D engine working" : "NVIDIA card ready: copy engine working, 2D engine not verified");
-        else scopy(gpu_msg_, "NVIDIA card not started - the reason is below, full log in nvgsp-log.txt");
+        if(r > 0) *scopy(gpu_msg_, nv2d_ready() ? "NVIDIA card ready: copy engine and 2D engine working" : "NVIDIA card ready: copy engine working, 2D engine not verified") = 0;
+        else *scopy(gpu_msg_, "NVIDIA card not started - the reason is below, full log in nvgsp-log.txt") = 0;
         klog(gpu_msg_);
         nv_fail_ = 0;
         gpu_req_ = 0;
@@ -335,15 +350,43 @@ void Gpu3dApp::step_time() {
     if(now - fps_t0_ >= 1000000000ULL) { fps_ = frames_; frames_ = 0; fps_t0_ = now; }
 }
 
-void Gpu3dApp::render(u32* target, int rw, int rh, int pitch) {
+r3d_view Gpu3dApp::view() const {
     r3d_view v;
     v.scene = scene_;
     v.wire = wire_ ? 1 : 0;
-    v.shadows = shadows_ ? 1 : 0;
+    v.shadows = shadows_ && !gpu3d_ ? 1 : 0;
     v.yaw_md = scene_ == 0 ? yaw_md_ : yaw_md_ + (int)((t_us_ / 1000) * 12 % 360000);
     v.pitch_md = pitch_md_;
     v.dist_mm = dist_mm_;
     v.t_us = t_us_;
+    return v;
+}
+
+bool Gpu3dApp::gpu_frame(int x0, int y0, int s) {
+    r3d_view v = view();
+    float c[3];
+    r3d_clear_colour(&v, c);
+    u64 r0 = hr_ns();
+    if(!nv3d_begin((u32)lay_.rw, (u32)lay_.rh, c[0], c[1], c[2])) return false;
+    r3d_frame_tris(lay_.rw, lay_.rh, &v, &st_, nv3d_tri, 0);
+    if(!nv3d_end() || !nv3d_to_screen(x0, y0, s)) return false;
+    render_us_ = (u32)((hr_ns() - r0) / 1000);
+    gpu3d_tris_ = (u32)st_.tris_drawn;
+    const int lw = 240, lh = 30;
+    if(lay_.rw >= lw && lay_.rh >= lh && frame_) {
+        u32* f = frame_.get();
+        for(int y = 0; y < lh; ++y) for(int x = 0; x < lw; ++x) f[(u64)y * fp_ + x] = rgb(8, 10, 16);
+        TextLine t;
+        t << "FPS: " << fps_ << "  NVIDIA 3D";
+        frame_text(f, fp_, lw, lh, 6, 8, t.str(), rgb(60, 255, 60), 2);
+        if(nv2d_gen_ != nvgsp_ce_gen()) { nv2d_gen_ = nvgsp_ce_gen(); nv2d_va_ = 0; nv2d_ptr_ = 0; }
+        nv2d_to_screen(f, (u32)fp_, lw, lh, x0 + 8, y0 + 8, 1, &nv2d_va_, &nv2d_ptr_);
+    }
+    return true;
+}
+
+void Gpu3dApp::render(u32* target, int rw, int rh, int pitch) {
+    r3d_view v = view();
     u64 r0 = hr_ns();
     r3d_frame(target, rw, rh, pitch, work_.get(), &v, &st_);
     render_us_ = (u32)((hr_ns() - r0) / 1000);
@@ -353,7 +396,7 @@ void Gpu3dApp::overlay_text(u32* target, int pitch, int rw, int rh, int scale) {
     TextLine fps;
     fps << "FPS: " << fps_;
     frame_text(target, pitch, rw, rh, 14 / scale, 12 / scale, fps.str(), rgb(60, 255, 60), scale == 1 ? 3 : 1);
-    if(gpu_msg_[0]) frame_text(target, pitch, rw, rh, 14 / scale, 50 / scale, gpu_msg_, rgb(255, 196, 107), 1);
+    if(gpu_msg_[0] && !gpu3d_) frame_text(target, pitch, rw, rh, 14 / scale, 50 / scale, gpu_msg_, rgb(255, 196, 107), 1);
 }
 
 bool Gpu3dApp::fast() {
@@ -372,6 +415,14 @@ bool Gpu3dApp::fast() {
     if(DOCK_w > 0 && DOCK_h > 0 && DOCK_x < x0 + dw && DOCK_x + DOCK_w > x0 && DOCK_y < y0 + dh && DOCK_y + DOCK_h > y0) return false;
     if(!ensure_buffers(lay_.rw, lay_.rh)) return false;
     step_time();
+    if(gpu3d_ && !wire_ && nv3d_ready() && !g_fb_rgb && BYPP == 4) {
+        if(gpu_frame(x0, y0, s)) { gpu3d_dirty_ = true; fast_path_ = Fast::Gpu3d; ++fast_frames_; ++fast_gpu_; return true; }
+        gpu3d_ = false;
+        TextLine m; m << "NVIDIA 3D stopped: " << nv3d_why();
+        int i = 0; for(; i < 95 && m.str()[i]; ++i) gpu_msg_[i] = m.str()[i]; gpu_msg_[i] = 0;
+        klog(gpu_msg_);
+        gpu3d_dirty_ = true;
+    }
     u32* f = frame_.get();
     render(f, lay_.rw, lay_.rh, fp_);
     overlay_text(f, fp_, lay_.rw, lay_.rh, s);

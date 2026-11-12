@@ -100,6 +100,7 @@ int win_edge_hit(int px,int py,int* win){
         if(inside)return 0; }
     return 0; }
 static void on_click(int px,int py){
+    { extern int xtray_pop_open(void), xtray_pop_click(int,int), xtray_bar_click(int,int,int); if(xtray_pop_open()&&xtray_pop_click(px,py))return; if(py>=g_tby&&xtray_bar_click(px,py,0))return; }
     if(g_prop){ prop_click(px,py); return; }
     if(g_imgview>=0){ g_imgview=-1; return; }
     if(g_rename) return;
@@ -134,6 +135,7 @@ static void on_click(int px,int py){
                 int jx=ppx+pw-76; if(px>=jx&&px<jx+60&&py>=cy&&py<cy+26){ extern int wifi_entry_key(int); wifi_entry_key('\n'); return; } }
             return; }
         g_wifipop=0; { extern void wifi_entry_cancel(void); wifi_entry_cancel(); } return; }
+    if(g_dstyle!=1){ extern int xwin_count(void); extern void xwin_toggle(int); int nx=xwin_count(); if(nx>8)nx=8; for(int j=0;j<nx;j++){ int ix=DOCK_x+DOCK_PAD+(12+j)*(DOCK_IC+DOCK_GAP)+8; if(px>=ix-5&&px<ix+DOCK_IC+5&&py>=DOCK_y&&py<DOCK_y+DOCK_h){ xwin_toggle(j); return; } } }
     for(int k=0;k<12;k++){ int ix=DOCK_x+DOCK_PAD+k*(DOCK_IC+DOCK_GAP);
         if(px>=ix-5&&px<ix+DOCK_IC+5&&py>=DOCK_y&&py<DOCK_y+DOCK_h){ focus_win(IC_APP[k]); return; } }   /* dock */
     { int ew=-1; int ef=win_edge_hit(px,py,&ew); if(ef&&ew>=0&&win_ctl_hit(ew,px,py)<0){ focus_win(ew); g_resize=ew; g_rflags=ef; r_sw0=WN[ew].w; r_sh0=WN[ew].h; r_sx0=WN[ew].x; r_sy0=WN[ew].y; r_mx0=px; r_my0=py; return; } }
@@ -206,6 +208,7 @@ static int mouse_step(int dx,int dy,int btn,int rbtn,int sc){ int changed=0;
             if(g_rflags&1){ int r=r_sx0+r_sw0; nx=r_sx0+ddx; if(nx<0)nx=0; if(r-nx<MW)nx=r-MW; nw=r-nx; }
             if(g_rflags&4){ int bt=r_sy0+r_sh0; ny=r_sy0+ddy; if(ny<0)ny=0; if(bt-ny<MH)ny=bt-MH; nh=bt-ny; }
             if(nw!=w->w||nh!=w->h||nx!=w->x||ny!=w->y){ w->x=nx; w->y=ny; w->w=nw; w->h=nh; w->max=0; changed=1; } }
+        if(rbtn&&!mouse_rbtn_prev){ extern int xtray_bar_click(int,int,int); if(my>=g_tby&&xtray_bar_click(mx,my,1)){ mouse_btn_prev=btn; mouse_rbtn_prev=rbtn; return 1; } }
         if(rbtn&&!mouse_rbtn_prev){ g_launcher=0; g_qs=0; g_fpop=0; g_clockpop=0; g_wifipop=0; g_ctxkind=0; g_ctxwin=-1;
             int top=-1,tz=-1; for(int i=0;i<NWIN;i++) if(WN[i].open&&!WN[i].min&&in_rect(mx,my,WN[i].x,WN[i].y,WN[i].w,WN[i].h)&&WN[i].z>tz){tz=WN[i].z;top=i;}
             if(top<0){ int it=desk_hit(mx,my); if(it>=0){ g_dctx_item=it; g_ctxkind=(it<100)?5:6; } }
@@ -257,12 +260,13 @@ static int process_input_body(void){
     }
     if(g_gesture){ int g=g_gesture; g_gesture=0; changed=1;
         if(g==GES_SWIPE_UP){ g_launcher=1; } else if(g==GES_SWIPE_DOWN){ g_launcher=0; g_notifpanel=0; }
-        else if(g==GES_SWIPE_LEFT){ ws_switch(g_ws+1); } else if(g==GES_SWIPE_RIGHT){ ws_switch(g_ws-1); } }
-    if(mouse_evt||in_mq_pending()){ g_last_input_t=g_ticks; int dx,dy,btn,rbtn,sc; { int hs=mouse_hscroll; mouse_hscroll=0; if(hs&&focus==W_BROWSER&&WN[W_BROWSER].open&&g_page==3){ extern void browser_wheelxy(int,int); browser_wheelxy(0,hs); changed=1; } } static int ex[IN_MQ_N],ey[IN_MQ_N],eb[IN_MQ_N]; static u64 et[IN_MQ_N]; int ne=0;
+        else if(g==GES_SWIPE_LEFT){ ws_switch(g_ws+1); } else if(g==GES_SWIPE_RIGHT){ ws_switch(g_ws-1); }
+        else if(g==GES_ZOOM_IN||g==GES_ZOOM_OUT){ extern int xover_zoom(int); if(!g_launcher)xover_zoom(g==GES_ZOOM_IN); } }
+    if(mouse_evt||in_mq_pending()){ g_last_input_t=g_ticks; int dx,dy,btn,rbtn,sc; { int hs=mouse_hscroll; if(hs&&focus==W_BROWSER&&WN[W_BROWSER].open&&g_page==3){ mouse_hscroll=0; extern void browser_wheelxy(int,int); browser_wheelxy(0,hs); changed=1; } } static int ex[IN_MQ_N],ey[IN_MQ_N],eb[IN_MQ_N]; static u64 et[IN_MQ_N]; int ne=0;
         cpu_irq_off(); while(ne<IN_MQ_N&&in_mq_take(&ex[ne],&ey[ne],&eb[ne],&et[ne]))ne++; dx=mouse_dx;dy=mouse_dy;mouse_dx=0;mouse_dy=0;btn=mouse_btn;rbtn=mouse_rbtn;sc=mouse_scroll;mouse_scroll=0;mouse_evt=0; cpu_irq_on();
         int ux=0, uy=0;
         for(int i=0;i<ne;i++){ g_click_t=et[i]; { u32 lg=(u32)(g_ticks-et[i])*10u; if(lg>g_in_lag_acc)g_in_lag_acc=lg; } int sx=ex[i]-ux, sy=ey[i]-uy; ux=ex[i]; uy=ey[i]; if(sx||sy){ if(mouse_step(sx,sy,mouse_btn_prev,mouse_rbtn_prev,0))changed=1; } if(mouse_step(0,0,eb[i]&1,(eb[i]>>1)&1,0))changed=1; }
-        g_click_t=g_ticks; if(mouse_step(dx-ux,dy-uy,btn,rbtn,sc))changed=1; }
+        g_click_t=g_ticks; if(mouse_step(dx-ux,dy-uy,btn,rbtn,sc))changed=1; mouse_hscroll=0; }
     { static int xb_seen=0; int xb=mouse_xback; if(xb!=xb_seen){ xb_seen=xb; if(!g_launcher&&focus==W_BROWSER&&WN[W_BROWSER].open){ extern int browser_xback(void); if(browser_xback())changed=1; } } }
     { static int mp_seen=0; int mp=mouse_mpress; if(mp!=mp_seen){ mp_seen=mp; if(!g_launcher){ int top=-1,tz=-1; for(int i=0;i<NWIN;i++) if(WN[i].open&&!WN[i].min&&in_rect(mx,my,WN[i].x,WN[i].y,WN[i].w,WN[i].h)&&WN[i].z>tz){tz=WN[i].z;top=i;}
         if(top==W_BROWSER&&my>WN[top].y+TITLEH){ extern int browser_mclick(int,int); if(browser_mclick(mx,my))changed=1; } } } }
@@ -271,10 +275,10 @@ static int process_input_body(void){
         { extern int g_screen_off, g_lid_open; if(g_screen_off){ if(g_lid_open!=0){ extern void bl_screen(int); g_screen_off=0; bl_screen(1); changed=1; } continue; } }
         { extern int g_pm_on; extern int pm_key(int); if(g_pm_on){ pm_key(c); changed=1; continue; } }
         { extern int g_ss_on; extern int ss_key(int); if(g_ss_on){ ss_key(c); changed=1; continue; } }
-        { extern int g_xfull; extern void xfull_exit(void); extern void xdisp_key(int); if(g_xfull){ if(c==30||c==31){ xfull_exit(); changed=1; } else xdisp_key(c); continue; } { extern int g_xover, g_xkbd; if(g_xover&&g_xkbd&&!g_launcher){ xdisp_key(c); continue; } } }
+        { extern int g_xfull; extern void xfull_exit(void); extern void xdisp_key(int); if(g_xfull){ if(c==30||c==31){ xfull_exit(); changed=1; } else xdisp_key(c); continue; } { extern int g_xover, g_xkbd; if(g_xover&&g_xkbd&&!g_launcher&&!(c==9&&kalt)){ xdisp_key(c); continue; } } }
         if(g_rename){ if(c=='\n'){ fx_rename_commit(); }
             else if(c==27){ g_rename=0; g_renmode=0; } else if(c=='\b'){ if(g_renlen>0)g_renlen--; g_renbuf[g_renlen]=0; } else if(c>=32&&c<127){ if(g_renlen<63){g_renbuf[g_renlen++]=(char)c; g_renbuf[g_renlen]=0;} } changed=1; continue; }
-        if(c==9 && kalt){ if(!g_alttab){ g_altn=0; for(int i=0;i<NWIN;i++) if(WN[i].open)g_altlist[g_altn++]=i; if(g_altn>0){ g_alttab=1; g_altsel=(g_altn>1)?1:0; } } else g_altsel=(g_altn>0)?(g_altsel+1)%g_altn:0; changed=1; continue; }
+        if(c==9 && kalt){ if(!g_alttab){ g_altn=0; extern int xwin_count(void), xwin_active(int); int xa=-1; for(int k=0;k<xwin_count()&&k<32;k++) if(xwin_active(k))xa=k; if(xa>=0)g_altlist[g_altn++]=NWIN+xa; for(int i=0;i<NWIN;i++) if(WN[i].open)g_altlist[g_altn++]=i; for(int k=0;k<xwin_count()&&k<32;k++) if(k!=xa)g_altlist[g_altn++]=NWIN+k; if(g_altn>0){ g_alttab=1; g_altsel=(g_altn>1)?1:0; } } else g_altsel=(g_altn>0)?(g_altsel+1)%g_altn:0; changed=1; continue; }
         if(g_launcher){ launcher_key((char)c); changed=1; continue; }
         if(g_wifipop && g_wifi_entry && g_wifi_sel>=0){ extern int wifi_entry_key(int); if(wifi_entry_key(c))changed=1;
             continue; }
@@ -303,14 +307,14 @@ static int process_input_body(void){
         else if(focus==W_GPU3D&&WN[W_GPU3D].open){ extern void gpu3d_key(int); gpu3d_key(c); changed=1; }
         else if(focus==W_FLAPPY&&WN[W_FLAPPY].open){ flappy_key(c); changed=1; }
         else if(focus==W_CALENDAR&&WN[W_CALENDAR].open){ cal_key(c); changed=1; } }
-    if(!kalt && alt_prev && g_alttab){ if(g_altn>0) focus_win(g_altlist[g_altsel]); g_alttab=0; changed=1; } alt_prev=kalt;
+    if(!kalt && alt_prev && g_alttab){ if(g_altn>0){ int a=g_altlist[g_altsel]; if(a>=NWIN){ extern void xwin_activate(int); xwin_activate(a-NWIN); } else focus_win(a); } g_alttab=0; changed=1; } alt_prev=kalt;
     if(WN[W_BROWSER].open){ g_pi_depth--; int bt=browser_tick(); g_pi_depth++; if(bt)changed=1; }
     { extern int video_tick(void); if(video_tick())changed=1; }
     if(WN[W_SNAKE].open&&!WN[W_SNAKE].min&&focus==W_SNAKE&&snake_state==1&&(u64)(g_ticks-snake_last)>=8){ snake_last=g_ticks; snake_step(); changed=1; }
     if(WN[W_FLAPPY].open&&!WN[W_FLAPPY].min&&focus==W_FLAPPY&&fb_state==1&&(u64)(g_ticks-flappy_last)>=3){ flappy_last=g_ticks; flappy_step(); changed=1; }
     if(toast_t && (u64)(g_ticks-toast_t)<300) changed=1;
-    static int lastsec=-1; int h,m,ss,y,mo,d; read_clock(&h,&m,&ss,&y,&mo,&d); if(ss!=lastsec){lastsec=ss;changed=1;}
-    static int lastbl=-1; int bp=(int)((g_ticks/50)&1); if(bp!=lastbl){lastbl=bp; if(g_rename||((focus==W_TERM||focus==W_EDITOR)&&(WN[W_TERM].open||WN[W_EDITOR].open)))changed=1;}
+    { static int lastsec=-1, lastmin=-1; static u64 lastrd; if(g_ticks-lastrd>=10||lastsec<0){ lastrd=g_ticks; int h,m,ss,y,mo,d; read_clock(&h,&m,&ss,&y,&mo,&d); if(ss!=lastsec){ lastsec=ss; extern int g_xover; extern int g_tb_due; if(g_xover&&m==lastmin&&!g_clockpop&&!g_qs&&!g_notifpanel&&!(WN[W_SYSMON].open&&!WN[W_SYSMON].min))g_tb_due=1; else changed=1; lastmin=m; } } }
+    static int lastbl=-1; int bp=(int)((g_ticks/50)&1); if(bp!=lastbl){lastbl=bp; extern int g_xover, g_xkbd; if(g_rename||((focus==W_TERM||focus==W_EDITOR)&&(WN[W_TERM].open||WN[W_EDITOR].open)&&!(g_xover&&g_xkbd)))changed=1;}
     return changed;
 }
 /* ---- desktop right-click context menu ---- */

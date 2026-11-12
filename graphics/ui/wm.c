@@ -38,7 +38,7 @@ int g_submenu=0, g_sub_x=0, g_sub_y=0, g_subn=0;   /* hover submenu */
 int g_fdrag=0, g_fdrag_slot=-1, g_fdrag_x=0, g_fdrag_y=0;   /* drag a tree file */
 const char* g_subit[8]; char g_subparent[16]="";
 int g_snap=0, g_resize=-1, r_sw0=0, r_sh0=0, r_mx0=0, r_my0=0, r_sx0=0, r_sy0=0, g_rflags=8|2, g_rz_hover=0;
-int g_launcher=0, g_alttab=0, g_altsel=0, g_altlist[NWIN], g_altn=0, alt_prev=0;
+int g_launcher=0, g_alttab=0, g_altsel=0, g_altlist[NWIN+32], g_altn=0, alt_prev=0;
 int g_wallmode=2, wall_custom_slot=-1, g_clockpop=0, g_qs=0;
 int g_rename=0, g_renslot=-1, g_renlen=0; char g_renbuf[64]="";
 int g_clockx=0, g_qsx=0;
@@ -48,13 +48,13 @@ void toast(const char*m){ { extern int g_osd_kind; g_osd_kind=0; } int i=0; whil
 const char *APPNAME[NWIN]={"Welcome","Terminal","Files","Editor","Calculator","Browser","Clock","Task Manager","Calendar","Snake","Flappy Bird","neofetch","Paint","DOOM","Settings","About","Registry Editor","Presentation","Logs","Terminal Finder","Video Player","X Display","Camera","Benchmark","Voice Recorder","Writer","Quake","Gears"};
    /* fwd - defined near compositor */
   
-void open_win(int i){ int was=WN[i].open; WN[i].open=1; WN[i].min=0; WN[i].ws=g_ws; focus=i; WN[i].z=++ztop;
+void open_win(int i){ { extern int g_xkbd; g_xkbd=0; } int was=WN[i].open; WN[i].open=1; WN[i].min=0; WN[i].ws=g_ws; focus=i; WN[i].z=++ztop;
     if(!was){ if(i==W_SNAKE)snake_reset(); else if(i==W_FLAPPY)flappy_reset(); else if(i==W_CALENDAR)cal_open(); }
     if(!was)focus_app_started(i);
     if(!was && g_state==ST_DESKTOP){ win_anim(i,1); gfx_win_event(i,0); } }
 static void focus_next(void){ int best=-1, bz=-1; for(int k=0;k<NWIN;k++) if(WN[k].open&&!WN[k].min&&WN[k].ws==g_ws&&WN[k].z>bz){ bz=WN[k].z; best=k; } focus=best; }
 void close_win(int i){ if(WN[i].open&&!WN[i].min&&g_state==ST_DESKTOP){ win_anim(i,0); gfx_win_event(i,1); } { int wo=WN[i].open; WN[i].open=0; WN[i].min=0; if(focus==i)focus_next(); if(wo)focus_app_closed(i); } if(i==W_DOOM) g_doom_mcap=0; if(i==W_GPU3D){ extern void gpu3d_closed(void); gpu3d_closed(); } if(i==W_CAMERA){ extern void camera_closed(void); camera_closed(); } if(i==W_RECORDER){ extern void recorder_closed(void); recorder_closed(); } if(i==W_QUAKE){ extern void quake_closed(void); quake_closed(); } if(i==W_VIDEO){ extern void video_stop(void); video_stop(); } if(i==W_BROWSER){ extern void browser_media_pause(void); extern int web_busy(void); extern volatile int g_busy_esc; if(web_busy())g_busy_esc=1; browser_media_pause(); } }
-void focus_win(int i){ if(!WN[i].open){ open_win(i); return; } if(WN[i].min)gfx_win_event(i,0); WN[i].min=0; focus=i; WN[i].z=++ztop; }
+void focus_win(int i){ { extern int g_xkbd; g_xkbd=0; } if(!WN[i].open){ open_win(i); return; } if(WN[i].min)gfx_win_event(i,0); WN[i].min=0; focus=i; WN[i].z=++ztop; }
 void win_min(int i){ if(!WN[i].min&&WN[i].open)gfx_win_event(i,2); WN[i].min=1; if(focus==i)focus_next(); }
 void win_max(int i){ if(!WN[i].max){ WN[i].sx=WN[i].x;WN[i].sy=WN[i].y;WN[i].sw=WN[i].w;WN[i].sh=WN[i].h;
         WN[i].x=6; WN[i].y=32; WN[i].w=(int)W-12; WN[i].h=(int)H-32-86; WN[i].max=1; }

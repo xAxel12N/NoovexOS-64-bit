@@ -462,6 +462,39 @@ Partition entries are written in native blocks (`/R`). Everything else in the in
 
 ---
 
+## 8.7b The installer program INSTALL.NVX (v10.65)
+
+Since v10.65 the screens of the installer run as a separate, signed user-mode program; the disk work stays in the kernel, which has the drivers and the file system code. `install` and `noovexos_install` in the Terminal and the Install button in Settings start it with `inst_launch()`; `install classic` still opens the built-in installer (8.7), and `inst_launch()` falls back to it when no valid program is found.
+
+Files
+- `usr/src/nvxinstall.c`: the program (native NoovexOS ELF linked with nvxlibc, about 20 KB). Pages: Welcome, Disk, Where (whole disk or a usable MBR partition), File system (NoovexOS, FAT32, NTFS, FAT16), Confirm, Installing (one line per stage), Done or Error. Same look as the built-in installer: blue background, white dialog box with a dashed title line and black shadow, "(*)" lists, red "< Button >" buttons; Up/Down choose in a list, Left/Right or Tab move between buttons, Enter, Esc, mouse.
+- `core/init/installer_parts/04_inst_svc.c`: the kernel side: system calls, the step-by-step install and the launcher.
+- `build.sh` step `[inst]` builds it, signs it (`tools/nvxsign.py signfile`) and checks the signature (`verifyfile`); the result `build/install.nvx` is copied into the Linux files as `/usr/lib/noovex/install.nvx`. `boot/mkhybrid.py` puts it in the root of the image's FAT partition as `INSTALL.NVX` (8.3 name, the FAT code has no long names), so it is visible on a flashed USB stick.
+
+Signed file format: the ELF followed by an 88-byte trailer: ECDSA P-256 signature r||s (64 bytes) over the SHA-256 of the ELF, the 8-byte key id, the ELF length (u32), version 1 (u32) and the magic `NVXFILE1`. `secboot_check_file()` in `core/secboot.c` checks it with the public key of the running kernel; a file signed with another key, changed after signing, or without a trailer is refused.
+
+Start (`inst_launch()`): reads `INSTALL.NVX` from the USB stick the system started from (`ufs`/`ufat_read`); if it is missing or refused (the log says why), the copy in the Linux files (covered by the kernel signature) is checked the same way. The verified image is handed to `jc_create("nvx-install")` through a one-time hook in `jc_find_prog`, the job's pid is kept in `g_inst_pid`, and the state becomes `ST_APP`: the main loop then runs jobs but does no input handling and no drawing of its own. `inst_app_tick()` returns to the previous state when the job ends, also after a crash of the program; if that happens in the middle of an install the log and a message say that the disk will not start. Ctrl+Alt+Esc ends the program at any time except during an install step (`inst_app_keys()`), so a hung program cannot trap the screen. Only root (uid 0) can start it; a second start while it runs is refused.
+
+System calls (only for the job with `g_inst_pid` and uid 0; every user pointer is checked):
+
+| No. | Arguments | What it does |
+|---|---|---|
+| 200 | - | take the screen (`ST_APP`) |
+| 201 | int[4] | screen width, height, lockdown, source (1 USB stick, 2 Linux files) |
+| 202 | disk array, count | list disks (name, sectors, kind, current, big enough) |
+| 203 | index, info | choose a disk, read its MBR: partitions, which ones can be used, GPT flag |
+| 204 | params | mode (0 whole disk, 1 partition), partition, file system, copy, label; checked, then the install starts |
+| 205 | progress | runs the next step and returns stage (0-8), progress (0-1000), done, failed and the error texts |
+| 206 | x/y, colour/scale, text | text in the system font |
+| 207 | - | draw the pointer and show the frame |
+| 208 | int[4] | next key (or -1), pointer x, y, flags (moved, clicked) |
+| 209 | 0 or 1 | close (refused while an install is running) or restart (only after success) |
+| 210 | text | write a line to the system log |
+
+Steps (`is_run_step()`, the same work as `ip_run2()`): 0 checks (kernel copy, memory map) and builds the boot partition image; 1 partition table, zeroing of GPT areas on a whole disk, stage2; 2 the boot partition, 4096 sectors per call; 3 marker files and formatting of the data partition (`n4_format` or `nk_install`); 4 read-back of the partition table and stage2; 5 read-back of the boot partition, 4096 sectors per call; 6 kernel copy check, flush, Linux files to the boot partition, marker file. The freeze watchdog is held during each step. During formatting with file copy (`nk_install`) a thin progress bar at the bottom of the screen is drawn directly by the kernel, because that step runs inside one call.
+
+The installer writes no UEFI boot entry (neither did the built-in one); firmware finds `\EFI\BOOT\BOOTX64.EFI` on the boot partition. In QEMU a variable store that already has boot entries from an earlier run may go straight to the UEFI shell; a fresh store starts the installed disk.
+
 ## 8.8 Disk Manager (`dm_*`, `core/init/installer.c` lines 1-104)
 
 The Disk Manager is a graphical MBR editor. It works on `g_dm_p[4]` (`dmpart {used,type,start,size}`), loaded by `dm_load()` from LBA 0 with `*dk_ratio()` scaling.

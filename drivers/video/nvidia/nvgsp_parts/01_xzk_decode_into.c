@@ -21,7 +21,7 @@ static struct {
     u64 bar1, bar1_len, bar3, bar3_len;
     u32 mthd_size;
     struct { u32 type, runl; } eng[32]; u32 neng;
-    u32 err_count, seq_count, ev_count, resumes; char seq_err[96];
+    u32 err_count, seq_count, ev_count, resumes; char seq_err[96]; u32 bad_csum, seq_gaps, held;
 } G;
 
 static u8* sa(u64 size,u64 align){ u8* r=(u8*)kmalloc((unsigned long)(size+align)); if(!r)return 0; u8* p=(u8*)(((u64)r+align-1)&~(align-1)); for(u64 i=0;i<size;i++)p[i]=0; return p; }
@@ -46,10 +46,10 @@ static int str_eq(const char* a,const char* b){ while(*a&&*a==*b){ a++; b++; } r
 static int elf_sect(const u8* f,u32 n,const char* name,const u8** out,u64* sz){
     if(n<64||f[0]!=0x7F||f[1]!='E'||f[4]!=2)return 0;
     u64 sho=*(const u64*)(f+0x28); u16 shn=*(const u16*)(f+0x3C), shs=*(const u16*)(f+0x3E);
-    if(sho+(u64)shn*64>n||shs>=shn)return 0;
+    if(sho>n||(u64)shn*64>n-sho||shs>=shn)return 0;
     u64 sto=*(const u64*)(f+sho+(u64)shs*64+0x18), stz=*(const u64*)(f+sho+(u64)shs*64+0x20); if(sto>=n||stz>n-sto||!stz||f[sto+stz-1])return 0;
     const u8* str=f+sto;
-    for(u16 i=0;i<shn;i++){ const u8* s=f+sho+(u64)i*64; if(*(const u32*)s>=stz)continue; if(str_eq((const char*)str+*(const u32*)s,name)){ u64 o=*(const u64*)(s+0x18), z=*(const u64*)(s+0x20); if(o+z>n)return 0; *out=f+o; *sz=z; return 1; } }
+    for(u16 i=0;i<shn;i++){ const u8* s=f+sho+(u64)i*64; if(*(const u32*)s>=stz)continue; if(str_eq((const char*)str+*(const u32*)s,name)){ u64 o=*(const u64*)(s+0x18), z=*(const u64*)(s+0x20); if(o>n||z>n-o)return 0; *out=f+o; *sz=z; return 1; } }
     return 0; }
 
 #define CMDQ 0x1000u
@@ -83,15 +83,18 @@ static int msg_one(u32* fn,u8* out,u32 cap,u32* olen,u32 ms){
     { u32 w=*q32(MSGQ+0x10); u32 used=w+QCNT-rp; if(used>=QCNT)used-=QCNT; u32 sl=(total+0xFFFu)/0x1000u;
       if(rlen<0x20||total>16*0x1000u||sl>used){ u32 ec=*(u32*)(e+0x28); if(ec<1||ec>16||ec>used)ec=1; nvl_kv("bad status-queue element skipped, length",rlen); rp+=ec; while(rp>=QCNT)rp-=QCNT; cpu_mb(); *q32(CMDQ+0x20)=rp; G.rx_seq++; *fn=0; return -1; } }
     u32 slots=(total+0xFFFu)/0x1000u; static u32 g_rx_buf[0x4000]; u8* m=(u8*)g_rx_buf; u32 left=total, r=rp, o=0;
-    while(left){ u32 c=left>0x1000u?0x1000u:left; u8* s=G.shm+MSGQ+0x1000u+r*0x1000u; for(u32 i=0;i<c;i++)m[o+i]=s[i]; o+=c; left-=c; r++; if(r>=QCNT)r=0; }
-    u32 seq=*(u32*)(m+0x24); if(seq!=G.rx_seq){ nvl_s("  status queue sequence "); nvl_d(seq); nvl_s(" expected "); nvl_d(G.rx_seq); nvl_nl(); } G.rx_seq=seq+1;
+    left=slots*0x1000u; while(left){ u8* s=G.shm+MSGQ+0x1000u+r*0x1000u; for(u32 i=0;i<0x1000u;i++)m[o+i]=s[i]; o+=0x1000u; left-=0x1000u; r++; if(r>=QCNT)r=0; }
+    { u64 cs=0; for(u32 i=0;i<slots*0x1000u;i+=8)cs^=*(u64*)(m+i); if((u32)(cs>>32)^(u32)cs){ G.bad_csum++; if(G.bad_csum<=4)nvl_kv("status-queue element checksum does not add up, function",*(u32*)(m+0x3C)); } }
+    u32 seq=*(u32*)(m+0x24); if(seq!=G.rx_seq){ G.seq_gaps++; nvl_s("  status queue sequence "); nvl_d(seq); nvl_s(" expected "); nvl_d(G.rx_seq); nvl_nl(); } G.rx_seq=seq+1;
     rp+=slots; while(rp>=QCNT)rp-=QCNT; cpu_mb(); *q32(CMDQ+0x20)=rp;
     *fn=*(u32*)(m+0x3C); u32 res=*(u32*)(m+0x40); u32 pl=rlen-0x20; if(pl>cap)pl=cap; for(u32 i=0;i<pl;i++)out[i]=m[0x50+i]; *olen=pl;
     if(res){ nvl_s("  reply to function "); nvl_d(*fn); nvl_s(" has rpc_result "); nvl_x(res); nvl_nl(); return -2; }
     return 1; }
 static u8 g_evbuf[0x10000];
 static int ev_handle(u32 fn,u8* p,u32 n);
-static void msgq_drain_events(void){ static u8 b[0x1000]; for(int k=0;k<8;k++){ u32 fn=0,n=0; int r=msg_one(&fn,b,sizeof(b),&n,0); if(r==0)break; if(r>0&&fn>=0x1000)ev_handle(fn,b,n); } }
+#define HOLDN 4
+static struct { u32 fn, n; int r; u8 d[0x4000]; } g_hold[HOLDN]; static int g_holdn;
+static void msgq_drain_events(void){ static u8 b[0x10000]; for(int k=0;k<8;k++){ u32 fn=0,n=0; int r=msg_one(&fn,b,sizeof(b),&n,0); if(r==0)break; if(fn>=0x1000){ if(r>0)ev_handle(fn,b,n); continue; } if(fn&&g_holdn<HOLDN){ int h=g_holdn++; g_hold[h].fn=fn; g_hold[h].r=r; g_hold[h].n=n<sizeof(g_hold[h].d)?n:(u32)sizeof(g_hold[h].d); for(u32 i=0;i<g_hold[h].n;i++)g_hold[h].d[i]=b[i]; G.held++; } } }
 static int ev_handle(u32 fn,u8* p,u32 n){
     if(fn==0x1002){ G.seq_count++; seq_run((const u32*)p,n); return 1; }
     if((fn==0x1006||fn==0x1004)&&G.err_count>=16){ G.err_count++; return 1; }
@@ -100,10 +103,11 @@ static int ev_handle(u32 fn,u8* p,u32 n){
     if(fn==0x1005){ G.err_count++; nvl_s("  GPU MMU fault reported"); nvl_nl(); return 1; }
     G.ev_count++; return 1; }
 static int rpc_wait(u32 want,u8* out,u32 cap,u32* olen,u32 ms){
+    for(int h=0;h<g_holdn;h++) if(g_hold[h].fn==want){ int r=g_hold[h].r; u32 n=g_hold[h].n, c=n<cap?n:cap; for(u32 i=0;i<c;i++)out[i]=g_hold[h].d[i]; if(olen)*olen=n; for(int k=h;k+1<g_holdn;k++)g_hold[k]=g_hold[k+1]; g_holdn--; return r>0?1:-1; }
     u64 t0=hr_ns();
     for(;;){ u32 fn=0, n=0; u64 el=(hr_ns()-t0)/1000000ULL; if(el>ms)return 0; int r=msg_one(&fn,g_evbuf,sizeof(g_evbuf),&n,(u32)(ms-el));
         if(r==0)return 0; if(r<0&&fn==want)return -1; if(r<0)continue;
-        if(fn==want){ u32 c=n<cap?n:cap; for(u32 i=0;i<c;i++)out[i]=g_evbuf[i]; if(olen)*olen=n; return 1; }
+        if(fn==want){ u32 c=n<cap?n:cap; for(u32 i=0;i<c;i++)out[i]=g_evbuf[i]; if(olen)*olen=n; g_holdn=0; return 1; }
         ev_handle(fn,g_evbuf,n); } }
 
 static u32 g_gsp_boots=0;
@@ -124,8 +128,8 @@ static int seq_resume(void){
     if(!(nvr32(0x111240)&1u)){ nvf_dump(NVF_GSP,"GSP falcon"); seq_fail("CORE_RESUME: the GSP RISC-V core is not running after SEC2 restarted it"); return 0; }
     G.resumes++; nvl_s("  sequencer: GSP-RM resumed"); nvl_nl(); return 1; }
 static void seq_run(const u32* p,u32 n){
-    if(n<40)return; u32 cnt=p[1]; const u32* c=p+10; u32 i=0; u32 save[8]; for(int k=0;k<8;k++)save[k]=p[2+k];
-    while(i<cnt&&(i+1)*4+40<=n){ u32 op=c[i];
+    if(n<40)return; u32 cnt=p[1]; const u32* c=p+10; u32 i=0; u32 save[8]; for(int k=0;k<8;k++)save[k]=p[2+k]; u32 words=(n-40)/4; if(cnt>words)cnt=words;
+    while(i<cnt){ u32 op=c[i]; u32 need=op==0?3:op==1?4:op==2?6:op==3?2:op==4?3:1; if(i+need>cnt){ seq_fail("sequencer data cut short"); break; }
         if(op==0){ nvw32(c[i+1],c[i+2]); i+=3; }
         else if(op==1){ nvm32(c[i+1],c[i+2],c[i+3]); i+=4; }
         else if(op==2){ u32 to=c[i+4]?c[i+4]:4000000u; u64 t0=hr_ns(); while((nvr32(c[i+1])&c[i+2])!=c[i+3]){ if(hr_ns()-t0>(u64)to*1000ULL){ nvl_kv("sequencer poll timed out on",c[i+1]); break; } cpu_pause(); } i+=6; }
@@ -284,7 +288,7 @@ static int gsp_post(void){
     if(!got){ nvf_dump(NVF_GSP,"GSP falcon"); nvl_kv("cmdq write/read",((u64)*q32(CMDQ+0x10)<<32)|*q32(MSGQ+0x20)); nvl_kv("msgq write/read",((u64)*q32(MSGQ+0x10)<<32)|*q32(CMDQ+0x20));
         if(G.seq_err[0]){ static char w[160]; char* q=w; q=scopy(q,"GSP-RM asked the CPU for a sequence that failed - "); q=scopy(q,G.seq_err); *q=0; return nv_fail(7,w); }
         return nv_fail(7,"GSP-RM did not report GSP_INIT_DONE within 15 s"); }
-    if(G.resumes){ nvl_kv("GSP-RM resumes done for the sequencer",G.resumes); }
+    if(G.resumes){ nvl_kv("GSP-RM resumes done for the sequencer",G.resumes); } if(G.bad_csum)nvl_kv("status-queue checksums that did not add up",G.bad_csum); if(G.seq_gaps)nvl_kv("status-queue sequence gaps",G.seq_gaps); if(G.held)nvl_kv("replies kept while waiting for queue space",G.held);
     G.state=2; g_rpc_dead=0; g_gsp_boots++; nvl_s("  GSP-RM is running"); nvl_nl();
     nvl_s("[8] GET_GSP_STATIC_INFO"); nvl_nl();
     static u8 si[2168]; for(int i=0;i<2168;i++)si[i]=0;

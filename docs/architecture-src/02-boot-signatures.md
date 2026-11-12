@@ -183,7 +183,7 @@ Because they enter with `EAX=0`, `boot64.S` skips its Multiboot branch and does 
 
 `efi_main()` in order:
 
-1. Disables the watchdog (`SetWatchdogTimer(0,...)`), clears the screen and prints `NoovexOS UEFI loader 2.0`.
+1. Disables the watchdog (`SetWatchdogTimer(0,...)`), clears the screen and prints `NoovexOS UEFI loader 3.0 (signed boot)`.
 2. Finds a file system: the Simple File System of the loaded image's device, or else the first one from `LocateProtocol`.
 3. Reads `\boot\update.txt` (opened read-write) and applies the same update states as stage2 (8.12), writing the next state with `EFI_FILE_PROTOCOL.Write` and reading it back. If `\boot\kernel64.old` exists it shows "press P to start the previous version" for 0.6 s. It then opens the kernel: with no state file `\KERNEL64.BIN`, `\boot\kernel64.bin`, `\boot\kernel64.old`; with a state that starts the new version `\boot\kernel64.bin` first; for the previous version `\boot\kernel64.old` first. Paths are returned as literals, not through a table of pointers, because the loader is not relocated and a static pointer table would hold link-time addresses.
 4. Gets the file size from `EFI_FILE_INFO` (offset 8). It must not exceed `KERNEL_MAX = 0x1000000-0x100000` = 0xF00000 (15,728,640 bytes; 8 MiB in v9.08 to v9.10, 0x5C0000 before). The file is read in 1 MiB chunks into `AllocatePages(AnyPages, LoaderData)`.
@@ -387,7 +387,8 @@ State transitions found in the code:
 
 ## 2.11 Boot menu, recovery, setup and splash
 
-- `core/init/bootmenu.c` holds the recovery environment. It has a menu stack (`g_recstack`, depth 5) over four menus: `RM_MAIN` (Continue, Restart, Troubleshoot, Startup Settings, Command Prompt, Turn off), `RM_TROUBLE`, `RM_ADVANCED` and `RM_STARTUP`, with actions `RA_*` handled in `recovery_act()`. Continue to `ST_SETUP`. Safe Mode sets `g_safemode=1`. Command Prompt sets safe mode and `g_rec_openterm=1`. Startup Diagnostics (`g_recmode=1`) lists CPU, RAM, display, IDE, NIC and USB. Reset Display Mode re-reads the `0x5000` block. Restart and shutdown call `power_reboot()`/`power_off()`. Startup Repair, System Restore, Reset PC and UEFI Settings only show info panels (`g_recmode=2`). Startup Repair prints "Kernel image: valid" unconditionally; it does not consult `g_sig_ok`.
+- `core/init/bootmenu.c` holds the recovery environment (plain dark screens since v10.63). Main list `rm_main`: Continue to NoovexOS, Start in Safe Mode, Startup Repair, Show the crash report, Command Prompt, Startup Diagnostics, More options (`rm_more`: Reset Display Mode, System Restore, Reset this PC, UEFI Firmware Settings, Back), Restart, Turn off. Actions `RA_*` are handled in `recovery_act()`. Continue, Safe Mode (`g_safemode=1`) and Command Prompt (Safe Mode plus `g_rec_openterm=1`) set `g_state=g_rec_ret`, the state the start had chosen (default `ST_SETUP` when Recovery is opened from the boot menu). `g_recmode` 1 is Startup Diagnostics, 2 an info panel (`g_recinfo` 0 Startup Repair, 1 System Restore, 2 Reset this PC, 3 UEFI), 3 the crash report. Startup Repair reports the boot file system (`fat_mount`), the installed disk, the signature result (`g_sb_flags` from the UEFI loader, otherwise `g_sig_ok`) and whether a crash report exists; it changes nothing. System Restore and Reset this PC only show text.
+- Crash to Recovery (v10.63): `cx_panic_main()` in `core/crash.c` saves the report, then `cx_rec_note()` (only after this start has passed `crash_rec_pending()` and not inside Recovery itself, so a crash early in the start or in Recovery stays on the red screen instead of restarting forever) writes `RECNEXT.TXT` ("1") on the USB stick (`ufat_poke`, skipped when the crash was inside the USB code) and `rec-next.flag` on an installed disk (skipped when the heap was busy). If either was written, `cx_panic_wait(15,...)` counts down (time from `hr_ns()`; when that does not move with interrupts off, from wraps of the PIT channel 0 counter, 5 ms each in mode 3); old keys are thrown away first and calls `power_reboot()`; any key stops the countdown, R restarts. At the next start `crash_rec_pending()` (called in `kmain` after the first frame) reads both notes, sets them to "0" and returns 1; `recovery_after_crash()` stores `g_state` in `g_rec_ret`, sets `g_rec_crash=1` and switches to `ST_RECOVERY` and draws it at once. Command Prompt on a USB start opens the terminal directly. The crash report is read once per start and kept. The panic path turns off cloud file upload (`g_cloud_fs=0`) before it saves. `crash_report_text()` reads `crash-report.txt` from the installed disk or `CRASH.TXT` from the stick.
 - The synthwave boot menu (`bootmenu_present/input/activate`, in `core/init/installer.c`) has five items: Desktop to `ST_SETUP`, Safe Mode to `ST_SETUP` with `g_safemode`, Recovery to `ST_RECOVERY`, Install to `ip_open(ST_BOOTMENU)`, and Boot Configuration (shows resolution, CPU and NIC, and toggles safe mode).
 - `core/init/setup.c` is the first-run wizard with `NSU`=7 pages (language, keyboard, timezone, personalisation, Noovex account, storage, done). `su_apply()` commits the user name, accent, theme and locale choices, enables cloud files if signed in, and calls `nvx_settings_save()`. It also contains the login screen (`login_present/input`).
 - `core/init/splash.c`: `splash_boot()` is the black wordmark hold called from `kmain`. `synthwave_scene()` (gradient, grid, sun, wordmark) is the background for the boot menu.
@@ -511,11 +512,15 @@ def signature_ok(k):
 
 | Checker | When | Immutable hash | Full hash | On failure |
 |---|---|---|---|---|
-| `sig_self_check()` | every boot, `sig` command | yes (live memory) | no | skull screen; R restarts, C continues with `g_sig_ok=0` |
+| `sig_self_check()` | every boot, `sig` command | yes (live memory) | no | skull screen; R restarts, C continues with `g_sig_ok=0` (C is refused in lockdown) |
 | `kimg_check()` | installer, `kcheck` | yes (snapshot) | yes (snapshot) | installer aborts with a message |
-| `uefiboot.c` | UEFI load | no | no | only requires a valid `uefi_entry` |
+| `uefiboot.c` | UEFI load | no | yes, plus the P-256 signature over it (v10.61) | refused; with firmware Secure Boot off the user can press U to start it as untrusted (section 2.15) |
 | myboot stage2 | BIOS load | no | no | - |
 | `emulate.py` / `check.py` | host test | if matching ELF | yes | test FAIL |
+
+### Since v10.61: a real signature
+
+The hashes above only show that the file was not changed by accident: anyone who changes the kernel can compute new hashes and write them into the block. Since v10.61 the block also carries an ECDSA P-256 signature made with a private key that is not in the source tree, and the UEFI loader checks it before it starts the kernel. Section 2.15 describes the whole chain.
 
 ## 2.13 Size limits along the chain
 
@@ -554,3 +559,92 @@ The installer writes the file to the new boot partition after the boot partition
 
 - The header comment of `boot64.S` still documents the old `0x5000` layout (pitch at `0x5004`, bpp at `0x500A`). The code and `kmain` use the layout in 2.7.
 - `stage2_main` prints `myboot 0.3` while the menu title says `myboot 0.5`.
+
+## 2.15 Signed boot (v10.61)
+
+### What is checked, by whom
+
+| Step | Who | What | On failure |
+|---|---|---|---|
+| 1 | firmware | `BOOTX64.EFI` (only if the owner enrolled a key and turned firmware Secure Boot on; NoovexOS does not ship a firmware-signed loader yet) | the firmware refuses the loader |
+| 2 | `BOOTX64.EFI` (`boot/uefi/uefiboot.c`) | the kernel file: whole-file SHA-256 and the P-256 signature over it, with the public key built into the loader | firmware Secure Boot on: refused. Off: a red message; U within 15 s starts it as untrusted, anything else goes back to the firmware |
+| 3 | `BOOTX64.EFI` | the Linux files (`/sysroot/CRC.BIN`): SHA-256 against the hash inside the signed kernel | same as step 2 |
+| 4 | `BOOTX64.EFI` | the security version (`svn`) against the lowest allowed version stored in the firmware variable `NoovexMinSvn` | same as step 2 |
+| 5 | kernel (`core/secboot.c`) | reads the loader's result at `0x5100`; turns lockdown on when the kernel and Linux files were verified and the user did not override | - |
+| 6 | kernel, update (`core/update.c` `up_apply`) | a downloaded kernel must be signed with the same key, have `svn` at least the running one and the stored minimum, and its Linux files must match its signed hash | the update is not installed |
+| 7 | kernel, lockdown | Linux files read from the boot partition (`up_sr_load_disk`) are checked against the signed hash | not loaded |
+| 8 | kernel, any signed build | Linux files downloaded by the repair step (`upd_repair`) must match the signed hash, not only the CRC-32 | not used or saved |
+| 9 | kernel, UEFI start | when the loader passed no Linux files, the kernel no longer searches memory for a left-over copy (it would only have been checked by CRC-32) | started without Linux files |
+
+The legacy BIOS path (myboot) does not check signatures: nothing in a BIOS start can be trusted before the kernel, so lockdown stays off there and `security` says so.
+
+### The signature block (320 bytes, `core/buildsig.c`)
+
+The first 128 bytes are unchanged from 2.12. New fields:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 128 | 4 | `sb_version` | 1 = signed |
+| 132 | 4 | `svn` | security version (`NVX_SVN` in `core/buildsig.c`, or `nvxsign.py sign --svn N`) |
+| 136 | 8 | `keyid` | first 8 bytes of SHA-256 of the public key |
+| 144 | 32 | `sr_sha256` | SHA-256 of the Linux files (`build/sysroot.bin`) |
+| 176 | 4 | `sr_len` | their length |
+| 180 | 4 | `imm_size` | length of the code part (`__immutable_end - 0x100000`) |
+| 184 | 64 | `sig` | ECDSA P-256 signature (r, s) over `sha256_full` |
+| 248 | 65 | `pub` | the public key (uncompressed point); the kernel uses it to check updates |
+| 313 | 7 | `pad` | |
+
+Signing order (`tools/nvxsign.py` `sign_image`, called by `build.sh` step 6): fill `sb_version`, `svn`, `keyid`, `pub`, `sr_sha256`, `sr_len`, `imm_size`; zero `sha256`, `sha256_full` and `sig`; `sha256_full` = SHA-256 of the whole file; `sig` = ECDSA over `sha256_full` (the digest is signed as is); last, `sha256` = SHA-256 of the code part with `sha256` zero (so the runtime self-check still works). Because every other byte of the file, including `.data`, `svn`, the Linux-files hash and the public key, is inside `sha256_full`, the signature covers the whole file.
+
+The loader does not trust `pub` from the file: it compares it with the key built into the loader (`build/nvxkey.h`, written by `nvxsign.py pub --header`). A kernel signed with another key is refused as "signed with another key".
+
+The magic text must appear exactly once in the kernel file (2.14). The verifier in `lib/crypto/nvxsigv.c` stores it XOR 0xA5, and `build.sh` stops if it finds the magic more than once.
+
+### Verifier (`lib/crypto/nvxsigv.c`)
+
+One file shared by the loader and the kernel: streaming SHA-256, P-256 field and scalar arithmetic in Montgomery form (8 x 32-bit words), Jacobian point addition and doubling, and ECDSA verification with the usual checks (r and s in 1..n-1, the public key on the curve). All constants are byte arrays, because the loader is linked without relocation processing and must not contain pointers in its data. `sv_kernel_verify()` returns 0 or a negative code: -2 no block, -3 not signed, -4 other key, -5 damaged block, -6 file changed after signing, -7 wrong signature; the callers add -8 (Linux files) and -9 (rollback). The kernel includes the file from `core/secboot.c`.
+
+### Rollback protection
+
+The loader reads `NoovexMinSvn` (vendor GUID `eb01d052-b83d-4ba2-af32-098cb20247c5`) with `GetVariable`. A kernel with a lower `svn` is refused. After a verified start with no update being tried (`update.txt` not in TRY/FAIL/OLD state), a higher `svn` is written back with attributes non-volatile + boot-services only, so the running system cannot lower it after `ExitBootServices`. A variable that is also runtime-writable is ignored with a warning. Raise `svn` only for a security fix: older releases with a lower number stop starting on that computer.
+
+### Information for the kernel (`0x5100`, 32 bytes)
+
+| Offset | Size | Meaning |
+|---|---|---|
+| 0 | 4 | magic `0x4253564E` |
+| 4 | 4 | flags: 1 kernel verified, 2 Linux files verified, 4 firmware Secure Boot on, 8 started as untrusted by the user, 16 rollback minimum stored |
+| 8 | 4 | lowest allowed version |
+| 12 | 4 | the kernel's version |
+| 16 | 4 | error code (positive) |
+| 20 | 4 | loader version (3) |
+| 24 | 8 | key id built into the loader |
+
+### Lockdown (`g_lockdown`)
+
+On when the loader verified the kernel and the user did not override. Then:
+
+- the WRONG VERSION screen has no C (continue) key;
+- `dlmod` / `nvx_dlload` refuses to load kernel modules;
+- updates must be signed with the same key and not be older (`up_apply`);
+- Linux files from the boot partition are checked before use.
+
+`security` (or `secureboot`) in the Terminal shows the boot path, firmware Secure Boot, the signature result, the key id (and whether the loader has the same key), the Linux-files result, the versions and the lockdown state.
+
+### Keys (`tools/nvxsign.py`)
+
+| Command | What it does |
+|---|---|
+| `nvxsign.py newkey [--key P]` | make a P-256 key (default `build/keys/kernel-sign.pem`, mode 0600) if there is none |
+| `nvxsign.py pub [--header F]` | print the public key, or write the C header for the loader; makes a key if there is none |
+| `nvxsign.py sign K [--svn N] [--sysroot S]` | sign a kernel file (also re-signs an already signed one, for example with your own key) |
+| `nvxsign.py verify K [--key P / --pub HEX] [--sysroot S]` | check a kernel file |
+| `nvxsign.py info K` | show the block |
+
+`NVX_SIGN_KEY=/path/key.pem` makes the build use that key. The key decides which loaders accept the kernel and which installed systems accept an update, so it must stay the same across releases. `build/` is not in the source zip, so the key never travels with the sources. If the key is lost, installed systems must be reinstalled from a new image (the new loader carries the new key).
+
+### Limits
+
+- Firmware Secure Boot (step 1) needs a loader signed for the firmware (Authenticode) and the owner's key in the firmware `db`; not done yet. Until then someone who can write the EFI partition can replace the loader, key and all.
+- BIOS starts are not checked.
+- The check takes time: SHA-256 of the kernel (about 78 MB) and the Linux files (about 210 MB) costs about a second on a laptop and much longer in an emulator without hardware acceleration.

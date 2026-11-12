@@ -107,7 +107,7 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
         st_sep(y+64); st_rowtext(y+64,"Pointer style",0); { int w=st_segw(CUN,5); st_seg(X1-w,y+81,CUN,5,g_cursor,30); } }
     } else if(g_setcat==2){
         if(!pci_n)pci_scan(); int ek=nic_index();
-        int y=st_card(cy,64,"Ethernet"); st_rowtext(y,ek>=0?(char*)nic_name(pci_ven[ek],pci_dev[ek]):"No wired adapter",net_ok?"Connected":"Not started - run 'net' in the Terminal");
+        int y=st_card(cy,64,"Ethernet"); st_rowtext(y,nic_active_name()?(char*)nic_active_name():ek>=0?(char*)nic_name(pci_ven[ek],pci_dev[ek]):"No wired adapter",net_ok?"Connected":"Not started - run 'net' in the Terminal");
         if(net_ok){ char b[40],*p=b; p=udec(p,my_ip>>24);*p++='.';p=udec(p,(my_ip>>16)&255);*p++='.';p=udec(p,(my_ip>>8)&255);*p++='.';p=udec(p,my_ip&255); *p=0; pdstr(X1-pw_str(b,1),y+24,b,INK,1); }
         cy=y+64+28;
         extern char g_wifi_user[64], g_wifi_hid[33]; extern int g_wifi_userlen, g_wifi_hidlen; extern const char* wifi_sec_name(const scan_ap*); extern void wifi_bars(int,int,int,u32,u32); extern void wifi_lock(int,int,u32);
@@ -142,9 +142,20 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
             for(int i=0;i<n;i++){ int yy=y+i*40; if(i)st_sep(yy); pdstr(st_x0+20,yy+13,g_wnets[i].ssid,INK,1); char t[40],*p=t; p=scopy(p,"priority "); p=udec(p,(u32)g_wnets[i].prio); if(g_wnets[i].hidden)p=scopy(p,", hidden"); if(g_wnets[i].eap)p=scopy(p,", enterprise"); if(!g_wnets[i].autoc)p=scopy(p,", manual"); *p=0; pdstr(st_x0+260,yy+13,t,rgb(130,138,156),1);
                 st_btn(X1-250,yy+3,40,"+",1500+i,0); st_btn(X1-204,yy+3,40,"-",1520+i,0); st_btn(X1-158,yy+3,70,g_wnets[i].autoc?"Auto":"Manual",1540+i,0); st_btn(X1-82,yy+3,82,"Forget",1400+i,2); } } }
     } else if(g_setcat==3){
-        static const char* HZ[3]={"30 Hz","60 Hz","120 Hz"}; static const char* PN[2]={"LCD","OLED"}; static const char* MA[3]={"Off","Low","High"};
-        int y=st_card(cy,64*3,"Screen"); st_rowtext(y,"Refresh rate","How often the desktop redraws"); { int w=st_segw(HZ,3); st_seg(X1-w,y+17,HZ,3,g_refresh_hz==30?0:g_refresh_hz==60?1:2,60); } st_sep(y+64);
-        st_rowtext(y+64,"Panel type","OLED shifts pixels slightly to avoid burn-in"); { int w=st_segw(PN,2); st_seg(X1-w,y+81,PN,2,g_panel_oled,63); } st_sep(y+128);
+        static const char* HZ[3]={"30 Hz","60 Hz","120 Hz"}; static const char* PN[2]={"Off","On"}; static const char* MA[3]={"Off","Low","High"};
+        { extern const mon_edid_t* mon_get(void); extern int mon_max_hz(void); extern const char* mon_iface_name(void); const mon_edid_t* mo=mon_get();
+          if(mo->ok){ int y=st_card(cy,64*3,"Monitor (reported by the monitor)"); char b[96],*p=b;
+              p=scopy(p,mo->name[0]?mo->name:"Unnamed monitor"); p=scopy(p,"  -  maker code "); p=scopy(p,mo->maker); if(mo->year){ p=scopy(p,", made "); p=udec(p,mo->year); } *p=0; st_rowtext(y,"Monitor",b); st_sep(y+64);
+              p=b; p=udec(p,mo->nat_w); *p++='x'; p=udec(p,mo->nat_h); p=scopy(p," at "); p=udec(p,mo->nat_mhz/1000); *p++='.'; { u32 f=(mo->nat_mhz%1000)/10; *p++=(char)('0'+f/10); *p++=(char)('0'+f%10); } p=scopy(p," Hz"); if(mon_max_hz()>(int)((mo->nat_mhz+500)/1000)){ p=scopy(p,"  -  up to "); p=udec(p,(u32)mon_max_hz()); p=scopy(p," Hz"); } *p=0; st_rowtext(y+64,"Native mode",b); st_sep(y+128);
+              p=b; if(mo->cm_w&&mo->cm_h){ u32 d2=(u32)mo->cm_w*mo->cm_w+(u32)mo->cm_h*mo->cm_h; u32 r=0; while((r+1)*(r+1)<=d2)r++; u32 in10=(r*1000+127)/254; p=udec(p,in10/10); *p++='.'; *p++=(char)('0'+in10%10); p=scopy(p," inch ("); p=udec(p,mo->cm_w); *p++='x'; p=udec(p,mo->cm_h); p=scopy(p," cm), "); } p=scopy(p,mon_iface_name()); if(mo->bits){ p=scopy(p,", "); p=udec(p,(u32)mo->bits); p=scopy(p," bits per colour"); } *p=0; st_rowtext(y+128,"Size and connection",b);
+              cy=y+192+28; }
+          else { int y=st_card(cy,64,"Monitor"); st_rowtext(y,"Not reported","The firmware did not pass on the monitor's details (EDID)"); cy=y+64+28; } }
+        int y=st_card(cy,64*4,"Screen");
+        { extern int mon_cur_mhz(u32,u32); int cm=mon_cur_mhz(W,H); char b[96],*p=b; p=udec(p,W); *p++='x'; p=udec(p,H); p=scopy(p,"  -  "); if(cm){ p=udec(p,(u32)(cm+500)/1000); p=scopy(p," Hz (the monitor's native mode)"); } else p=scopy(p,"refresh rate not reported (set by the firmware)"); *p=0; st_rowtext(y,"Screen mode",b); st_sep(y+64); }
+        { extern int mon_max_hz(void); int mxh=mon_max_hz(); int nh=mxh>=120?3:2; if(g_refresh_hz>=120&&nh<3)g_refresh_hz=60; char d[96],*p=d; p=scopy(p,"How often NoovexOS redraws"); if(mxh){ p=scopy(p," (monitor max "); p=udec(p,(u32)mxh); p=scopy(p," Hz)"); } *p=0;
+          st_rowtext(y+64,"Desktop redraw rate",d); { int w=st_segw(HZ,nh); st_seg(X1-w,y+81,HZ,nh,g_refresh_hz==30?0:g_refresh_hz==60?1:2,60); } } st_sep(y+128);
+        st_rowtext(y+128,"Burn-in protection","Moves the picture by one pixel every 30 s (for OLED and plasma screens)"); { int w=st_segw(PN,2); st_seg(X1-w,y+145,PN,2,g_panel_oled,63); } st_sep(y+192);
+        y+=64;
         { char b[48],*p=b; p=udec(p,W); *p++='x'; p=udec(p,H); p=scopy(p,"  "); p=udec(p,BPP); p=scopy(p,"-bit colour - screen and monitors"); *p=0; st_rowtext(y+128,"Resolution",b); { int X1r=st_x0+st_w0-24; int hv=in_rect(mx,my,st_x0,y+128,st_w0,64); st_chev(X1r-4,y+156,hv?ACC:ST_DIM,0); st_hit(st_x0,y+128,st_w0,64,1000+P_SCREENS); } }
         cy=y+192+28;
         if(g_bl.ok){ y=st_card(cy,64,"Brightness"); { char b[24],*p=b; p=udec(p,(u32)(g_bl.cur<0?0:g_bl.cur)); *p++='%'; *p=0; st_rowtext(y,"Screen brightness",b); }
@@ -294,6 +305,8 @@ void settings_click(int px,int py){
         if(id==332){ extern int g_nvd_on; extern int nvd_desktop(void); extern char g_nvd_why[]; extern void gfx_stop(const char*); if(g_nvd_on)gfx_stop("turned off in Settings"); else if(nvd_desktop())toast(g_nvd_why); return; }
         if(id==333){ char m[120]; if(nvgsp_off()){ nvgsp_on(m,120); toast(m); } else { nvgsp_all_off("turned off in Settings"); toast("NVIDIA drawing off - the CPU draws"); } return; }
         if(id==335){ nvgsp_monitors(); return; }
+        if(id==336){ extern int nvgsp_cmd(const char*); int r=nvgsp_cmd("mode"); nvgsp_mode_t mi; nvgsp_mode_info(&mi); toast(r>0?"Second screen on":(mi.why&&mi.why[0]?mi.why:"The second screen could not be turned on - see nvgsp-log.txt")); return; }
+        if(id==337){ extern int nvgsp_cmd(const char*); int r=nvgsp_cmd("mode off"); toast(r>0?"Second screen off":"The second screen did not turn off - see nvgsp-log.txt"); return; }
         if(id==334){ extern void nvd_run_request(void); nvd_run_request(); toast("Starting the NVIDIA GPU..."); return; }
         if(id==322){ extern void snd_rec_gain(int); int pc=(px-st_mlx)*100/(st_mlw>0?st_mlw:1); snd_rec_gain(pc); return; }
         if(id==323){ open_win(W_RECORDER); return; }
@@ -323,7 +336,7 @@ void settings_click(int px,int py){
         if(id>=80&&id<86){ g_tth=id-80; return; }
         if(id>=110&&id<114){ static const int op[4]={100,90,80,65}; g_topa=op[id-110]; return; } if(id==114){ g_tblur^=1; return; } if(id==85||id==86){ g_tfont=(id==85); return; }
         if(id>=87&&id<90){ g_tcur=id-87; return; } if(id==90){ g_tstatus^=1; term_geom(); return; }
-        if(id==95){ ip_open(ST_DESKTOP); return; }
+        if(id==95){ inst_launch(ST_DESKTOP); return; }
         if(id==400){ if(!g_upd.busy){ g_upd.checked=0; g_upd.want_check=1; } return; }
         if(id==401){ upd_install(0); return; }
         if(id==402){ upd_use_new(); return; }

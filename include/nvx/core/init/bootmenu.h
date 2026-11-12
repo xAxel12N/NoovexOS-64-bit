@@ -12,5 +12,7 @@ extern int g_recsel , g_recinfo;
 
 void recovery_present(void);
 int recovery_input(void);
+void recovery_after_crash(void);
+extern int g_rec_ret, g_rec_crash;
 
 #endif

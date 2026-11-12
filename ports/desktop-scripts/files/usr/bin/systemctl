@@ -1,0 +1,14 @@
+#!/bin/sh
+q=0
+for a in "$@"; do case "$a" in -q|--quiet) q=1;; esac; done
+cmd=""; for a in "$@"; do case "$a" in -*) ;; *) cmd="$a"; break;; esac; done
+case "$cmd" in
+  is-system-running) echo offline; exit 1;;
+  is-active|is-failed) [ $q = 1 ] || echo inactive; exit 3;;
+  is-enabled) [ $q = 1 ] || echo disabled; exit 1;;
+  status) [ $q = 1 ] || echo "NoovexOS has no systemd; no services are running" >&2; exit 4;;
+  daemon-reload|daemon-reexec|reload|try-restart|try-reload-or-restart|preset|mask|unmask|enable|disable|reset-failed|set-default|revert) exit 0;;
+  start|stop|restart|reload-or-restart|kill) [ $q = 1 ] || echo "systemctl $cmd: NoovexOS has no systemd service manager" >&2; exit 1;;
+  "") echo "NoovexOS has no systemd; services are not managed here" >&2; exit 1;;
+  *) [ $q = 1 ] || echo "systemctl $cmd: not available on NoovexOS" >&2; exit 1;;
+esac

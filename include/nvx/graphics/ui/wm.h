@@ -33,7 +33,7 @@ extern const char* g_subit[8];
 extern char g_subparent[16];
 extern int g_snap , g_resize , r_sw0 , r_sh0 , r_mx0 , r_my0 , r_sx0 , r_sy0 , g_rflags , g_rz_hover;
 int win_edge_hit(int px,int py,int* win);
-extern int g_launcher , g_alttab , g_altsel , g_altlist[NWIN], g_altn , alt_prev;
+extern int g_launcher , g_alttab , g_altsel , g_altlist[NWIN+32], g_altn , alt_prev;
 extern int g_wallmode , wall_custom_slot , g_clockpop , g_qs;
 extern int g_rename , g_renslot , g_renlen;
 extern char g_renbuf[64];

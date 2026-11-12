@@ -3,14 +3,27 @@
 #include "include/nvx/fs/vfs/sysroot.h"
 #include "include/nvx/fs/vfs/vfs.h"
 #include "include/nvx/mem/heap.h"
+#include "include/nvx/arch/x86_64/cpu/percpu.h"
 extern int pz_inflate_raw(const unsigned char* src,int slen,unsigned char* out,int outcap);
 extern long xzk_decode_into(const u8* in,long n,u8* out,long cap);
+extern long zstk_decode_into(const u8* in,long n,u8* out,long cap);
 
 typedef struct { char name[120]; char tgt[120]; u32 mode, off, clen, ulen; } sr_v1;
 typedef struct { u32 type, off, clen, ulen; } sr_blk;
 typedef struct { u32 name, tgt, mode, blk, boff, ulen; } sr_v2;
-typedef struct { const char* name; const char* tgt; u32 mode, ulen, boff; int blk, layer; const u8* raw; u32 clen; u8* cache; } sr_ent;
-typedef struct { char tag[64]; const u8* blob; u32 size; int owned, used, v2, nblk; const sr_blk* blk; const u8* data; u8** bcache; } sr_layer;
+typedef struct { const char* name; const char* tgt; u32 mode, ulen, boff; int blk, layer; const u8* raw; u32 clen; u8* cache; int pch; } sr_ent;
+typedef struct { int ent; u32 npg; u64* fr; } sr_pcf;
+static void sr_pc_drop(int h);
+static sr_pcf* g_pcf; static int g_npcf, g_cpcf;
+u64 g_pc_fills, g_pc_hits, g_sr_unpack_ns, g_sr_unpack_bytes, g_pc_oom;
+u64 sysroot_pc_page(int h,u32 pg);
+u32 sysroot_pc_reclaim(u32 want);
+extern u64 hr_ns(void);
+extern u64 pframe_alloc(void); extern void pframe_free(u64 pa); extern void pframe_ref(u64 pa);
+typedef struct { char tag[64]; const u8* blob; u32 size; int owned, used, v2, nblk, busy; const sr_blk* blk; const u8* data; u8** bcache; u32* bt; u8* bpin; } sr_layer;
+extern volatile u64 g_ticks; extern unsigned long long heap_top, heap_base; extern u32 pframe_refcount(u64 pa);
+static u64 g_bc_bytes, g_bc_pin; u64 g_bc_evicted;
+u64 sysroot_bc_evict(u64 want,u32 min_age);
 typedef struct { char* path; int kind, ent, parent, child, next; } sr_node;
 
 #define SR_MAXL 256
@@ -22,7 +35,12 @@ static int* g_ht; static int g_hcap;
 static int sr_len(const char* s){ int n=0; while(s[n])n++; return n; }
 static int sr_eq(const char* a,const char* b){ while(*a&&*a==*b){ a++; b++; } return *a==*b; }
 static u32 sr_hash(const char* s){ u32 h=2166136261u; while(*s){ h=(h^(u8)*s++)*16777619u; } return h; }
-static char* sr_dup(const char* s){ int n=sr_len(s); char* d=(char*)kmalloc((unsigned long)n+1); if(!d)return 0; for(int i=0;i<=n;i++)d[i]=s[i]; return d; }
+static char** g_arb; static u32* g_arc; static int g_narb, g_carb, g_arbi; static u32 g_arn;
+static char* sr_dup(const char* s){ int n=sr_len(s); u32 need=(u32)n+1;
+    while(g_arbi<g_narb&&g_arn+need>g_arc[g_arbi]){ g_arbi++; g_arn=0; }
+    if(g_arbi>=g_narb){ if(g_narb>=g_carb){ int nc=g_carb?g_carb*2:64; char** b=(char**)krealloc(g_arb,sizeof(char*)*(unsigned long)nc); if(!b)return 0; g_arb=b; u32* c=(u32*)krealloc(g_arc,sizeof(u32)*(unsigned long)nc); if(!c)return 0; g_arc=c; g_carb=nc; }
+        u32 cap=need>262144u?need:262144u; char* m=(char*)kmalloc(cap); if(!m)return 0; g_arb[g_narb]=m; g_arc[g_narb]=cap; g_arbi=g_narb++; g_arn=0; }
+    char* d=g_arb[g_arbi]+g_arn; g_arn+=need; for(int i=0;i<=n;i++)d[i]=s[i]; return d; }
 
 static void sr_norm(const char* in,char* out,int cap){
     int o=0; const char* p=in; out[o++]='/';
@@ -76,7 +94,7 @@ static void sr_place(int ei){
     nd_new(full,(e->mode&2)?2:1,ei,pv); }
 
 static void sr_rebuild(void){
-    for(int i=0;i<g_nn;i++)kfree(g_nd[i].path); g_nn=0; if(g_ht)for(int i=0;i<g_hcap;i++)g_ht[i]=-1;
+    g_arbi=0; g_arn=0; g_nn=0; if(g_ht)for(int i=0;i<g_hcap;i++)g_ht[i]=-1;
     nd_new("/",0,-1,-1);
     for(int i=0;i<g_ne;i++) if(g_e[i].layer==0&&(g_e[i].mode&2)) sr_place(i);
     for(int li=g_nly-1;li>=1;li--){ if(!g_ly[li].used)continue; for(int i=0;i<g_ne;i++) if(g_e[i].layer==li) sr_place(i); }
@@ -91,33 +109,42 @@ static int sr_parse(int li){
     if(sz<8)return 0;
     if(b[0]=='N'&&b[1]=='V'&&b[2]=='S'&&b[3]=='R'){ u32 n=*(const u32*)(b+4); const sr_v1* t=(const sr_v1*)(b+8); const u8* data=b+8+(u64)n*sizeof(sr_v1); if(8+(u64)n*sizeof(sr_v1)>sz)return 0;
         l->v2=0; l->nblk=0; l->data=data;
-        for(u32 i=0;i<n;i++){ sr_ent x; x.name=t[i].name; x.tgt=t[i].tgt; x.mode=t[i].mode; x.ulen=t[i].ulen; x.clen=t[i].clen; x.raw=data+t[i].off; x.blk=-1; x.boff=0; x.layer=li; x.cache=0; if(!ent_push(&x))return 0; }
+        for(u32 i=0;i<n;i++){ sr_ent x; x.name=t[i].name; x.tgt=t[i].tgt; x.mode=t[i].mode; x.ulen=t[i].ulen; x.clen=t[i].clen; x.raw=data+t[i].off; x.blk=-1; x.boff=0; x.layer=li; x.cache=0; x.pch=-1; if(!ent_push(&x))return 0; }
         return 1; }
     if(b[0]=='N'&&b[1]=='V'&&b[2]=='S'&&b[3]=='2'){ if(sz<16)return 0; u32 n=*(const u32*)(b+4), nb=*(const u32*)(b+8), so=*(const u32*)(b+12);
         const sr_blk* bt=(const sr_blk*)(b+16); const sr_v2* et=(const sr_v2*)(b+16+(u64)nb*sizeof(sr_blk)); const char* st=(const char*)(b+so);
         if(16+(u64)nb*sizeof(sr_blk)+(u64)n*sizeof(sr_v2)>sz||so>sz)return 0;
         l->v2=1; l->nblk=(int)nb; l->blk=bt; l->data=b;
-        l->bcache=(u8**)kmalloc(sizeof(u8*)*(nb?nb:1)); if(!l->bcache)return 0; for(u32 i=0;i<nb;i++)l->bcache[i]=0;
-        for(u32 i=0;i<n;i++){ sr_ent x; x.name=st+et[i].name; x.tgt=st+et[i].tgt; x.mode=et[i].mode; x.ulen=et[i].ulen; x.blk=(int)et[i].blk; x.boff=et[i].boff; x.clen=0; x.raw=0; x.layer=li; x.cache=0; if(!ent_push(&x))return 0; }
+        l->bcache=(u8**)kmalloc(sizeof(u8*)*(nb?nb:1)); l->bt=(u32*)kmalloc(sizeof(u32)*(nb?nb:1)); l->bpin=(u8*)kmalloc(nb?nb:1); if(!l->bcache||!l->bt||!l->bpin)return 0; for(u32 i=0;i<nb;i++){ l->bcache[i]=0; l->bt[i]=0; l->bpin[i]=0; }
+        for(u32 i=0;i<n;i++){ sr_ent x; x.name=st+et[i].name; x.tgt=st+et[i].tgt; x.mode=et[i].mode; x.ulen=et[i].ulen; x.blk=(int)et[i].blk; x.boff=et[i].boff; x.clen=0; x.raw=0; x.layer=li; x.cache=0; x.pch=-1; if(!ent_push(&x))return 0; }
         return 1; }
     return 0; }
 
-static const u8* blk_get(sr_layer* l,int bi){
+int g_sr_nolock[64];
+long xzk_decode_unlocked(const u8* in,long n,u8* out,long cap); long zstk_decode_unlocked(const u8* in,long n,u8* out,long cap);
+static void sr_bc_budget(void){ u64 cap=(heap_top-heap_base)/4; u64 un=g_bc_bytes>g_bc_pin?g_bc_bytes-g_bc_pin:0; if(un>cap)sysroot_bc_evict(un-cap*3/4,1); }
+static void sr_pin(sr_layer* l,int bi){ if(!l->bpin[bi]){ l->bpin[bi]=1; g_bc_pin+=l->blk[bi].ulen; } }
+static const u8* blk_get(sr_layer* l,int bi,int pin){
     if(bi<0||bi>=l->nblk)return 0; const sr_blk* k=&l->blk[bi];
     if(k->type==0)return l->data+k->off;
-    if(l->bcache[bi])return l->bcache[bi];
-    u8* d=(u8*)kmalloc(k->ulen?k->ulen:1); if(!d)return 0;
-    int ok=0;
-    if(k->type==1)ok=pz_inflate_raw(l->data+k->off,(int)k->clen,d,(int)k->ulen)==(int)k->ulen;
-    else if(k->type==2)ok=xzk_decode_into(l->data+k->off,(long)k->clen,d,(long)k->ulen)==(long)k->ulen;
+    if(l->bcache[bi]){ l->bt[bi]=(u32)g_ticks; if(pin)sr_pin(l,bi); return l->bcache[bi]; }
+    u8* d=(u8*)kmalloc(k->ulen?k->ulen:1); if(!d&&sysroot_bc_evict((u64)k->ulen*2,1))d=(u8*)kmalloc(k->ulen?k->ulen:1); if(!d)return 0;
+    int ok=0; u64 t0=hr_ns(); int nl=g_sr_nolock[cpu_id()&63]&&k->type!=1; const u8* src=l->data+k->off; long cl=(long)k->clen, ul=(long)k->ulen; int kt=k->type;
+    extern volatile int g_frz_hold; int ofh=g_frz_hold; if(nl){ l->busy++; if(cpu_id()==0)g_frz_hold=1; }
+    if(kt==1)ok=pz_inflate_raw(src,(int)cl,d,(int)ul)==(int)ul;
+    else if(kt==2)ok=(nl?xzk_decode_unlocked(src,cl,d,ul):xzk_decode_into(src,cl,d,ul))==ul;
+    else if(kt==3)ok=(nl?zstk_decode_unlocked(src,cl,d,ul):zstk_decode_into(src,cl,d,ul))==ul;
+    if(nl){ l->busy--; if(cpu_id()==0)g_frz_hold=ofh; }
     if(!ok){ kfree(d); return 0; }
-    l->bcache[bi]=d; return d; }
+    g_sr_unpack_ns+=hr_ns()-t0; g_sr_unpack_bytes+=(u64)ul;
+    if(l->bcache[bi]){ kfree(d); l->bt[bi]=(u32)g_ticks; if(pin)sr_pin(l,bi); return l->bcache[bi]; }
+    l->bcache[bi]=d; l->bt[bi]=(u32)g_ticks; if(pin)sr_pin(l,bi); g_bc_bytes+=k->ulen; sr_bc_budget(); return d; }
 
-static const u8* ent_data(sr_ent* e){
+static const u8* ent_data(sr_ent* e,int pin){
     if(e->ulen==0)return (const u8*)"";
     sr_layer* l=&g_ly[e->layer];
     if(!l->v2){ if(e->cache)return e->cache; u8* d=(u8*)kmalloc(e->ulen); if(!d)return 0; if(pz_inflate_raw(e->raw,(int)e->clen,d,(int)e->ulen)!=(int)e->ulen){ kfree(d); return 0; } e->cache=d; return d; }
-    const u8* b=blk_get(l,e->blk); if(!b)return 0; return b+e->boff; }
+    u32 bo=e->boff; const u8* b=blk_get(l,e->blk,pin); if(!b)return 0; return b+bo; }
 
 static int sr_addlayer(const char* tag,const u8* blob,u32 size,int owned){
     int base=sr_eq(tag,"base"), li=-1;
@@ -125,9 +152,9 @@ static int sr_addlayer(const char* tag,const u8* blob,u32 size,int owned){
     else { for(int i=1;i<g_nly;i++) if(!g_ly[i].used){ li=i; break; }
         if(li<0){ if(g_nly<1)g_nly=1; if(g_nly>=SR_MAXL)return -1; li=g_nly++; } }
     sr_layer* l=&g_ly[li]; int k=0; for(;tag[k]&&k<63;k++)l->tag[k]=tag[k]; l->tag[k]=0;
-    l->blob=blob; l->size=size; l->owned=owned; l->used=1; l->bcache=0; l->nblk=0;
+    l->blob=blob; l->size=size; l->owned=owned; l->used=1; l->bcache=0; l->bt=0; l->bpin=0; l->nblk=0; l->busy=0;
     int ne0=g_ne;
-    if(!sr_parse(li)){ g_ne=ne0; l->used=0; if(l->bcache)kfree(l->bcache); return -1; }
+    if(!sr_parse(li)){ g_ne=ne0; l->used=0; if(l->bcache)kfree(l->bcache); if(l->bt)kfree(l->bt); if(l->bpin)kfree(l->bpin); l->bcache=0; l->bt=0; l->bpin=0; return -1; }
     return li; }
 
 #define SR_MOD SR_SLOT
@@ -169,21 +196,22 @@ void sysroot_init(void){
     u32 sz=sysroot_want_size(), c=sysroot_want_crc();
     extern unsigned long long heap_base;
     extern unsigned long long heap_top; u64 sb=sysroot_slot_base(), se=sysroot_slot_end();
-    if(sz>=8&&sz<=SR_MODMAX&&(heap_base>=se||heap_top<=sb)){ const u8* m=(const u8*)sb; if(sysroot_crc(m,sz)==c&&sr_addlayer("base",m,sz,0)>=0)g_sr_src=1; }
+    if(sz>=8&&sz<=SR_MODMAX&&!(*(volatile u32*)0x502CULL==0x49464555u&&*(volatile u64*)0x5030ULL==0)&&(heap_base>=se||heap_top<=sb)){ const u8* m=(const u8*)sb; if(sysroot_crc(m,sz)==c&&sr_addlayer("base",m,sz,0)>=0)g_sr_src=1; }
     { extern void klog(const char*); char t[96]; const char* p=g_sr_src?"linux files: found at 0x":"linux files: not found in memory, looked at 0x"; int k=0; while(*p)t[k++]=*p++;
       for(int i=28;i>=0;i-=4)t[k++]="0123456789ABCDEF"[(sb>>i)&15]; t[k]=0; klog(t); }
     sr_rebuild(); }
 
 int sysroot_add_layer(const char* tag,const u8* blob,u32 size,int owned){
     if(sr_eq(tag,"base"))return sysroot_set_base(blob,size,owned);
-    for(int i=1;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag))sysroot_del_layer(tag);
+    for(int i=1;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)&&!sysroot_del_layer(tag))return 0;
     int li=sr_addlayer(tag,blob,size,owned); if(li<0)return 0; sr_rebuild(); return 1; }
 
 int sysroot_del_layer(const char* tag){
     int li=-1; for(int i=0;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)){ li=i; break; }
-    if(li<=0)return 0; sr_layer* l=&g_ly[li];
-    int w=0; for(int i=0;i<g_ne;i++){ if(g_e[i].layer==li){ if(g_e[i].cache)kfree(g_e[i].cache); continue; } g_e[w++]=g_e[i]; } g_ne=w;
-    if(l->bcache){ for(int i=0;i<l->nblk;i++) if(l->bcache[i])kfree(l->bcache[i]); kfree(l->bcache); }
+    if(li<=0)return 0; sr_layer* l=&g_ly[li]; if(l->busy)return 0;
+    int w=0; for(int i=0;i<g_ne;i++){ if(g_e[i].layer==li){ if(g_e[i].cache)kfree(g_e[i].cache); if(g_e[i].pch>=0)sr_pc_drop(g_e[i].pch); continue; } g_e[w++]=g_e[i]; } g_ne=w;
+    for(int i=0;i<g_ne;i++) if(g_e[i].pch>=0)g_pcf[g_e[i].pch].ent=i;
+    if(l->bcache){ for(int i=0;i<l->nblk;i++) if(l->bcache[i]){ kfree(l->bcache[i]); if(g_bc_bytes>=l->blk[i].ulen)g_bc_bytes-=l->blk[i].ulen; if(l->bpin&&l->bpin[i]&&g_bc_pin>=l->blk[i].ulen)g_bc_pin-=l->blk[i].ulen; } kfree(l->bcache); l->bcache=0; } if(l->bt){ kfree(l->bt); l->bt=0; } if(l->bpin){ kfree(l->bpin); l->bpin=0; }
     if(l->owned)kfree((void*)l->blob); l->used=0; l->blob=0; sr_rebuild(); return 1; }
 
 const u8* sysroot_layer_blob(const char* tag,u32* size){ for(int i=0;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)){ if(size)*size=g_ly[i].size; return g_ly[i].blob; } return 0; }
@@ -196,9 +224,13 @@ int sysroot_layer_files(const char* tag,int idx,char* name,int cap){
 
 int sysroot_stats(int* files,int* layers){ int n=0; for(int i=0;i<g_nly;i++) if(g_ly[i].used)n++; if(files)*files=g_ne; if(layers)*layers=n; return g_nn; }
 
-const u8* sysroot_get(const char* path,u32* len,int* exec){
-    int v=sr_walk(path,1,0,0,0); if(v<0||g_nd[v].kind!=1)return 0; sr_ent* e=&g_e[g_nd[v].ent];
-    const u8* d=ent_data(e); if(!d)return 0; if(len)*len=e->ulen; if(exec)*exec=(int)(e->mode&1); return d; }
+static const u8* sr_get(const char* path,u32* len,int* exec,int pin){
+    int v=sr_walk(path,1,0,0,0); if(v<0||g_nd[v].kind!=1)return 0; sr_ent* e=&g_e[g_nd[v].ent]; u32 ul=e->ulen, md=e->mode;
+    const u8* d=ent_data(e,pin); if(!d)return 0; if(len)*len=ul; if(exec)*exec=(int)(md&1); return d; }
+const u8* sysroot_get(const char* path,u32* len,int* exec){ return sr_get(path,len,exec,1); }
+int sysroot_meta(const char* path,u32* len,int* exec){
+    int v=sr_walk(path,1,0,0,0); if(v<0||g_nd[v].kind!=1)return 0; sr_ent* e=&g_e[g_nd[v].ent]; if(len)*len=e->ulen; if(exec)*exec=(int)(e->mode&1); return 1; }
+const u8* sysroot_get_unlocked(const char* path,u32* len,int* exec){ int c=cpu_id()&63; int o=g_sr_nolock[c]; g_sr_nolock[c]=1; const u8* d=sr_get(path,len,exec,0); g_sr_nolock[c]=o; return d; }
 u32 sysroot_ino(const char* path,int follow){ int v=sr_walk(path,follow,0,0,0); if(v<=0)return 0; return 0x10000000u|(sr_hash(g_nd[v].path)&0x0FFFFFFFu); }
 int sysroot_isdir(const char* path){ int v=sr_walk(path,1,0,0,0); return v>0&&g_nd[v].kind==0; }
 int sysroot_exists(const char* path){ int v=sr_walk(path,1,0,0,0); return v>0; }
@@ -211,12 +243,69 @@ int sysroot_list(const char* dir,int idx,char* name,int cap,int* isdir){
     const char* p=g_nd[c].path; int s=sr_len(p); while(s>0&&p[s-1]!='/')s--; int k=0; for(;p[s+k]&&k<cap-1;k++)name[k]=p[s+k]; name[k]=0;
     if(isdir)*isdir=g_nd[c].kind==0; return 1; }
 static int sr_match(const char* p){ int v=sr_walk(p,1,0,0,0); return v>0&&g_nd[v].kind==1; }
-static int sr_read(const char* p,char* buf,int off,int len){ u32 L; const u8* d=sysroot_get(p,&L,0); if(!d)return -1; if(off<0||(u32)off>=L)return 0; if((u32)(off+len)>L)len=(int)(L-(u32)off); for(int i=0;i<len;i++)buf[i]=(char)d[off+i]; return len; }
+static int sr_read(const char* p,char* buf,int off,int len){ u32 L; const u8* d=sr_get(p,&L,0,0); if(!d)return -1; if(off<0||(u32)off>=L)return 0; if((u32)(off+len)>L)len=(int)(L-(u32)off); for(int i=0;i<len;i++)buf[i]=(char)d[off+i]; return len; }
 static int sr_size(const char* p){ int v=sr_walk(p,1,0,0,0); if(v<=0||g_nd[v].kind!=1)return -1; return (int)g_e[g_nd[v].ent].ulen; }
 int sysroot_fsize(const char* p){ return sr_size(p); }
+static int sr_pc_new(int ei){
+    sr_ent* e=&g_e[ei]; if(e->pch>=0)return e->pch;
+    if(g_npcf>=(1<<20)-1)return -1;
+    if(g_npcf>=g_cpcf){ int nc=g_cpcf?g_cpcf*2:256; sr_pcf* n=(sr_pcf*)krealloc(g_pcf,sizeof(sr_pcf)*(unsigned long)nc); if(!n)return -1; g_pcf=n; g_cpcf=nc; }
+    u32 np=(e->ulen+4095u)/4096u; u64* fr=(u64*)kmalloc(sizeof(u64)*(np?np:1)); if(!fr)return -1; for(u32 i=0;i<np;i++)fr[i]=0;
+    g_pcf[g_npcf].ent=ei; g_pcf[g_npcf].npg=np; g_pcf[g_npcf].fr=fr; e->pch=g_npcf; return g_npcf++; }
+static void sr_pc_keep(u32 h,u32 pg){ u64 f=sysroot_pc_page((int)h,pg); if(f)pframe_free(f); }
+static void sr_pc_drop(int h){
+    if(h<0||h>=g_npcf||!g_pcf[h].fr||g_pcf[h].ent<0)return;
+    extern void jc_file_markers(u32 h,void (*fn)(u32,u32));
+    jc_file_markers((u32)h,sr_pc_keep);
+    g_pcf[h].ent=-1; }
+u64 g_pc_reclaimed;
+u32 sysroot_pc_reclaim(u32 want){
+    extern u32 pframe_refcount(u64 pa); u32 n=0;
+    for(int h=0;h<g_npcf&&n<want;h++){ sr_pcf* c=&g_pcf[h]; if(!c->fr||c->ent<0)continue;
+        for(u32 i=0;i<c->npg&&n<want;i++) if(c->fr[i]&&pframe_refcount(c->fr[i])==1){ pframe_free(c->fr[i]); c->fr[i]=0; n++; } }
+    g_pc_reclaimed+=n; return n; }
+int sysroot_pc_handle(const char* path,u32* len){
+    int v=sr_walk(path,1,0,0,0); if(v<0||g_nd[v].kind!=1)return -1;
+    int ei=g_nd[v].ent; if(len)*len=g_e[ei].ulen; return sr_pc_new(ei); }
+int sysroot_pc_handle_ptr(const u8* data,u32 len){
+    for(int i=0;i<g_ne;i++){ sr_ent* e=&g_e[i]; if(e->ulen!=len||(e->mode&2))continue;
+        const u8* p=0; sr_layer* l=&g_ly[e->layer];
+        if(!l->v2)p=e->cache;
+        else if(e->blk>=0&&e->blk<l->nblk){ const sr_blk* k=&l->blk[e->blk]; if(k->type==0)p=l->data+k->off+e->boff; else if(l->bcache[e->blk])p=l->bcache[e->blk]+e->boff; }
+        if(p==data)return sr_pc_new(i); }
+    return -1; }
+void sysroot_pc_stats(u64* files,u64* fills,u64* hits,u64* ns,u64* bytes){ if(files)*files=(u64)g_npcf; if(fills)*fills=g_pc_fills; if(hits)*hits=g_pc_hits; if(ns)*ns=g_sr_unpack_ns; if(bytes)*bytes=g_sr_unpack_bytes; }
+u32 sysroot_pc_pages(int h){ return (h>=0&&h<g_npcf&&g_pcf[h].fr&&g_pcf[h].ent>=0)?g_pcf[h].npg:0; }
+u64 sysroot_pc_page(int h,u32 pg){
+    if(h<0||h>=g_npcf||!g_pcf[h].fr||pg>=g_pcf[h].npg)return 0;
+    u64 f=g_pcf[h].fr[pg];
+    if(!f){ if(g_pcf[h].ent<0)return 0;
+        int e0=g_pcf[h].ent; const u8* d=ent_data(&g_e[e0],0); if(!d)return 0;
+        if(g_pcf[h].ent!=e0||!g_pcf[h].fr||pg>=g_pcf[h].npg)return 0;
+        if(g_pcf[h].fr[pg]){ f=g_pcf[h].fr[pg]; g_pc_hits++; pframe_ref(f); return f; }
+        sr_ent* e=&g_e[g_pcf[h].ent];
+        extern u32 pframe_free_count(void); if(pframe_free_count()<8192u)sysroot_pc_reclaim(4096u);
+        f=pframe_alloc(); if(!f&&sysroot_pc_reclaim(4096u))f=pframe_alloc(); if(!f){ g_pc_oom++; return 0; }
+        u32 o=pg*4096u, n=e->ulen-o; if(n>4096u)n=4096u; u8* q=(u8*)f;
+        for(u32 i=0;i<n;i++)q[i]=d[o+i]; for(u32 i=n;i<4096u;i++)q[i]=0;
+        g_pcf[h].fr[pg]=f; g_pc_fills++; }
+    else g_pc_hits++;
+    pframe_ref(f); return f; }
 const vfs_fs_ops SYSROOTFS={ "sysroot", sr_match, sr_read, sr_size };
 extern int dt_mkdir_at(int parent,const char* name);
 extern int dt_child(int parent,const char* name);
+u64 sysroot_bc_evict(u64 want,u32 min_age){
+    static const u32 ages[4]={6000,1000,100,0}; u64 got=0; u32 now=(u32)g_ticks;
+    for(int a=0;a<4&&got<want;a++){ u32 ma=ages[a]<min_age?min_age:ages[a];
+        for(int li=0;li<g_nly&&got<want;li++){ sr_layer* l=&g_ly[li]; if(!l->used||!l->v2||!l->bcache||!l->bt||!l->bpin||l->busy)continue;
+            for(int i=0;i<l->nblk&&got<want;i++){ if(!l->bcache[i]||l->bpin[i]||l->blk[i].type==0||now-l->bt[i]<ma)continue;
+                kfree(l->bcache[i]); l->bcache[i]=0; got+=l->blk[i].ulen; if(g_bc_bytes>=l->blk[i].ulen)g_bc_bytes-=l->blk[i].ulen; g_bc_evicted+=l->blk[i].ulen; } } }
+    return got; }
+void sysroot_cache_stats(u64* pc_frames,u64* pc_free,u64* bc_bytes,u64* bc_unpinned){
+    u64 pf=0, pr=0; for(int h=0;h<g_npcf;h++){ sr_pcf* c=&g_pcf[h]; if(!c->fr||c->ent<0)continue; for(u32 i=0;i<c->npg;i++) if(c->fr[i]){ pf++; if(pframe_refcount(c->fr[i])==1)pr++; } }
+    u64 bu=0; for(int li=0;li<g_nly;li++){ sr_layer* l=&g_ly[li]; if(!l->used||!l->v2||!l->bcache||!l->bpin)continue; for(int i=0;i<l->nblk;i++) if(l->bcache[i]&&!l->bpin[i]&&l->blk[i].type)bu+=l->blk[i].ulen; }
+    if(pc_frames)*pc_frames=pf; if(pc_free)*pc_free=pr; if(bc_bytes)*bc_bytes=g_bc_bytes; if(bc_unpinned)*bc_unpinned=bu; }
+void sysroot_drop_caches(int what){ if(what&1){ sysroot_pc_reclaim(0xFFFFFFFFu); sysroot_bc_evict(~0ULL,1); } }
 void sysroot_mkdirs(void){
     for(int i=1;i<g_nn;i++){ if(g_nd[i].kind!=0)continue; const char* a=g_nd[i].path; int depth=0; for(const char* q=a;*q;q++) if(*q=='/')depth++; if(depth>3)continue;
         int par=0; char comp[64]; int c=0; if(*a=='/')a++;

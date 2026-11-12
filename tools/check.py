@@ -12,8 +12,8 @@ import emulate
 RESULTS = []
 SAN = []
 LIBC_SAN = []
-def sh(cmd, cwd=None, timeout=900):
-    p = subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str), capture_output=True, text=True, errors='replace', timeout=timeout)
+def sh(cmd, cwd=None, timeout=900, env=None):
+    p = subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str), capture_output=True, text=True, errors='replace', timeout=timeout, env=env)
     return p.returncode, p.stdout + p.stderr
 def record(group, name, ok, detail=''):
     RESULTS.append((group, name, bool(ok), detail))
@@ -337,11 +337,26 @@ def g_uvc(work):
     n = out.count(' ok\n'); record('usb', f'cameras: 2 streams, IR + colour, UYVY/I420/YV12/grey, bulk; mics: 24-bit, USB Audio 2 ({n} checks)', rc == 0 and n >= 20, out[-400:])
 def g_wifi(work):
     head('Wi-Fi security: WPA3 (SAE), AES-CMAC, PEAP/MSCHAPv2, P-256 (from the kernel sources)')
+    sc = os.path.join(work, 'wscan_t.c'); sb = os.path.join(work, 'wscan_t')
+    rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'scan_gen.py'), os.path.join(KDIR, 'drivers/net/wifi/rtw8821ce.c'), os.path.join(KDIR, 'include/nvx/drivers/net/wifi/rtw8821ce.h'), sc, os.path.join(TESTS, 'wifi', 'scan_main.c')])
+    if record('wifi', 'scan parser test builds against the current driver', rc == 0 and sh(['gcc', '-O1', '-w'] + SAN + ['-o', sb, sc])[0] == 0, out[-300:]):
+        rc, out = sh([sb]); record('wifi', 'scan: UTF-8 names, HT Operation channel, channel settle, WPA1, off-channel, 200000 random frames', rc == 0 and 'scan ok' in out, out[-300:])
     b = os.path.join(work, 'wifi_t')
     rc, out = sh(['gcc', '-O1', '-w', '-I', KDIR, '-o', b, os.path.join(TESTS, 'wifi', 'crypto.c')])
     if not record('wifi', 'Wi-Fi crypto test builds against the current sources', rc == 0, out[-300:]): return
     rc, out = sh([b])
     n = out.count('PASS '); record('wifi', f'SAE = IEEE 802.11 Annex J.10, CMAC = RFC 4493, MSCHAPv2 = RFC 2759, MD4, DES ({n} checks)', rc == 0 and n >= 30, out[-400:])
+def g_secboot(work):
+    head('Signed boot: SHA-256 and P-256 signature checks used by the UEFI loader and the kernel')
+    env = dict(os.environ, SANFLAGS=' '.join(SAN))
+    rc, out = sh(['python3', os.path.join(TESTS, 'secboot', 'run.py'), os.path.join(work, 'secboot')], env=env)
+    m = re.search(r'secboot: (\d+) passed, (\d+) failed', out)
+    record('secboot', f'SHA-256, ECDSA P-256, signed kernel block, tampering, other key, rollback fields ({m.group(1) if m else 0} checks)', rc == 0 and m is not None and m.group(2) == '0', out[-400:])
+    k = os.path.join(KDIR, 'build', 'kernel64.bin'); sr = os.path.join(KDIR, 'build', 'sysroot.bin')
+    if os.path.exists(k):
+        kb = open(k, 'rb').read()
+        rc, out = sh(['python3', os.path.join(KDIR, 'tools', 'nvxsign.py'), 'verify', k] + (['--sysroot', sr] if os.path.exists(sr) else []))
+        record('secboot', 'build/kernel64.bin: signature valid, Linux files match, magic appears once', rc == 0 and kb.count(b'NVX64SIG') == 1, out[-300:])
 def g_usb(work):
     head('USB keyboard/mouse driver (generated from xhci.c)')
     s = kread(os.path.join(KDIR, 'drivers/usb/xhci.c'))
@@ -354,13 +369,14 @@ def g_usb(work):
     reps = s[s.find('static int kcaps;'):s.find('static int usb_key_code')] if 'static int kcaps;' in s else 'static int kcaps;\n' + s[s.find('static int usbk_rep_code'):s.find('static int usb_key_code')]
     names = ['xhid_reset', 'hid_pick', 'hid_parse', 'hid_bits', 'xh_interval', 'ctx_sz', 'ctx_zero', 'xhid_free_region', 'xh_disable_slot', 'xhid_arm', 'xh_set_fail', 'xh_root_reset', 'xh_slot_ctx', 'xh_fix_mps0', 'xhci_hid_enum', 'xhci_enum_loc',
              'xhub_db', 'xhub_ctrl', 'xhub_status', 'xh_delay_ms', 'xh_under', 'xhub_remove_below', 'xhub_port_reset', 'xhub_child_loc', 'xhub_enum_port', 'xhub_attach', 'xhub_poll_ports',
-             'hid2ascii', 'hid2scan', 'usb_key_code', 'kbd_report', 'usb_kbd_repeat', 'hid_report_decode', 'hid_xfer', 'xhci_poll_one', 'xhci_mouse_poll', 'xhid_remove_port', 'xh_event_t', 'xh_ctrl']
+             'hid2ascii', 'hid2scan', 'usb_key_code', 'kbd_report', 'usb_kbd_repeat', 'cc_hk', 'hid_report_decode', 'hid_xfer', 'xhci_poll_one', 'xhci_mouse_poll', 'xhid_remove_port', 'xh_event_t', 'xh_ctrl']
     try: funcs = {n: defn(s, n) for n in names}
     except KeyError as e: record('usb', f'function {e} found in xhci.c', False); return
     funcs['xhci_enum_loc'] = funcs['xhci_enum_loc'].replace('#define XFAIL', '#undef XFAIL\n#define XFAIL', 1)
     funcs['xh_ctrl'] = funcs['xh_ctrl'].replace('static int xh_ctrl(', 'static int real_xh_ctrl(', 1)
     order = ['xh_event_t'] + [n for n in names if n not in ('xh_event_t', 'xh_ctrl')] + ['xh_ctrl']
     body = 'static int xhci_enum_loc(const usbloc_t* L);\n' + '\n'.join(funcs[n] if n != 'xh_fix_mps0' else tp['PRE2'] + '\n' + funcs[n] for n in order)
+    body += '\nstatic int usn_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr){ (void)sl; (void)ep; (void)cc; (void)res; (void)ptr; return 0; }\nstatic void usn_remove_below(int root,u32 R,int dR){ (void)root; (void)R; (void)dR; }\nstatic int usn_enum_loc(const usbloc_t* L){ (void)L; return 0; }\nstatic int usn_enum_root(int port){ (void)port; return 0; }\nstatic int usn_active(void){ return 0; }\nstatic void usn_noslot(void){}\nvoid usn_reset_all(void){}\n'
     ty = s[s.find('typedef struct { u8 iface'):s.find('static int hid_parse')]
     extra = ty + 'static char xhci_failstep[48]; static int xhci_failcc;\n'
     ctx = s[s.find('typedef struct { int present'):s.find('static void xhc_save(void)')] + '\n'.join(defn(s, n) for n in ('xhc_save', 'xhc_load', 'xhc_select')) + '\n'
@@ -378,6 +394,8 @@ def g_acpi(work):
     src = kread(os.path.join(KDIR, 'core/power.c'))
     tp = template(os.path.join(TESTS, 'acpi_template.txt'), ['HDR', 'TEST'])
     src = src.replace('#include "third_party/ntfs/nvxntfs.h"\n', '')
+    s0 = src.find('int g_sleeping;'); s1 = src.find('int power_sleep(void){')
+    if s0 >= 0 and s1 > s0: src = src[:s0] + 'int g_sleeping; volatile int g_sleep_wake, g_sleep_req; u64 g_wake_t; void power_wake_req(void){ if(g_sleeping)g_sleep_wake=1; } int power_s2idle(void){ return 0; }\n' + src[s1:]
     a = src.find('static u64 acpi_find_rsdp(void){'); b = src.find('\n}\n', a) + 3
     src = src[:a] + 'static u64 g_test_rsdp; static u64 acpi_find_rsdp(void){ return acpi_rsdp_ok(g_test_rsdp)?g_test_rsdp:0; }\n' + src[b:]
     c = os.path.join(work, 'acpi_t.c'); open(c, 'w').write(tp['HDR'] + kmissing(src, tp['HDR'] + tp['TEST']) + src + tp['TEST']); exe = os.path.join(work, 'acpi_t')
@@ -449,6 +467,15 @@ def g_nvme(work):
     for l in fails: print('    ' + l)
     record('nvme', 'init, 4 KB sectors, queue limits, wrap, stray completions, flush, timeout recovery, namespaces', rc == 0 and 'ALL PASS' in out, '; '.join(fails[:2]))
 
+def g_swapstore(work):
+    head('compressed swap store and LZ codec (generated from mem/swap.c)')
+    s = kread(os.path.join(KDIR, 'mem/swap.c')); a = s.find('typedef struct { u64 loc;'); b = s.find('extern int lx_fm_covers')
+    if not record('memory', 'swap store code located', a >= 0 and b > a): return
+    m = open(os.path.join(TESTS, 'swap', 'swap_main.c')).read().replace('/*SWAPCODE*/', s[a:b])
+    c = os.path.join(work, 'swap_t.c'); open(c, 'w').write(m); exe = os.path.join(work, 'swap_t')
+    rc, out = sh(['gcc', '-O1', '-w'] + SAN + ['-o', exe, c])
+    if not record('memory', 'swap store test builds against the current code', rc == 0, out[:300]): return
+    rc, out = sh([exe]); record('memory', 'swap store: 100000 codec round trips with corrupted input, 20000 pages stored, read, shared and freed, no frames left', rc == 0 and 'swap ok' in out, out[-400:])
 def g_memory(work):
     head('memory map, heap and DMA placement (generated from pmm_vmm.c and kernel64.c)')
     s = kread(os.path.join(KDIR, 'mem/pmm_vmm.c')); k = kread(os.path.join(KDIR, 'mem/heap.c'))
@@ -765,8 +792,9 @@ def g_accounts(work):
 def g_nvidia(work):
     head('NVIDIA Turing GSP driver (nvflcn.c, nvmem.c, nvgsp.c) against a simulated TU116')
     exe = os.path.join(work, 'nvsim')
-    rc, out = sh(['gcc', '-O1', '-w', '-I.', '-DNOOVEX64', '-fno-pie', '-no-pie', '-o', exe, os.path.join(TESTS, 'nvidia', 'nvsim.c')], cwd=KDIR)
-    if not record('nvidia', 'simulator builds against the current driver', rc == 0, out[:300]): return
+    san = (SAN + ['-fno-sanitize=alignment', '-g']) if SAN else []
+    rc, out = sh(['gcc', '-O1', '-w'] + san + ['-I.', '-DNOOVEX64', '-fno-pie', '-no-pie', '-o', exe, os.path.join(TESTS, 'nvidia', 'nvsim.c')], cwd=KDIR)
+    if not record('nvidia', 'simulator builds against the current driver' + (' (with sanitizers)' if san else ''), rc == 0, out[:300]): return
     fw = os.environ.get('NVX_NVFW')
     if not fw:
         import lzma
@@ -774,12 +802,18 @@ def g_nvidia(work):
         for xz, dst in (('gsp', 'tu102/gsp/gsp-535.113.01.bin'), ('bootloader', 'tu102/gsp/bootloader-535.113.01.bin'), ('booter_load', 'tu116/gsp/booter_load-535.113.01.bin'), ('booter_unload', 'tu116/gsp/booter_unload-535.113.01.bin'), ('acr_bl', 'tu116/acr/bl.bin')):
             d = os.path.join(fw, dst); os.makedirs(os.path.dirname(d), exist_ok=True)
             with lzma.open(os.path.join(A, f'nvfw_{xz}.xz')) as s, open(d, 'wb') as o: o.write(s.read())
-    rc, out = sh([exe, fw], timeout=600)
+    rc, out = sh([exe, fw], timeout=900, env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
     if 'skipped' in out: record('nvidia', 'firmware files present (kernel/assets/nvidia, or NVX_NVFW set to the linux-firmware nvidia folder)', False, out[-200:]); return
     fails = [l.strip() for l in out.splitlines() if l.rstrip().endswith('FAIL')]
     for l in fails: print('    ' + l)
     n = len([l for l in out.splitlines() if l.rstrip().endswith((' ok', ' FAIL'))])
-    record('nvidia', f'VRAM, layout, allocator, VBIOS/FWSEC, booter, radix3, queues, RPC, BARs, objects, copy engine ({n} checks)', rc == 0 and 'ALL PASS' in out, '; '.join(fails[:2]))
+    san_bad = [l.strip() for l in out.splitlines() if 'ERROR: AddressSanitizer' in l or 'runtime error' in l]
+    record('nvidia', f'VRAM, layout, allocator, VBIOS/FWSEC, booter, radix3, queues, RPC, BARs, objects, copy engine, second screen, 3D engine ({n} checks)', rc == 0 and 'ALL PASS' in out and not san_bad, '; '.join((san_bad + fails)[:2]))
+    sk = os.path.join(work, 'r3d_sink')
+    rc, out = sh(['g++', '-O2', '-w', '-std=gnu++20', '-fno-exceptions', '-fno-rtti'] + SAN + ['-o', sk, os.path.join(KDIR, 'apps/graphics/r3d/r3d.cpp'), os.path.join(TESTS, 'r3d', 'sink_main.cpp')])
+    if record('nvidia', 'renderer triangle-output test builds', rc == 0, out[:300]):
+        rc, out = sh([sk], timeout=600, env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
+        record('nvidia', 'Gears triangles for the GPU: 4 scenes x 6 views rasterised on the host match the CPU picture (mean difference below 14 of 255), every vertex inside the clip volume', rc == 0 and 'sink ok' in out, out[-300:])
 
 def g_qemu(iso):
     q = os.environ.get('NVX_QEMU') or shutil.which('qemu-system-x86_64')
@@ -790,7 +824,7 @@ def g_qemu(iso):
     with open(disk, 'wb') as f: f.truncate(64 << 20)
     iso2 = os.path.join(work, 'boot.img'); shutil.copy(iso, iso2)
     bios = os.environ.get('NVX_QEMU_BIOS')
-    cmd = [q] + (['-L', bios] if bios else []) + ['-m', '1024', '-smp', '4', '-accel', 'tcg,thread=multi',
+    cmd = [q] + (['-L', bios] if bios else []) + ['-m', '2048', '-smp', '4', '-accel', 'tcg,thread=multi',
            '-drive', f'file={disk},format=raw,if=none,id=d0', '-device', 'ide-hd,drive=d0,bus=ide.0,unit=0',
            '-drive', f'file={iso2},format=raw,if=none,id=c0', '-device', 'ide-hd,drive=c0,bus=ide.1,unit=0,bootindex=0',
            '-serial', f'file:{log}', '-display', 'none', '-no-reboot', '-monitor', f'unix:{mon},server,nowait']
@@ -805,9 +839,17 @@ def g_qemu(iso):
             time.sleep(1)
         return False
     keys = {' ': 'spc', '\n': 'ret', '-': 'minus', '/': 'slash', '.': 'dot', '>': 'shift-dot', '&': 'shift-7'}
-    def typ(sock, txt):
+    def typ1(sock, txt):
         for ch in txt:
             sock.sendall(('sendkey ' + keys.get(ch, ch) + '\n').encode()); time.sleep(0.08)
+    def typ(sock, txt):
+        nf = serial().count('command not found')
+        typ1(sock, txt)
+        if not txt.endswith('\n'): return
+        time.sleep(2)
+        if serial().count('command not found') > nf:
+            print('  note: a keystroke was lost while typing ' + repr(txt.strip()) + ', typing it again')
+            typ1(sock, txt)
     try:
         if not record('qemu', 'boots to the main loop', wait_for('entering main loop', 120), serial()[-300:]): return
         time.sleep(3)
@@ -844,11 +886,51 @@ def g_qemu(iso):
         m = re.search(r'(\d+) of (\d+) ABI checks passed', serial())
         for l in sorted(set(re.findall(r'FAIL [a-z][^\n]*', serial()))): print('  ' + l[:150])
         record('qemu', f'nvx-abitest: inotify, signalfd, waitid, flock/fcntl locks, timer_create, preadv, sendmmsg, getdents ({m.group(0) if m else "no result"})', bool(m) and m.group(1) == m.group(2), serial()[-300:])
+        typ(s, 'abi2test >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 180 and not re.search(r'abi2: done \d+ passed', serial()): time.sleep(1)
+        m = re.search(r'abi2: done (\d+) passed, (\d+) failed', serial())
+        for l in sorted(set(re.findall(r'abi2: FAIL[^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'abi2test: real-time signals, Unix datagrams, SCM_RIGHTS, IPv6 sockets, socket options, netlink, ping sockets ({m.group(0) if m else "no result"})', bool(m) and m.group(2) == '0' and int(m.group(1)) >= 31, serial()[-300:])
+        typ(s, 'schedtest >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 120 and not re.search(r'sched: done \d+ passed', serial()): time.sleep(1)
+        m = re.search(r'sched: done (\d+) passed, (\d+) failed', serial()); rt = re.search(r'work ratio [0-9.]+', serial())
+        for l in sorted(set(re.findall(r'sched: FAIL[^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'schedtest: nice, setpriority, SCHED_FIFO/IDLE, fair share by nice ({m.group(0) if m else "no result"}{", " + rt.group(0) if rt else ""})', bool(m) and m.group(2) == '0', serial()[-300:])
+        typ(s, 'sysfstest >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 90 and not re.search(r'sysfs: done \d+ passed', serial()): time.sleep(1)
+        m = re.search(r'sysfs: done (\d+) passed, (\d+) failed', serial())
+        for l in sorted(set(re.findall(r'sysfs: FAIL[^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'sysfstest: /sys tree, class/dev/subsystem links, block nodes, uevents over netlink ({m.group(0) if m else "no result"})', bool(m) and m.group(2) == '0', serial()[-300:])
+        typ(s, 'swaptest >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 480 and not re.search(r'swap: done \d+ passed', serial()): time.sleep(1)
+        m = re.search(r'swap: done (\d+) passed, (\d+) failed', serial())
+        for l in sorted(set(re.findall(r'swap: (?:FAIL|paged|wrote|pressure)[^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'swaptest: compressed swap (zram), MADV_PAGEOUT, fork and munmap of swapped pages, drop_caches, memory pressure ({m.group(0) if m else "no result"})', bool(m) and m.group(2) == '0', serial()[-300:])
+        typ(s, 'abi3test >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 480 and not re.search(r'abi3: done \d+ passed', serial()): time.sleep(1)
+        m = re.search(r'abi3: done (\d+) passed, (\d+) failed', serial())
+        for l in sorted(set(re.findall(r'abi3: FAIL[^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'abi3test: SysV semaphores and message queues, POSIX message queues, pidfd, splice/tee, copy_file_range, openat2, FIFOs, futex_waitv, process_vm_readv, seccomp, execveat ({m.group(0) if m else "no result"})', bool(m) and m.group(2) == '0' and int(m.group(1)) >= 81, serial()[-300:])
+        typ(s, 'contest >/dev/kmsg\n')
+        t0 = time.time()
+        while time.time() - t0 < 900 and not re.search(r'contest: done \d+ passed', serial()): time.sleep(1)
+        m = re.search(r'contest: done (\d+) passed, (\d+) failed', serial())
+        for l in sorted(set(re.findall(r'cont: FAIL[^\n]*', serial()))): print('  ' + l[:150])
+        record('qemu', f'contest: namespaces (mount, pid, uts, ipc, net, user), chroot, pivot_root, overlay, cgroup v2 pids/memory/cpu limits ({m.group(0) if m else "no result"})', bool(m) and m.group(2) == '0' and int(m.group(1)) >= 113, serial()[-300:])
         typ(s, 'smp off\n')
         record('qemu', 'smp off parks the other cores', wait_for('smp: secondary cores parked', 60), serial()[-300:])
         s.close()
     finally:
-        pr.kill(); pr.wait(); shutil.rmtree(work, ignore_errors=True)
+        pr.kill(); pr.wait()
+        if os.environ.get('NVX_KEEP_SERIAL'):
+            try: shutil.copy(log, os.environ['NVX_KEEP_SERIAL'])
+            except OSError: pass
+        shutil.rmtree(work, ignore_errors=True)
 
 def g_tls(work):
     head('TLS certificate checks: X.509 parser, RSA/ECDSA, Mozilla roots, chains, host names, CertificateVerify')
@@ -1166,8 +1248,100 @@ def g_net(iso):
     finally:
         pr.kill(); pr.wait(); peer.kill(); peer.wait(); shutil.rmtree(work, ignore_errors=True)
 
+NIC_MODELS = [('e1000', ['-device', 'e1000,netdev=n0'], 'Intel e1000'),
+              ('e1000e (82574L)', ['-device', 'e1000e,netdev=n0'], 'e1000e: up'),
+              ('igb (82576)', ['-device', 'igb,netdev=n0'], 'igb: up'),
+              ('vmxnet3', ['-device', 'vmxnet3,netdev=n0'], 'vmxnet3: up'),
+              ('RTL8139', ['-device', 'rtl8139,netdev=n0'], 'RTL8139'),
+              ('VirtIO-net', ['-device', 'virtio-net-pci,netdev=n0'], 'VirtIO'),
+              ('USB CDC-ECM on xHCI', ['-device', 'qemu-xhci', '-device', 'usb-net,netdev=n0'], 'CDC-ECM adapter'),
+              ('USB RNDIS on xHCI', ['-device', 'qemu-xhci', '-device', 'usb-net,netdev=n0'], 'RNDIS adapter'),
+              ('USB adapter plugged in while running', ['-device', 'qemu-xhci,id=xh'], 'CDC-ECM adapter'),
+              ('two adapters, only the second has a cable', ['-device', 'e1000,netdev=n1', '-device', 'igb,netdev=n0', '-netdev', 'user,id=n1'], 'net: Intel I210/I211/82576/I350 (igb)')]
+
+def g_nics(iso):
+    q = os.environ.get('NVX_QEMU') or shutil.which('qemu-system-x86_64')
+    if not q or not os.path.exists(iso): return
+    head('Ethernet adapters in QEMU: each model gets an address by DHCP and downloads 300 KB over HTTP')
+    import socket, threading, http.server, socketserver
+    data = bytes(((i*7+(i>>8))&0xFF) for i in range(300000)); want = big_sha()
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+        def log_message(self, *a): pass
+    class TS(socketserver.ThreadingMixIn, http.server.HTTPServer): daemon_threads = True
+    srv = TS(('127.0.0.1', 0), H); port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    keys = {' ': 'spc', '\n': 'ret', '-': 'minus', '/': 'slash', '.': 'dot', '>': 'shift-dot', ':': 'shift-semicolon', '=': 'equal'}
+    results = {}
+    def one(idx, label, dev, expect):
+        work = tempfile.mkdtemp(prefix='nvx_nic_'); log = os.path.join(work, 'serial.log'); mon = os.path.join(work, 'mon'); disk = os.path.join(work, 'disk.img')
+        with open(disk, 'wb') as f: f.truncate(64 << 20)
+        iso2 = os.path.join(work, 'boot.img'); shutil.copy(iso, iso2)
+        bios = os.environ.get('NVX_QEMU_BIOS')
+        cmd = [q] + (['-L', bios] if bios else []) + ['-m', '1024', '-smp', '2', '-accel', 'tcg,thread=multi', '-net', 'none',
+               '-drive', f'file={disk},format=raw,if=none,id=d0', '-device', 'ide-hd,drive=d0,bus=ide.0,unit=0',
+               '-drive', f'file={iso2},format=raw,if=none,id=c0', '-device', 'ide-hd,drive=c0,bus=ide.1,unit=0,bootindex=0',
+               '-netdev', 'user,id=n0'] + dev + ['-serial', f'file:{log}', '-display', 'none', '-no-reboot', '-monitor', f'unix:{mon},server,nowait']
+        pr = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if 'n1' in ' '.join(dev):
+            for _ in range(50):
+                if os.path.exists(mon): break
+                time.sleep(0.1)
+            try:
+                s0 = socket.socket(socket.AF_UNIX); s0.connect(mon); time.sleep(0.3); s0.sendall(b'set_link n1 off\n'); time.sleep(0.3); s0.close()
+            except OSError: pass
+        def serial():
+            try: return open(log, errors='replace').read()
+            except OSError: return ''
+        def wait_for(rx, secs, start=0):
+            t = time.time()
+            while time.time() - t < secs:
+                m = re.search(rx, serial()[start:])
+                if m: return m
+                time.sleep(1)
+            return None
+        def typ(sock, txt):
+            for ch in txt:
+                k = keys.get(ch) or ('shift-' + ch.lower() if ch.isupper() else ch)
+                sock.sendall(('sendkey ' + k + '\n').encode()); time.sleep(0.07)
+        out = ''
+        try:
+            if not wait_for('entering main loop', 400): results[idx] = (False, 'no boot'); return
+            time.sleep(3)
+            s = socket.socket(socket.AF_UNIX); s.connect(mon); time.sleep(0.5)
+            if 'RNDIS' in label: typ(s, 'usbnet rndis\n'); time.sleep(8)
+            if 'plugged in' in label:
+                s.sendall(b'device_add usb-net,netdev=n0,bus=xh.0\n'); time.sleep(10)
+            mark = len(serial())
+            typ(s, 'net\n')
+            wait_for(r'DHCP ok|DHCP failed|no supported|no network adapter', 60, mark)
+            mark = len(serial())
+            typ(s, f'fetch -s -o /dev/null http://10.0.2.2:{port}/big 2>/dev/kmsg\n')
+            m = wait_for(r'fetch: sha256 ([0-9a-f]{64})|fetch: cannot[^\n]*|fetch: [^\n]*failed[^\n]*', 150, mark)
+            out = serial()
+            nm = re.findall(r'net: ([^\n]*)', out)
+            used = ' / '.join(x for x in nm if not x.startswith('NIC up') and not x.startswith('DHCP'))[:120]
+            ok = bool(m) and m.group(1) == want and expect in out
+            results[idx] = (ok, used if ok else (out[-400:].replace('\n', ' | ')))
+            s.close()
+        finally:
+            pr.kill(); pr.wait(); shutil.rmtree(work, ignore_errors=True)
+    threads = []
+    par = int(os.environ.get('NVX_NIC_PAR', '2')); only = os.environ.get('NVX_NIC_ONLY')
+    for i, (label, dev, expect) in enumerate(NIC_MODELS):
+        if only and only.lower() not in label.lower(): continue
+        t = threading.Thread(target=one, args=(i, label, dev, expect)); t.start(); threads.append(t)
+        while sum(1 for x in threads if x.is_alive()) >= par: time.sleep(1)
+    for t in threads: t.join()
+    srv.shutdown()
+    for i, (label, dev, expect) in enumerate(NIC_MODELS):
+        if only and only.lower() not in label.lower(): continue
+        ok, det = results.get(i, (False, 'no result'))
+        record('nics', f'{label}: DHCP, 300 KB download, checksum matches', ok, det)
+
 def g_drivers(work):
-    head('separately built driver modules against simulated devices (RTL8139, RTL8111, VirtIO net/blk, AC97, HD Audio)')
+    head('separately built driver modules against simulated devices (e1000, e1000e/I219, igb/igc, RTL8139, RTL8111, RTL8125, VirtIO net/blk, AC97, HD Audio)')
     objs = []
     for m in kernel_modules():
         o = os.path.join(work, 'drv_' + os.path.basename(m)[:-2] + '.o')
@@ -1183,6 +1357,13 @@ def g_drivers(work):
     fails = [l.strip() for l in out.splitlines() if l.startswith('  ') and 'FAIL' in l]
     n = len([l for l in out.splitlines() if l.startswith('  ')])
     record('drivers', f'all driver modules behave correctly against simulated hardware ({n} checks)', rc == 0 and 'ALL PASS' in out, '; '.join(fails[:3]) or out[-300:])
+    exe2 = os.path.join(work, 'usbnet_proto')
+    rc, out = sh(['gcc', '-O1', '-g', '-Wall', '-Wextra', '-I' + KDIR] + SAN + [os.path.join(TESTS, 'usbnet', 'proto_main.c'), '-o', exe2])
+    if not record('drivers', 'USB network protocol test builds (CDC-NCM blocks, RNDIS messages, MAC strings)', rc == 0, out[:300]): return
+    rc, out = sh([exe2], timeout=300)
+    for l in out.splitlines():
+        if l.startswith('  '): print('  ' + l.strip()[:150])
+    record('drivers', 'USB network protocols: round trips and 200000 corrupted blocks', rc == 0 and 'ALL PASS' in out, out[-300:])
 
 def main():
     ap = argparse.ArgumentParser(description='NoovexOS automatic bug checker')
@@ -1190,7 +1371,7 @@ def main():
     ap.add_argument('--iso', help='image to test (default: the one built with --build, else tools/out/check.iso)')
     ap.add_argument('--quick', action='store_true', help='smaller random test sizes')
     ap.add_argument('--sanitize', action='store_true', help='run driver tests under ASan+UBSan and libc/tool tests with UBSan traps')
-    ap.add_argument('--only', help='comma list: build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,cookies,linux,fs,accounts,nvidia,tls,fetch,qemu,net,drivers,analyze,libc,coreutils')
+    ap.add_argument('--only', help='comma list: build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,cookies,linux,fs,accounts,nvidia,tls,fetch,qemu,net,nics,drivers,analyze,libc,coreutils')
     a = ap.parse_args()
     if a.sanitize:
         SAN[:] = ['-fsanitize=address,undefined', '-fno-sanitize-recover=undefined', '-fno-omit-frame-pointer', '-g']
@@ -1209,11 +1390,12 @@ def main():
             else: record('boot', f'image {iso} exists (use --build or --iso)', False)
         if want('usb'): g_usb(work); g_xhci_init(work); g_uvc(work)
         if want('wifi'): g_wifi(work)
+        if want('secboot'): g_secboot(work)
         if want('acpi'): g_acpi(work)
         if want('gpu'): g_gpu(work)
         if want('nvme'): g_nvme(work)
         if want('touchpad'): g_touchpad(work)
-        if want('memory'): g_memory(work)
+        if want('memory'): g_memory(work); g_swapstore(work)
         if want('aml'): g_aml(work)
         if want('timers'): g_timers(work)
         if want('cookies'): g_cookies(work)
@@ -1225,6 +1407,7 @@ def main():
         if want('fetch'): g_fetch(work)
         if want('qemu'): g_qemu(iso)
         if want('net'): g_net(iso)
+        if want('nics'): g_nics(iso)
         if want('drivers'): g_drivers(work)
         if want('analyze'): g_analyze(work)
         libc = g_libc(work, a.quick) if (want('libc') or want('coreutils')) else None

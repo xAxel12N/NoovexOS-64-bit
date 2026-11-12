@@ -25,5 +25,6 @@ out.append(line('typedef struct { u8 ifn, alt, ep, intv, ch, sub, bits, nrate, c
 out.append(line('static struct { int ok, ctl, reg, slot, speed, root, ac_if, nalt, nfu, pb, cp'))
 out.append(line('typedef struct { volatile u32* ring; u8* bufs; u32 enq, deq, cyc, out, ntd, bsz, dci, mps, ivus, rate, ch, acc, dirin, bs, bcap; } aud_ep_t;'))
 out.append('static aud_ep_t apb, acp; static u32 *aud_cpq; static u32 aud_cpw=0,aud_cpr=0; \n#define ACP_N 16384u\n')
-for s in ['static int aud_has_audio(const u8* c,int n){','static void aud_parse(const u8* c,int n){','static u32 aud_pick_rate(const uac_alt_t* a){','static int aud_pick(int in){','static int aud_s16(const u8* p,u32 bs){','static void aud_take_cp(const u8* d,u32 n){','static int uvc_has_video(const u8* c,int n){']: out.append(func(s))
+out.append('#define APB_N 16384u\nstatic u32 *aud_pbq; static u32 aud_pbw=0,aud_pbr=0,aud_underrun=0,aud_pacc=0; static int aud_vol=100;\n')
+for s in ['static int aud_has_audio(const u8* c,int n){','static void aud_parse(const u8* c,int n){','static u32 aud_pick_rate(const uac_alt_t* a){','static int aud_pick(int in){','static int aud_s16(const u8* p,u32 bs){','static void aud_take_cp(const u8* d,u32 n){','static u32 aud_fill_pb(u8* d){','static int uvc_has_video(const u8* c,int n){']: out.append(func(s))
 open(sys.argv[2],'w').write('\n'.join(out)+'\n'+open(sys.argv[3]).read())

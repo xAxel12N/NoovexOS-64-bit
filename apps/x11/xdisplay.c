@@ -9,6 +9,8 @@
 #include "include/nvx/arch/x86_64/time/hrtimer.h"
 
 int desk_win_exposed(int i);
+void bkl_yield(void);
+extern int xw_mask_n; void xwin_mask_build(void); int xwin_masked(int x,int y); void xwin_clicked(void);
 void present_rect(int x,int y,int w,int h);
 
 u64* g_xfb_pg; int g_xfb_n; int g_xfb_live; extern int g_xfull;
@@ -83,7 +85,12 @@ int xdisp_fast(void){
     if(dv>0){ u32 w,h,bpl; u64 d; int r0,r1; if(xfb_geom(&w,&h,&bpl,&d)&&xd_rows(d,bpl,h,&r0,&r1)){ xd_clear(); if(r0>=ah)return 0; if(r1>=ah)r1=ah-1; xd_blit_rows(W_XDISP,r0,r1); present_rect(ax,ay+r0,aw,r1-r0+1); return 0; } xd_clear(); }
     xd_blit(W_XDISP); present_rect(ax,ay,aw,ah); return 0; }
 static u8 g_xq[512][8]; static int g_xq_h, g_xq_t; static int g_xb_prev, g_xr_prev, g_xmx=-1, g_xmy=-1;
-static void xq_push(int type,int code,int down,int x,int y){ int n=(g_xq_t+1)&511; if(n==g_xq_h)return; u8* r=g_xq[g_xq_t]; r[0]=(u8)type; r[1]=(u8)code; r[2]=(u8)down; r[3]=0; r[4]=(u8)x; r[5]=(u8)(x>>8); r[6]=(u8)y; r[7]=(u8)(y>>8); g_xq_t=n; }
+static void xq_push(int type,int code,int down,int x,int y){ int n=(g_xq_t+1)&511; if(n==g_xq_h)return; u8* r=g_xq[g_xq_t]; r[0]=(u8)type; r[1]=(u8)code; r[2]=(u8)down; r[3]=0; r[4]=(u8)x; r[5]=(u8)(x>>8); r[6]=(u8)y; r[7]=(u8)(y>>8); g_xq_t=n; extern void jc_kick_waiters(void); jc_kick_waiters(); }
+static int xq_free(void){ return 511-((g_xq_t-g_xq_h)&511); }
+static void xq_wheel(int sc){
+    if(sc){ int b=sc>0?4:5, k=sc>0?sc:-sc; if(k>10)k=10; while(k--&&xq_free()>64){ xq_push(2,b,1,mx,my); xq_push(2,b,0,mx,my); } }
+    extern volatile int mouse_hscroll; int hs=__atomic_exchange_n(&mouse_hscroll,0,__ATOMIC_SEQ_CST);
+    if(hs){ int b=hs>0?7:6, k=hs>0?hs:-hs; if(k>10)k=10; while(k--&&xq_free()>64){ xq_push(2,b,1,mx,my); xq_push(2,b,0,mx,my); } } }
 int xin_read(char* buf,int len){ int c=0; while(c+8<=len&&g_xq_h!=g_xq_t){ for(int k=0;k<8;k++)buf[c+k]=(char)g_xq[g_xq_h][k]; g_xq_h=(g_xq_h+1)&511; c+=8; } return c; }
 int xin_ready(void){ return g_xq_h!=g_xq_t; }
 void xdisp_mouse(int btn,int rbtn,int sc){
@@ -95,7 +102,7 @@ void xdisp_mouse(int btn,int rbtn,int sc){
     if(rbtn!=g_xr_prev&&(in||!rbtn)){ xq_push(2,3,rbtn?1:0,x,y); }
     if(in&&sc){ int b=sc>0?4:5; xq_push(2,b,1,x,y); xq_push(2,b,0,x,y); }
     g_xb_prev=btn; g_xr_prev=rbtn; }
-void xdisp_key(int c){ if(!g_xfb_live)return; extern volatile unsigned char kdown[128]; extern int kalt; int n=(g_xq_t+1)&511; if(n==g_xq_h)return; u8* r=g_xq[g_xq_t]; r[0]=3; r[1]=(u8)(c&0xFF); r[2]=1; r[3]=(u8)((kdown[0x1D]?1:0)|(kalt?2:0)); r[4]=r[5]=r[6]=r[7]=0; g_xq_t=n; }
+void xdisp_key(int c){ if(!g_xfb_live)return; extern volatile unsigned char kdown[128]; extern int kalt; int n=(g_xq_t+1)&511; if(n==g_xq_h)return; u8* r=g_xq[g_xq_t]; r[0]=3; r[1]=(u8)(c&0xFF); r[2]=1; r[3]=(u8)((kdown[0x1D]?1:0)|(kalt?2:0)); r[4]=r[5]=r[6]=r[7]=0; g_xq_t=n; extern void jc_kick_waiters(void); jc_kick_waiters(); }
 int g_xfull; static u64 g_xf_last; static int g_xf_drawn;
 extern int g_fb0_open, g_fb0_dirty;
 void xfull_enter(void){ if(g_xfull||!g_xfb_live)return; g_xfull=1; g_fb0_open++; g_xf_last=0; g_xf_drawn=0; }
@@ -119,7 +126,7 @@ void xfull_mouse(int btn,int rbtn,int sc){
     if(mx!=g_xmx||my!=g_xmy){ xq_push(1,0,0,mx,my); g_xmx=mx; g_xmy=my; }
     if(btn!=g_xb_prev)xq_push(2,1,btn?1:0,mx,my);
     if(rbtn!=g_xr_prev)xq_push(2,3,rbtn?1:0,mx,my);
-    if(sc){ int b=sc>0?4:5; xq_push(2,b,1,mx,my); xq_push(2,b,0,mx,my); }
+    xq_wheel(sc);
     g_xb_prev=btn; g_xr_prev=rbtn; }
 int g_xfull_pending;
 int xdisp_pending_tick(void){ if(g_xfull_pending&&g_xfb_live){ g_xfull_pending=0; xfull_enter(); return 1; } return 0; }
@@ -132,15 +139,15 @@ static u32 xo_px(u64 d,u32 bpl,int x,int y){ u64 o=d+(u64)y*bpl+(u64)x*4; u64 pg
 int xfb_has_window(void){ u32 w,h,bpl; u64 d; if(!xo_geom(&w,&h,&bpl,&d))return 0; int n=0;
     for(u32 y=4;y<h;y+=16) for(u32 x=4;x<w;x+=16){ u32 c=xo_px(d,bpl,(int)x,(int)y); if(c!=XKEY&&c!=0)n++; }
     return n>=20; }
-int xover_hit(int x,int y){ if(!g_xover||!g_xfb_live)return 0; u32 w,h,bpl; u64 d; if(!xo_geom(&w,&h,&bpl,&d))return 0; if(x<0||y<0||(u32)x>=w||(u32)y>=h||y>=g_tby)return 0; return xo_px(d,bpl,x,y)!=XKEY; }
+int xover_hit(int x,int y){ if(!g_xover||!g_xfb_live)return 0; xwin_mask_build(); if(xwin_masked(x,y))return 0; u32 w,h,bpl; u64 d; if(!xo_geom(&w,&h,&bpl,&d))return 0; if(x<0||y<0||(u32)x>=w||(u32)y>=h||y>=g_tby)return 0; return xo_px(d,bpl,x,y)!=XKEY; }
 void xover_draw(void){
-    if(!g_xover||!g_xfb_live)return; u32 w,h,bpl; u64 d; if(!xo_geom(&w,&h,&bpl,&d))return;
+    if(!g_xover||!g_xfb_live)return; u32 w,h,bpl; u64 d; if(!xo_geom(&w,&h,&bpl,&d))return; xwin_mask_build();
     if(g_xshadow&&g_xsh_w==(w<W?w:W)){ u32 mh=h<(u32)g_tby?h:(u32)g_tby; if(mh>H)mh=H; if(mh>g_xsh_h)mh=g_xsh_h;
-        for(u32 y=0;y<mh;y++){ u32* row=&SCENE[y*SW]; const u32* sh=&g_xshadow[y*g_xsh_w]; for(u32 x=0;x<g_xsh_w;x++){ u32 c=sh[x]; if(c!=XKEY)row[x]=c; } } return; }
+        for(u32 y=0;y<mh;y++){ u32* row=&SCENE[y*SW]; const u32* sh=&g_xshadow[y*g_xsh_w]; for(u32 x=0;x<g_xsh_w;x++){ u32 c=sh[x]; if(c!=XKEY&&(!xw_mask_n||!xwin_masked((int)x,(int)y)))row[x]=c; } } return; }
     u32 mh=h<(u32)g_tby?h:(u32)g_tby; if(mh>H)mh=H; u32 mw=w<W?w:W;
     for(u32 y=0;y<mh;y++){ u64 o=d+(u64)y*bpl; u32* row=&SCENE[y*SW]; u32 x=0;
         while(x<mw){ u64 oo=o+(u64)x*4; u64 pg=oo>>12; if((int)pg>=g_xfb_n)break; u32 run=(u32)((4096-(oo&0xFFF))/4); if(run>mw-x)run=mw-x;
-            const u32* src=(const u32*)((const u8*)g_xfb_pg[pg]+(oo&0xFFF)); for(u32 k=0;k<run;k++){ u32 c=src[k]&0xFFFFFFu; if(c!=XKEY)row[x+k]=c; } x+=run; } } }
+            const u32* src=(const u32*)((const u8*)g_xfb_pg[pg]+(oo&0xFFF)); for(u32 k=0;k<run;k++){ u32 c=src[k]&0xFFFFFFu; if(c!=XKEY&&(!xw_mask_n||!xwin_masked((int)(x+k),(int)y)))row[x+k]=c; } x+=run; } } }
 u32 g_xo_fast, g_xo_fullc;
 void xover_invalidate(void){ g_xo_full=1; }
 static int xover_tick2(void);
@@ -157,7 +164,8 @@ static int xover_tick2(void){
     if(dv>0){ int r0,r1; if(!xd_rows(d,bpl,h,&r0,&r1)){ xd_clear(); if(idle<1000)idle++; return 0; } ya=(u32)r0; yb=(u32)r1+1; if(yb>mh)yb=mh; }
     else if(g_xd_ok&&g_xd_bits)xd_clear();
     g_xd_scans++;
-    for(u32 y=ya;y<yb;y++){ u64 o=d+(u64)y*bpl; u32* sh=&g_xshadow[y*mw]; u32 x=0;
+    u64* pgs=g_xfb_pg; int pgn=g_xfb_n;
+    for(u32 y=ya;y<yb;y++){ if((y&31)==31){ bkl_yield(); if(g_xfb_pg!=pgs||g_xfb_n!=pgn||!g_xfb_live){ g_xo_full=1; return 0; } } u64 o=d+(u64)y*bpl; u32* sh=&g_xshadow[y*mw]; u32 x=0;
         while(x<mw){ u64 oo=o+(u64)x*4; u64 pg=oo>>12; if((int)pg>=g_xfb_n)break; u32 run=(u32)((4096-(oo&0xFFF))/4); if(run>mw-x)run=mw-x;
             if(dv>0&&!xd_pg((int)pg)){ x+=run; continue; }
             const u32* src=(const u32*)((const u8*)g_xfb_pg[pg]+(oo&0xFFF));
@@ -169,18 +177,20 @@ static int xover_tick2(void){
     if(x1<0)return 0;
     extern int desk_popups_clear(void); extern int g_state;
     if(tokey||!desk_popups_clear()){ g_xo_fullc++; return 1; }
-    for(int y=y0;y<=y1;y++){ u32* row=&SCENE[(u32)y*SW]; const u32* sh=&g_xshadow[(u32)y*mw]; for(int x=x0;x<=x1;x++){ u32 c=sh[x]; if(c!=XKEY)row[x]=c; } }
+    xwin_mask_build();
+    for(int y=y0;y<=y1;y++){ u32* row=&SCENE[(u32)y*SW]; const u32* sh=&g_xshadow[(u32)y*mw]; for(int x=x0;x<=x1;x++){ u32 c=sh[x]; if(c!=XKEY&&(!xw_mask_n||!xwin_masked(x,y)))row[x]=c; } }
     present_rect(x0,y0,x1-x0+1,y1-y0+1); g_xo_fast++; return 0; }
 int xover_mouse(int btn,int rbtn,int sc,int pressed_edge){
     if(!g_xover||!g_xfb_live)return 0;
     int over=xover_hit(mx,my);
-    if(pressed_edge){ g_xkbd=over; g_xcap=over; }
+    if(pressed_edge){ if(over||my<g_tby)g_xkbd=over; g_xcap=over; if(over)xwin_clicked(); }
     if(!over&&!g_xcap){ if(g_xb_prev||g_xr_prev){ if(g_xb_prev)xq_push(2,1,0,mx,my); if(g_xr_prev)xq_push(2,3,0,mx,my); g_xb_prev=0; g_xr_prev=0; } return 0; }
     if(mx!=g_xmx||my!=g_xmy){ xq_push(1,0,0,mx,my); g_xmx=mx; g_xmy=my; }
     if(btn!=g_xb_prev)xq_push(2,1,btn?1:0,mx,my);
     if(rbtn!=g_xr_prev)xq_push(2,3,rbtn?1:0,mx,my);
-    if(sc){ int b=sc>0?4:5; xq_push(2,b,1,mx,my); xq_push(2,b,0,mx,my); }
+    xq_wheel(sc);
     g_xb_prev=btn; g_xr_prev=rbtn; if(!btn&&!rbtn)g_xcap=0; return 1; }
+int xover_zoom(int in){ if(!g_xover||!g_xfb_live||!xover_hit(mx,my))return 0; int b=in?4:5; xq_push(4,b,1,mx,my); return 1; }
 void wm_close_xdisp(void){ extern void close_win(int); if(WN[W_XDISP].open)close_win(W_XDISP); g_xkbd=1; xover_invalidate(); }
 void xstat_print(void (*out)(const char*)){
     char b[200],*p=b; p=scopy(p,"X damage tracking: "); p=scopy(p,g_xd_ok&&!g_xd_off?"on (page dirty bits)":"off (full-screen compare)"); *p++='\n'; *p=0; out(b);

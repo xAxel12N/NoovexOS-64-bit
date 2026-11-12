@@ -59,9 +59,8 @@ static void nic_detect(void){ nic_present=0;
 int nic_up_raw(void){
     if(nic_init)return net_ok;
     nic_init=1; nic_detect();
-    if(!nic_present){ if(e1000_probe(&g_mnic)||rtl8169_probe(&g_mnic)||rtl8139_probe(&g_mnic)||virtio_net_probe(&g_mnic)){ nic_present=1; nic_kind=2; for(int i=0;i<6;i++)my_mac[i]=g_mnic.mac[i]; net_ok=1;
-            { char b[52],*p=b; p=scopy(p,"NIC up  MAC "); for(int i=0;i<6;i++){ p=hx(p,my_mac[i],2); if(i<5)*p++=':'; } *p=0; netlog(g_mnic.name); netlog(b); } return 1; } }
-    if(!nic_present||(nic_kind==0&&!nic_io)){ netlog("no supported NIC (PCnet, e1000, RTL8139, RTL8111/8168, VirtIO)"); net_ok=0; return 0; }
+    if(!nic_present){ if(nic_probe_all()){ int k=nic_pick(); if(nic_count()>1){ extern u64 hr_ns(void); u64 t0=hr_ns(); int found=0; while(!found&&hr_ns()-t0<1500000000ULL){ for(int i=0;i<8&&!found;i++){ int lk=0; if(nic_list(i,&lk,0)&&lk){ found=1; k=i; } } } } nic_use(k); { extern int g_nic_pref; g_nic_pref=k; } return 1; } }
+    if(!nic_present||(nic_kind==0&&!nic_io)){ netlog("no supported network adapter found"); net_ok=0; return 0; }
     u32 cmd=pci_cfg(nic_bus,nic_dev,0,0x04); pci_wcfg(nic_bus,nic_dev,0,0x04,cmd|0x07);   /* I/O + MEM + bus master */
     for(int i=0;i<6;i++) my_mac[i]=inb(nic_io+i);
     inl(nic_io+0x18); inw(nic_io+0x14);
@@ -102,6 +101,7 @@ void nic_send(const u8* data,int len){
 }
 int nic_recv(u8* out,int max){
     if(nic_kind==2) return net_ok?g_mnic.recv(out,max):0;
+    if(!nic_rxd||!nic_rxb||!net_ok)return 0;
     volatile u32* d=(u32*)(nic_rxd+nic_rx_idx*16);
     if(d[1]&(1u<<31))return 0;
     int len=(int)(d[2]&0xFFF); if(len>max)len=max;

@@ -81,13 +81,14 @@ int nvm_unmap(nvvmm* m,u64 va,u64 len){
     u64 spt=0, reg=~0ULL;
     for(u64 o=0;o<len;o+=0x1000){ u64 v=va+o; if((v>>21)!=reg){ reg=v>>21; spt=spt_find(m,v,0); } if(spt)nvp_wr64(spt+((v>>12)&511)*8,0); }
     return 1; }
-int nvm_map(nvvmm* m,u64 va,u64 pa,u64 len,int sysmem,int priv,int ro){
+int nvm_map_kind(nvvmm* m,u64 va,u64 pa,u64 len,int sysmem,int priv,int ro,u32 kind){
     u64 spt=0, reg=~0ULL;
     for(u64 o=0;o<len;o+=0x1000){ u64 v=va+o;
         if((v>>21)!=reg){ reg=v>>21; spt=spt_find(m,v,1); } if(!spt)return 0;
-        u64 p=pa+o; u64 pte=(p>>4)|1ULL|((u64)(sysmem?2:0)<<1)|((u64)(sysmem?1:0)<<3)|((u64)(priv?1:0)<<5)|((u64)(ro?1:0)<<6);
+        u64 p=pa+o; u64 pte=(p>>4)|1ULL|((u64)(sysmem?2:0)<<1)|((u64)(sysmem?1:0)<<3)|((u64)(priv?1:0)<<5)|((u64)(ro?1:0)<<6)|((u64)(kind&0xFFu)<<56);
         nvp_wr64(spt+((v>>12)&511)*8,pte); }
     return 1; }
+int nvm_map(nvvmm* m,u64 va,u64 pa,u64 len,int sysmem,int priv,int ro){ return nvm_map_kind(m,va,pa,len,sysmem,priv,ro,0); }
 u64 nvm_pd3_entry0(nvvmm* m){ return nvp_rd64(m->pd3); }
 int nvm_inst_join(nvvmm* m,u64 inst){
     u64 base=m->pd3|(1ULL<<10)|(1ULL<<11);

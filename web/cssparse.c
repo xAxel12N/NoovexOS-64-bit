@@ -1219,38 +1219,45 @@ static void prefetch_links(node* root) {
     pl_walk(root, list, bufs, &m);
     if (m >= 2) nwk_prefetch_more(list, m, G.url);
 }
-static void collect(node* n) {
-    for (node* c = n->first; c; c = c->next) {
-        if (c->type != NT_ELEM) continue;
+static void collect(node* n);
+static int collect_el(node* c) {
+        if (c->type != NT_ELEM) return 0;
         if (c->tag == T_STYLE) {
             const char* ty = attr_get(c, "type");
-            if (ty && *ty && !istarts(ty, "text/css")) continue;
+            if (ty && *ty && !istarts(ty, "text/css")) return 0;
             sbuf b = { 0, 0, 0 };
             text_content(c, &b);
             const char* m = attr_get(c, "media");
             if (b.n) parse_cached(b.s, b.n, G.base, (m && *m) ? nstrdup(m) : 0, 2);
-            continue;
+            return 0;
         }
         if (c->tag == T_LINK) {
             const char* rel = attr_get(c, "rel");
-            if (!rel) continue;
+            if (!rel) return 0;
             int ss = 0;
             const char* p = rel;
             while (*p) { while (is_ws((unsigned char)*p)) p++; if (istarts(p, "stylesheet")) ss = 1; if (istarts(p, "alternate")) { ss = 0; break; } while (*p && !is_ws((unsigned char)*p)) p++; }
-            if (!ss || attr_get(c, "disabled")) continue;
+            if (!ss || attr_get(c, "disabled")) return 0;
             int len = 0;
             char* t = link_text(c, &len);
             const char* m = attr_get(c, "media");
-            char full[4096];
+            static char full[4096];
             url_resolve(G.base, attr_get(c, "href"), full, sizeof(full));
             if (t && len) parse_cached(t, len, full, (m && *m && strcmp(m, "all")) ? nstrdup(m) : 0, 2);
-            continue;
+            return 0;
         }
-        if (c->tag == T_TEMPLATE) continue;
-        if (c->tag == T_SVG) { node* stk[256]; int sp = 0; for (node* d = c->last; d && sp < 256; d = d->prev) stk[sp++] = d; while (sp) { node* d = stk[--sp]; if (d->type != NT_ELEM) continue; if (d->tag == T_STYLE) { sbuf b = { 0, 0, 0 }; text_content(d, &b); if (b.n) parse_cached(b.s, b.n, G.base, 0, 2); continue; } for (node* e = d->last; e && sp < 256; e = e->prev) stk[sp++] = e; } continue; }
+        if (c->tag == T_TEMPLATE) return 0;
+        if (c->tag == T_SVG) { node* stk[256]; int sp = 0; for (node* d = c->last; d && sp < 256; d = d->prev) stk[sp++] = d; while (sp) { node* d = stk[--sp]; if (d->type != NT_ELEM) continue; if (d->tag == T_STYLE) { sbuf b = { 0, 0, 0 }; text_content(d, &b); if (b.n) parse_cached(b.s, b.n, G.base, 0, 2); continue; } for (node* e = d->last; e && sp < 256; e = e->prev) stk[sp++] = e; } return 0; }
         if (c->shadow) { const char* sv = g_parse_scope; g_parse_scope = c->name ? c->name : "?"; if (c->shadow->value && c->shadow->vlen > 0) parse_cached(c->shadow->value, c->shadow->vlen, G.base, 0, 2); collect(c->shadow); g_parse_scope = sv; }
-        collect(c);
-    }
+        return 1;
+    return 0;
+}
+static void collect(node* n) {
+    int cap = 256, sp = 0; node** st = nalloc((size_t)cap * sizeof(node*)); if (!st) return;
+    for (node* c = n->last; c; c = c->prev) { if (sp == cap) { node** ns = nalloc((size_t)cap * 2 * sizeof(node*)); if (!ns) break; memcpy(ns, st, (size_t)sp * sizeof(node*)); nfree(st); st = ns; cap *= 2; } st[sp++] = c; }
+    while (sp) { node* c = st[--sp]; if (!collect_el(c)) continue;
+        for (node* d = c->last; d; d = d->prev) { if (sp == cap) { node** ns = nalloc((size_t)cap * 2 * sizeof(node*)); if (!ns) { sp = 0; break; } memcpy(ns, st, (size_t)sp * sizeof(node*)); nfree(st); st = ns; cap *= 2; } st[sp++] = d; } }
+    nfree(st);
 }
 
 void css_reset_all(void) {

@@ -31,7 +31,8 @@ const u8 _binary_nvfw_booter_unload_xz_start[1], _binary_nvfw_booter_unload_xz_e
 
 static int fails=0; static void chk(const char* w,int c){ printf("  %-78s %s\n",w,c?"ok":"FAIL"); if(!c)fails++; }
 
-void* kmalloc(unsigned long n){ void* p=0; if(posix_memalign(&p,64,n?n:1))return 0; return p; }
+static unsigned char* sim_low=0; static unsigned long sim_low_n=0;
+void* kmalloc(unsigned long n){ if(n==0x2000){ if(!sim_low){ sim_low=mmap((void*)0x50000000ULL,1UL<<24,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0); if(sim_low==MAP_FAILED)sim_low=0; } if(sim_low&&sim_low_n+n<=(1UL<<24)){ void* q=sim_low+sim_low_n; sim_low_n+=n; return q; } } void* p=0; if(posix_memalign(&p,64,n?n:1))return 0; return p; }
 void kfree(void* p){ (void)p; }
 char* scopy(char* p,const char* s){ while(*s)*p++=*s++; return p; }
 char* udec(char* p,u32 v){ char t[12]; int n=0; do{ t[n++]=(char)('0'+v%10); v/=10; }while(v); while(n)*p++=t[--n]; return p; }
@@ -73,14 +74,61 @@ static u64 walk(u64 pd3,u64 va,int* sys){
     e=rd64(VR+t+((va>>38)&511)*8); if(((e>>1)&3)!=1)return ~0ULL; t=(e&~0xFFULL)<<4;
     e=rd64(VR+t+((va>>29)&511)*8); if(((e>>1)&3)!=1)return ~0ULL; t=(e&~0xFFULL)<<4;
     e=rd64(VR+t+((va>>21)&255)*16+8); if(((e>>1)&3)!=1)return ~0ULL; t=(e&~0xFFULL)<<4;
-    e=rd64(VR+t+((va>>12)&511)*8); if(!(e&1))return ~0ULL; *sys=((e>>1)&3)==2; return ((e&~0xFFULL)<<4)+(va&0xFFF); }
+    e=rd64(VR+t+((va>>12)&511)*8); if(!(e&1))return ~0ULL; *sys=((e>>1)&3)==2; return ((e&0x00FFFFFFFFFFFF00ULL)<<4)+(va&0xFFF); }
 static u8* vptr(u64 pd3,u64 va){ int s=0; u64 p=walk(pd3,va,&s); if(p==~0ULL)return 0; return s?(u8*)p:VR+p; }
 static u64 SIM_BAR1PD, SIM_BAR2PD;
 static int sim_bars=0; static int sim_drop_next=0; static int disp_alloc=0, disp_inst_ok=0, disp_inst_n=0;
 static void sim_edid(u8* e){ memset(e,0,128); static const u8 h[8]={0,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0}; memcpy(e,h,8); e[8]=0x10; e[9]=0xAC; e[10]=0x34; e[11]=0x12; e[18]=1; e[19]=3;
-    u8* d=e+54; d[0]=0x02; d[1]=0x3A; d[2]=0x80; d[3]=0x18; d[4]=0x71; d[5]=0x38; d[6]=0x2D; d[7]=0x40;
+    u8* d=e+54; d[0]=0x02; d[1]=0x3A; d[2]=0x80; d[3]=0x18; d[4]=0x71; d[5]=0x38; d[6]=0x2D; d[7]=0x40; d[8]=0x58; d[9]=0x2C; d[10]=0x45; d[17]=0x1E;
     u8* n=e+72; n[3]=0xFC; memcpy(n+5,"SIM MONITOR\n ",13);
     u8 s=0; for(int i=0;i<127;i++)s=(u8)(s+e[i]); e[127]=(u8)(0x100-s); }
+static int sim_fuzz=0; static unsigned sim_fz=99;
+static int sim_two=0, sim_hdmi2=0, sim_no_ntfy=0, sim_refuse_cls=0, sim_proto2=2;
+static int sim_edid2(u8* e){ memset(e,0,256); static const u8 h[8]={0,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0}; memcpy(e,h,8); e[8]=0x4C; e[9]=0x2D; e[10]=0x77; e[11]=0x01; e[18]=1; e[19]=3;
+    u8* d=e+54; d[0]=0x30; d[1]=0x2A; d[2]=0x00; d[3]=0x98; d[4]=0x51; d[5]=0x00; d[6]=0x2A; d[7]=0x40; d[8]=0x30; d[9]=0x70; d[10]=0x13; d[17]=0x1E;
+    u8* n=e+72; n[3]=0xFC; memcpy(n+5,"SIM SECOND\n  ",13);
+    if(sim_hdmi2)e[126]=1;
+    u8 s=0; for(int i=0;i<127;i++)s=(u8)(s+e[i]); e[127]=(u8)(0x100-s);
+    if(!sim_hdmi2)return 128;
+    u8* c=e+128; c[0]=0x02; c[1]=0x03; c[2]=10; c[3]=0; c[4]=0x65; c[5]=0x03; c[6]=0x0C; c[7]=0x00; c[8]=0x10; c[9]=0x00;
+    s=0; for(int i=0;i<127;i++)s=(u8)(s+c[i]); c[127]=(u8)(0x100-s); return 256; }
+static u32 KC_ASY[0x1000], KC_ARM[0x1000], KW_ASY[8][0x200], KW_ARM[8][0x200]; static int kw_pend[8];
+static u64 sim_pb[9], sim_inst=0; static int sim_pb_ok[9]; static u32 sim_get[9];
+static int disp_sink_caps=0, disp_brightc=0; static int disp_root=0, disp_core=0, disp_win[8], disp_bad=0, disp_updates=0, disp_jumps=0, disp_ntfy=0, disp_sor_asg=0, disp_hdmi_en=0, disp_chan_alloc=0;
+static u64 sim_ramht(int chid,u32 handle,u32* fl,u64* limit){
+    if(!sim_inst)return ~0ULL; u32 h=0, x=handle; while(x){ h^=x&1023u; x>>=10; } h^=(u32)chid<<6; h&=1023u;
+    for(u32 i=0;i<1024;i++){ u32 co=(h+i)&1023u; u32 hd=*(u32*)(VR+sim_inst+co*8), cx=*(u32*)(VR+sim_inst+co*8+4);
+        if(!hd&&!cx)return ~0ULL;
+        if(hd==handle&&(int)(cx>>25)==chid){ if((cx&0x3FFFu)!=2u)return ~0ULL; u64 obj=sim_inst+((cx>>9)&0xFFFFu); if(obj<sim_inst+0x2000)return ~0ULL;
+            *fl=*(u32*)(VR+obj); if(limit)*limit=(((u64)*(u32*)(VR+obj+12))|((u64)*(u32*)(VR+obj+16)<<32))<<8; return (((u64)*(u32*)(VR+obj+4))|((u64)*(u32*)(VR+obj+8)<<32))<<8; } }
+    return ~0ULL; }
+static void kd_mthd(int ch,u32 m,u32 v){
+    if(ch==0){ if(m>=0x4000){ disp_bad++; return; } KC_ASY[m/4]=v;
+        if(m==0x200){ disp_updates++; u32 wm=KC_ASY[0x21C/4]; if(wm) for(int w=0;w<8;w++) if(KC_ASY[(0x1000+w*0x80)/4]!=KC_ARM[(0x1000+w*0x80)/4])disp_bad++;
+            for(int hh=0;hh<4;hh++){ u32 own=KC_ASY[(0x2020+hh*0x400)/4]; if(own&&((KC_ASY[(0x1010+hh*2*0x80)/4]&0x7FFFu)!=0x7FFFu||(KC_ASY[(0x1000+hh*2*0x80)/4]&0xFu)!=(u32)hh))disp_bad++; }
+            for(int w=0;w<8;w++){ if(!(wm&(1u<<w)))continue; if(!kw_pend[w]){ disp_bad++; continue; } memcpy(KW_ARM[w],KW_ASY[w],sizeof KW_ARM[w]); kw_pend[w]=0; }
+            memcpy(KC_ARM,KC_ASY,sizeof KC_ARM);
+            if((KC_ASY[0x20C/4]&0x1000u)&&!sim_no_ntfy){ u32 fl=0; u64 st=sim_ramht(0,KC_ASY[0x208/4],&fl,0); if(st==~0ULL||(fl&0x47u)!=0x45u)disp_bad++; else { *(u32*)(VR+st+((KC_ASY[0x20C/4]>>4)&0xFFu)*16)=0x80000000u; disp_ntfy++; } } }
+        return; }
+    int w=ch-1; if(m>=0x800){ disp_bad++; return; } KW_ASY[w][m/4]=v;
+    if(m==0x200){ if(KW_ASY[w][0x370/4]&1u){ if(!(KW_ASY[w][0x374/4]&(1u<<w)))disp_bad++; kw_pend[w]=1; } else memcpy(KW_ARM[w],KW_ASY[w],sizeof KW_ARM[w]); } }
+static void kd_exec(int ch){
+    u32 user=ch?0x690000u+(u32)(ch-1)*0x1000u:0x680000u; u32 put=REG[user/4]/4, get=sim_get[ch];
+    if(!sim_pb_ok[ch]||!(ch?disp_win[ch-1]:disp_core)||put>=1024){ disp_bad++; return; }
+    u32* pb=(u32*)sim_pb[ch]; int guard=0;
+    while(get!=put&&guard++<6000){ u32 hd=pb[get];
+        if((hd&0xE0000000u)==0x20000000u){ get=(hd&0x1FFFFFFFu)/4; disp_jumps++; if(get>=1024){ disp_bad++; break; } continue; }
+        u32 n=(hd>>18)&0x3FFu, m=hd&0xFFFCu; get++; if(!n||get+n>1024||(hd&0xE0000003u)){ disp_bad++; break; }
+        for(u32 k=0;k<n;k++)kd_mthd(ch,m+k*4,pb[get++]); }
+    sim_get[ch]=get; REG[(user+4)/4]=get*4; }
+static u32 sim_scan(int head,u32 x,u32 y,int* ok){
+    int w=head*2; *ok=0; if((KC_ARM[(0x1000+w*0x80)/4]&0xFu)!=(u32)head)return 0;
+    u32 fl=0; u64 lim=0; u64 st=sim_ramht(1+w,KW_ARM[w][0x240/4],&fl,&lim); if(st==~0ULL||(fl&0x47u)!=0x05u)return 0;
+    u64 off=(u64)KW_ARM[w][0x260/4]<<8; u32 pitch=(KW_ARM[w][0x230/4]&0x1FFFu)<<6; u32 sz=KW_ARM[w][0x224/4];
+    if(x>=(sz&0xFFFFu)||y>=(sz>>16)||!pitch||(KW_ARM[w][0x228/4]&0x10u)==0||(KW_ARM[w][0x22C/4]&0xFFu)!=0xCFu)return 0;
+    { u32 f2=0; u64 vb=sim_ramht(1+w,KW_ARM[w][0x444/4],&f2,0); u64 il=(u64)KW_ARM[w][0x448/4]<<8; if(vb!=0||(f2&0x47u)!=0x45u||!il||KW_ARM[w][0x440/4]!=((2u<<2)|(1029u<<8)))return 0;
+      if(*(u16*)(VR+il+0x20)!=0||*(u16*)(VR+il+0x20+1023*8)!=0x3BFEu||*(u16*)(VR+il+0x20+512*8+2)!=0x3800u||*(u16*)(VR+il+0x20+1024*8+4)!=0x3BFEu)return 0; }
+    u64 a=st+off+(u64)y*pitch+(u64)x*4; if(a+4>lim+1||a+4>VRSZ)return 0; *ok=1; return *(u32*)(VR+a); }
 static u64 sim_b1_cpu=0;
 u64 acpi_hi_map(u64 pa){ if(pa==BAR1&&sim_b1_cpu)return sim_b1_cpu; if(!sim_bars)return 0; int s=0;
     if(pa==BAR3){ u64 p=walk(g_bar2.pd3,0,&s); return p==~0ULL?0:(u64)(VR+p); }
@@ -107,10 +155,13 @@ static void gsp_handle(u32 fn,u8* p,u32 n){
         *(u64*)(s+0x828)=SIM_BAR1PD; *(u64*)(s+0x830)=SIM_BAR2PD; *(u32*)(s+0x868)=0xC1E00004u; *(u32*)(s+0x86C)=0xDE1D0001u; *(u32*)(s+0x870)=0x5D1D0002u;
         strcpy((char*)s+0x71C,"NVIDIA GeForce GTX 1660 SUPER (simulated)"); msg_post(65,s,sizeof s,0); return; }
     if(fn==70){ u64 v=rd64(p+8), sh=rd64(p+16); bar_pde_ok=(*(u32*)p==1&&((v>>1)&3)==1&&sh==47); *(u64*)(VR+SIM_BAR2PD)=v; msg_post(70,p,n,0); return; }
-    if(fn==10){ msg_post(10,p,n,0); return; }
+    if(fn==10){ if(*(u32*)p==0xC1D00002u&&*(u32*)(p+8)==0xC1D00002u){ disp_root=0; disp_core=0; for(int i=0;i<8;i++)disp_win[i]=0; for(int i=0;i<9;i++)sim_pb_ok[i]=0; } msg_post(10,p,n,0); return; }
     if(fn==47){ msg_post(47,p,n,0); REG[0x110040/4]=0x80000000u; return; }
     if(fn==103){ u32 hc=*(u32*)p, hp=*(u32*)(p+4), ho=*(u32*)(p+8), cls=*(u32*)(p+12), ps=*(u32*)(p+20); u8* pr=p+0x20; u32 st=0;
-        u32 want= cls==0?108:cls==0x80?56:cls==0x2080?4:cls==0x90F1?48:cls==0xC46F?360:cls==0xC5B5?8:0; if(cls==0x73){ disp_alloc++; if(!disp_inst_ok)alloc_bad++,st=0x1F; }
+        u32 want= cls==0?108:cls==0x80?56:cls==0x2080?4:cls==0x90F1?48:cls==0xC46F?360:cls==0xC5B5?8:(cls==0xC57D||cls==0xC57E)?32:0; if(cls==0x73){ disp_alloc++; if(!disp_inst_ok)alloc_bad++,st=0x1F; }
+        if(cls==0xC570){ if(hc!=0xC1D00002u||ho!=0xC5700000u||sim_refuse_cls==0xC570)st=0x1F; else disp_root=1; }
+        if(cls==0xC57D){ disp_chan_alloc++; if(!disp_root||hp!=0xC5700000u||ho!=0xC57D0000u||!sim_pb_ok[0]||*(u32*)pr!=0||*(u32*)(pr+12)!=0||sim_refuse_cls==0xC57D)st=0x1F; else { disp_core=1; sim_get[0]=0; REG[0x680000/4]=0; REG[0x680004/4]=0; memset(KC_ASY,0,sizeof KC_ASY); } }
+        if(cls==0xC57E){ disp_chan_alloc++; u32 wi=*(u32*)pr; if(!disp_root||hp!=0xC5700000u||wi>7||ho!=(0xC57E0000u|wi)||!sim_pb_ok[1+wi]||sim_refuse_cls==0xC57E)st=0x1F; else { disp_win[wi]=1; sim_get[1+wi]=0; REG[(0x690000+wi*0x1000)/4]=0; REG[(0x690004+wi*0x1000)/4]=0; memset(KW_ASY[wi],0,sizeof KW_ASY[wi]); kw_pend[wi]=0; } }
         if(ps!=want){ alloc_bad++; st=0x1F; }
         if(cls==0&&(hc!=ho||hp!=ho||*(u32*)pr!=hc))alloc_bad++,st=0x1F;
         if(cls==0xC46F){ u32 chid=ho&0xFFFFu, fl=*(u32*)(pr+0x14); if(((fl>>8)&7)!=chid%8||((fl>>12)&0x1FF)!=chid/8||!(fl&(1u<<21)))alloc_bad++,st=0x1F;
@@ -132,16 +183,26 @@ static void gsp_handle(u32 fn,u8* p,u32 n){
         else if(cmd==0x00801813u){ if(ps!=32||*(u32*)(pr+8)!=4)ctrl_bad++; vas_pd3[1]=rd64(pr); }
         else if(cmd==0xA06F0104u){ int c=chan_find(ho); if(c<0||*(u32*)pr!=CH[c].et)ctrl_bad++; }
         else if(cmd==0xA06F0103u){ int c=chan_find(ho); if(c<0||pr[0]!=1)ctrl_bad++; else CH[c].sched=1; }
-        else if(cmd==0x20800A49u){ if(ps!=24||hc!=0xC1E00004u||*(u32*)(pr+16)!=2||rd64(pr+8)!=0x10000||(rd64(pr)&0xFFFF))ctrl_bad++; else { disp_inst_ok=1; disp_inst_n++; } }
+        else if(cmd==0x20800A49u){ if(ps!=24||hc!=0xC1E00004u||*(u32*)(pr+16)!=2||rd64(pr+8)!=0x10000||(rd64(pr)&0xFFFF))ctrl_bad++; else { disp_inst_ok=1; disp_inst_n++; sim_inst=rd64(pr); } }
+        else if(cmd==0x20800A01u){ if(ps!=28||hc!=0xC1E00004u)ctrl_bad++; *(u32*)(pr+4)=0xFF; }
+        else if(cmd==0x731365u){ if(ps!=4)ctrl_bad++; }
+        else if(cmd==0x20800A58u){ u32 hcl=*(u32*)(pr+28), ci=*(u32*)(pr+32); int k=hcl==0xC57D?0:hcl==0xC57E&&ci<8?(int)(1+ci):-1;
+            if(ps!=40||hc!=0xC1E00004u||k<0||*(u32*)pr!=1||rd64(pr+16)!=0xFFF||*(u32*)(pr+24)!=1||pr[36]!=1||(rd64(pr+8)&0xFFF)){ ctrl_bad++; st=0x1F; } else { sim_pb[k]=rd64(pr+8); sim_pb_ok[k]=1; } }
+        else if(cmd==0x730126u){ if(ps!=16)ctrl_bad++; u32 hh=*(u32*)(pr+4); *(u32*)(pr+12)=hh==0?0x100u:0; }
+        else if(cmd==0x731152u){ if(ps!=80)ctrl_bad++; u32 id=*(u32*)(pr+4); u32 ex=pr[8]; int o=-1; for(int k=0;k<4;k++) if(!(ex&(1u<<k))){ o=k; break; } if(o<0||(id!=0x100&&id!=0x400))st=0x1F; else { *(u32*)(pr+40+o*8)=id; *(u32*)(pr+24+o*4)=id; disp_sor_asg|=(1<<o)<<(id==0x400?4:0); } }
+        else if(cmd==0x730273u){ if(ps!=12||*(u32*)(pr+4)!=0x400)ctrl_bad++; else disp_hdmi_en=pr[8]?1:2; }
+        else if(cmd==0x730293u){ if(ps!=12||*(u32*)(pr+4)!=0x400||*(u32*)(pr+8)!=0||disp_hdmi_en!=1)ctrl_bad++; else disp_sink_caps++; }
+        else if(cmd==0x20800AC6u){ if(ps!=4104||hc!=0xC1E00004u||*(u32*)pr!=0x56u)ctrl_bad++; else disp_brightc++; }
         else if(cmd==0x730102u){ *(u32*)(pr+8)=4; }
         else if(cmd==0x730287u){ *(u32*)(pr+4)=0xF; }
         else if(cmd==0x730120u){ if(ps!=12)ctrl_bad++; *(u32*)(pr+4)=0x700; }
-        else if(cmd==0x730122u){ if(ps!=16)ctrl_bad++; *(u32*)(pr+8)&=0x100; }
-        else if(cmd==0x73028Bu){ if(ps!=56)ctrl_bad++; u32 id=*(u32*)(pr+4); *(u32*)(pr+12)=2; *(u32*)(pr+16)=id==0x100?1:id==0x200?8:5; }
+        else if(cmd==0x730122u){ if(ps!=16)ctrl_bad++; *(u32*)(pr+8)&=sim_two?0x500:0x100; }
+        else if(cmd==0x73028Bu){ if(ps!=56)ctrl_bad++; u32 id=*(u32*)(pr+4); *(u32*)(pr+8)=id==0x100?0:id==0x200?2:1; *(u32*)(pr+12)=2; *(u32*)(pr+16)=id==0x100?1:id==0x200?8:(sim_two?(u32)sim_proto2:5); }
         else if(cmd==0x731140u){ *(u32*)(pr+8)=(1u<<8); }
-        else if(cmd==0x730245u){ if(ps!=2064||*(u32*)(pr+4)!=0x100)ctrl_bad++; else { sim_edid(pr+16); *(u32*)(pr+8)=128; } }
+        else if(cmd==0x730245u){ u32 id=*(u32*)(pr+4); if(ps!=2064||(id!=0x100&&!(sim_two&&id==0x400)))ctrl_bad++; else if(id==0x100){ sim_edid(pr+16); *(u32*)(pr+8)=128; } else *(u32*)(pr+8)=(u32)sim_edid2(pr+16); }
         else if(cmd==0xC36F0108u){ int c=chan_find(ho); *(u32*)pr=c>=0?((CH[c].runl<<16)|CH[c].chid):0; }
         else { ctrl_bad++; st=0x56; }
+        if(sim_fuzz&&((cmd>>16)==0x73||cmd==0x20800A01u)){ for(u32 i=0;i<ps;i++){ sim_fz=sim_fz*1103515245u+12345u; if((sim_fz>>28)<sim_fuzz)pr[i]=(u8)(sim_fz>>16); } st=((sim_fz>>8)%23==0)?0x1Fu:0; }
         u8 r[0x4000]; memcpy(r,p,0x18+ps); *(u32*)(r+12)=st; msg_post(76,r,0x18+ps,0); return; }
 }
 static void gsp_service(void){
@@ -161,8 +222,90 @@ static void gsp_boot(void){
     gsp_init=1; resume_wait=1; }
 static u32 ce_lines=0, ce_fills=0;
 static u32 R2D[16][0x400]; static u32 HOST[16][0x40]; static u32 tw_fills=0, tw_blits=0, host_sems=0, mem_ops=0;
+static u32 sim_kind(u64 pd3,u64 va){
+    u64 t=pd3; u64 e;
+    e=rd64(VR+t+((va>>47)&3)*8); if(((e>>1)&3)!=1)return 0xFFFF; t=(e&~0xFFULL)<<4;
+    e=rd64(VR+t+((va>>38)&511)*8); if(((e>>1)&3)!=1)return 0xFFFF; t=(e&~0xFFULL)<<4;
+    e=rd64(VR+t+((va>>29)&511)*8); if(((e>>1)&3)!=1)return 0xFFFF; t=(e&~0xFFULL)<<4;
+    e=rd64(VR+t+((va>>21)&255)*16+8); if(((e>>1)&3)!=1)return 0xFFFF; t=(e&~0xFFULL)<<4;
+    e=rd64(VR+t+((va>>12)&511)*8); if(!(e&1))return 0xFFFF; return (u32)(e>>56); }
+static int s2d_blbad=0;
 static u8* s2d(u64 pd3,const u32* R,int dst,int x,int y){ u64 base=((u64)R[(dst?0x220:0x250)/4]<<32)|R[(dst?0x224:0x254)/4]; u32 pitch=R[(dst?0x214:0x244)/4]; u32 w=R[(dst?0x218:0x248)/4], h=R[(dst?0x21C:0x24C)/4];
-    if(x<0||y<0||(u32)x>=w||(u32)y>=h||R[(dst?0x204:0x234)/4]!=1)return 0; return vptr(pd3,base+(u64)y*pitch+(u64)x*4); }
+    if(x<0||y<0||(u32)x>=w||(u32)y>=h)return 0;
+    if(!dst&&R[0x234/4]==0){ if(R[0x238/4]!=0||R[0x23C/4]!=1||R[0x240/4]!=2||sim_kind(pd3,base)!=6){ s2d_blbad++; return 0; } return vptr(pd3,base+((u64)y*w+(u64)x)*4); }
+    if(R[(dst?0x204:0x234)/4]!=1)return 0; return vptr(pd3,base+(u64)y*pitch+(u64)x*4); }
+static u32 R3[16][0x3000/4]; static int s3_bad=0, s3_draws=0, s3_clears=0, s3_nodepth=0; static u32 s3_verts=0, s3_pix=0; static char s3_why[64];
+static void s3_err(const char* w){ if(!s3_bad)strncpy(s3_why,w,63); s3_bad++; }
+static float s3_f(u32 u){ float f; memcpy(&f,&u,4); return f; }
+static u32 s3_field(const u32* in,int lo,int hi){ u64 v=((u64)in[lo/32])|((u64)in[lo/32+1<4?lo/32+1:3]<<32); if(lo/32==3)v=in[3]; return (u32)((v>>(lo%32))&((1ULL<<(hi-lo))-1)); }
+static u32 s3_sph(const u32* h,int lo,int hi){ u32 v=0; for(int b=lo;b<hi;b++) if(h[b/32]&(1u<<(b%32)))v|=1u<<(b-lo); return v; }
+static int s3_prog(u64 pd3,const u32* R,int idx,const u32** hdr,const u32** code){
+    u32 base=N3_SET_PIPELINE_SHADER+(u32)idx*0x40u; if(R[base/4]!=(idx==1?0x11u:0x51u)){ s3_err("pipeline shader not enabled"); return 0; }
+    u64 a=((u64)R[(base+0x14)/4]<<32)|R[(base+0x18)/4]; const u32* p=(const u32*)vptr(pd3,a); if(!p||(a&0x7F)){ s3_err("program address"); return 0; }
+    if(s3_sph(p,0,5)!=(idx==1?1u:2u)||s3_sph(p,5,10)!=4||s3_sph(p,10,14)!=(u32)idx||s3_sph(p,17,21)!=1){ s3_err("SPH type/version"); return 0; }
+    *hdr=p; *code=p+32; return 1; }
+static int s3_vs(u64 pd3,const u32* R,u32 vi,float* pos,float* var){
+    const u32* h; const u32* code; if(!s3_prog(pd3,R,1,&h,&code))return 0; float r[256]; memset(r,0,sizeof r); u32 maxr=0; int wrote_pos=0;
+    for(int ip=0;ip<64;ip++){ const u32* in=code+ip*4; u32 op=in[0]&0xFFFu; if(((in[0]>>12)&7u)!=7u){ s3_err("VS predicate"); return 0; }
+        if(op==0x94D){ if(s3_field(in,87,90)!=7){ s3_err("EXIT"); return 0; } break; }
+        u32 addr=s3_field(in,40,50), comps=s3_field(in,74,76)+1;
+        if(op==0x321){ u32 dst=(in[0]>>16)&255u; if(s3_field(in,32,40)!=255||((in[0]>>24)&255u)!=255||s3_field(in,79,80)){ s3_err("ALD operands"); return 0; }
+            if(addr<0x80||addr>=0x280){ s3_err("ALD address"); return 0; } u32 at=(addr-0x80)/16, c0=((addr-0x80)/4)&3;
+            for(u32 c=0;c<comps;c++){ if(!(s3_sph(h,192+(int)((addr-0x80)/4+c),193+(int)((addr-0x80)/4+c)))){ s3_err("VS input not in SPH imap"); return 0; } }
+            u32 va=R[(N3_SET_VERTEX_ATTRIBUTE_A+at*4)/4]; if((va&0x1Fu)!=0||(va&(1u<<6))||((va>>21)&0x3Fu)!=1||((va>>27)&7u)!=7){ s3_err("vertex attribute format"); return 0; }
+            u32 off=(va>>7)&0x3FFFu, fmt=R[N3_SET_VERTEX_STREAM_A_FORMAT/4]; u32 stride=fmt&0xFFFu; if(!(fmt&0x1000u)||!stride){ s3_err("vertex stream disabled"); return 0; }
+            u64 sb=((u64)R[(N3_SET_VERTEX_STREAM_A_FORMAT+4)/4]<<32)|R[(N3_SET_VERTEX_STREAM_A_FORMAT+8)/4]; u64 sz=((u64)R[N3_SET_VERTEX_STREAM_SIZE_A/4]<<32)|R[(N3_SET_VERTEX_STREAM_SIZE_A+4)/4];
+            u64 o=(u64)vi*stride+off; if(o+16>sz){ s3_err("vertex beyond stream size"); return 0; }
+            for(u32 c=0;c<comps;c++){ u8* q=vptr(pd3,sb+o+(c0+c)*4); if(!q){ s3_err("vertex buffer unmapped"); return 0; } memcpy(&r[dst+c],q,4); if(dst+c>maxr)maxr=dst+c; } }
+        else if(op==0x322){ u32 src=s3_field(in,32,40); if(s3_field(in,64,72)!=255||((in[0]>>24)&255u)!=255){ s3_err("AST operands"); return 0; }
+            if(addr/4<s3_sph(h,140,148)||(addr+comps*4-1)/4>s3_sph(h,152,160)){ s3_err("AST outside store_req"); return 0; }
+            for(u32 c=0;c<comps;c++){ u32 a=addr+c*4;
+                if(a>=0x70&&a<0x80){ if(!s3_sph(h,400+(int)(a/4),401+(int)(a/4))){ s3_err("position not in omap"); return 0; } pos[(a-0x70)/4]=r[src+c]; wrote_pos|=1<<((a-0x70)/4); }
+                else if(a>=0x80&&a<0x100){ if(!s3_sph(h,432+(int)((a-0x80)/4),433+(int)((a-0x80)/4))){ s3_err("output not in omap"); return 0; } var[(a-0x80)/4]=r[src+c]; }
+                else { s3_err("AST address"); return 0; } } }
+        else { s3_err("unknown VS instruction"); return 0; } }
+    if(wrote_pos!=15){ s3_err("VS did not write the position"); return 0; }
+    if(R[(N3_SET_PIPELINE_REGISTER_COUNT+0x40)/4]<maxr+1+2){ s3_err("VS register count"); return 0; } return 1; }
+static int s3_fs(u64 pd3,const u32* R,const float* var,float* out){
+    const u32* h; const u32* code; if(!s3_prog(pd3,R,5,&h,&code))return 0; float r[256]; memset(r,0,sizeof r); u32 maxr=0;
+    if(!s3_sph(h,14,15)||s3_sph(h,576,608)!=0xF){ s3_err("FS output map"); return 0; }
+    if(!s3_sph(h,191,192)){ s3_err("FS header without the position W input"); return 0; }
+    for(int ip=0;ip<64;ip++){ const u32* in=code+ip*4; u32 op=in[0]&0xFFFu; if(op==0x94D)break;
+        if(op!=0x326){ s3_err("unknown FS instruction"); return 0; } u32 dst=(in[0]>>16)&255u, addr=s3_field(in,64,72)<<2;
+        if(s3_field(in,76,78)||s3_field(in,78,80)||s3_field(in,32,40)!=255||s3_field(in,81,84)!=7||addr<0x80||addr>=0x100){ s3_err("IPA operands"); return 0; }
+        u32 ci=(addr-0x80)/4; if(s3_sph(h,192+(int)ci*2,194+(int)ci*2)!=2){ s3_err("FS input not perspective in SPH"); return 0; } r[dst]=var[ci]; if(dst>maxr)maxr=dst; }
+    if(R[(N3_SET_PIPELINE_REGISTER_COUNT+5*0x40)/4]<maxr+1+2){ s3_err("FS register count"); return 0; }
+    for(int c=0;c<4;c++)out[c]=r[c]; return 1; }
+static int s3_targets(u64 pd3,const u32* R,u64* ct,u64* zt,u32* sw,u32* sh){
+    *ct=((u64)R[N3_SET_COLOR_TARGET_A/4]<<32)|R[N3_SET_COLOR_TARGET_B/4]; *zt=((u64)R[N3_SET_ZT_A/4]<<32)|R[N3_SET_ZT_B/4]; *sw=R[N3_SET_COLOR_TARGET_WIDTH/4]; *sh=R[N3_SET_COLOR_TARGET_HEIGHT/4];
+    if(R[N3_SET_COLOR_TARGET_FORMAT/4]!=0xCF||R[N3_SET_COLOR_TARGET_MEMORY/4]!=0||R[N3_SET_COLOR_TARGET_THIRD_DIMENSION/4]!=1||R[N3_SET_CT_SELECT/4]!=1){ s3_err("colour target state"); return 0; }
+    if(R[N3_SET_ZT_FORMAT/4]!=0x0A||R[N3_SET_ZT_BLOCK_SIZE/4]!=0||R[N3_SET_ZT_SELECT/4]!=1||R[N3_SET_ZT_SIZE_A/4]!=*sw||R[N3_SET_ZT_SIZE_B/4]!=*sh){ s3_err("depth target state"); return 0; }
+    if(R[0x19CC/4]||R[0x111C/4]||R[0x19E0/4]){ s3_err("compression enabled on plain memory"); return 0; }
+    if((*sw&15)||(*sh&7)||sim_kind(pd3,*ct)!=6||sim_kind(pd3,*zt)!=6||sim_kind(pd3,*ct+(u64)*sw*4**sh-4)!=6){ s3_err("target memory kind or size"); return 0; } return 1; }
+static void s3_clear(u64 pd3,const u32* R,u32 v){
+    u64 ct, zt; u32 sw, sh; if(!s3_targets(pd3,R,&ct,&zt,&sw,&sh))return; if(v!=0x3D||R[N3_SET_CLEAR_SURFACE_CONTROL/4]!=0x10){ s3_err("clear control"); return; }
+    u32 x0=R[N3_SET_CLEAR_RECT_HORIZONTAL/4]&0xFFFF, x1=R[N3_SET_CLEAR_RECT_HORIZONTAL/4]>>16, y0=R[N3_SET_CLEAR_RECT_VERTICAL/4]&0xFFFF, y1=R[N3_SET_CLEAR_RECT_VERTICAL/4]>>16; if(x1>sw||y1>sh){ s3_err("clear rect"); return; }
+    u32 px=0; for(int c=0;c<4;c++){ float f=s3_f(R[(N3_SET_COLOR_CLEAR_VALUE+c*4)/4]); if(f<0)f=0; if(f>1)f=1; u32 b=(u32)(f*255.0f+0.5f); px|=b<<(c==0?16:c==1?8:c==2?0:24); }
+    for(u32 y=y0;y<y1;y++) for(u32 x=x0;x<x1;x++){ u8* cp=vptr(pd3,ct+((u64)y*sw+x)*4); u8* zp=vptr(pd3,zt+((u64)y*sw+x)*4); if(!cp||!zp){ s3_err("target unmapped"); return; } memcpy(cp,&px,4); memcpy(zp,&R[N3_SET_Z_CLEAR_VALUE/4],4); }
+    s3_clears++; }
+static void s3_draw(u64 pd3,const u32* R,u32 count){
+    u64 ct, zt; u32 sw, sh; if(!s3_targets(pd3,R,&ct,&zt,&sw,&sh))return; s3_draws++;
+    if(R[N3_SET_PRIMITIVE_TOPOLOGY/4]!=4||R[N3_SET_DRAW_CONTROL_A/4]!=0x200||R[(N3_SET_DRAW_CONTROL_A+4)/4]!=1||R[N3_DRAW_VERTEX_ARRAY_BEGIN_END_A/4]!=0||count%3){ s3_err("draw control"); return; }
+    float sx=s3_f(R[N3_SET_VIEWPORT_SCALE_X/4]), sy=s3_f(R[(N3_SET_VIEWPORT_SCALE_X+4)/4]), sz=s3_f(R[(N3_SET_VIEWPORT_SCALE_X+8)/4]), ox=s3_f(R[N3_SET_VIEWPORT_OFFSET_X/4]), oy=s3_f(R[(N3_SET_VIEWPORT_OFFSET_X+4)/4]), oz=s3_f(R[(N3_SET_VIEWPORT_OFFSET_X+8)/4]);
+    u32 cw=R[N3_SET_SURFACE_CLIP_HORIZONTAL/4]>>16, chh=R[N3_SET_SURFACE_CLIP_VERTICAL/4]>>16, vw=R[N3_SET_VIEWPORT_CLIP_HORIZONTAL/4]>>16, vh=R[(N3_SET_VIEWPORT_CLIP_HORIZONTAL+4)/4]>>16; if(vw<cw)cw=vw; if(vh<chh)chh=vh; if(cw>sw||chh>sh){ s3_err("clip larger than target"); return; }
+    for(u32 t=0;t+2<count;t+=3){ float p[3][4], v[3][8], X[3], Y[3], Z[3], iw[3]; int skip=0;
+        for(int k=0;k<3;k++){ memset(v[k],0,sizeof v[k]); if(!s3_vs(pd3,R,t+k,p[k],v[k]))return; if(p[k][3]<=0||p[k][2]<0||p[k][2]>p[k][3])skip=1; iw[k]=1.0f/p[k][3]; X[k]=p[k][0]*iw[k]*sx+ox; Y[k]=p[k][1]*iw[k]*sy+oy; Z[k]=p[k][2]*iw[k]*sz+oz; }
+        s3_verts+=3; if(skip)continue;
+        float area=(X[1]-X[0])*(Y[2]-Y[0])-(Y[1]-Y[0])*(X[2]-X[0]); if(area==0)continue; float inv=1.0f/area;
+        float fx0=X[0],fx1=X[0],fy0=Y[0],fy1=Y[0]; for(int k=1;k<3;k++){ if(X[k]<fx0)fx0=X[k]; if(X[k]>fx1)fx1=X[k]; if(Y[k]<fy0)fy0=Y[k]; if(Y[k]>fy1)fy1=Y[k]; }
+        int x0=(int)fx0, x1=(int)fx1+1, y0=(int)fy0, y1=(int)fy1+1; if(x0<0)x0=0; if(y0<0)y0=0; if(x1>(int)cw)x1=(int)cw; if(y1>(int)chh)y1=(int)chh;
+        for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++){ float px=x+0.5f, py=y+0.5f;
+            float b0=((X[1]-px)*(Y[2]-py)-(Y[1]-py)*(X[2]-px))*inv, b1=((X[2]-px)*(Y[0]-py)-(Y[2]-py)*(X[0]-px))*inv, b2=1.0f-b0-b1; if(b0<0||b1<0||b2<0)continue;
+            float z=b0*Z[0]+b1*Z[1]+b2*Z[2]; u8* zp=vptr(pd3,zt+((u64)y*sw+x)*4); u8* cp=vptr(pd3,ct+((u64)y*sw+x)*4); if(!zp||!cp){ s3_err("target unmapped"); return; }
+            float zo; memcpy(&zo,zp,4); if(!s3_nodepth&&!(z<zo))continue;
+            float w=b0*iw[0]+b1*iw[1]+b2*iw[2], var[8]; for(int c=0;c<8;c++)var[c]=(b0*v[0][c]*iw[0]+b1*v[1][c]*iw[1]+b2*v[2][c]*iw[2])/w;
+            float o[4]; if(!s3_fs(pd3,R,var,o))return; u32 pxl=0; for(int c=0;c<4;c++){ float f=o[c]; if(f<0)f=0; if(f>1)f=1; u32 b=(u32)(f*255.0f+0.5f); pxl|=b<<(c==0?16:c==1?8:c==2?0:24); }
+            memcpy(cp,&pxl,4); memcpy(zp,&z,4); s3_pix++; } } }
 static u32 tw_op(const u32* R,u32 d,u32 sv,int srcfmt){
     u32 op=R[0x2AC/4]; if(op==3)return sv; if(op!=6)return d;
     u32 b=R[0x2A8/4]>>24; u32 sa=srcfmt==0xE6u?255u:(sv>>24); u32 k=sa*b/255u; u32 o=0;
@@ -204,7 +347,7 @@ static void cp_launch(u64 pd3,const u32* R){
 static void ce_exec(u32 token){
     int c=-1; for(int i=0;i<NCH;i++) if(CH[i].chid==(token&0xFFFF)&&CH[i].runl==(token>>16))c=i; if(c<0||!CH[c].sched)return;
     u64 pd3=rd64(VR+CH[c].inst+0x200)&~0xFFFULL; u32 put=*(u32*)(VR+CH[c].userd+0x8C), get=*(u32*)(VR+CH[c].userd+0x88);
-    u32* R=R2D[c]; u32* HS=HOST[c]; if(cp_hang&&CH[c].et==1)return;
+    u32* R=R2D[c]; u32* HS=HOST[c]; if(cp_hang&&CH[c].et==1){ *(u32*)(VR+CH[c].userd+0x88)=put; return; }
     while(get!=put){ u8* gp=vptr(pd3,CH[c].gpva+get*8); if(!gp)return; u32 e0=*(u32*)gp, e1=*(u32*)(gp+4); u64 pva=((u64)(e1&0xFF)<<32)|(e0&0xFFFFFFFCu); u32 nd=(e1>>10)&0x1FFFFF;
         u32* pb=(u32*)vptr(pd3,pva); if(!pb)return; u32 regs[0x800]; memset(regs,0,sizeof regs); static u32 obj[16][8];
         for(u32 i=0;i<nd;){ u32 h=pb[i++]; u32 cnt=(h>>16)&0x1FFF, mth=(h&0xFFF)<<2, sub=(h>>13)&7; if((h>>29)!=1)return;
@@ -215,6 +358,7 @@ static void ce_exec(u32 token){
                     continue; }
                 if(m==0){ obj[c][sub]=v; continue; }
                 if(obj[c][sub]==0xC5C0u){ if(m<0x2000)CPR[c][m/4]=v; if(m==0x110)cp_wfi++; if(m==0x2BC)cp_launch(pd3,CPR[c]); continue; }
+                if(obj[c][sub]==0xC597u){ if(m<0x3000)R3[c][m/4]=v; if(m==N3_CLEAR_SURFACE)s3_clear(pd3,R3[c],v); if(m==N3_DRAW_VERTEX_ARRAY_BEGIN_END_A+4)s3_draw(pd3,R3[c],v); continue; }
                 if(obj[c][sub]==0x902Du){ if(m<0x1000)R[m/4]=v;
                     if(m==0x60C&&R[0x580/4]==4){ int x0=(int)R[0x600/4], y0=(int)R[0x604/4], x1=(int)R[0x608/4], y1=(int)v;
                         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++){ u8* dp=s2d(pd3,R,1,x,y); if(dp){ u32 d=*(u32*)dp; *(u32*)dp=tw_op(R,d,R[0x588/4],(int)R[0x584/4]); } } tw_fills++; }
@@ -270,6 +414,8 @@ void nvw32(u32 off,u32 v){
     if(off==0x110080){ REG[off/4]=v; if(gsp_on&&!gsp_init)gsp_boot(); else if(resume_wait&&resumed&&(REG[0x111240/4]&1u)){ u8 z[4]={0}; resume_wait=0; msg_post(0x1001,z,4,0); } return; }
     if(off==0x110C00){ if(gsp_init)gsp_service(); return; }
     if(off==0xBB0090){ ce_exec(v); return; }
+    if(off==0x680000){ REG[off/4]=v; kd_exec(0); return; }
+    if(off>=0x690000&&off<0x698000&&!(off&0xFFF)){ REG[off/4]=v; kd_exec(1+(int)((off-0x690000)>>12)); return; }
     REG[off/4]=v; }
 
 static void build_rom(void){
@@ -465,6 +611,63 @@ int main(int argc,char** argv){
         &&!strcmp(nvgsp_mon_sig(&ml[0]),"HDMI")&&!ml[1].connected&&!strcmp(nvgsp_mon_sig(&ml[1]),"DisplayPort")&&strstr(g_nv_log,"1 monitor(s) connected")!=0;
       int again=nvgsp_monitors()==1&&disp_alloc==a0+2&&disp_inst_n==1;
       chk("monitors like nouveau's r535_disp_oneinit: display instance memory, NV04_DISPLAY_COMMON, connected outputs, HDMI/DP type and EDID name and native mode",good&&again); }
+    { nvl_reset(); int b0=s3_bad; int r3=nv3d_selftest(); if(s3_bad)printf("    3D model: %s\n",s3_why);
+      chk("3D engine: state from NVIDIA's class header, block-linear colour and ZF32 depth targets (memory kind 6), shaders run by the model, depth order, read back through the 2D engine",r3==1&&nv3d_ready()&&s3_bad==b0&&s3_clears==1&&s3_draws==1&&s3_verts==9&&s2d_blbad==0);
+      nv2d_surf sc; int hs=nv2d_screen(&sc); int ts=hs?nv3d_to_screen(100,50,2):0; u8* q=hs?vptr(g_uv.pd3,sc.va+(u64)(50+2*58)*sc.pitch+(u64)(100+2*6)*4):0; u8* q2=hs?vptr(g_uv.pd3,sc.va+(u64)(50+2*4)*sc.pitch+(u64)(100+2*40)*4):0;
+      chk("3D picture goes from the block-linear target to the screen through the 2D engine, scaled 2x",hs&&ts&&q&&q2&&(*(u32*)q&0xFFFFFFu)==0x00FF00u&&(*(u32*)q2&0xFFFFFFu)==0x4080BFu&&s2d_blbad==0);
+      u32 v0=s3_verts, sb0=0, sb1=0, tr0=0, tr1=0; nv3d_stats(0,&tr0,&sb0,0,0); int bg=nv3d_begin(320,200,0,0,0); unsigned sd=7; float t[24];
+      for(int i=0;i<20000&&bg;i++){ sd=sd*1103515245u+12345u; float cx=(float)((sd>>8)%2000)/1000.0f-1.0f, cy=(float)((sd>>19)%2000)/1000.0f-1.0f, z=(float)((sd>>4)%1000)/1000.0f;
+          for(int k=0;k<3;k++){ float* d=t+k*8; d[0]=cx+(k==1?0.02f:0); d[1]=cy+(k==2?0.02f:0); d[2]=z; d[3]=1.0f; d[4]=(float)(i&255)/255.0f; d[5]=(float)k*0.5f; d[6]=z; d[7]=1.0f; } nv3d_tri(0,t); }
+      int en=bg?nv3d_end():0; nv3d_stats(0,&tr1,&sb1,0,0);
+      chk("20000 triangles in one frame: the vertex buffer goes in two parts and every vertex reaches the engine",en==1&&s3_verts==v0+60000u&&sb1==sb0+2&&tr1==tr0+20000u&&s3_bad==b0&&s3_clears==2);
+      s3_nodepth=1; nvl_reset(); int rb=nv3d_selftest(); s3_nodepth=0; int off=rb==0&&!nv3d_ready()&&strstr(nv3d_why(),"did not match")!=0&&strstr(g_nv_log,"3D stays off")!=0; int rg=nv3d_selftest();
+      chk("a card that ignores the depth test fails the 3D self-test (3D stays off); a correct one passes again",off&&rg==1&&nv3d_ready()&&s3_bad==b0); }
+    { for(u32 y=0;y<600;y++) for(u32 x=0;x<1024;x++) *(u32*)(VR+(u64)y*4096+x*4)=0xFF000000u|(y<<12)|x;
+      int cb0=ctrl_bad, ab0=alloc_bad;
+      nvl_reset(); int one=nvgsp_mode(0); int one_ok=one==0&&strstr(g_nv_log,"only one monitor")!=0&&KD.up;
+      nvgsp_mode_lost(); rm_free(HC(2),HC(2)); sim_two=1;
+      sim_refuse_cls=0xC57D; nvl_reset(); int rf=nvgsp_mode(0); int rf_ok=rf==0&&strstr(KD.why,"core display channel")!=0&&!KD.up&&!disp_root; int ab1=alloc_bad; sim_refuse_cls=0;
+      sim_proto2=8; nvl_reset(); int dp=nvgsp_mode(0); int dp_ok=dp==0&&strstr(g_nv_log,"not driven yet")!=0; sim_proto2=2;
+      chk("second screen refused cleanly: one monitor only, core channel refused by GSP-RM (client freed), DisplayPort monitor",one_ok&&rf_ok&&dp_ok&&ctrl_bad==cb0&&alloc_bad==ab1&&ab1==ab0);
+      nvl_reset(); int r1=nvgsp_mode(0); int sk=0; u32 px=sim_scan(1,700,333,&sk); u32 H1=0x400;
+      int ras=KC_ARM[(0x2064+H1)/4]==(1688u|(1066u<<16))&&KC_ARM[(0x2068+H1)/4]==(111u|(2u<<16))&&KC_ARM[(0x206C+H1)/4]==(359u|(40u<<16))&&KC_ARM[(0x2070+H1)/4]==(1639u|(1064u<<16))&&KC_ARM[(0x200C+H1)/4]==108000000u&&KC_ARM[(0x2028+H1)/4]==108000000u;
+      int rt=KC_ARM[(0x2020+H1)/4]==0x400u&&KC_ARM[0x320/4]==((1u<<1)|(2u<<8))&&KC_ARM[0x1100/4]==1u&&disp_brightc>=1&&KC_ARM[(0x2004+H1)/4]==((4u<<4)|(0x3Fu<<26))&&KD.head[1].or==1&&KD.head[1].id==0x400u;
+      int vp=KC_ARM[(0x204C+H1)/4]==(1024u|(600u<<16))&&KC_ARM[(0x2058+H1)/4]==(1280u|(750u<<16));
+      u32 lf=0; u64 vs=sim_ramht(0,KC_ARM[(0x2288+H1)/4],&lf,0); u64 lut=(u64)KC_ARM[(0x228C+H1)/4]<<8; int lu=vs==0&&(lf&0x47u)==0x45u&&lut&&*(u16*)(VR+lut+0x20+512*8)==512*64&&*(u16*)(VR+lut+0x20+512*8+2)==512*64&&*(u16*)(VR+lut+0x20+512*8+4)==512*64&&*(u16*)(VR+lut+0x20+1024*8)==1023*64&&((KC_ARM[(0x2280+H1)/4]>>8)&0x7FFu)==1029u;
+      int h0=KC_ARM[0x2064/4]==0&&KC_ARM[0x300/4]==0&&KC_ARM[0x1000/4]==0;
+      chk("second screen: display object, core and window channels, SOR from GSP-RM, 1280x1024 raster and 108 MHz clock from the EDID, head 0 left alone",r1==1&&ras&&rt&&h0&&disp_bad==0&&disp_ntfy==2&&ctrl_bad==cb0&&alloc_bad==ab0);
+      chk("second screen: hash table and DMA objects found by a hardware-style lookup, window scans the desktop picture, viewport 1024x600 fitted to 1280x750, identity colour table",sk&&px==(0xFF000000u|(333u<<12)|700u)&&vp&&lu);
+      int ca=disp_chan_alloc; nvl_reset(); int r2=nvgsp_mode(0); nvgsp_monitors(); const nvgsp_mon_t* ml=0; int mn=nvgsp_mon_get(&ml,0,0,0); int mk=0; for(int i=0;i<mn;i++) if(ml[i].id==0x400u&&ml[i].lit==2&&ml[i].head==1&&ml[i].act_w==1280&&ml[i].act_h==1024)mk=1;
+      nvgsp_mode_t mi; int mc=nvgsp_mode_info(&mi);
+      chk("second screen: asking again changes nothing, monitor list and mode info show head 1 at 1280x1024",r2==1&&disp_chan_alloc==ca&&mk&&mc==1&&mi.h[0].head==1&&mi.h[0].w==1280&&mi.h[0].ow==1280&&mi.h[0].oh==750&&mi.h[0].sor==1&&disp_bad==0);
+      nvl_reset(); int of=nvgsp_mode_off(); int off_ok=of==1&&KC_ARM[0x320/4]==0&&KW_ARM[2][0x240/4]==0&&KC_ARM[0x1100/4]==1u&&KC_ARM[(0x2020+H1)/4]==0&&KD.head[1].or<0&&nvgsp_mode_off()==0;
+      sim_hdmi2=1; disp_hdmi_en=0; nvl_reset(); int r3=nvgsp_mode(0); u8 fr[17]; u32 hd=REG[0x6F0408/4], l0=REG[0x6F040C/4], h0r=REG[0x6F0410/4], l1=REG[0x6F0414/4], h1r=REG[0x6F0418/4];
+      fr[0]=(u8)hd; fr[1]=(u8)(hd>>8); fr[2]=(u8)(hd>>16); fr[3]=(u8)l0; fr[4]=(u8)(l0>>8); fr[5]=(u8)(l0>>16); fr[6]=(u8)(l0>>24); fr[7]=(u8)h0r; fr[8]=(u8)(h0r>>8); fr[9]=(u8)(h0r>>16); fr[10]=(u8)l1; fr[11]=(u8)(l1>>8); fr[12]=(u8)(l1>>16); fr[13]=(u8)(l1>>24); fr[14]=(u8)h1r; fr[15]=(u8)(h1r>>8); fr[16]=(u8)(h1r>>16);
+      u8 cs=0; for(int i=0;i<17;i++)cs=(u8)(cs+fr[i]); int hm=r3==1&&disp_hdmi_en==1&&disp_sink_caps==1&&(fr[4]&0x10)&&(REG[0x6F0400/4]&1u)&&fr[0]==0x82&&fr[1]==2&&fr[2]==13&&cs==0&&(fr[6]&0x0C)==0x08&&KD.head[1].hdmi==1;
+      int of2=nvgsp_mode_off()==1&&disp_hdmi_en==1&&!(REG[0x6F0400/4]&1u); sim_hdmi2=0;
+      chk("second screen: off clears the output, window and display id; an HDMI monitor gets HDMI mode and a valid AVI InfoFrame (full-range RGB)",off_ok&&hm&&of2&&disp_bad==0);
+      nvl_reset(); int r4=nvgsp_mode(1); int s0=0, s1=0; u32 p0=sim_scan(0,10,599,&s0), p1=sim_scan(1,1023,0,&s1);
+      int all_ok=r4==1&&KC_ARM[0x2064/4]==(2200u|(1125u<<16))&&KC_ARM[0x2068/4]==(43u|(4u<<16))&&KC_ARM[0x206C/4]==(191u|(40u<<16))&&KC_ARM[0x2070/4]==(2111u|(1120u<<16))&&KC_ARM[0x200C/4]==148500000u&&KC_ARM[0x300/4]==((1u<<0)|(1u<<8))&&KC_ARM[0x2020/4]==0x100u
+        &&KC_ARM[0x2058/4]==(1842u|(1080u<<16))&&s0&&p0==(0xFF000000u|(599u<<12)|10u)&&s1&&p1==(0xFF000000u|1023u)&&KD.head[0].or==0&&KD.head[1].or==1;
+      chk("nvgsp mode all: the first monitor is set to its own 1920x1080 mode on its own output as well, both heads scan the desktop",all_ok&&disp_bad==0);
+      int lp=1; for(int k=0;k<70&&lp;k++){ if(nvgsp_mode_off()!=1||nvgsp_mode(1)!=1)lp=0; } int s2=0; u32 p2=sim_scan(1,5,5,&s2);
+      chk("70 off/on rounds: command buffers wrap with a jump, every update finishes, hash table does not grow",lp&&disp_jumps>=2&&disp_bad==0&&s2&&p2==(0xFF000000u|(5u<<12)|5u)&&KD.nobj==8&&disp_chan_alloc==ca+1);
+      nvgsp_mode_off(); sim_no_ntfy=1; nvl_reset(); u32 t0=KD.timeouts; int r5=nvgsp_mode(0); sim_no_ntfy=0; int w5=strstr(KD.why,"did not finish")!=0; int r6=nvgsp_mode(0);
+      chk("an update the display engine never finishes is reported after 3 s and the next try works",r5==0&&KD.timeouts==t0+1&&w5&&r6==1&&KD.head[1].or>=0&&disp_bad==0);
+      *(u32*)(g_bootinfo+8)=4100; nvgsp_mode_off(); nvl_reset(); int r7=nvgsp_mode(0); *(u32*)(g_bootinfo+8)=4096; *(u64*)g_bootinfo=0x1000; int r8=nvgsp_mode(0); *(u64*)g_bootinfo=BAR1;
+      chk("a desktop line length the display engine cannot scan, or a desktop that is not in NVIDIA memory, is refused",r7==0&&r8==0&&strstr(KD.why,"another GPU")!=0&&disp_bad==0);
+      unsigned sd=12345; long acc=0, hdm=0; int fz=1;
+      for(int it=0;it<300000&&fz;it++){ u8 e[256]; for(int i=0;i<256;i++){ sd=sd*1103515245u+12345u; e[i]=(u8)(sd>>16); } if(it&1){ e[126]=1; e[128]=2; e[130]=(u8)(4+(sd>>8)%124); } if(it%3==0){ e[54]=1; e[71]&=0x7F; }
+          kmode m; int n=(it%5==0)?(int)((sd>>4)%257):256; if(nvk_edid_mode(e,n,&m)){ acc++; u32 r[4]; nvk_mode_regs(&m,r); u32 ow=0,oh=0; nvk_fit(1+(sd%4000),1+((sd>>12)%4000),m.hact,m.vact,&ow,&oh);
+              if(m.hact<320||m.vact<200||!m.hsw||!m.vsw||(r[0]&0xFFFF)<=m.hact||(r[0]>>16)<=m.vact||(r[3]&0xFFFF)>=(r[0]&0xFFFF)+m.hsw+m.hbp||ow>m.hact||oh>m.vact||!ow||!oh)fz=0; }
+          hdm+=nvk_edid_hdmi(e,n); }
+      chk("300000 random EDID blocks: the timing and HDMI parsers stay inside the block and only accept sane modes",fz&&acc>0);
+      { int cb=ctrl_bad, ab=alloc_bad, db=disp_bad; u64 ft0=hr_ns(); int n1=0;
+        for(int it=0;it<1500;it++){ sim_fuzz=1+(it%15); sim_hdmi2=it&1; sim_proto2=(it%7==0)?8:2; int r=nvgsp_mode(it%3==0); if(r)n1++; if(it%4==1)nvgsp_mode_off(); if(it%9==0)nvgsp_monitors(); if(it%50==49){ nvgsp_mode_lost(); sim_fuzz=0; rm_free(HC(2),HC(2)); } }
+        sim_fuzz=0; sim_hdmi2=0; sim_proto2=2; nvgsp_mode_lost(); rm_free(HC(2),HC(2)); ctrl_bad=cb; alloc_bad=ab; disp_bad=db; nvl_reset(); int back=nvgsp_mode(0);
+        chk("1500 rounds with random bytes and random refusals in GSP-RM's display replies: no crash, no timeout, and a clean start works afterwards",back==1&&hr_ns()-ft0<60000000000ULL&&n1>0);
+        sim_two=0; nvl_reset(); int gone=nvgsp_mode(0); chk("a second monitor that was unplugged: its head is turned off at the next nvgsp mode",gone==0&&KD.head[1].or<0&&KC_ARM[0x320/4]==0&&strstr(g_nv_log,"is gone")!=0); sim_two=1; }
+      sim_two=0; }
     { int a0=alloc_bad; g_rpc_dead=0; nvl_reset(); sim_drop_next=1; u32 x[3]={0,0,0}; int t1=rm_ctrl(HC(1),HDEV,0x730120u,x,12); int t2=rm_ctrl(HC(1),HDEV,0x730120u,x,12); int dead=g_rpc_dead;
       chk("a GSP-RM reply that does not come within 5 s stops all further requests (a late reply is never taken for the next one)",t1!=0&&t2==-1003&&dead&&strstr(g_nv_log,"did not answer")!=0&&alloc_bad==a0); g_rpc_dead=0; sim_drop_next=0; }
     sim_mode=1; nvl_reset(); r=nvgsp_shutdown();

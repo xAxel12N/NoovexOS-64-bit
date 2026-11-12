@@ -2,7 +2,8 @@ static inline void cpu_irq_on(void){ __asm__ volatile("sti":::"memory"); }
 static inline void cpu_irq_off(void){ __asm__ volatile("cli":::"memory"); }
 static inline void cpu_pause(void){ __asm__ volatile("pause"); }
 static inline void cpu_halt(void){ __asm__ volatile("hlt"); }
-static inline void cpu_idle(void){ __asm__ volatile("sti; hlt":::"memory"); }
+extern int g_mwait_hint; extern volatile u64 g_mwait_line[8];
+static inline void cpu_idle(void){ if(g_mwait_hint>=0){ __asm__ volatile("monitor"::"a"(&g_mwait_line[0]),"c"(0u),"d"(0u):"memory"); __asm__ volatile("sti; mwait"::"a"((u32)g_mwait_hint),"c"(1u):"memory"); } else __asm__ volatile("sti; hlt":::"memory"); }
 static inline void cpu_stop(void){ __asm__ volatile("cli; hlt":::"memory"); }
 static inline void cpu_wmb(void){ __asm__ volatile("sfence":::"memory"); }
 static inline void cpu_mb(void){ __asm__ volatile("mfence":::"memory"); }
@@ -20,13 +21,14 @@ static inline int cpu_rand32(u32* x){ unsigned char ok=0; __asm__ volatile("rdra
 static inline int cpu_seed32(u32* x){ unsigned char ok=0; __asm__ volatile("rdseed %0; setc %1":"=r"(*x),"=qm"(ok)::"cc"); return ok; }
 static inline void cpu_cpuid(u32 leaf,u32 sub,u32* a,u32* b,u32* c,u32* d){ __asm__ volatile("cpuid":"=a"(*a),"=b"(*b),"=c"(*c),"=d"(*d):"a"(leaf),"c"(sub)); }
 static inline u64 cpu_sp(void){ u64 v; __asm__ volatile("mov %%rsp,%0":"=r"(v)); return v; }
-static inline void cpu_fpu_save(void* p){ __asm__ volatile("fxsave (%0)"::"r"(p):"memory"); }
-static inline void cpu_fpu_restore(const void* p){ __asm__ volatile("fxrstor (%0)"::"r"(p):"memory"); }
+extern int g_xsave_on;
+static inline void cpu_fpu_save(void* p){ if(g_xsave_on)__asm__ volatile("xsave (%0)"::"r"(p),"a"(0xFFFFFFFFu),"d"(0xFFFFFFFFu):"memory"); else __asm__ volatile("fxsave (%0)"::"r"(p):"memory"); }
+static inline void cpu_fpu_restore(const void* p){ if(g_xsave_on)__asm__ volatile("xrstor (%0)"::"r"(p),"a"(0xFFFFFFFFu),"d"(0xFFFFFFFFu):"memory"); else __asm__ volatile("fxrstor (%0)"::"r"(p):"memory"); }
 static inline u16 cpu_bios_ebda_seg(void){ u16 v; __asm__ volatile("movw 0x40E, %0":"=r"(v)); return v; }
 static inline void cpu_triple_fault(void){ struct { u16 l; u64 b; } __attribute__((packed)) nul={0,0}; __asm__ volatile("lidt %0; int3"::"m"(nul)); }
 extern volatile int g_msr_probe, g_msr_fault;
-static inline int cpu_rdmsr_safe(u32 m,u64* v){ u32 a=0,d=0; g_msr_fault=0; g_msr_probe=1; __asm__ volatile("rdmsr":"=a"(a),"=d"(d):"c"(m):"memory"); g_msr_probe=0; if(g_msr_fault)return -1; *v=((u64)d<<32)|a; return 0; }
-static inline int cpu_wrmsr_safe(u32 m,u64 v){ g_msr_fault=0; g_msr_probe=1; __asm__ volatile("wrmsr"::"a"((u32)v),"d"((u32)(v>>32)),"c"(m):"memory"); g_msr_probe=0; return g_msr_fault?-1:0; }
+static inline int cpu_rdmsr_safe(u32 m,u64* v){ u32 a=0,d=0; u64 f=0; __atomic_add_fetch(&g_msr_probe,1,__ATOMIC_SEQ_CST); __asm__ volatile("rdmsr":"=a"(a),"=d"(d),"+S"(f):"c"(m):"memory"); __atomic_sub_fetch(&g_msr_probe,1,__ATOMIC_SEQ_CST); if(f)return -1; *v=((u64)d<<32)|a; return 0; }
+static inline int cpu_wrmsr_safe(u32 m,u64 v){ u64 f=0; __atomic_add_fetch(&g_msr_probe,1,__ATOMIC_SEQ_CST); __asm__ volatile("wrmsr":"+S"(f):"a"((u32)v),"d"((u32)(v>>32)),"c"(m):"memory"); __atomic_sub_fetch(&g_msr_probe,1,__ATOMIC_SEQ_CST); return f?-1:0; }
 static inline u64 cpu_rdmsr(u32 m){ u32 a,d; __asm__ volatile("rdmsr":"=a"(a),"=d"(d):"c"(m)); return ((u64)d<<32)|a; }
 static inline void cpu_wrmsr(u32 m,u64 v){ __asm__ volatile("wrmsr"::"a"((u32)v),"d"((u32)(v>>32)),"c"(m)); }
 static inline void cpu_set_fsbase(u64 v){ cpu_wrmsr(0xC0000100,v); }

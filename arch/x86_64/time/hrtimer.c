@@ -69,7 +69,7 @@ static void hr_cpuid_tsc(void){
     u32 r[4]; hr_cpuid(0,0,r); u32 maxl=r[0]; if(maxl>=0x15){ hr_cpuid(0x15,0,r); if(r[0]&&r[1]&&r[2]){ g_hr.tsc_hz=(u64)r[2]*r[1]/r[0]; g_hr.ref=3; if(!g_hr.lapic_hz&&g_hr.lapic_ok)g_hr.lapic_hz=(u64)r[2]/16; return; } }
     if(maxl>=0x16){ hr_cpuid(0x16,0,r); if(r[0]&0xFFFF){ g_hr.tsc_hz=(u64)(r[0]&0xFFFF)*1000000ULL; g_hr.ref=4; } } }
 u64 hr_ns(void){
-    if(g_hr.src==2)return hr_mul_shr32(hr_rdtsc()-g_hr.tsc0,g_hr.tsc_mult);
+    if(g_hr.src==2){ u64 t=hr_rdtsc(); return t>g_hr.tsc0?hr_mul_shr32(t-g_hr.tsc0,g_hr.tsc_mult):0; }
     if(g_hr.src==1)return hr_hpet_ns();
     return g_ticks*10000000ULL; }
 static u64 hr_us(void){ return hr_ns()/1000ULL; }
@@ -91,14 +91,14 @@ static int hr_lapic_periodic(u32 hz){
 void hr_init(void){
     if(g_hr.ready)return;
     u32 r[4]; hr_cpuid(0x80000000u,0,r); if(r[0]>=0x80000007u){ hr_cpuid(0x80000007u,0,r); g_hr.tsc_inv=(r[3]>>8)&1; }
-    hr_cpuid(1,0,r); g_hr.tsc_ok=(r[3]>>4)&1;
+    hr_cpuid(1,0,r); g_hr.tsc_ok=(r[3]>>4)&1; int hv=(int)((r[2]>>31)&1);
     hr_hpet_init();
     g_hr.lapic_ok=hr_lapic_init();
     if(!hr_calibrate())hr_cpuid_tsc();
     if(g_hr.tsc_ok&&g_hr.tsc_hz>=10000000ULL){ g_hr.tsc_mult=(1000000000ULL<<32)/g_hr.tsc_hz; g_hr.tsc0=hr_rdtsc(); }
     else g_hr.tsc_ok=0;
     if(g_hr.lapic_ok&&g_hr.lapic_hz<100000ULL)g_hr.lapic_ok=0;
-    if(g_hr.tsc_ok&&g_hr.tsc_inv)g_hr.src=2; else if(g_hr.hpet_ok)g_hr.src=1; else if(g_hr.tsc_ok)g_hr.src=2; else g_hr.src=0;
+    if(g_hr.tsc_ok&&(g_hr.tsc_inv||hv))g_hr.src=2; else if(g_hr.hpet_ok)g_hr.src=1; else if(g_hr.tsc_ok)g_hr.src=2; else g_hr.src=0;
     g_hr.boot_ns_ticks=g_ticks; g_hr.ready=1;
     klog(g_hr.src==2?(g_hr.tsc_inv?"timers: clock = invariant TSC":"timers: clock = TSC (not invariant)"):g_hr.src==1?"timers: clock = HPET":"timers: no precise clock, using the 100 Hz PIT");
     if(g_hr.hpet_ok)klog("timers: HPET running"); if(g_hr.lapic_ok)klog("timers: local APIC timer calibrated"); }

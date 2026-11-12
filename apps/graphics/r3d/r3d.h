@@ -29,6 +29,9 @@ unsigned long r3d_arena_need(void);
 int r3d_init(void* arena, unsigned long size);
 unsigned long r3d_work_bytes(int w, int h);
 void r3d_frame(unsigned* color, int w, int h, int pitch, void* work, const r3d_view* v, r3d_stats* st);
+typedef void (*r3d_tri_fn)(void* ctx, const float* v);
+void r3d_frame_tris(int w, int h, const r3d_view* v, r3d_stats* st, r3d_tri_fn fn, void* ctx);
+void r3d_clear_colour(const r3d_view* v, float* rgb);
 const char* r3d_scene_name(int scene);
 
 #ifdef __cplusplus

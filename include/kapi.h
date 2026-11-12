@@ -23,4 +23,5 @@ void kapi_delay_us(u32 us);
 u64 kapi_ns(void);
 void kapi_log(const char* s);
 void kapi_mb(void);
+void* kapi_mmio(u64 pa,u64 len);
 #endif

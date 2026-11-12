@@ -84,39 +84,45 @@ static int cur_slot=0; u32 cur_ep0=0, cur_dbuf=0, e0_enq=0, e0_cyc=1;
 int xhid_n=0, xhci_mouse_ok=0;
 int xhid_used[XHID_MAX], xhid_slot[XHID_MAX], xhid_dci[XHID_MAX], xhid_rlen[XHID_MAX], xhid_iskbd[XHID_MAX], xhid_port[XHID_MAX];
 static u32 xhid_epin[XHID_MAX], xhid_ein_enq[XHID_MAX], xhid_ein_cyc[XHID_MAX], xhid_dbuf[XHID_MAX];
-static u8 xhid_kprev[XHID_MAX][8];
+static u8 xhid_kprev[XHID_MAX][8]; static u16 xhid_ccp[XHID_MAX][16]; static int xhid_ccn[XHID_MAX];
 int xhid_nlay[XHID_MAX], xhid_rep[XHID_MAX], xhid_hasid[XHID_MAX], xhid_ctl[XHID_MAX];
 typedef struct { u8 sl, ep, cc, ctl; u32 res, ptr; } xhq_t; static xhq_t xh_q[32]; static int xh_qn=0, xh_want_slot=-1, xh_want_ep=-1;
 u32 xhid_cnt[XHID_MAX]; u8 xhid_last[XHID_MAX][16]; int xhid_lastn[XHID_MAX];
 typedef struct { int root, depth, hub, hport, speed; u32 route; int tt_slot, tt_port; } usbloc_t;
+static int usn_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr);
+static void usn_remove_below(int root,u32 R,int dR);
+static int usn_enum_loc(const usbloc_t* L);
+static int usn_enum_root(int port);
+static int usn_active(void);
+static void usn_noslot(void);
 static int aud_incam_next=0; static int aud_reg_hold=-1; static void uvc_add_mic(const usbloc_t* L,int d,const u8* big,int tw,u8 cfgval,u16 vid,u16 pid,const char* nm); static int aud_has_audio(const u8* c,int n); static int aud_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm); static void aud_reset(void); static void aud_unplug(int port); static void aud_sync_e0(void); static void aud_mark_sync(void);
 static int uvc_reg_hold=-1; static int uvc_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm); static int uvc_has_video(const u8* c,int n); static void uvc_reset(void); static void uvc_unplug(int port);
 
 xhub_t xhub[XHUB_MAX]; static int xreg_hub[XHID_MAX]; u32 xhid_route[XHID_MAX]; int xhid_depth[XHID_MAX];
 static int xhub_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval);
-static void xhid_reset(void){ uvc_reset(); aud_reset(); for(int h=0;h<XHUB_MAX;h++)xhub[h].used=0; for(int i=0;i<XHID_MAX;i++){ xreg_hub[i]=0; xhid_route[i]=0; xhid_depth[i]=0; xhid_cnt[i]=0; xhid_lastn[i]=0; xhid_rep[i]=0; xhid_nlay[i]=0; xhid_used[i]=0; xhid_slot[i]=0; for(int k=0;k<8;k++)xhid_kprev[i][k]=0; } xhid_n=0; xhci_mouse_ok=0; }
+static void xhid_reset(void){ { extern void usn_reset_all(void); usn_reset_all(); } uvc_reset(); aud_reset(); for(int h=0;h<XHUB_MAX;h++)xhub[h].used=0; for(int i=0;i<XHID_MAX;i++){ xreg_hub[i]=0; xhid_route[i]=0; xhid_depth[i]=0; xhid_cnt[i]=0; xhid_lastn[i]=0; xhid_rep[i]=0; xhid_nlay[i]=0; xhid_used[i]=0; xhid_slot[i]=0; for(int k=0;k<8;k++)xhid_kprev[i][k]=0; xhid_ccn[i]=0; } xhid_n=0; xhci_mouse_ok=0; }
 typedef struct { u8 iface, proto, sub, ep; u16 mps; u8 intv; u16 rdlen; } hidif_t;
 
 hidlay_t xhid_lay[XHID_MAX][HIDLAY_MAX];
 static int hid_parse(const u8* d,int n,hidlay_t* out,int max,int* hasid){
-    u32 upage=0, rsize=0, rcount=0, rid=0; u32 usages[32]; int nus=0; u32 umin=0, umax=0; int hasrange=0;
+    u32 upage=0, rsize=0, rcount=0, rid=0; int lmin=0; u32 usages[32]; int nus=0; u32 umin=0, umax=0; int hasrange=0;
     u32 gst[4][4]; int gsp=0; int depth=0, appkind[8]={0}; int nl=0; *hasid=0;
     int bitpos[256]; for(int i=0;i<256;i++)bitpos[i]=0;
     for(int i=0;i<n;){
         u8 b=d[i]; if(b==0xFE){ if(i+2>=n)break; i+=3+d[i+1]; continue; }
         int sz=b&3; if(sz==3)sz=4; int type=(b>>2)&3, tag=(b>>4)&0xF; if(i+1+sz>n)break;
         u32 v=0; for(int k=0;k<sz;k++)v|=(u32)d[i+1+k]<<(8*k); i+=1+sz;
-        if(type==1){ if(tag==0)upage=v; else if(tag==7)rsize=v; else if(tag==8){ rid=v&0xFF; *hasid=1; } else if(tag==9)rcount=v;
+        if(type==1){ if(tag==1)lmin=(sz==1)?(int)(signed char)v:(sz==2)?(int)(short)v:(int)v; if(tag==0)upage=v; else if(tag==7)rsize=v; else if(tag==8){ rid=v&0xFF; *hasid=1; } else if(tag==9)rcount=v;
             else if(tag==10&&gsp<4){ gst[gsp][0]=upage; gst[gsp][1]=rsize; gst[gsp][2]=rcount; gst[gsp][3]=rid; gsp++; } else if(tag==11&&gsp>0){ gsp--; upage=gst[gsp][0]; rsize=gst[gsp][1]; rcount=gst[gsp][2]; rid=gst[gsp][3]; } }
         else if(type==2){ u32 u=(sz==4)?v:((upage<<16)|v); if(tag==0&&nus<32)usages[nus++]=u; else if(tag==1){ umin=u; hasrange=1; } else if(tag==2){ umax=u; hasrange=1; } }
         else if(type==0){
-            if(tag==10){ int kind=appkind[depth>0?depth-1:0]; if(v==1){ u32 u=nus?usages[0]:0; kind=(u==0x10002u||u==0x10001u)?2:(u==0x10006u||u==0x10007u)?1:0; } if(depth<7){ depth++; appkind[depth-1]=kind; } }
+            if(tag==10){ int kind=appkind[depth>0?depth-1:0]; if(v==1){ u32 u=nus?usages[0]:0; kind=(u==0x10002u||u==0x10001u)?2:(u==0x10006u||u==0x10007u)?1:(u==0xC0001u)?3:0; } if(depth<7){ depth++; appkind[depth-1]=kind; } }
             else if(tag==12){ if(depth>0)depth--; }
             else if(tag==8){
-                int kind=depth>0?appkind[depth-1]:0; int flags=(int)v; int pos=bitpos[rid];
+                int kind=depth>0?appkind[depth-1]:0; int flags=(int)v; int pos=bitpos[rid]; if(rsize>32||rcount>1024||pos>8192)kind=0;
                 if(kind&&!(flags&1)){
                     hidlay_t* L=0; for(int k=0;k<nl;k++) if(out[k].id==rid&&out[k].kind==kind)L=&out[k];
-                    if(!L&&nl<max){ L=&out[nl++]; for(int k=0;k<(int)(sizeof(hidlay_t)/sizeof(short));k++)((short*)L)[k]=-1; L->id=(u8)rid; L->kind=(u8)kind; L->btn_cnt=0; L->arr_cnt=0; L->bm_cnt=0; }
+                    if(!L&&nl<max){ L=&out[nl++]; for(int k=0;k<(int)(sizeof(hidlay_t)/sizeof(short));k++)((short*)L)[k]=-1; L->id=(u8)rid; L->kind=(u8)kind; L->btn_cnt=0; L->arr_cnt=0; L->bm_cnt=0; L->cc_cnt=0; L->cv_cnt=0; }
                     if(L){ int var=(flags&2)!=0;
                         if(var){ u32 rcl=rcount>256?256:rcount; for(u32 c=0;c<rcl;c++){ u32 u; if(nus) u=usages[c<(u32)nus?c:(u32)nus-1]; else if(hasrange) u=umin+c; else u=0; if(hasrange&&!nus&&umin+c>umax)u=0;
                                 int at=pos+(int)(c*rsize); u32 pg=u>>16, us=u&0xFFFF;
@@ -125,15 +131,17 @@ static int hid_parse(const u8* d,int n,hidlay_t* out,int max,int* hasid){
                                 else if(pg==1&&us==0x31){ L->y_off=(short)at; L->y_sz=(short)rsize; }
                                 else if(pg==1&&us==0x38){ L->w_off=(short)at; L->w_sz=(short)rsize; }
                                 else if(pg==7&&rsize==1&&us>=0xE0&&us<=0xE7){ if(us==0xE0)L->mod_off=(short)at; }
+                                else if(kind==3&&pg==0x0C&&rsize==1&&us&&L->cv_cnt<12){ L->cv_us[L->cv_cnt]=(u16)us; L->cv_off[L->cv_cnt]=(short)at; L->cv_cnt++; }
                                 else if(pg==7&&rsize==1&&us<0xE0){ if(L->bm_cnt==0){ L->bm_off=(short)at; L->bm_min=(short)us; } L->bm_cnt++; } } }
+                        else if(kind==3&&L->cc_cnt==0&&rsize>=8&&rsize<=16){ L->cc_off=(short)pos; L->cc_sz=(short)rsize; L->cc_cnt=(short)(rcount>4?4:rcount); L->cc_base=(short)((hasrange?(int)(umin&0xFFFF):0)-lmin); }
                         else if((upage==7||(hasrange&&(umin>>16)==7))&&rsize==8&&L->arr_cnt==0){ L->arr_off=(short)pos; L->arr_cnt=(short)(rcount>6?6:rcount); } }
                 }
-                bitpos[rid]=pos+(int)(rsize*rcount);
+                { long np=(long)pos+(long)rsize*(long)rcount; bitpos[rid]=np>16384?16384:(int)np; }
             }
             nus=0; hasrange=0; umin=umax=0;
         }
     }
-    int k=0; for(int j=0;j<nl;j++){ hidlay_t* L=&out[j]; int ok=(L->kind==2)?(L->x_off>=0&&L->y_off>=0):(L->kind==1)?(L->arr_cnt>0||L->bm_cnt>0):0; if(ok)out[k++]=*L; }
+    int k=0; for(int j=0;j<nl;j++){ hidlay_t* L=&out[j]; int ok=(L->kind==2)?(L->x_off>=0&&L->y_off>=0):(L->kind==1)?(L->arr_cnt>0||L->bm_cnt>0):(L->kind==3)?(L->cc_cnt>0||L->cv_cnt>0):0; if(ok)out[k++]=*L; }
     return k;
 }
 static int hid_bits(const u8* b,int len,int off,int sz,int sgn){ if(off<0||sz<=0||sz>32||off+sz>len*8)return 0; u32 v=0; for(int i=0;i<sz;i++){ int p=off+i; if(b[p>>3]&(1<<(p&7)))v|=1u<<i; } if(sgn&&sz<32&&(v&(1u<<(sz-1))))v|=~0u<<sz; return (int)v; }
@@ -159,7 +167,7 @@ static int xh_event_t(u32 want_type,u32* p0,u8* cc,u8* slot,u8* epid){
         if((e[3]&1)==ev_cyc){ u32 ty=(e[3]>>10)&0x3F; u8 c=(u8)((e[2]>>24)&0xFF), sl=(u8)((e[3]>>24)&0xFF), ep=(u8)((e[3]>>16)&0x1F); u32 pp=e[0];
             ev_deq++; if(ev_deq>=256){ev_deq=0;ev_cyc^=1;}
             u64 rt=xhci_base+xhci_rtoff+0x20; XMW(rt+0x18,(XHCI_EVTRING+ev_deq*16)|(1u<<3)); XMW(rt+0x1C,0);
-            if(ty==32&&(want_type!=32||(xh_want_slot>=0&&(sl!=(u8)xh_want_slot||ep!=(u8)xh_want_ep)))){ if(xh_qn<32){ xh_q[xh_qn].ctl=(u8)g_xcur; xh_q[xh_qn].sl=sl; xh_q[xh_qn].ep=ep; xh_q[xh_qn].cc=c; xh_q[xh_qn].res=e[2]&0xFFFFFF; xh_q[xh_qn].ptr=e[0]; xh_qn++; } continue; }
+            if(ty==32&&(want_type!=32||(xh_want_slot>=0&&(sl!=(u8)xh_want_slot||ep!=(u8)xh_want_ep)))){ if(usn_xfer(sl,ep,c,e[2]&0xFFFFFF,e[0]))continue; if(xh_qn<32){ xh_q[xh_qn].ctl=(u8)g_xcur; xh_q[xh_qn].sl=sl; xh_q[xh_qn].ep=ep; xh_q[xh_qn].cc=c; xh_q[xh_qn].res=e[2]&0xFFFFFF; xh_q[xh_qn].ptr=e[0]; xh_qn++; } continue; }
             if(ty==want_type){ if(p0)*p0=pp; if(cc)*cc=c; if(slot)*slot=sl; if(epid)*epid=ep; return 1; }
         } else io_wait();
     }
@@ -283,6 +291,7 @@ static int xhci_enum_loc(const usbloc_t* L){
       for(int j=0;j<nh;j++){ int keep=0, m=0, nl=0, hid=0;
         if(hf[j].sub==1&&hf[j].proto==1){ keep=1; m=0; }
         else {
+            if(hf[j].rdlen>0&&hf[j].rdlen<=1024){ volatile u8* z=(volatile u8*)(u64)cur_dbuf; for(int q=0;q<hf[j].rdlen;q++)z[q]=0; }
             if(hf[j].rdlen>0&&hf[j].rdlen<=1024&&xh_ctrl(0x81,6,0x2200,(u16)hf[j].iface,hf[j].rdlen,1,0)){
                 u8 rd[1024]; volatile u8* db=(volatile u8*)(u64)cur_dbuf; for(int q=0;q<hf[j].rdlen;q++)rd[q]=db[q];
                 nl=hid_parse(rd,hf[j].rdlen,lays[k],HIDLAY_MAX,&hid); }
@@ -309,7 +318,7 @@ static int xhci_enum_loc(const usbloc_t* L){
     for(int j=0;j<nh;j++){ int e=reg[j]; int dci=(hf[j].ep&0x0F)*2+1; int rlen=hf[j].proto==1?8:(hf[j].mps<8?hf[j].mps:8); if(rlen<3)rlen=3;
         if(mode[j]){ rlen=hf[j].mps>64?64:hf[j].mps; if(rlen<1)rlen=8; }
         xhid_rep[e]=mode[j]; xhid_hasid[e]=hasid[j]; xhid_nlay[e]=nlays[j]; for(int q=0;q<nlays[j];q++)xhid_lay[e][q]=lays[j][q];
-        xhid_ctl[e]=g_xcur; xhid_used[e]=1; xhid_slot[e]=cur_slot; xhid_dci[e]=dci; xhid_rlen[e]=rlen; xhid_iskbd[e]=mode[j]?(nlays[j]>0&&lays[j][0].kind==1):(hf[j].proto==1); xhid_port[e]=port; xhid_route[e]=L->route; xhid_depth[e]=L->depth;
+        xhid_ctl[e]=g_xcur; xhid_used[e]=1; xhid_slot[e]=cur_slot; xhid_dci[e]=dci; xhid_rlen[e]=rlen; { int ik=0; for(int q=0;q<nlays[j];q++) if(lays[j][q].kind==1)ik=1; xhid_iskbd[e]=mode[j]?ik:(hf[j].proto==1); } xhid_ccn[e]=0; xhid_port[e]=port; xhid_route[e]=L->route; xhid_depth[e]=L->depth;
         xhid_epin[e]=XHID_EPINRING(e); xhid_dbuf[e]=XHID_DATABUF(e); xhid_ein_enq[e]=0; xhid_ein_cyc[e]=1; for(int k=0;k<8;k++)xhid_kprev[e][k]=0;
         if(e+1>xhid_n)xhid_n=e+1;
         xhid_bs[e&63]=0; for(int q=0;q<XHID_INFLIGHT;q++)xhid_arm(e); }

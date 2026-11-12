@@ -1,0 +1,29 @@
+#!/bin/bash
+mode=""; text=""; title=""
+args=("$@")
+for ((i=0;i<${#args[@]};i++)); do a="${args[i]}"
+  case "$a" in
+    --text|--title) v="${args[i+1]}"; i=$((i+1)); [ "$a" = --text ] && text="$v" || title="$v";;
+    --progress|--error|--info|--warning|--question|--notification|--entry|--file-selection|--list|--password|--calendar|--scale|--text-info|--forms|--color-selection) mode="${a#--}";;
+    --text=*) text="${a#--text=}";;
+    --title=*) title="${a#--title=}";;
+  esac
+done
+note() { printf 'nvx-notify:%s\x1f%s\n' "$(printf '%s' "$1" | tr -d '\n\037' | cut -c1-39)" "$(printf '%s' "$2" | tr -d '\n\037' | sed 's/<[^>]*>//g' | cut -c1-71)" > /dev/kmsg 2>/dev/null; }
+case "$mode" in
+  progress)
+    note "${title:-${text:-Working}}" "${text:-Please wait}"
+    last=""
+    while IFS= read -r l; do
+      case "$l" in
+        \#*) text="${l#\#}"; text="${text# }";;
+        [0-9]*) n="${l%%[!0-9]*}"; if [ -n "$n" ] && [ "$n" -ge 100 ] && [ "$last" != 100 ]; then last=100; fi;;
+      esac
+    done
+    note "${title:-${text:-Done}}" "Finished"
+    exit 0;;
+  error|warning|info|notification) note "${title:-${mode^}}" "$text"; exit 0;;
+  question) note "${title:-Question}" "$text (answered No - no dialog available)"; exit 1;;
+  "") echo "zenity: NoovexOS stand-in; supports --progress, --info, --warning, --error, --question, --notification" >&2; exit 255;;
+  *) note "${title:-zenity}" "${text:-This dialog is not available on NoovexOS}"; exit 1;;
+esac

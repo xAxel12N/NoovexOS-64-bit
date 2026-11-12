@@ -140,7 +140,7 @@ static u32 aud_pick_rate(const uac_alt_t* a){
     for(int k=0;k<a->nrate;k++) if(a->rate[k]<=48000&&a->rate[k]>best)best=a->rate[k]; if(!best&&a->nrate)best=a->rate[0]; return best; }
 static int aud_pick(int in){
     int best=-1,score=-1; for(int k=0;k<aud.nalt;k++){ uac_alt_t* a=&aud.alt[k]; if(((a->ep&0x80)!=0)!=in)continue; if(!a->nrate&&!a->v2)continue;
-        if(in){ if(a->sub<2||a->sub>4||a->bits<16||a->ch<1||a->ch>8)continue; } else { if(a->sub!=2||a->bits!=16||a->ch<1||a->ch>2)continue; }
+        if(in){ if(a->sub<2||a->sub>4||a->bits<16||a->ch<1||a->ch>8)continue; } else { if(a->sub<2||a->sub>4||a->bits<16||a->bits>a->sub*8||a->ch<1||a->ch>2)continue; }
         u32 r=aud_pick_rate(a); int s=(a->ch==2?4:a->ch==1?3:2)+(r==48000?2:r==44100?1:0)+(a->sub==2?1:0); if(s>score){ score=s; best=k; } }
     return best; }
 static u8* aud_al(u32 n,u32 al){ u8* p=(u8*)kmalloc((unsigned long)n+(unsigned long)al); if(!p)return 0; u64 a=((u64)p+al-1)&~(u64)(al-1); if(a+n>0xFFFFFFFFULL){ kfree(p); return 0; } return (u8*)a; }
@@ -148,7 +148,8 @@ static void aud_er_init(void){
     u64 rt=xhci_base+xhci_rtoff+0x60;
     if(!aud_er_done){ aud_er_done=1; for(int i=0;i<4096*4;i++)aud_er[i]=0; aud_erst[0]=(u32)(u64)aud_er; aud_erst[1]=0; aud_erst[2]=4096; aud_erst[3]=0; aud_ev=0; aud_evc=1;
         XMW(rt+0x00,0); XMW(rt+0x08,1); XMW(rt+0x18,(u32)(u64)aud_er); XMW(rt+0x1C,0); XMW(rt+0x10,(u32)(u64)aud_erst); XMW(rt+0x14,0); } }
-static int aud_ivus(const uac_alt_t* a){ if(aud.speed>=3){ int e=a->intv?a->intv-1:0; if(e>15)e=15; return 125<<e; } int e=a->intv?a->intv-1:0; if(e>4)e=4; return 1000<<e; }
+static int aud_ivus_raw(const uac_alt_t* a){ if(aud.speed>=3){ int e=a->intv?a->intv-1:0; if(e>15)e=15; return 125<<e; } int e=a->intv?a->intv-1:0; if(e>4)e=4; return 1000<<e; }
+static int aud_ivus(const uac_alt_t* a){ int v=aud_ivus_raw(a); return v>8000?8000:v; }
 static int aud_cfg_ep(aud_ep_t* e,const uac_alt_t* a,int add){
     u32 ic0=XHID_INPUTCTX(aud.reg); ctx_zero(ic0,(int)ctx_sz()*33/4); volatile u32* ic=(volatile u32*)(u64)ic0;
     int dci=(int)e->dci; if(dci<2)return 0;
@@ -173,13 +174,14 @@ static void aud_queue(aud_ep_t* e,u32 len){
     e->out++; }
 static u32 aud_fill_pb(u8* d){
     u32 num=apb.rate*apb.ivus+apb.acc; u32 fr=num/1000000u; apb.acc=num%1000000u;
-    u32 maxfr=apb.mps/(apb.ch*2u); if(fr>maxfr)fr=maxfr;
+    u32 bs=apb.bs>=2&&apb.bs<=4?apb.bs:2u, fsz=apb.ch*bs; u32 maxfr=apb.mps/fsz; if(fr>maxfr)fr=maxfr;
     int g=aud_vol*aud_vol; short* o=(short*)d;
     for(u32 k=0;k<fr;k++){ u32 v=0; if(aud_pbr!=aud_pbw)v=aud_pbq[aud_pbr%APB_N]; else if(k==0)aud_underrun++;
         int l=(short)(v&0xFFFF), r=(short)(v>>16); l=l*g/10000; r=r*g/10000;
-        if(apb.ch==2){ o[k*2]=(short)l; o[k*2+1]=(short)r; } else o[k]=(short)((l+r)/2);
+        if(bs==2){ if(apb.ch==2){ o[k*2]=(short)l; o[k*2+1]=(short)r; } else o[k]=(short)((l+r)/2); }
+        else { int sm[2]; sm[0]=apb.ch==2?l:(l+r)/2; sm[1]=r; for(u32 c=0;c<apb.ch;c++){ u8* q=d+k*fsz+c*bs; u32 x=(u32)sm[c]<<16; if(bs==3){ q[0]=(u8)(x>>8); q[1]=(u8)(x>>16); q[2]=(u8)(x>>24); } else { q[0]=0; q[1]=0; q[2]=(u8)(x>>16); q[3]=(u8)(x>>24); } } }
         aud_pacc+=48000u; while(aud_pacc>=apb.rate){ aud_pacc-=apb.rate; if(aud_pbr!=aud_pbw)aud_pbr++; } }
-    return fr*apb.ch*2u; }
+    return fr*fsz; }
 static int aud_s16(const u8* p,u32 bs){ return bs==2?(short)(p[0]|(p[1]<<8)):bs==3?(short)(p[1]|(p[2]<<8)):(short)(p[2]|(p[3]<<8)); }
 static void aud_take_cp(const u8* d,u32 n){
     u32 bs=acp.bs?acp.bs:2u; u32 fs=acp.ch*bs; if(!fs)return; u32 fr=n/fs;

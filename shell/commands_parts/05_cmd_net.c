@@ -1,20 +1,27 @@
     else if(seq(cmd,"net")){ int r=nic_up(); if(!pci_n)pci_scan(); int k=nic_index();
-        tcol(CYAN); term_puts("NIC: "); tcol(WHT); term_puts(k>=0?nic_name(pci_ven[k],pci_dev[k]):"none");
-        if(k>=0){ char b[40],*p=b; p=scopy(p,"  ["); p=hx(p,pci_ven[k],4);*p++=':';p=hx(p,pci_dev[k],4);*p++=']'; *p=0; term_puts(b); } term_putc('\n');
+        { const char* an=nic_active_name(); tcol(CYAN); term_puts("NIC: "); tcol(WHT); term_puts(an?an:k>=0?nic_name(pci_ven[k],pci_dev[k]):"none");
+          if(!an&&k>=0){ char b[40],*p=b; p=scopy(p,"  ["); p=hx(p,pci_ven[k],4);*p++=':';p=hx(p,pci_dev[k],4);*p++=']'; *p=0; term_puts(b); } term_putc('\n');
+          if(nic_count()>1) for(int i=0;i<8;i++){ int lk=0,cu=0; const char* nm=nic_list(i,&lk,&cu); if(!nm)continue; tcol(GREY); term_puts(cu?"  * ":"    "); term_puts(nm); term_puts(lk?"  (cable in)\n":"  (no link)\n"); tcol(WHT); } }
         if(r){ char b[64],*p=b; p=scopy(p,"MAC "); for(int i=0;i<6;i++){p=hx(p,my_mac[i],2); if(i<5)*p++=':';} *p=0; term_puts(b); term_putc('\n');
             p=b; p=scopy(p,"IP "); p=ipstr(p,my_ip); p=scopy(p,"/"); { u32 m=my_mask,c=0; while(m&0x80000000u){c++;m<<=1;} p=udec(p,c); } p=scopy(p,"  GW "); p=ipstr(p,gw_ip); p=scopy(p,g_dhcp_ok?"  (DHCP)":"  (static)"); *p=0; tcol(GREEN); term_puts(b); tcol(WHT); term_putc('\n');
             p=b; p=scopy(p,"DNS "); p=ipstr(p,dns_ip); *p=0; tcol(GREY); term_puts(b); tcol(WHT); term_putc('\n');
             term_puts("try: dhcp   ping 10.0.2.2   dns example.com   http example.com\n"); }
-        else { tcol(rgb(240,150,120)); term_puts("link down - set the VM adapter to PCnet-FAST III (NAT)\n"); tcol(WHT); } }
+        else { tcol(rgb(240,150,120)); term_puts("no network adapter found\n"); tcol(WHT); } }
+    else if(seq(cmd,"usbnet")){ extern int usbnet_info(char*,int); extern int usbnet_prefer(int); extern int usbnet_scan(void); char b[220];
+        if(seq(arg,"ecm")||seq(arg,"ncm")||seq(arg,"rndis")||seq(arg,"auto")){ int kd=seq(arg,"ecm")?1:seq(arg,"ncm")?2:seq(arg,"rndis")?3:0; int r=usbnet_prefer(kd); term_puts(r?"USB network adapter set up again\n":"no USB network adapter answered\n"); }
+        else if(seq(arg,"scan")){ term_puts(usbnet_scan()?"USB network adapter found\n":"no USB network adapter found\n"); }
+        else if(arg[0]){ term_puts("usage: usbnet [scan|ecm|ncm|rndis|auto]\n"); }
+        usbnet_info(b,(int)sizeof b); term_puts(b); term_putc('\n'); }
     else if(seq(cmd,"dhcp")){ tcol(GREY); term_puts("requesting a lease...\n"); tcol(WHT);
         int r=dhcp_renew();
         if(r==1){ char b[96],*p=b; p=scopy(p,"IP "); p=ipstr(p,my_ip); p=scopy(p,"/"); { u32 m=my_mask,c=0; while(m&0x80000000u){c++;m<<=1;} p=udec(p,c); } p=scopy(p,"  GW "); p=ipstr(p,gw_ip); p=scopy(p,"  DNS "); p=ipstr(p,dns_ip); *p=0; tcol(GREEN); term_puts(b); term_putc('\n'); tcol(WHT); }
         else if(r==0){ tcol(rgb(240,150,120)); term_puts("no DHCP server answered - keeping the static address\n"); tcol(WHT); }
         else { term_puts("network not available\n"); } }
-    else if(seq(cmd,"ping")){ u32 ip; if(!parse_ip(arg,&ip)){ term_puts("usage: ping A.B.C.D\n"); }
+    else if(seq(cmd,"ping")){ u32 ip; int okp=arg[0]&&parse_ip(arg,&ip); if(!okp&&arg[0]){ int dr=dns_query(arg,&ip); if(dr==1)okp=1; else { term_puts("ping: could not resolve "); term_puts(arg); term_putc('\n'); okp=-1; } }
+        if(okp==-1){} else if(!okp){ term_puts("usage: ping A.B.C.D or ping hostname\n"); }
         else { int r=do_ping(ip); if(r==1){ char b[300],*p=b; p=scopy(p,"reply from "); for(int i=0;arg[i]&&i<200;i++)*p++=arg[i]; *p=0; tcol(GREEN); term_puts(b); term_putc('\n'); tcol(WHT); }
             else if(r==0) term_puts("no reply (timeout)\n"); else term_puts("network not available\n"); } }
-    else if(seq(cmd,"dns")){ if(!arg[0]){ term_puts("usage: dns hostname\n"); }
+    else if(seq(cmd,"dns")||seq(cmd,"host")||seq(cmd,"nslookup")){ if(!arg[0]){ term_puts("usage: dns hostname\n"); }
         else { u32 ip; int r=dns_query(arg,&ip); if(r==1){ char b[300],*p=b; for(int i=0;arg[i]&&i<260;i++)*p++=arg[i]; p=scopy(p," -> "); char t[16]; { u32 v=ip; int q=0; char oc[4]; for(int i=3;i>=0;i--){ u32 o=(v>>(i*8))&0xFF; if(!o)t[q++]='0'; else { int n=0; while(o){oc[n++]='0'+o%10;o/=10;} while(n)t[q++]=oc[--n]; } if(i)t[q++]='.'; } t[q]=0; } p=scopy(p,t); *p=0; tcol(GREEN); term_puts(b); term_putc('\n'); tcol(WHT); }
             else term_puts("could not resolve\n"); } }
     else if(seq(cmd,"http")||seq(cmd,"https")||seq(cmd,"wget")||seq(cmd,"get")){
@@ -94,6 +101,17 @@
             u32* px=(u32*)kmalloc((u64)w*h*4); if(!px){ sh_err("faceid: ","out of memory"); return; } for(int q=0;q<w*h;q++){ const u8* s=d+i+q*3; px[q]=((u32)s[0]<<16)|((u32)s[1]<<8)|s[2]; } fid_feed_set(px,w,h); term_puts("faceid: test picture added (used instead of the camera)\n"); }
         else { static const char* SN[6]={"idle","starting","looking","success","failed","error"}; char b[200],*p=b; p=scopy(p,"faceid: "); p=scopy(p,SN[g_fid_state>=0&&g_fid_state<6?g_fid_state:0]); p=scopy(p,g_fid_mode==FID_ENROLL?"  (set up)":g_fid_mode==FID_VERIFY?"  (sign-in)":""); p=scopy(p,"  saved "); p=udec(p,(u32)g_fid_count); p=scopy(p,"  distance "); if(g_fid_dist>=0)p=udec(p,(u32)g_fid_dist); else p=scopy(p,"-"); p=scopy(p,"  face "); p=scopy(p,g_fid_face[2]?"seen":"none"); if(g_fid_hint){ p=scopy(p,"  ("); p=scopy(p,g_fid_hint); p=scopy(p,")"); } if(g_fid_msg[0]){ p=scopy(p,"  - "); p=scopy(p,g_fid_msg); } *p++='\n'; *p=0; term_puts(b); } }
     else if(seq(cmd,"usbdevs")||seq(cmd,"lsusb")){ int any=0; for(int k=0;k<g_usbdev_n;k++){ if(!g_usbdev[k].used)continue; any=1; char b[140],*p=b; p=scopy(p,g_usbdev[k].kind); p=scopy(p,"  "); p=scopy(p,g_usbdev[k].name[0]?g_usbdev[k].name:"(no name)"); p=scopy(p,"  "); p=hx(p,g_usbdev[k].vid,4); *p++=':'; p=hx(p,g_usbdev[k].pid,4); p=scopy(p,"  port "); p=udec(p,(u32)g_usbdev[k].port+1); if(g_usbdev[k].cam)p=scopy(p,"  (video streaming not supported yet)"); *p=0; term_puts(b); term_putc('\n'); } if(!any)term_puts("no USB devices found (keyboards, mice, cameras, printers)\n"); }
+    else if(seq(cmd,"tracelog")){
+        extern int g_lxtrace; extern int tracelog_start(void); extern void tracelog_stop(void); extern const char* tracelog_data(u32*); extern int g_tl_on;
+        const char* q=arg; while(*q==' ')q++;
+        if(q[0]=='o'&&q[1]=='n'&&(!q[2]||q[2]==' ')){ const char* m=q+2; while(*m==' ')m++; if(tracelog_start()<0){ term_puts("tracelog: not enough memory\n"); }
+            else { g_lxtrace=(m[0]=='a')?-1:(m[0]=='e'&&m[1]=='x')?-2:-3; term_puts(g_lxtrace==-1?"tracelog: recording every Linux system call (slow)\n":g_lxtrace==-2?"tracelog: recording program starts\n":"tracelog: recording failed Linux system calls, crashes and app output\n"); term_puts("start the program now, then type: tracelog save\n"); } }
+        else if(q[0]=='o'&&q[1]=='f'&&q[2]=='f'){ tracelog_stop(); g_lxtrace=0; term_puts("tracelog: off\n"); }
+        else if(q[0]=='s'&&q[1]=='a'&&q[2]=='v'&&q[3]=='e'){ u32 n=0; const char* d=tracelog_data(&n); if(!d||!n){ term_puts("tracelog: nothing recorded - type: tracelog on\n"); }
+            else { extern int fs_save_bin(const char*,const u8*,int,int); extern int msd_ok, ufat_ok; extern int ufat_write_file(const char*,const char*,int); extern int disk_ok; extern void nvx3_sync_all(void);
+                int a1=fs_save_bin("tracelog.txt",(const u8*)d,(int)n,0); if(a1>=0&&disk_ok)nvx3_sync_all(); int a2=(msd_ok&&ufat_ok)?ufat_write_file("TRACELOG.TXT",d,(int)n):-1;
+                char b[160],*w=b; w=scopy(w,"tracelog: saved "); w=udec(w,n); w=scopy(w," bytes"); if(a1>=0)w=scopy(w," as tracelog.txt in Files"); if(a2==0)w=scopy(w,a1>=0?" and as TRACELOG.TXT on the USB stick":" as TRACELOG.TXT on the USB stick"); *w++='\n'; *w=0; term_puts(b); } }
+        else { term_puts("usage: tracelog on [errors|exec|all] | save | off\n"); term_puts(g_tl_on?"tracelog is recording\n":"tracelog is off\n"); } }
     else if(cmd[0]=='l'&&cmd[1]=='x'&&cmd[2]=='t'&&cmd[3]=='r'&&cmd[4]=='a'&&cmd[5]=='c'&&cmd[6]=='e'){ extern int g_lxtrace; int n=0; const char* q=cmd+7; while(*q==' ')q++; while(*q>='0'&&*q<='9')n=n*10+(*q++-'0'); g_lxtrace=n?n:400; term_puts("syscall trace on (kernel log)\n"); }
     else if(seq(cmd,"disks")||seq(cmd,"disk")){
         gdisk_ensure();
@@ -153,20 +171,20 @@
     else if(seq(cmd,"presentation")||seq(cmd,"slides")||seq(cmd,"pptx")){ int sl=-1; for(int z=0;z<FS_N;z++)if(FS[z].used&&fext_eq(FS[z].name,"pptx")){sl=z;break;} if(sl>=0){pptx_load(sl);open_win(W_PPTX);term_puts("opened Presentation.\n");} else term_puts("no .pptx file found (put one on a USB stick).\n"); }
     else if(seq(cmd,"reboot")||seq(cmd,"restart")){ term_puts("rebooting...\n"); blit_all(); power_reboot(); }
     else if(seq(cmd,"shutdown")||seq(cmd,"poweroff")||seq(cmd,"halt")){ term_puts("shutting down...\n"); blit_all(); power_off(); }
-    else if(seq(cmd,"suspend")){ term_puts("sleeping - press a key (or the power button) to wake\n"); blit_all(); int r=power_sleep(); term_puts(r?"woke from ACPI S1 sleep\n":"woke up (this computer has no ACPI S1; the screen was turned off)\n"); }
+    else if(seq(cmd,"suspend")){ term_puts("sleeping - press a key (or the power button) to wake\n"); blit_all(); int r=power_sleep(); term_puts(r==1?"woke from ACPI S1 sleep\n":r==2?"woke from light sleep (S0 idle)\n":"woke up\n"); }
     else if(seq(cmd,"kcheck")){ kcheck_run(); }
     else if(seq(cmd,"memmap")){ memmap_run(); }
     else if(seq(cmd,"vminfo")){ extern void vminfo_run(void); vminfo_run(); }
     else if(seq(cmd,"tpinfo")){ if(arg[0]=='s')tpinfo_run(1); else if(arg[0]=='d'){ extern void tpinfo_dump(void); tpinfo_dump(); } else tpinfo_run(0); }
-    else if(seq(cmd,"touchpad")){ extern int g_tp_tap, g_tp_speed, g_tp_natural, g_tp_dwt, g_tp_zones;
+    else if(seq(cmd,"touchpad")){ extern int g_tp_tap, g_tp_speed, g_tp_natural, g_tp_dwt, g_tp_zones, g_tp_kinetic;
         char w1[16]; int k=0; const char* q=arg; while(*q&&*q!=' '&&k<15)w1[k++]=*q++; w1[k]=0; while(*q==' ')q++;
         int on=(q[0]=='o'&&q[1]=='n')||q[0]=='1'||q[0]=='n';
-        if(seq(w1,"tap"))g_tp_tap=on; else if(seq(w1,"zones"))g_tp_zones=on; else if(seq(w1,"typing"))g_tp_dwt=on;
+        if(seq(w1,"tap"))g_tp_tap=on; else if(seq(w1,"zones"))g_tp_zones=on; else if(seq(w1,"typing"))g_tp_dwt=on; else if(seq(w1,"coast"))g_tp_kinetic=on;
         else if(seq(w1,"scroll"))g_tp_natural=(q[0]=='n');
         else if(seq(w1,"speed")){ int v=0; while(*q>='0'&&*q<='9')v=v*10+(*q++-'0'); if(v>=1&&v<=10)g_tp_speed=v; }
-        else if(w1[0]){ term_puts("usage: touchpad [tap on|off] [speed 1-10] [scroll natural|classic] [zones on|off] [typing on|off]\n"); }
-        char b[160],*p=b; p=scopy(p,"touchpad: tap-to-click "); p=scopy(p,g_tp_tap?"on":"off"); p=scopy(p,"  speed "); p=udec(p,(u32)g_tp_speed); p=scopy(p,"  scroll "); p=scopy(p,g_tp_natural?"natural":"classic");
-        p=scopy(p,"  click zones "); p=scopy(p,g_tp_zones?"on":"off"); p=scopy(p,"  ignore while typing "); p=scopy(p,g_tp_dwt?"on":"off"); *p=0; term_puts(b); term_putc('\n'); }
+        else if(w1[0]){ term_puts("usage: touchpad [tap on|off] [speed 1-10] [scroll natural|classic] [zones on|off] [typing on|off] [coast on|off]\n"); }
+        char b[200],*p=b; p=scopy(p,"touchpad: tap-to-click "); p=scopy(p,g_tp_tap?"on":"off"); p=scopy(p,"  speed "); p=udec(p,(u32)g_tp_speed); p=scopy(p,"  scroll "); p=scopy(p,g_tp_natural?"natural":"classic");
+        p=scopy(p,"  click zones "); p=scopy(p,g_tp_zones?"on":"off"); p=scopy(p,"  ignore while typing "); p=scopy(p,g_tp_dwt?"on":"off"); p=scopy(p,"  coasting "); p=scopy(p,g_tp_kinetic?"on":"off"); *p=0; term_puts(b); term_putc('\n'); }
     else if(seq(cmd,"explorer")||seq(cmd,"files")||seq(cmd,"thispc")){ open_win(W_FILES); if(seq(cmd,"thispc")||arg[0]=='t'){ extern void fx_do(int,int); fx_do(20,-2); } term_puts("opened File Explorer.\n"); }
     else if(seq(cmd,"wallpaper")){ extern int g_theme, g_wallmode; extern void build_bg(void); static const char* WN6[6]={"porsche","crane","wireframe","peaks","earth","yosemite"}; int t=-1;
         if(arg[0]>='0'&&arg[0]<='5')t=arg[0]-'0'; else for(int k=0;k<6;k++) if(seq(arg,WN6[k]))t=k;

@@ -54,7 +54,7 @@ static void neofetch(void){
     char info[9][80]; int n=0; char*p;
     p=info[n++];p=scopy(p,"noovex@noovex64");*p=0;
     p=info[n++];p=scopy(p,"---------------");*p=0;
-    p=info[n++];p=scopy(p,"OS: NoovexOS 64 v10.60");*p=0;
+    p=info[n++];p=scopy(p,"OS: NoovexOS 64 v10.86");*p=0;
     p=info[n++];p=scopy(p,"Kernel: x86-64 long mode");*p=0;
     p=info[n++];p=scopy(p,"CPU: ");p=scopy(p,g_brand);*p=0;
     p=info[n++];p=scopy(p,"Display: ");p=udec(p,W);*p++='x';p=udec(p,H);p=scopy(p," @ ");p=udec(p,BPP);p=scopy(p,"bpp");*p=0;

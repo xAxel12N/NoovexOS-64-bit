@@ -120,7 +120,7 @@ static void st_infocard(int* cy,const char* title,const char** a,char b[][80],in
 static void old_leaf(int cat,int cy);
 static int st_para(int x,int y,int w,const char* t,u32 c){ int cols=w/8; if(cols<20)cols=20; if(cols>110)cols=110; char ln[112];
     while(*t){ int n=0, cut=0; while(t[n]&&n<cols){ if(t[n]==' ')cut=n; n++; } if(t[n]&&cut>0)n=cut; for(int k=0;k<n;k++)ln[k]=t[k]; ln[n]=0; pdstr(x,y,ln,c,1); y+=18; t+=n; while(*t==' ')t++; } return y; }
-static const char* NV_NOTE_MODE="The screen mode is still the one set at boot. There's no NVIDIA mode setting, no tear-free page flips and no second monitor yet. That's stage 6, the display engine.";
+static const char* NV_NOTE_MODE="A second monitor on HDMI or DVI gets its own native mode and shows the same picture as the first one, scaled to fit. The first screen keeps the mode set at boot. DisplayPort monitors, a desktop that continues on the second screen and tear-free page flips are not there yet.";
 static const char* NV_NOTE_MEM="The desktop images sit in normal RAM, not on the card. The GPU reads and writes them over the PCIe bus. That works and is correct, but it's slower than keeping them in the card's own memory, which a full driver would do. It's the next big speed step.";
 static int g_scr_n=-2; static char g_scr_t[4][96]; static u64 g_scr_at=0;
 int isin(int deg); int icos(int deg);
@@ -273,16 +273,17 @@ static void st_page(int p,int cy){
     switch(p){
     case P_DISPLAY: { stile g={P_GRAPHICS,3,"Graphics","GPU drawing, NVIDIA, effects, screen copies"}; st_tiles(&cy,&g,1); cy+=10; old_leaf(3,cy); } break;
     case P_SCREENS: { extern volatile u64 g_ticks; if(g_scr_n==-2||g_ticks-g_scr_at>200){ g_scr_at=g_ticks; g_scr_n=nvm_screens(g_scr_t,4); }
-        const char* a[3]={"Screen mode","Refresh rate","Set by"}; char v[3][80]; q=v[0]; q=udec(q,W); q=scopy(q," x "); q=udec(q,H); *q=0; q=v[1]; q=udec(q,(u32)(g_refresh_hz>0?g_refresh_hz:60)); q=scopy(q," Hz"); *q=0; q=v[2]; q=scopy(q,"the firmware at boot (UEFI GOP or VESA)"); *q=0; st_infocard(&cy,"Current screen",a,v,3);
+        const char* a[3]={"Screen mode","Refresh rate","Set by"}; char v[3][80]; q=v[0]; q=udec(q,W); q=scopy(q," x "); q=udec(q,H); *q=0; q=v[1]; { extern int mon_cur_mhz(u32,u32); int cm=mon_cur_mhz(W,H); if(cm){ q=udec(q,(u32)(cm+500)/1000); q=scopy(q," Hz (reported by the monitor)"); } else q=scopy(q,"not reported"); q=scopy(q,"; desktop redraws at "); q=udec(q,(u32)(g_refresh_hz>0?g_refresh_hz:60)); q=scopy(q," Hz"); } *q=0; q=v[2]; q=scopy(q,"the firmware at boot (UEFI GOP or VESA)"); *q=0; st_infocard(&cy,"Current screen",a,v,3);
         { const nvgsp_mon_t* ml=0; int mn=nvgsp_mon_get(&ml,0,0,0); nvgsp_info_t ni; nvgsp_info(&ni);
           if(ni.state>=7){ int rows=0; for(int i=0;i<mn;i++)rows++; if(rows<1)rows=1; if(rows>4)rows=4; int y=st_card(cy,rows*38+8+44,"Monitors (read through GSP-RM, like Linux)"); int r=0;
             if(mn<=0){ pdstr(st_x0+24,y+15,mn<0?"Not read yet":"No outputs reported",INK,1); r=1; }
             for(int i=0;i<mn&&r<4;i++,r++){ const nvgsp_mon_t* m=&ml[i]; int ry=y+4+r*38; if(r)fill_rect(st_x0+20,ry,st_w0-40,1,rgb(238,240,245)); char t[96],*p=t;
                 p=scopy(p,nvgsp_mon_sig(m)); p=scopy(p,": "); if(!m->connected)p=scopy(p,"nothing connected"); else if(m->edid_ok){ p=scopy(p,m->name[0]?m->name:"monitor"); p=scopy(p," ("); p=scopy(p,m->maker); p=scopy(p,")"); if(m->nmodes){ p=scopy(p,"  native "); p=udec(p,m->mw[0]); *p++='x'; p=udec(p,m->mh[0]); p=scopy(p," @ "); p=udec(p,m->mhz[0]); p=scopy(p," Hz"); } } else p=scopy(p,"connected, EDID not readable yet");
+                if(m->lit==2){ p=scopy(p,"  -  on at "); p=udec(p,m->act_w); *p++='x'; p=udec(p,m->act_h); p=scopy(p,", same picture"); } else if(m->lit==1)p=scopy(p,"  -  first screen");
                 *p=0; pdstr(st_x0+24,ry+11,t,m->connected?INK:rgb(128,136,154),1); }
-            int by=y+4+r*38+4; st_btn(X1-130,by,130,"Read again",335,1); cy=by+40+20; } }
+            int by=y+4+r*38+4; st_btn(X1-130,by,130,"Read again",335,1); { nvgsp_mode_t mi; int on=nvgsp_mode_info(&mi)>0; st_btn(X1-130-190,by,180,on?"Second screen off":"Second screen on",on?337:336,1); } cy=by+40+20; } }
         if(g_scr_n>=0){ int n=g_scr_n?g_scr_n:1; int y=st_card(cy,n*38+8,"Current mode on the card (display engine, read only)"); for(int r=0;r<n;r++){ int ry=y+4+r*38; if(r)fill_rect(st_x0+20,ry,st_w0-40,1,rgb(238,240,245)); pdstr(st_x0+24,ry+11,g_scr_n?g_scr_t[r]:"No head is scanning out",INK,1); } cy=y+n*38+8+20; }
-        int y=st_card(cy,96,"Stage 6"); st_para(st_x0+24,y+14,st_w0-48,NV_NOTE_MODE,rgb(110,118,136)); cy=y+96+20; } break;
+        { extern u16 g_nv_dev; nvgsp_info_t n2; nvgsp_info(&n2); if(n2.state>0||g_nv_dev){ int y=st_card(cy,116,"Second screen"); st_para(st_x0+24,y+14,st_w0-48,NV_NOTE_MODE,rgb(110,118,136)); cy=y+116+20; } } } break;
     case P_NVIDIA: { nvgsp_info_t ni; nvgsp_info(&ni); extern int g_nvd_auto; char d[96];
         int y=st_card(cy,64*4,"NVIDIA GeForce");
         if(ni.state<7){ q=d; q=scopy(q,ni.state?ni.state_name:"Not started"); q=scopy(q," - start takes about 10 s"); *q=0; st_rowtext(y,"NVIDIA driver (GSP-RM)",d); st_btn(X1-130,y+16,130,"Start now",334,1); }
@@ -337,7 +338,7 @@ static void st_page(int p,int cy){
         if(g_wall_fx_us){ y=st_card(cy,64,0); q=b; q=scopy(q,"Made in "); q=udec(q,g_wall_fx_us/1000); q=scopy(q," ms when the wallpaper was set"); *q=0; st_rowtext(y,"Last update",b); } } break;
     case P_WIFI: old_leaf(2,cy); break;
     case P_NETINFO: { const char* a[5]={"Wired adapter","Wired status","Wi-Fi","IPv4 address","MAC address"}; char v[5][80]; if(!pci_n)pci_scan(); int ek=nic_index();
-        q=v[0]; q=scopy(q,ek>=0?nic_name(pci_ven[ek],pci_dev[ek]):"None"); *q=0; q=v[1]; q=scopy(q,net_ok?"Connected":"Not connected"); *q=0; q=v[2]; q=scopy(q,g_wifi_conn[0]?g_wifi_conn:"Not connected"); *q=0;
+        q=v[0]; q=scopy(q,nic_active_name()?nic_active_name():ek>=0?nic_name(pci_ven[ek],pci_dev[ek]):"None"); *q=0; q=v[1]; q=scopy(q,net_ok?"Connected":"Not connected"); *q=0; q=v[2]; q=scopy(q,g_wifi_conn[0]?g_wifi_conn:"Not connected"); *q=0;
         q=v[3]; if(net_ok||g_wifi_conn[0]){ q=udec(q,my_ip>>24);*q++='.';q=udec(q,(my_ip>>16)&255);*q++='.';q=udec(q,(my_ip>>8)&255);*q++='.';q=udec(q,my_ip&255); } else q=scopy(q,"-"); *q=0;
         q=v[4]; for(int k=0;k<6;k++){ q=hx(q,my_mac[k],2); if(k<5)*q++=':'; } *q=0; st_infocard(&cy,"Addresses",a,v,5);
         if(g_wm_state==WM_CONNECTED){ extern int g_wifi_rekeys; extern int g_wpa_akm; const char* wa[7]={"Network","Access point","Channel","Signal","Speed","Security","Gateway and DNS"}; char wv[7][80]; cy+=10;

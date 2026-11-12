@@ -1,8 +1,8 @@
 static int lx_wait_deadline(struct jproc* p,long ms){
     if(ms==0)return 1;
-    if(!p->pollwake)p->pollwake=(ms<0)?~0ULL:g_ticks+((u64)ms+9)/10+1;
-    if(g_ticks>=p->pollwake){ p->pollwake=0; return 1; }
-    return 0;
+    if(!p->pollwake){ p->pollwake=(ms<0)?~0ULL:g_ticks+((u64)ms+9)/10+1; p->wdl=(ms>0&&hr_precise())?hr_ns()+(u64)ms*1000000ULL:0; }
+    if(g_ticks>=p->pollwake||(p->wdl&&hr_ns()>=p->wdl)){ p->pollwake=0; p->wdl=0; return 1; }
+    p->wdl_arm=1; return 0;
 }
 static long lx_poll(struct sysregs* r,u64 fds,u64 n,long ms){
     struct jproc* p=&g_jp[g_jcur];
@@ -10,9 +10,9 @@ static long lx_poll(struct sysregs* r,u64 fds,u64 n,long ms){
     int cnt=0;
     for(u64 i=0;i<n;i++){ int fd=*(int*)(fds+i*8); short ev=*(short*)(fds+i*8+4); short re=0;
         if(fd>=0)re=(short)lx_poll_one(fd,ev); *(short*)(fds+i*8+6)=re; if(re)cnt++; }
-    if(cnt){ p->pollwake=0; return cnt; }
+    if(cnt){ p->pollwake=0; p->wdl=0; return cnt; }
     if(lx_wait_deadline(p,ms))return 0;
-    if(jc_deliverable(p)){ p->pollwake=0; return -LX_EINTR; }
+    if(jc_deliverable(p)){ p->pollwake=0; p->wdl=0; return -LX_EINTR; }
     jc_block(r,S_WAIT,g_ticks+1);
 }
 #define LX_EPOLL 113
@@ -23,7 +23,7 @@ static int lx_ep_live(struct lx_ep* e,int i){ int f=e->fd[i]; if(f<0||f>=FDMAX)r
 static void lx_ep_del(struct lx_ep* e,int k){ e->n--; e->fd[k]=e->fd[e->n]; e->vi[k]=e->vi[e->n]; e->gen[k]=e->gen[e->n]; e->ev[k]=e->ev[e->n]; e->data[k]=e->data[e->n]; }
 static struct lx_ep g_ep[EPI];
 static void ep_close(int i){ if(i>=0&&i<EPI){ g_ep[i].used=0; g_ep[i].n=0; } }
-static long lx_epoll_create(int fl){ int e=-1; for(int i=0;i<EPI;i++) if(!g_ep[i].used){ e=i; break; } if(e<0)return -LX_ENOMEM;
+static long lx_epoll_create(int fl){ if(fl&~0x80000)return -LX_EINVAL; int e=-1; for(int i=0;i<EPI;i++) if(!g_ep[i].used){ e=i; break; } if(e<0)return -LX_ENOMEM;
     g_ep[e].used=1; g_ep[e].n=0; int vi=jc_newvf(LX_EPOLL,e,O_RDWR); if(vi<0){ g_ep[e].used=0; return -LX_EMFILE; } int fd=lx_fd_install(vi,(fl&0x80000)?1:0,0); if(fd<0){ vf_unref(vi); g_ep[e].used=0; } return fd; }
 static struct lx_ep* lx_ep_of(int fd){ struct vfile* v=lx_vf(fd); if(!v||v->dev!=LX_EPOLL)return 0; if(v->fs_idx<0||v->fs_idx>=EPI)return 0; return &g_ep[v->fs_idx]; }
 static long lx_epoll_ctl(int epfd,int op,int fd,u64 uev){
@@ -31,10 +31,16 @@ static long lx_epoll_ctl(int epfd,int op,int fd,u64 uev){
     u32 ev=0; u64 data=0; if(op!=2){ u8 b[12]; if(lx_get(b,uev,12))return -LX_EFAULT; ev=*(u32*)b; data=*(u64*)(b+4); }
     for(int i=0;i<e->n;i++) if(!lx_ep_live(e,i)){ lx_ep_del(e,i); i--; }
     int k=-1; for(int i=0;i<e->n;i++) if(e->fd[i]==fd){ k=i; break; }
-    if(op==1){ if(k>=0)return -17; if(e->n>=EPN)return -LX_ENOMEM; e->fd[e->n]=fd; e->vi[e->n]=fdt()[fd]; e->gen[e->n]=g_vf[fdt()[fd]].gen; e->ev[e->n]=ev; e->data[e->n]=data; e->n++; return 0; }
+    if(op==1){ struct vfile* tv=lx_vf(fd); if(tv&&(tv->dev==0||tv->dev==LX_MFD||tv->dev==100||tv->dev==LX_DIRDEV))return -LX_EPERM; if(k>=0)return -17; if(e->n>=EPN)return -LX_ENOMEM; e->fd[e->n]=fd; e->vi[e->n]=fdt()[fd]; e->gen[e->n]=g_vf[fdt()[fd]].gen; e->ev[e->n]=ev; e->data[e->n]=data; e->n++; return 0; }
     if(op==3){ if(k<0)return -LX_ENOENT; e->ev[k]=ev; e->data[k]=data; return 0; }
     if(op==2){ if(k<0)return -LX_ENOENT; lx_ep_del(e,k); return 0; }
     return -LX_EINVAL; }
+static int g_ep_depth;
+int lx_ep_ready(int idx){
+    if(idx<0||idx>=EPI||!g_ep[idx].used||g_ep_depth>=4)return 0;
+    struct lx_ep* e=&g_ep[idx]; int any=0; g_ep_depth++;
+    for(int i=0;i<e->n;i++){ if(!lx_ep_live(e,i))continue; if(!(e->ev[i]&0x3F))continue; if(lx_poll_one(e->fd[i],(int)(e->ev[i]&0x3F))){ any=1; break; } }
+    g_ep_depth--; return any; }
 static long lx_epoll_wait(struct sysregs* r,int epfd,u64 out,int max,long ms){
     struct jproc* p=&g_jp[g_jcur]; struct lx_ep* e=lx_ep_of(epfd); if(!e)return -LX_EINVAL; if(max<=0)return -LX_EINVAL; if(!lx_okw(out,(u64)max*12))return -LX_EFAULT;
     int cnt=0;
@@ -42,9 +48,9 @@ static long lx_epoll_wait(struct sysregs* r,int epfd,u64 out,int max,long ms){
         int re=lx_poll_one(e->fd[i],(int)(e->ev[i]&0x3F)); if(!re)continue;
         u8* o=(u8*)(out+(u64)cnt*12); *(u32*)o=(u32)re; *(u64*)(o+4)=e->data[i]; cnt++;
         if(e->ev[i]&0x40000000u)e->ev[i]&=~0x3Fu; }
-    if(cnt){ p->pollwake=0; return cnt; }
+    if(cnt){ p->pollwake=0; p->wdl=0; return cnt; }
     if(lx_wait_deadline(p,ms))return 0;
-    if(jc_deliverable(p)){ p->pollwake=0; return -LX_EINTR; }
+    if(jc_deliverable(p)){ p->pollwake=0; p->wdl=0; return -LX_EINTR; }
     jc_block(r,S_WAIT,g_ticks+1);
 }
 static u64 lx_tv_ticks(const u64* tv){ u64 us=tv[0]*1000000ULL+tv[1]; return (us+9999ULL)/10000ULL; }
@@ -85,8 +91,8 @@ static long lx_select(struct sysregs* r,int n,u64 rd,u64 wr,u64 ex,long ms){
         int re=lx_poll_one(fd,(ir?1:0)|(iw?4:0));
         if(ir&&(re&0x19)){ oR[fd>>3]|=(u8)(1u<<(fd&7)); cnt++; }
         if(iw&&(re&0x0C)){ oW[fd>>3]|=(u8)(1u<<(fd&7)); cnt++; } }
-    if(cnt||lx_wait_deadline(p,ms)){ p->pollwake=0; if(rd)lx_put(rd,oR,(u64)nb); if(wr)lx_put(wr,oW,(u64)nb); if(ex){ u8 z[128]; lx_zero(z,128); lx_put(ex,z,(u64)nb); } return cnt; }
-    if(jc_deliverable(p)){ p->pollwake=0; return -LX_EINTR; }
+    if(cnt||lx_wait_deadline(p,ms)){ p->pollwake=0; p->wdl=0; if(rd)lx_put(rd,oR,(u64)nb); if(wr)lx_put(wr,oW,(u64)nb); if(ex){ u8 z[128]; lx_zero(z,128); lx_put(ex,z,(u64)nb); } return cnt; }
+    if(jc_deliverable(p)){ p->pollwake=0; p->wdl=0; return -LX_EINTR; }
     jc_block(r,S_WAIT,g_ticks+1);
 }
 
@@ -97,7 +103,8 @@ static void lx_fm_wb(struct lx_fm* m,u64 a,u64 e){
     int k=m->k; if(k<0||k>=FS_N||!FS[k].used)return; u64 me=m->va+(m->pages<<12); if(a<m->va)a=m->va; if(e>me)e=me;
     for(u64 v=a&~0xFFFULL;v<e;v+=0x1000ULL){ u64* pt=vm_walk(m->cr3,v,0); if(!pt||!(*pt&1))continue; u64 fo=m->off+(v-m->va); if(fo>=(u64)FS[k].len)break;
         u64 n=(u64)FS[k].len-fo; if(n>4096)n=4096; const u8* f=(const u8*)(*pt&PTE_ADDR); char* d=fsd(k); if(!d)return; d+=fo; int ch=0;
-        for(u64 b=0;b<n;b++) if((u8)d[b]!=f[b]){ d[b]=(char)f[b]; ch=1; } if(ch){ g_fs_dirty[k]=1; g_fs_wb_pending=1; } } }
+        u64 b=0; if(!(((u64)d|(u64)f)&7)){ const u64* fw=(const u64*)f; u64* dw=(u64*)d; for(;b+8<=n;b+=8){ u64 x=fw[b>>3]; if(dw[b>>3]!=x){ dw[b>>3]=x; ch=1; } } }
+        for(;b<n;b++) if((u8)d[b]!=f[b]){ d[b]=(char)f[b]; ch=1; } if(ch){ g_fs_dirty[k]=1; g_fs_wb_pending=1; } } }
 static void lx_fm_sync(int k,u64 off,u64 n){
     if(n==0)return; for(int i=0;i<256;i++){ struct lx_fm* m=&g_fm[i]; if(!m->pages||m->k!=k)continue; u64 me=m->off+(m->pages<<12); if(off+n<=m->off||off>=me)continue;
         u64 a=off>m->off?off:m->off, e=off+n<me?off+n:me; const char* d=fsd(k); if(!d)return;
@@ -107,6 +114,7 @@ static void lx_fm_cut(u64 cr3,u64 a,u64 e){ cr3&=~0xFFFULL; for(int i=0;i<256;i+
 static void lx_fm_msync(u64 cr3,u64 a,u64 e){ cr3&=~0xFFFULL; for(int i=0;i<256;i++){ struct lx_fm* m=&g_fm[i]; if(m->pages&&m->cr3==cr3)lx_fm_wb(m,a,e); } }
 static void lx_fm_dead(u64 cr3){ cr3&=~0xFFFULL; for(int i=0;i<256;i++){ struct lx_fm* m=&g_fm[i]; if(m->pages&&m->cr3==cr3){ lx_fm_wb(m,m->va,m->va+(m->pages<<12)); m->pages=0; } } }
 static void lx_fm_dup(u64 src,u64 dst){ src&=~0xFFFULL; int n=0; for(int i=0;i<256;i++) if(g_fm[i].pages&&g_fm[i].cr3==src)n++; for(int i=0;i<256&&n>0;i++) if(g_fm[i].pages&&g_fm[i].cr3==src){ lx_fm_add(dst,g_fm[i].va,g_fm[i].off,g_fm[i].k,g_fm[i].pages); n--; } }
+int lx_fm_covers(u64 cr3,u64 va){ cr3&=~0xFFFULL; for(int i=0;i<256;i++){ struct lx_fm* m=&g_fm[i]; if(m->pages&&m->cr3==cr3&&va>=m->va&&va<m->va+(m->pages<<12))return 1; } return 0; }
 static void lx_sha_dead(u64 cr3);
 static void lx_sha_dup(u64 src,u64 dst);
 struct lx_res { u64 cr3,b,e,pb; };
@@ -132,24 +140,34 @@ void lx_res_dup(u64 src,u64 dst){ lx_fm_dup(src,dst); lx_sha_dup(src,dst); src&=
 void lx_res_drop(u64 cr3){ cr3&=~0xFFFULL; for(int i=0;i<g_res_hi;i++) if(g_res[i].cr3==cr3)g_res[i].e=0; while(g_res_hi>0&&!g_res[g_res_hi-1].e)g_res_hi--; }
 static void lx_unmap_range(u64 a,u64 e){
     struct jproc* p=&g_jp[g_jcur]; { extern void xfb_untrack_range(u64,u64,u64); xfb_untrack_range(p->cr3,a,e); } lx_res_cut(p->cr3,a,e); lx_fm_cut(p->cr3,a,e); int shared=jc_tg_live(p->tg,g_jcur)>0; u64 nf=0; u64 fr[64];
-    for(u64 v=a;v<e;v+=0x1000ULL){ u64* pt=vm_walk(p->cr3,v,0); if(!pt)continue;
+    for(u64 v=a;v<e;v+=0x1000ULL){ u64* pt=vm_walk(p->cr3,v,0); if(!pt){ v=vm_skip(p->cr3&~0xFFFULL,v)-0x1000ULL; continue; }
         if(*pt&1){ u64 pa=*pt&PTE_ADDR; *pt=0; cpu_flush_page(v); { extern int g_xfb_live; extern void xfb_drop(u64); extern u32 pframe_refcount(u64); if(g_xfb_live&&pframe_refcount(pa)<=1)xfb_drop(pa); }
             if(!shared){ pframe_free(pa); continue; }
             fr[nf++]=pa; if(nf==64){ smp_tlb_sync(p->cr3); for(u64 k=0;k<nf;k++)pframe_free(fr[k]); nf=0; } }
-        else if(*pt&PTE_LAZY)*pt=0; }
+        else if(*pt&PTE_LAZY){ if(pte_is_swap(*pt)&&swap_put)swap_put(*pt); *pt=0; } }
     if(nf){ smp_tlb_sync(p->cr3); for(u64 k=0;k<nf;k++)pframe_free(fr[k]); }
 }
-static u64 lx_find_gap(u64 cr3,u64 pages){
-    u64 need=pages<<12, v=0x40004000000ULL, start=v, run=0;
-    for(int guard=0;v+need<=0x48000000000ULL&&guard<4000000;guard++){
-        { int ri=lx_res_find(cr3,v); if(ri>=0){ v=g_res[ri].e; run=0; start=v; continue; } }
+static u64 lx_gap_scan(u64 cr3,u64 need,u64 from,u64 to){
+    u64 v=from; { int r0=lx_res_find(cr3,v); if(r0>=0)v=g_res[r0].e; } u64 start=v, run=0; u64 rn=lx_res_next(cr3,v-1);
+    for(long guard=0;guard<4000000;guard++){
+        if(start+need>to)return 0;
+        if(v>=rn){ int ri=lx_res_find(cr3,v); if(ri>=0){ v=g_res[ri].e; run=0; start=v; } rn=lx_res_next(cr3,v-1); if(ri>=0)continue; }
         u64* e=vm_walk(cr3,v,0);
-        if(!e){ u64 nv=(v+0x200000ULL)&~0x1FFFFFULL; u64 rn=lx_res_next(cr3,v); if(rn<nv){ run+=rn-v; v=rn; if(run>=need)return start; continue; } run+=nv-v; v=nv; }
+        if(!e){ u64 nv=vm_skip(cr3,v); if(nv>rn)nv=rn; run+=nv-v; v=nv; }
         else if(vm_pte_used(*e)){ v+=0x1000ULL; run=0; start=v; }
         else { v+=0x1000ULL; run+=0x1000ULL; }
         if(run>=need)return start; }
-    return 0;
-}
+    return 0; }
+static u64 g_gh_cr3[32], g_gh_v[32]; static int g_gh_i;
+static u64 lx_find_gap(u64 cr3,u64 pages){
+    const u64 lo=0x40004000000ULL, hi=0x48000000000ULL; u64 need=pages<<12; cr3&=~0xFFFULL;
+    int h=-1; for(int i=0;i<32;i++) if(g_gh_cr3[i]==cr3){ h=i; break; }
+    if(h<0){ h=g_gh_i; g_gh_i=(g_gh_i+1)&31; g_gh_cr3[h]=cr3; g_gh_v[h]=lo; }
+    u64 hint=g_gh_v[h]; if(hint<lo||hint>=hi)hint=lo;
+    u64 r=lx_gap_scan(cr3,need,hint,hi);
+    if(!r&&hint>lo)r=lx_gap_scan(cr3,need,lo,hi);
+    if(r)g_gh_v[h]=r+need;
+    return r; }
 struct lx_mapname { u64 cr3,b,e; char nm[40]; };
 struct lx_mapname g_mapn[2048]; int g_mapn_i;
 char* lx_addr_name(char* o,u64 cr3,u64 a){ cr3&=~0xFFFULL; int f=-1; for(int i=0;i<2048;i++){ struct lx_mapname* m=&g_mapn[i]; if((m->cr3&~0xFFFULL)==cr3&&m->cr3&&a>=m->b&&a<m->e){ f=i; break; } }
@@ -198,6 +216,7 @@ static int lx_ncpu_on(void){ int n=0; for(int i=0;i<NCPU;i++) if(i==0||(g_smp_on
 static char* lx_u64s(char* o,u64 v){ char t[24]; int k=0; if(!v)t[k++]='0'; while(v){ t[k++]=(char)('0'+v%10); v/=10; } while(k)*o++=t[--k]; return o; }
 static int lx_proc_extra_gen(const char* pa,char* out,int cap){
     char* o=out; const char* q=0; int who=-1;
+    if(lx_streq(pa,"/proc/nvxpack")){ extern const char* pack_status(void); const char* z=pack_status(); int k=0; while(z[k]&&k<cap-2)*o++=z[k++]; *o++='\n'; return (int)(o-out); }
     if(lx_streq(pa,"/proc/stat")){
         u64 tu=0,ti=0,ts=0; for(int i=0;i<NCPU;i++) if(i==0||g_cpu[i].online){ tu+=g_cpu[i].user_ticks; ti+=g_cpu[i].idle_ticks; u64 tt=g_cpu[i].ticks; u64 k=tt>g_cpu[i].user_ticks+g_cpu[i].idle_ticks?tt-g_cpu[i].user_ticks-g_cpu[i].idle_ticks:0; ts+=k; }
         const char* z="cpu  "; while(*z)*o++=*z++; o=lx_u64s(o,tu); z=" 0 "; while(*z)*o++=*z++; o=lx_u64s(o,ts); *o++=' '; o=lx_u64s(o,ti); z=" 0 0 0 0 0 0\n"; while(*z)*o++=*z++;
@@ -219,11 +238,11 @@ static int lx_proc_extra_gen(const char* pa,char* out,int cap){
         int nt=0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_TDEAD&&g_jp[j].tg==P->tg)nt++;
         const char* nm=L->exe[0]?L->exe:L->cmd; int sl=-1; for(int k=0;nm[k];k++) if(nm[k]=='/')sl=k; nm+=sl+1;
         o=lx_u64s(o,(u64)P->pid); *o++=' '; *o++='('; for(int k=0;nm[k]&&nm[k]!=' '&&k<15;k++)*o++=nm[k]; *o++=')'; *o++=' ';
-        *o++=(P->state==S_ZOMB)?'Z':(P->runcpu>=0?'R':'S'); *o++=' ';
+        *o++=(P->state==S_ZOMB)?'Z':P->state==S_STOP?'T':(P->runcpu||P->state==S_RUN)?'R':'S'; *o++=' ';
         o=lx_u64s(o,(u64)L->ppid); *o++=' '; o=lx_u64s(o,(u64)L->pgid); *o++=' '; o=lx_u64s(o,(u64)L->sid); const char* z=" 0 -1 4194304 0 0 0 0 "; while(*z)*o++=*z++;
-        o=lx_u64s(o,P->cputicks); z=" 0 0 0 20 0 "; while(*z)*o++=*z++; o=lx_u64s(o,(u64)nt); z=" 0 0 "; while(*z)*o++=*z++;
+        o=lx_u64s(o,P->cputicks); z=" 0 0 0 "; while(*z)*o++=*z++; { int pri=(P->policy==1||P->policy==2)?-1-P->rtprio:20+P->nice; if(pri<0){ *o++='-'; pri=-pri; } o=lx_u64s(o,(u64)pri); *o++=' '; int nv=P->nice; if(nv<0){ *o++='-'; nv=-nv; } o=lx_u64s(o,(u64)nv); *o++=' '; } o=lx_u64s(o,(u64)nt); z=" 0 0 "; while(*z)*o++=*z++;
         u64 vs=L->brk>0x40002000000ULL?L->brk-0x40000000000ULL:0x2000000ULL; o=lx_u64s(o,vs); *o++=' '; o=lx_u64s(o,vs/4096/4); z=" 18446744073709551615 4194304 33554432 140737488351232 0 0 0 0 0 0 0 0 0 17 "; while(*z)*o++=*z++;
-        o=lx_u64s(o,(u64)(P->lastcpu>0?P->lastcpu:0)); z=" 0 0 0 0 0 0 0 0 0 0 0 0 0\n"; while(*z)*o++=*z++;
+        o=lx_u64s(o,(u64)(P->lastcpu>0?P->lastcpu:0)); *o++=' '; o=lx_u64s(o,(u64)P->rtprio); *o++=' '; o=lx_u64s(o,(u64)P->policy); z=" 0 0 0 0 0 0 0 0 0 0 0\n"; while(*z)*o++=*z++;
         return (int)(o-out); }
     if(lx_streq(q,"status")){
         int nt=0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_TDEAD&&g_jp[j].tg==P->tg)nt++;
@@ -235,7 +254,7 @@ static int lx_proc_extra_gen(const char* pa,char* out,int cap){
         z="Gid:\t"; while(*z)*o++=*z++; for(int k=0;k<4;k++){ o=lx_u64s(o,(u64)L->gid); *o++=k<3?'\t':'\n'; }
         u64 vk=(L->brk>0x40002000000ULL?L->brk-0x40000000000ULL:0x2000000ULL)/1024;
         z="FDSize:\t256\nGroups:\t\nVmPeak:\t"; while(*z)*o++=*z++; o=lx_u64s(o,vk); z=" kB\nVmSize:\t"; while(*z)*o++=*z++; o=lx_u64s(o,vk); z=" kB\nVmRSS:\t"; while(*z)*o++=*z++; o=lx_u64s(o,vk/4); z=" kB\nThreads:\t"; while(*z)*o++=*z++; o=lx_u64s(o,(u64)nt);
-        z="\nSigQ:\t0/63432\nSigPnd:\t"; while(*z)*o++=*z++; o=lx_hx(o,(u64)P->sigpend>>1,16); z="\nShdPnd:\t0000000000000000\nSigBlk:\t"; while(*z)*o++=*z++; o=lx_hx(o,(u64)P->sigmask>>1,16);
+        z="\nSigQ:\t0/63432\nSigPnd:\t"; while(*z)*o++=*z++; o=lx_hx(o,sig_k2l(P->sigpend),16); z="\nShdPnd:\t0000000000000000\nSigBlk:\t"; while(*z)*o++=*z++; o=lx_hx(o,sig_k2l(P->sigmask),16);
         z="\nSigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nCpus_allowed_list:\t0-"; while(*z)*o++=*z++;
         o=lx_u64s(o,(u64)(lx_ncpu_on()-1)); z="\nvoluntary_ctxt_switches:\t0\nnonvoluntary_ctxt_switches:\t0\n"; while(*z)*o++=*z++;
         return (int)(o-out); }
@@ -260,6 +279,7 @@ static long lx_proc_maps(const char* pa,int flags){
     me[n].b=0x40000001000ULL; me[n].e=0x40000101000ULL; me[n].nm="[stack]"; me[n].pm="rw-p"; n++;
     me[n].b=0x40000400000ULL; me[n].e=0x40002000000ULL; me[n].nm=P->exe[0]?P->exe:"/proc/self/exe"; me[n].pm="r-xp"; n++;
     if(P->brk>0x40002000000ULL){ me[n].b=0x40002000000ULL; me[n].e=(P->brk+0xFFFULL)&~0xFFFULL; me[n].nm="[heap]"; me[n].pm="rw-p"; n++; }
+    { extern u64 vdso_end(void), vdso_start(void); u64 ve=vdso_end(); if(ve){ me[n].b=vdso_start(); me[n].e=ve-0x1000ULL; me[n].nm="[vdso]"; me[n].pm="r-xp"; n++; me[n].b=ve-0x1000ULL; me[n].e=ve; me[n].nm="[vvar]"; me[n].pm="r--p"; n++; } }
     me[n].b=0x40030000000ULL; me[n].e=0x40030040000ULL; me[n].nm="/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"; me[n].pm="r-xp"; n++;
     int cnt=g_mapn_i<2048?g_mapn_i:2048;
     for(int j=0;j<cnt&&n<400;j++){ struct lx_mapname* m=&g_mapn[(g_mapn_i-cnt+j)%2048]; if((m->cr3&~0xFFFULL)!=cr3||!m->e)continue; me[n].b=m->b; me[n].e=m->e; me[n].nm=m->nm; me[n].pm="r-xp"; n++; }
@@ -279,23 +299,31 @@ static long lx_proc_maps(const char* pa,int flags){
     int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
 static long lx_madvise(u64 a,u64 len,int adv){
     if(a&0xFFF)return -LX_EINVAL; if(!len)return 0; u64 e=(a+len+0xFFFULL)&~0xFFFULL; if(!jc_uok(a,e-a))return -LX_ENOMEM;
+    if(adv==21||adv==20){ if(adv==21&&swap_pageout)swap_pageout(g_jp[g_jcur].cr3,a,e); return 0; }
     if(adv!=4&&adv!=9)return 0;
-    extern u32 pframe_refcount(u64 pa); struct jproc* p=&g_jp[g_jcur];
-    for(u64 v=a;v<e;v+=0x1000ULL){ u64* pt=vm_walk(p->cr3,v,0); if(!pt||!(*pt&1))continue; u64 pa=*pt&PTE_ADDR; if((*pt&PTE_SHR)||pframe_refcount(pa)>1)continue;
-        lx_unmap_range(v,v+0x1000ULL); vm_map_lazy(p->cr3,v); }
+    extern u32 pframe_refcount(u64 pa); struct jproc* p=&g_jp[g_jcur]; u64 cr3=p->cr3&~0xFFFULL;
+    int shared=jc_tg_live(p->tg,g_jcur)>0; u64 nf=0; u64 fr[64];
+    for(u64 v=a;v<e;v+=0x1000ULL){ u64* pt=vm_walk(cr3,v,0); if(!pt){ v=vm_skip(cr3,v)-0x1000ULL; continue; }
+        u64 x=*pt; if(!(x&1)){ if(pte_is_swap(x)){ if(swap_put)swap_put(x); *pt=PTE_LAZY|(x&PTE_PBITS); } continue; } u64 pa=x&PTE_ADDR; if((x&PTE_SHR)||pframe_refcount(pa)>1)continue;
+        *pt=PTE_LAZY|(x&PTE_PBITS); cpu_flush_page(v);
+        { extern int g_xfb_live; extern void xfb_drop(u64); if(g_xfb_live)xfb_drop(pa); }
+        if(!shared){ pframe_free(pa); continue; }
+        fr[nf++]=pa; if(nf==64){ smp_tlb_sync(p->cr3); for(u64 k=0;k<nf;k++)pframe_free(fr[k]); nf=0; } }
+    if(nf){ smp_tlb_sync(p->cr3); for(u64 k=0;k<nf;k++)pframe_free(fr[k]); }
     return 0; }
 static long lx_mprotect(u64 a,u64 len,int prot){
     if(a&0xFFF)return -LX_EINVAL; if(prot&~0x7)return -LX_EINVAL; if(!len)return 0;
     u64 e=(a+len+0xFFFULL)&~0xFFFULL; if(e<a||!jc_uok(a,e-a))return -LX_ENOMEM;
     struct jproc* p=&g_jp[g_jcur]; u64 cr3=p->cr3&~0xFFFULL; u64 bits=vm_prot_bits(prot); int any=0;
+    int cri=lx_res_find(cr3,a); u64 rn=lx_res_next(cr3,a);
     for(u64 v=a;v<e;){
-        int ri=lx_res_find(cr3,v); u64* pt=vm_walk(cr3,v,0);
-        if(ri>=0&&!(pt&&vm_pte_used(*pt))){ u64 re=g_res[ri].e<e?g_res[ri].e:e; u64 n=v+0x1000ULL; while(n<re){ u64* q=vm_walk(cr3,n,0); if(q&&vm_pte_used(*q))break; n+=0x1000ULL; }
+        int ri=(cri>=0&&g_res[cri].e&&v>=g_res[cri].b&&v<g_res[cri].e)?cri:(v>=rn?lx_res_find(cr3,v):-1); if(v>=rn)rn=lx_res_next(cr3,v); cri=ri; u64* pt=vm_walk(cr3,v,0);
+        if(ri>=0&&!(pt&&vm_pte_used(*pt))){ u64 re=g_res[ri].e<e?g_res[ri].e:e; u64 n=v+0x1000ULL; while(n<re){ u64* q=vm_walk(cr3,n,0); if(!q){ n=vm_skip(cr3,n); continue; } if(vm_pte_used(*q))break; n+=0x1000ULL; } if(n>re)n=re;
             if(g_res[ri].b>=v&&g_res[ri].e<=n)g_res[ri].pb=bits; else { u64 ob=g_res[ri].pb; lx_res_cut(cr3,v,n); if(lx_res_addp(cr3,v,n,bits)){ lx_res_addp(cr3,v,n,ob); } }
-            any=1; v=n; continue; }
-        if(!pt||!vm_pte_used(*pt)){ v+=0x1000ULL; if(!pt)v=(v+0x1FFFFFULL)&~0x1FFFFFULL; continue; }
+            any=1; v=n; cri=-1; rn=lx_res_next(cr3,v-1); continue; }
+        if(!pt||!vm_pte_used(*pt)){ if(!pt){ u64 nv=vm_skip(cr3,v); v=rn>v&&rn<nv?rn:nv; } else v+=0x1000ULL; continue; }
         any=1; u64 x=*pt;
-        if(!(x&1)){ *pt=PTE_LAZY|(x&PTE_SHR)|bits; }
+        if(!(x&1)){ *pt=(x&(PTE_FILE|PTE_SWP))?((x&~PTE_PBITS)|bits):(PTE_LAZY|(x&PTE_SHR)|bits); }
         else { u64 n2=(x&~(2ULL|4ULL|PTE_PBITS))|4ULL|bits; if(!(bits&PTE_PRO)&&!(x&PTE_COW))n2|=2ULL; *pt=vm_pflags(n2&~(PTE_PBITS),bits); }
         cpu_flush_page(v); v+=0x1000ULL; }
     if(!any)return -LX_ENOMEM;

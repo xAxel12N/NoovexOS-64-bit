@@ -23,7 +23,7 @@
 #include "include/nvx/core/init/installer.h"
 #include "include/nvx/fs/vfs/volumes.h"
 /* =========================================================================
-   File Explorer (v10.60) - browses the real Unix directory tree (DT + FS)
+   File Explorer (v10.86) - browses the real Unix directory tree (DT + FS)
    ========================================================================= */
 #define FX_MAXROWS 96
 #define FX_MAXB    72

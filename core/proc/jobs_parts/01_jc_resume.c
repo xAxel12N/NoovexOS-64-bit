@@ -51,11 +51,12 @@ void vf_unref(int vi){
     if(vi<0||vi>=VMAXOPEN||!g_vf[vi].used)return;
     if(--g_vf[vi].ref>0)return;
     struct vfile* v=&g_vf[vi];
-    if(v->dev==6||v->dev==7){ struct jpipe* p=&g_pipe[v->fs_idx]; if(v->dev==6)p->readers--; else p->writers--;
-        if(p->readers<=0&&p->writers<=0){ if(p->buf)kfree(p->buf); p->buf=0; p->used=0; } }
+    if(v->dev==6||v->dev==7){ struct jpipe* p=&g_pipe[v->fs_idx]; if(v->dev==6){ p->readers--; if((v->flags&3)==2)p->writers--; } else p->writers--;
+        if(p->readers<=0&&p->writers<=0){ { extern void lxm_pipe_freed(int) __attribute__((weak)); if(lxm_pipe_freed)lxm_pipe_freed(v->fs_idx); } if(p->buf)kfree(p->buf); p->buf=0; p->used=0; } }
     if(vi==g_con_vi){ v->ref=1; return; }
     if(v->dev==14)lxs_release(v->fs_idx);
-    { extern void un_close(int); extern void mfd_close(int); extern void evtm_close(int,int); if(v->dev==18)un_close(v->fs_idx); else if(v->dev==114||v->dev==115){ extern void pty_close(int,int); pty_close(v->dev,v->fs_idx); } else if(v->dev==116||v->dev==117){ extern void asnd_close(int,int); asnd_close(v->dev,v->fs_idx); } else if(v->dev==19)mfd_close(v->fs_idx); else if(v->dev==20||v->dev==21)evtm_close(v->dev,v->fs_idx); else if(v->dev==22||v->dev==23||v->dev==113){ extern void lxabi_close(int,int); lxabi_close(v->dev,v->fs_idx); } }
+    if(v->dev==25){ extern void lxm_vf_close(int,int) __attribute__((weak)); if(lxm_vf_close)lxm_vf_close(v->dev,v->fs_idx); }
+    { extern void un_close(int); extern void mfd_close(int); extern void evtm_close(int,int); if(v->dev==18)un_close(v->fs_idx); else if(v->dev==114||v->dev==115){ extern void pty_close(int,int); pty_close(v->dev,v->fs_idx); } else if(v->dev==116||v->dev==117){ extern void asnd_close(int,int); asnd_close(v->dev,v->fs_idx); } else if(v->dev==118){ extern void dx_close(int); dx_close(v->fs_idx); } else if(v->dev==19)mfd_close(v->fs_idx); else if(v->dev==20||v->dev==21)evtm_close(v->dev,v->fs_idx); else if(v->dev==22||v->dev==23||v->dev==113){ extern void lxabi_close(int,int); lxabi_close(v->dev,v->fs_idx); } }
     { extern void lx_lock_vfclose(int); lx_lock_vfclose(vi); }
     if(v->dev==9&&g_fb0_open>0)g_fb0_open--; if(v->dev==10&&g_mouse_open>0)g_mouse_open--;
     if(v->dev==0&&v->fs_idx>=0&&v->fs_idx<FS_N&&g_fs_dirty[v->fs_idx]){ int k=v->fs_idx; g_fs_dirty[k]=0; if(FS[k].used&&!FS[k].orphan&&disk_ok)fs_wb_mark(k); }
@@ -109,12 +110,19 @@ int jc_tty_read(char* buf,int len){
     return JS_BLOCK;
 }
 
+void jc_file_markers(u32 h,void (*fn)(u32 h,u32 pg)){
+    for(int j=0;j<JMAX;j++){ if(g_jp[j].state==S_FREE||!g_jp[j].cr3)continue; if(g_jp[j].tg!=j)continue;
+        u64* pml4=(u64*)(g_jp[j].cr3&~0xFFFULL); if(!(pml4[8]&1))continue; u64* pdpt=(u64*)(pml4[8]&PTE_ADDR);
+        for(int i3=0;i3<512;i3++){ if(!(pdpt[i3]&1))continue; u64* pd=(u64*)(pdpt[i3]&PTE_ADDR);
+            for(int i2=0;i2<512;i2++){ if(!(pd[i2]&1))continue; u64* pt=(u64*)(pd[i2]&PTE_ADDR);
+                for(int i1=0;i1<512;i1++){ u64 e=pt[i1]; if((e&1)||!(e&PTE_LAZY)||!(e&PTE_FILE))continue;
+                    if((u32)((e>>PTE_FH_SHIFT)&0xFFFFFu)==h)fn(h,(u32)((e&PTE_FP_MASK)>>12)); } } } } }
 void vm_free_user(u64 cr3){
     if(!cr3)return; { extern void lx_mapn_dead(u64); lx_mapn_dead(cr3); extern void xfb_untrack_cr3(u64); xfb_untrack_cr3(cr3); } u64* pml4=(u64*)(cr3&~0xFFFULL);
     if(pml4[8]&1){ u64* pdpt=(u64*)(pml4[8]&~0xFFFULL);
         for(int i3=0;i3<512;i3++){ if(!(pdpt[i3]&1))continue; u64* pd=(u64*)(pdpt[i3]&~0xFFFULL);
             for(int i2=0;i2<512;i2++){ if(!(pd[i2]&1))continue; u64* pt=(u64*)(pd[i2]&~0xFFFULL);
-                for(int i1=0;i1<512;i1++) if(pt[i1]&1)pframe_free(pt[i1]&PTE_ADDR);
+                for(int i1=0;i1<512;i1++){ u64 x=pt[i1]; if(x&1)pframe_free(x&PTE_ADDR); else if(pte_is_swap(x)&&swap_put)swap_put(x); }
                 pframe_free((u64)pt); }
             pframe_free((u64)pd); }
         pframe_free((u64)pdpt); pml4[8]=0; }
@@ -129,7 +137,8 @@ static u64 vm_clone_user(u64 src){
                 for(int i1=0;i1<512;i1++){ u64 e=ppt[i1]; if(!vm_pte_used(e))continue;
                     u64 v=((u64)8<<39)|((u64)i3<<30)|((u64)i2<<21)|((u64)i1<<12);
                     u64* d=vm_walk(dst,v,1); if(!d){ vm_free_user(dst); return 0; }
-                    if(!(e&1)){ *d=PTE_LAZY|(e&PTE_PBITS); continue; }
+                    if(pte_is_swap(e)){ if(swap_dup&&!swap_dup(e)){ *d=e; continue; } u64 f=pframe_alloc(); if(!f||!swap_read||swap_read(e,f)){ if(f)pframe_free(f); vm_free_user(dst); return 0; } *d=vm_live(f,e&~PTE_SHR)|PTE_ANON; continue; }
+                    if(!(e&1)){ *d=(e&PTE_FILE)?e:(PTE_LAZY|(e&PTE_PBITS)); continue; }
                     u64 pa=e&PTE_ADDR;
                     if(!pf_owned(pa)){ u64 f=pframe_alloc(); if(!f){ vm_free_user(dst); return 0; }
                         u8* q=(u8*)f; u8* s=(u8*)pa; for(int b=0;b<4096;b++)q[b]=s[b]; *d=vm_live(f,e&~PTE_SHR); continue; }
@@ -156,6 +165,13 @@ extern const unsigned char _binary_user_smptest_elf_start[], _binary_user_smptes
 extern const unsigned char _binary_user_nettest_elf_start[], _binary_user_nettest_elf_end[];
 extern const unsigned char _binary_user_featest_elf_start[], _binary_user_featest_elf_end[];
 extern const unsigned char _binary_user_afutest_elf_start[], _binary_user_afutest_elf_end[];
+extern const unsigned char _binary_user_abi2test_elf_start[], _binary_user_abi2test_elf_end[];
+extern const unsigned char _binary_user_schedtest_elf_start[], _binary_user_schedtest_elf_end[];
+extern const unsigned char _binary_user_sysfstest_elf_start[], _binary_user_sysfstest_elf_end[];
+extern const unsigned char _binary_user_swaptest_elf_start[], _binary_user_swaptest_elf_end[];
+extern const unsigned char _binary_user_abi3test_elf_start[], _binary_user_abi3test_elf_end[];
+extern const unsigned char _binary_user_contest_elf_start[], _binary_user_contest_elf_end[];
+extern const unsigned char _binary_user_container_elf_start[], _binary_user_container_elf_end[];
 extern const unsigned char _binary_user_kfeat_elf_start[], _binary_user_kfeat_elf_end[];
 extern const unsigned char _binary_user_sqlite3_elf_start[], _binary_user_sqlite3_elf_end[];
 extern const unsigned char _binary_user_gzip_elf_start[], _binary_user_gzip_elf_end[];
@@ -188,6 +204,13 @@ const struct nvx_JS_BIN_t JS_BIN[]={
     {"nettest",_binary_user_nettest_elf_start,_binary_user_nettest_elf_end},
     {"featest",_binary_user_featest_elf_start,_binary_user_featest_elf_end},
     {"afutest",_binary_user_afutest_elf_start,_binary_user_afutest_elf_end},
+    {"abi2test",_binary_user_abi2test_elf_start,_binary_user_abi2test_elf_end},
+    {"schedtest",_binary_user_schedtest_elf_start,_binary_user_schedtest_elf_end},
+    {"sysfstest",_binary_user_sysfstest_elf_start,_binary_user_sysfstest_elf_end},
+    {"swaptest",_binary_user_swaptest_elf_start,_binary_user_swaptest_elf_end},
+    {"abi3test",_binary_user_abi3test_elf_start,_binary_user_abi3test_elf_end},
+    {"contest",_binary_user_contest_elf_start,_binary_user_contest_elf_end},
+    {"container",_binary_user_container_elf_start,_binary_user_container_elf_end},
     {"kfeat",_binary_user_kfeat_elf_start,_binary_user_kfeat_elf_end},
     {"sqlite3",_binary_user_sqlite3_elf_start,_binary_user_sqlite3_elf_end},
     {"gzip",_binary_user_gzip_elf_start,_binary_user_gzip_elf_end},
@@ -224,25 +247,29 @@ static const u8* jc_unz(const u8* s,u32* len){
     *len=n; return d;
 }
 const u8* jc_find_prog(const char* name,u32* len){
+    { extern const u8* g_inst_img; extern u32 g_inst_len; if(g_inst_img&&g_inst_len&&jc_ieq(name,"nvx-install")){ *len=g_inst_len; return g_inst_img; } }
     char rl[192]; { extern int ux_resolve_links(const char*,char*,int); if(name[0]=='/'&&ux_resolve_links(name,rl,(int)sizeof(rl))==0)name=rl; }
     if(name[0]=='/'){ int sx=0; const u8* sd=sysroot_get(name,len,&sx); if(sd&&sx&&*len>=64&&sd[0]==0x7F&&sd[1]=='E')return sd; }
     const char* n=name; if(n[0]=='/'&&n[1]=='b'&&n[2]=='i'&&n[3]=='n'&&n[4]=='/')n+=5; else if(n[0]=='/'&&n[1]=='u'&&n[2]=='s'&&n[3]=='r'&&n[4]=='/'&&n[5]=='b'&&n[6]=='i'&&n[7]=='n'&&n[8]=='/')n+=9;
     else if(n[0]=='/'&&n[1]=='s'&&n[2]=='b'&&n[3]=='i'&&n[4]=='n'&&n[5]=='/'){ n+=6; if(n[0]=='i'&&n[1]=='n'&&n[2]=='i'&&n[3]=='t'&&!n[4])n="+init"; }
     char base[64]; int k=0; while(n[k]&&k<63){ base[k]=n[k]; k++; } base[k]=0;
     if(k>4&&jc_ieq(base+k-4,".elf"))base[k-4]=0;
+    { extern int lxn_in_container(void) __attribute__((weak)); if(lxn_in_container&&lxn_in_container())goto jc_nobuiltin; }
     if(jc_ieq(base,"init")&&(name[0]=='+'||g_jcur<0||1)){ for(int i=0;JS_BIN[i].name;i++) if(JS_BIN[i].name[0]=='+'){ *len=(u32)(JS_BIN[i].e-JS_BIN[i].s); return JS_BIN[i].s; } }
     for(int i=0;JS_BIN[i].name;i++) if(jc_ieq(base,JS_BIN[i].name)){ *len=(u32)(JS_BIN[i].e-JS_BIN[i].s); return jc_unz(JS_BIN[i].s,len); }
+    jc_nobuiltin:;
     int isd_=0; int f=ux_lookup(name,&isd_,1); if(isd_)f=-1;
     if(f>=0&&FS[f].len>=64){ const char* fd0=fsd(f); if((u8)fd0[0]==0x7F&&fd0[1]=='E'&&fd0[2]=='L'&&fd0[3]=='F'){
         if(g_uid!=0&&!(FS[f].mode&0111))return 0; *len=(u32)FS[f].len; return (const u8*)fd0; } }
     { int slash=0; for(const char* q=name;*q;q++) if(*q=='/')slash=1; if(!slash&&name[0]){ static const char* const pres[]={"/opt/gnu/bin/","/usr/local/bin/","/usr/bin/","/bin/","/usr/sbin/","/sbin/",0};
-        for(int pi=0;pres[pi];pi++){ char gp[128]; int o=0; const char* pre=pres[pi]; while(*pre)gp[o++]=*pre++; for(int q=0;name[q]&&o<127;q++)gp[o++]=name[q]; gp[o]=0; int sx=0; const u8* sd=sysroot_get(gp,len,&sx); if(sd&&sx&&*len>=64&&sd[0]==0x7F&&sd[1]=='E')return sd; } } }
+        for(int pi=0;pres[pi];pi++){ char gp[128]; int o=0; const char* pre=pres[pi]; while(*pre)gp[o++]=*pre++; for(int q=0;name[q]&&o<127;q++)gp[o++]=name[q]; gp[o]=0; int sx=0; if(!sysroot_meta(gp,len,&sx))continue; const u8* sd=sysroot_get(gp,len,&sx); if(sd&&sx&&*len>=64&&sd[0]==0x7F&&sd[1]=='E')return sd; } } }
     int got=fat_read_file(name,g_spawnbuf,(int)sizeof(g_spawnbuf));
     if(got>=64&&g_spawnbuf[0]==0x7F&&g_spawnbuf[1]=='E'){ *len=(u32)got; return g_spawnbuf; }
     return 0;
 }
 const u8* jc_find_lib(const char* path,u32* len){
     const char* b=path; for(const char* q=path;*q;q++) if(*q=='/')b=q+1;
+    char lmb[256]; { extern int lxn_libmap(const char*,char*,int) __attribute__((weak)); if(lxn_libmap&&lxn_libmap(path,lmb,256)==0)path=lmb; }
     if(jc_ieq(b,"ld-musl-x86_64.so.1")||jc_ieq(b,"libc.so")||jc_ieq(b,"libc.musl-x86_64.so.1")){ *len=(u32)(_binary_user_libc_so_elf_end-_binary_user_libc_so_elf_start); return jc_unz(_binary_user_libc_so_elf_start,len); }
     { int isd=0; int f=ux_lookup(path,&isd,1); if(f>=0&&!isd&&FS[f].len>=64){ const char* d=fsd(f); if((u8)d[0]==0x7F&&d[1]=='E'){ *len=(u32)FS[f].len; return (const u8*)d; } } }
     { const u8* sd=sysroot_get(path,len,0); if(sd&&*len>=64)return sd; }
@@ -274,7 +301,7 @@ static u64 jc_build(const char* args,u64* entry,u64* rsp,u64* argc,u64* argv){
         if(vm_map_lazy(cr3,v)){ vm_free_user(cr3); return 0; } }
     *rsp=g_arg_rsp?g_arg_rsp:USTK_V+0x1000ULL; *argc=(u64)g_arg_argc; *argv=g_arg_argv; return cr3;
 }
-static void jc_fx_init(u8* fx){ for(int i=0;i<512;i++)fx[i]=0; *(u16*)fx=0x037F; *(u32*)(fx+24)=0x1F80; *(u32*)(fx+28)=0xFFFF; }
+static void jc_fx_init(u8* fx){ for(int i=0;i<1024;i++)fx[i]=0; *(u16*)fx=0x037F; *(u32*)(fx+24)=0x1F80; *(u32*)(fx+28)=0xFFFF; }
 static void jc_ctx_fresh(regs_pt* c,u64 entry,u64 rsp,u64 argc,u64 argv){
     for(int i=0;i<(int)(sizeof(*c)/8);i++)((u64*)c)[i]=0;
     c->rip=entry; c->cs=0x1B; c->rflags=0x202; c->rsp=rsp; c->ss=0x23; c->rdi=argc; c->rsi=argv;
@@ -290,7 +317,7 @@ int jc_create(const char* args,int ppid,int pgid){
     jc_ctx_fresh(&p->ctx,entry,rsp,argc,argv);
     for(int f=0;f<FDMAX;f++)p->fd[f]=-1;
     int con=jc_con(); for(int f=0;f<3;f++){ p->fd[f]=con; vf_ref(con); }
-    jc_cmdname(p,args); jc_fx_init(p->fx); p->state=S_RUN;
+    jc_cmdname(p,args); jc_fx_init(p->fx); p->vrt=g_min_vrt; p->state=S_RUN;
     smp_kick_idle();
     return i;
 }

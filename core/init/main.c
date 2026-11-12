@@ -44,6 +44,7 @@
 #include "include/nvx/core/init/setup.h"
 #include "include/nvx/arch/x86_64/cpu/cpu_init.h"
 #include "include/nvx/core/init/main.h"
+#include "include/nvx/core/secboot.h"
 /* =========================================================================
    kmain
    ========================================================================= */
@@ -173,7 +174,11 @@ static void bootlog_line(const char* s){
     for(int y=g_bootlog_y;y<g_bootlog_y+16;y++){ u32* d=(u32*)(FBB+(u64)y*PITCHB); u32* sc=SCENE+(u64)y*SW; if(g_fb_rgb)copy_swap32(d,sc,(int)W); else for(u32 x=0;x<W;x++)d[x]=sc[x]; } { extern void fb_shadow_note(int,int,int,int); fb_shadow_note(0,g_bootlog_y,(int)W,16); }
     g_bootlog_y+=18;
 }
-volatile u32 g_ml_beat=0; volatile int g_ml_stage=0;
+volatile u32 g_ml_beat=0; volatile int g_ml_stage=0; volatile int g_bsp_idle; int g_tb_due;
+u64 g_ml_cyc[20]; static u64 g_ml_t;
+u32 g_ch_src[20]; static int g_ch_seen;
+static void ml_mark2(int n,int ch){ if(ch&&!g_ch_seen&&g_ml_stage>=0&&g_ml_stage<20){ g_ch_src[g_ml_stage]++; g_ch_seen=1; } if(n==1)g_ch_seen=0; }
+static void ml_mark(int n){ u64 t=hr_rdtsc(); if(g_ml_t&&g_ml_stage>=0&&g_ml_stage<20)g_ml_cyc[g_ml_stage]+=t-g_ml_t; g_ml_t=t; g_ml_stage=n; }
 void kmain(void){
     /* zero .bss (flat image doesn't) - preserve the boot page tables up to boot_pt_end */
     { extern void early_idt_install(void); early_idt_install(); }
@@ -197,6 +202,7 @@ void kmain(void){
     BYPP=(BPP>=32)?4:3; if(W>MAXW)W=MAXW; if(H>MAXH)H=MAXH; SW=W;
     if(!PITCHB)PITCHB=W*BYPP; if(!W||!H||!FBB){ for(;;)cpu_halt(); }
     FBB2=0; g_fb2_ok=0;
+    { extern void edid_boot_capture(void); extern int mon_max_hz(void); extern int g_refresh_hz; edid_boot_capture(); int mx=mon_max_hz(); if(mx>0&&g_refresh_hz>mx)g_refresh_hz=mx>=60?60:30; }
     { extern void igpu_early(void); igpu_early(); }
     if(*(volatile u32*)0x502CULL==0x49464555u && *(volatile u32*)0x5040ULL==0x4432584Eu && *(volatile u32*)0x5044ULL>0){
         u8* r=(u8*)0x5048ULL; u64 b=*(volatile u64*)(r+0); u32 p=*(volatile u32*)(r+8);
@@ -233,6 +239,7 @@ void kmain(void){
     { extern void ioapic_mask_all(void); extern int g_ioapic_n, g_ioapic_masked; ioapic_mask_all(); char ib[80],*ip=ib; ip=scopy(ip,"boot: I/O APIC lines masked: "); ip=udec(ip,(u32)g_ioapic_masked); ip=scopy(ip," of "); ip=udec(ip,(u32)g_ioapic_n); ip=scopy(ip," controllers"); *ip=0; klog(ib); }
     pic_remap(); pit_init(100); klog("boot: pic+pit ok");
     set_gate(HR_LAPIC_VEC,isr_lapic_timer); hr_init();
+    { extern u64 g_tsc_hz_cp; extern void cpupower_init(int); g_tsc_hz_cp=g_hr.tsc_hz; cpupower_init(1); }
     if(inb(0x64)==0xFF){ klog("boot: no PS/2 controller (USB keyboard/mouse only)"); }
     else { for(int i=0;i<64&&(inb(0x64)&1);i++) inb(0x60); mouse_init(); klog("boot: ps2 mouse ok"); }
     xhci_mouse_autoinit(); klog("boot: xhci probe done");
@@ -247,18 +254,19 @@ void kmain(void){
     if(drv_begin("cputemp")){ extern void ctemp_init(void); ctemp_init(); } drv_end();
     mx=(int)W/2; my=(int)H/2;
     klog("boot: splash start"); g_klog_hook=0; splash_boot(); klog("boot: splash done");                      /* Windows-style animated boot logo */
-    g_sig_ok = sig_self_check(); klog(g_sig_ok?"boot: integrity check passed":g_sig_tampered?"boot: INTEGRITY CHECK FAILED - kernel code was modified":"boot: integrity check skipped (unstamped build)");
+    secboot_init(); g_sig_ok = sig_self_check(); klog(g_sig_ok?"boot: integrity check passed":g_sig_tampered?"boot: INTEGRITY CHECK FAILED - kernel code was modified":"boot: integrity check skipped (unstamped build)");
 
     { extern void live_init(void); extern void live_present(void); klog("boot: live_init start"); g_state=ST_LIVE; live_init(); klog("boot: live_init done");
       { extern int installed_boot(void); if(installed_boot())klog(g_state==ST_SETUP?"boot: installed system, first start - setup":"boot: installed system - login"); }
       { extern void reg_boot(void); reg_boot(); }
       { extern void progfiles_sync(int); progfiles_sync(1); } { extern void sysfiles_build(void); sysfiles_build(); } { extern void focus_boot(void); focus_boot(); }
       { extern int live_lock_start(void); if(g_state==ST_LIVE&&live_lock_start())klog("boot: started from a USB stick - sign-in screen (turn off in Settings > Accounts)"); }
-      if(g_state==ST_LIVE)live_present(); klog("boot: first frame presented"); }
+      if(g_state==ST_LIVE)live_present(); klog("boot: first frame presented");
+      { extern int crash_rec_pending(void); extern void recovery_after_crash(void); if(crash_rec_pending())recovery_after_crash(); } }
     cpu_irq_on();
     { u64 t0=g_ticks; for(int i=0;i<3000000&&g_ticks==t0;i++) cpu_pause(); if(g_ticks==t0){ g_ticks_live=0; klog("boot: timer interrupts are not arriving - using a polled timer"); } }
     if(g_sig_enforce&&g_sig_tampered){ skull_screen(); klog("boot: waiting for R (restart) or C (continue)");
-        for(;;){ if(xhid_n)xhci_mouse_poll(); int k=kpop(); if(k=='r'||k=='R')power_reboot(); if(k=='c'||k=='C'){ klog("boot: user chose to continue with a modified kernel"); break; } cpu_idle(); }
+        for(;;){ if(xhid_n)xhci_mouse_poll(); int k=kpop(); if(k=='r'||k=='R')power_reboot(); if((k=='c'||k=='C')&&!secboot_locked("continue with a modified kernel")){ klog("boot: user chose to continue with a modified kernel"); break; } cpu_idle(); }
         { extern void live_invalidate(void); extern void live_present(void); live_invalidate(); live_present(); } }
     if(drv_begin("smp")){ extern void smp_boot_auto_c(void); smp_boot_auto_c(); } drv_end();
     drv_boot_done();
@@ -269,25 +277,38 @@ void kmain(void){
         int ch=0;
         int live3d=0; if(g_state==ST_DESKTOP&&WN[W_GPU3D].open&&!WN[W_GPU3D].min){ extern int gpu3d_live(void); live3d=gpu3d_live(); }
         { static u64 hb=0; if(g_ticks-hb>=500){ hb=g_ticks; klog(g_state==ST_LIVE?"alive: main loop running (live)":"alive: main loop running"); { extern int g_lxtrace; static int psn; if(g_lxtrace==-4&&++psn%12==0){ extern void lx_ps_dump(void); lx_ps_dump(); } } } }
-        g_ml_beat++; g_ml_stage=1; tp_poll(); g_ml_stage=2; etp_poll(); { extern void syn_poll(void); syn_poll(); } g_ml_stage=3; { extern void vm_mouse_poll(void); vm_mouse_poll(); }
-        g_ml_stage=4; { static u64 ap=0; if(g_ticks-ap>=2){ ap=g_ticks; acpi_poll(); g_ml_stage=5; snd_poll(); { extern void ctemp_poll(void); ctemp_poll(); } } }
-        g_ml_stage=6;{ extern void uvc_poll(void); extern void bench_tick(void); extern int bench_busy(void); extern u32 uvc_frames; static u32 lf=0; uvc_poll(); bench_tick(); if(WN[W_CAMERA].open&&!WN[W_CAMERA].min&&uvc_frames!=lf){ lf=uvc_frames; ch=1; } if(WN[W_BENCH].open&&bench_busy())ch=1; { extern int recorder_tick(void); if(recorder_tick())ch=1; } { extern int g_quake_state; if(WN[W_QUAKE].open&&!WN[W_QUAKE].min&&g_quake_state<3)ch=1; } { extern int writer_blink(void); static u64 lbk=0; if(writer_blink()){ u64 ph=hr_ns()/530000000ULL; if(ph!=lbk){ lbk=ph; ch=1; } } } }
+        { extern u64 jc_next_wdl(int); if(hr_precise())jc_next_wdl(1); }
+        { extern void sx_poll(void); sx_poll(); extern void swap_poll(void); swap_poll(); }
+        { extern void cpupower_tick(void); extern void cpupower_saver(int); extern int g_battsave; cpupower_saver(g_battsave); cpupower_tick(); }
+        g_ml_beat++; ml_mark2(1,ch); ml_mark(1); tp_poll(); ml_mark2(2,ch); ml_mark(2); etp_poll(); { extern void syn_poll(void); syn_poll(); } ml_mark2(3,ch); ml_mark(3); { extern void vm_mouse_poll(void); vm_mouse_poll(); }
+        ml_mark2(4,ch); ml_mark(4); { static u64 ap=0; if(g_ticks-ap>=2){ ap=g_ticks; acpi_poll(); ml_mark2(5,ch); ml_mark(5); snd_poll(); { extern void ctemp_poll(void); ctemp_poll(); } } }
+        ml_mark2(6,ch); ml_mark(6);{ extern void uvc_poll(void); extern void bench_tick(void); extern int bench_busy(void); extern u32 uvc_frames; static u32 lf=0; uvc_poll(); bench_tick(); if(WN[W_CAMERA].open&&!WN[W_CAMERA].min&&uvc_frames!=lf){ lf=uvc_frames; ch=1; } if(WN[W_BENCH].open&&bench_busy())ch=1; { extern int recorder_tick(void); if(recorder_tick())ch=1; } { extern int g_quake_state; if(WN[W_QUAKE].open&&!WN[W_QUAKE].min&&g_quake_state<3)ch=1; } { extern int writer_blink(void); static u64 lbk=0; if(writer_blink()){ u64 ph=hr_ns()/530000000ULL; if(ph!=lbk){ lbk=ph; ch=1; } } } }
         if(xhid_n) xhci_mouse_poll();
-        else if(!jc_any_runnable()&&g_ticks_live){ int armed=0; if(g_state==ST_DESKTOP&&(g_cursor_moved||live3d)&&hr_precise())armed=hr_wake_at(last_ns+frame_ns); { int bd=bkl_drop(); extern int kpending(void); extern int in_mq_pending(void); extern volatile int g_gesture; cpu_irq_off(); if(!mouse_evt&&!in_mq_pending()&&!kpending()&&!g_gesture)cpu_idle(); else cpu_irq_on(); bkl_take(bd); } if(armed)hr_wake_cancel(); }
+        if((!xhid_n||hr_precise())&&(jc_bsp_off()||!jc_any_runnable())&&g_ticks_live){ int armed=0; if(hr_precise()){ u64 at=0; if(xhid_n)at=hr_ns()+1500000ULL; if(g_state==ST_DESKTOP&&(g_cursor_moved||live3d)&&(!at||last_ns+frame_ns<at))at=last_ns+frame_ns; { extern u64 jc_next_wdl(int); u64 wd=jc_next_wdl(1); if(wd&&(!at||wd<at))at=wd; } if(at)armed=hr_wake_at(at); } { ml_mark2(14,ch); ml_mark(14); int bd=bkl_drop(); extern int kpending(void); extern int in_mq_pending(void); extern volatile int g_gesture; cpu_irq_off(); if(!mouse_evt&&!in_mq_pending()&&!kpending()&&!g_gesture){ g_bsp_idle=1; u64 it0=hr_rdtsc(); cpu_idle(); { extern void cpupower_idle_add(u64); cpupower_idle_add(hr_rdtsc()-it0); } g_bsp_idle=0; } else cpu_irq_on(); bkl_take(bd); } if(armed)hr_wake_cancel(); }
         if(bkl_held())g_bkl.depth=1; else bkl_lock();
+        { extern volatile int g_sleep_req; extern u64 g_wake_t; if(g_sleep_req){ g_sleep_req=0; if(!g_wake_t||g_ticks-g_wake_t>200){ power_sleep(); ch=1; } } }
+        ml_mark2(15,ch); ml_mark(15);
+        { extern int pack_poll(void); if((g_state==ST_DESKTOP||g_state==ST_LIVE)&&pack_poll())ch=1; }
+        { extern int g_xt_gen; static int lxg; if(g_xt_gen!=lxg){ lxg=g_xt_gen; ch=1; } }
+        { extern char g_open_req[512]; if(g_open_req[0]&&g_state==ST_DESKTOP){ static char u[512]; int k=0; while(g_open_req[k]&&k<511){ u[k]=g_open_req[k]; k++; } u[k]=0; g_open_req[0]=0; extern void nvx_open_url_tab(const char*); nvx_open_url_tab(u); ch=1; } }
         bkl_yield();
         if(g_fs_wb_pending&&g_ticks>=g_fs_wb_due)nvx3_sync_all();
-        g_ml_stage=7; if(g_state==ST_LIVE){ extern int live_input(void); ch=live_input(); }
+        ml_mark2(7,ch); ml_mark(7); if(g_state==ST_LIVE){ extern int live_input(void); ch=live_input(); }
         else if(g_state==ST_DESKTOP) ch=process_input();
         else if(g_state==ST_BOOTMENU) ch=bootmenu_input();
         else if(g_state==ST_RECOVERY) ch=recovery_input();
         else if(g_state==ST_DISKMGR) ch=dm_input();
         else if(g_state==ST_INSTALL) ch=ip_input();
         else if(g_state==ST_SETUP) ch=setup_input();
+        else if(g_state==ST_APP) ch=0;
         else ch=login_input();
+        bkl_yield();
         if(g_state!=ST_DESKTOP){ extern int in_mq_pending(void); extern void in_mq_clear(void); if(in_mq_pending())in_mq_clear(); }
-        if(g_state==ST_DESKTOP){ ux_desktop_start(g_user); static u64 jlast=0; static unsigned jtg=0; int jr=jc_step(); if(jr&2) ch=1; else if((jr&1)&&(g_term_gen!=jtg||g_ticks-jlast>=50)){ jtg=g_term_gen; jlast=g_ticks; ch=1; } }
+        ml_mark2(10,ch); ml_mark(10); if(g_state==ST_DESKTOP){ ux_desktop_start(g_user); static u64 jlast=0; static unsigned jtg=0; int jr=jc_step(); if(jr&2) ch=1; else if((jr&1)&&(g_term_gen!=jtg||g_ticks-jlast>=300)){ jtg=g_term_gen; jlast=g_ticks; ch=1; } }
+        ml_mark2(11,ch); ml_mark(11); bkl_yield();
         if(g_state!=ST_DESKTOP&&g_state!=ST_LIVE){ extern int fid_active(void); if(fid_active())jc_step(); }
+        if(g_state==ST_APP)jc_step();
+        { extern int inst_app_tick(void); extern void inst_app_keys(void); inst_app_keys(); if(inst_app_tick())ch=1; }
         { static int prevst=-1; if(g_state==ST_LIVE&&prevst!=ST_LIVE){ live_invalidate(); ch=1; } prevst=g_state; }
         if(g_state==ST_LIVE){ static unsigned lg=0; static int lfg=0; jc_step();
             if(g_term_gen!=lg){ lg=g_term_gen; ch=1; }
@@ -300,20 +321,23 @@ void kmain(void){
         { extern void media_tick(void); media_tick(); }
         { extern int upd_tick(void); if(upd_tick())ch=1; }
         { extern int crash_tick(void); if(crash_tick()){ ch=1; if(g_state==ST_LIVE){ extern void live_invalidate(void); live_invalidate(); } } }
-        g_ml_stage=8; usb_hotplug_poll(); { extern void svc_tick(void); svc_tick(); } { extern void sysfiles_tick(void); sysfiles_tick(); } { extern void focus_tick(void); focus_tick(); } { extern void wifi_mgr_tick(void); wifi_mgr_tick(); } g_ml_stage=9;
+        bkl_yield();
+        ml_mark2(8,ch); ml_mark(8); usb_hotplug_poll(); { extern void nic_watch(void); nic_watch(); } { extern void svc_tick(void); svc_tick(); } { extern void sysfiles_tick(void); sysfiles_tick(); } { extern void focus_tick(void); focus_tick(); } { extern void wifi_mgr_tick(void); wifi_mgr_tick(); } ml_mark2(9,ch); ml_mark(9);
         if(g_state==ST_DESKTOP){ extern void firefox_tick(void); firefox_tick(); }
         if(g_state==ST_DESKTOP){ extern void (*g_nv_progress)(int,const char*); extern void desk_nv_progress(int,const char*); extern void nvd_poll(void); g_nv_progress=desk_nv_progress; nvd_poll(); }
         { extern void acct_idle_tick(void); acct_idle_tick(); }
         { extern int fid_tick(void); if(fid_tick()&&g_state==ST_DESKTOP)ch=1; }
         if(g_state==ST_DESKTOP){ battery_tick();   /* USB insert/remove + battery % */
             if(g_usb_arrived){ open_win(W_FILES); g_files_usb=1; g_usb_arrived=0; notify("USB drive","Flash drive connected"); ch=1; } }
+        ml_mark2(12,ch); ml_mark(12); bkl_yield();
         if(g_state==ST_DESKTOP&&g_fb0_open<=0&&!ch){ extern int video_fast(void); extern int browser_media_fast(void); if(video_fast()) ch=1; else if(browser_media_fast()) ch=1; else { extern int xdisp_fast(void); extern int xover_tick(void); if(xdisp_fast()) ch=1; else if(xover_tick()) ch=1; } }
-        if(g_state==ST_DESKTOP&&g_fb0_open<=0){
+        ml_mark2(13,ch); ml_mark(13); if(g_state==ST_DESKTOP&&g_fb0_open<=0){
             u64 mt=(g_refresh_hz>=120)?1:(g_refresh_hz>=60)?2:3; frame_ns=1000000000ULL/(u64)(g_refresh_hz>0?g_refresh_hz:60);
             int due=hr_precise()?(hr_ns()-last_ns>=frame_ns):((g_ticks-last_frame)>=mt);
             { extern int gfx_anim_active(void); if(!ch&&due&&gfx_anim_active())ch=1; }
             if(!ch&&due&&live3d){ extern int gpu3d_fast(void); if(gpu3d_fast()){ last_ns=hr_ns(); last_frame=g_ticks; } else ch=1; }
-            if(ch){ last_frame=g_ticks; last_ns=hr_ns(); compose_present(); g_cursor_moved=0; }        /* real change -> full frame */
+            if(ch){ last_frame=g_ticks; last_ns=hr_ns(); compose_present(); g_cursor_moved=0; g_tb_due=0; }        /* real change -> full frame */
+            else if(g_tb_due){ g_tb_due=0; present_topbar(); }
             else if((g_ticks-last_frame)>=50){ last_frame=g_ticks; last_ns=hr_ns();                    /* ~0.5s heartbeat */
                 int timebased = WN[W_DOOM].open || g_toast_cur>=0 || toast_t;         /* DOOM/toasts need full frames */
                 { extern int g_gfx; if(timebased||g_gfx) compose_present(); else present_topbar(); }               /* else just tick the clock (cheap) */
@@ -323,7 +347,7 @@ void kmain(void){
                 else present_cursor();
                 g_cursor_moved=0; }
         } else if(ch){
-            if(g_state==ST_LIVE){ extern void live_present(void); live_present(); } else if(g_state==ST_BOOTMENU) bootmenu_present(); else if(g_state==ST_RECOVERY) recovery_present(); else if(g_state==ST_DISKMGR) dm_present(); else if(g_state==ST_INSTALL) ip_present(); else if(g_state==ST_SETUP) setup_present(); else login_present();
+            if(g_state==ST_LIVE){ extern void live_present(void); live_present(); } else if(g_state==ST_BOOTMENU) bootmenu_present(); else if(g_state==ST_RECOVERY) recovery_present(); else if(g_state==ST_DISKMGR) dm_present(); else if(g_state==ST_INSTALL) ip_present(); else if(g_state==ST_SETUP) setup_present(); else if(g_state!=ST_APP) login_present();
         } else if(g_state==ST_INSTALL&&g_ip_curmoved){ g_ip_curmoved=0; present_cursor();
         }
     }

@@ -29,6 +29,7 @@ static void xhub_remove_below(int root,u32 R,int dR){
         xh_disable_slot(sl); }
     for(int h=0;h<XHUB_MAX;h++) if(xhub[h].used&&xhub[h].ctl==g_xcur&&xhub[h].root==root&&xh_under(xhub[h].route,xhub[h].depth,R,dR)){ xh_disable_slot(xhub[h].slot); xreg_hub[xhub[h].reg]=0; xhub[h].used=0; }
     if(msd_ok&&msd_ctl==g_xcur&&msd_port==root&&xh_under(msd_route,msd_depth,R,dR)){ xh_disable_slot(msd_slot); msd_ok=0; ufat_ok=0; ufs_n=0; msd_port=-1; g_files_usb=0; }
+    usn_remove_below(root,R,dR);
     int any=0; for(int i=0;i<xhid_n;i++) if(xhid_used[i])any=1; if(!any)xhci_mouse_ok=0; }
 static int xhub_port_reset(int hi,int p){
     xhub_t* h=&xhub[hi]; u16 st=0,ch=0;
@@ -47,6 +48,8 @@ static int xhub_enum_port(int hi,int p){
     usbloc_t C; xhub_child_loc(hi,p,sp,&C);
     if(!msd_ok){ if(xhci_msd_enum_loc(&C)){ msd_ctl=g_xcur; msd_port=C.root; ufat_mount(); if(ufat_ok)g_usb_arrived=1; klog("usb: USB stick behind a hub"); return 0; }
         xh_disable_slot(msd_slot); msd_slot=0; sp=xhub_port_reset(hi,p); if(!sp)return 0; xhub_child_loc(hi,p,sp,&C); }
+    if(!usn_active()){ if(usn_enum_loc(&C)){ klog("usb: network adapter behind a hub"); return 0; }
+        usn_noslot(); sp=xhub_port_reset(hi,p); if(!sp)return 0; xhub_child_loc(hi,p,sp,&C); }
     int r=xhci_enum_loc(&C); aud_sync_e0(); if(r>0)klog("usb: keyboard/mouse behind a hub set up"); return r>0?r:0; }
 static int xhub_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval){
     int hi=-1; for(int h=0;h<XHUB_MAX;h++) if(!xhub[h].used){ hi=h; break; }
@@ -88,13 +91,13 @@ static void xhub_poll_ports(void){
 usbdev_t g_usbdev[USBDEV_MAX]; int g_usbdev_n=0; u32 g_usbdev_gen=0;
 static const char* usb_cls_name(int c,int proto){ switch(c){ case 1: return "Audio device"; case 2: return "Network adapter"; case 3: return proto==1?"Keyboard":proto==2?"Mouse":"Input device"; case 6: return "Camera (still image)"; case 7: return "Printer"; case 8: return "USB drive"; case 9: return "USB hub"; case 0x0B: return "Card reader"; case 0x0E: return "Camera"; case 0xE0: return "Bluetooth adapter"; case 0xEF: return "Device"; case 0xFF: return "Vendor device"; } return "USB device"; }
 void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name){
-    int kind=-1, kbd=0, mouse=0, cam=0, prn=0;
-    for(int i=0;i+8<n;){ int bl=cfg[i]; if(bl<2)break; if(cfg[i+1]==4){ int c=cfg[i+5], pr=cfg[i+7]; if(c==3&&pr==1)kbd=1; else if(c==3&&pr==2)mouse=1; else if(c==0x0E)cam=1; else if(c==7)prn=1; if(kind<0)kind=c; } i+=bl; }
+    int kind=-1, kbd=0, mouse=0, cam=0, prn=0, cls0=0;
+    for(int i=0;i+8<n;){ int bl=cfg[i]; if(bl<2)break; if(cfg[i+1]==4){ int c=cfg[i+5], pr=cfg[i+7]; if(c==3&&pr==1)kbd=1; else if(c==3&&pr==2)mouse=1; else if(c==0x0E)cam=1; else if(c==7)prn=1; if(kind<0){ kind=c; cls0=c; } } i+=bl; }
     int slot=-1; for(int k=0;k<USBDEV_MAX;k++) if(g_usbdev[k].used&&g_usbdev[k].ctl==g_xcur&&g_usbdev[k].port==port&&g_usbdev[k].vid==vid&&g_usbdev[k].pid==pid){ slot=k; break; }
     if(slot<0) for(int k=0;k<USBDEV_MAX;k++) if(!g_usbdev[k].used){ slot=k; break; } if(slot<0)return;
     usbdev_t* d=&g_usbdev[slot]; int fresh=!d->used; d->used=1; d->ctl=g_xcur; d->port=port; d->vid=vid; d->pid=pid;
     const char* kn=cam?"Camera":prn?"Printer":(kbd&&mouse)?"Keyboard and mouse":kbd?"Keyboard":mouse?"Mouse":usb_cls_name(kind,0); int q=0; for(;kn[q]&&q<31;q++)d->kind[q]=kn[q]; d->kind[q]=0;
-    q=0; for(;name&&name[q]&&q<39;q++)d->name[q]=name[q]; d->name[q]=0; d->cam=cam; d->prn=prn; d->hid=(kbd||mouse); d->t=g_ticks;
+    q=0; for(;name&&name[q]&&q<39;q++)d->name[q]=name[q]; d->name[q]=0; d->cam=cam; d->prn=prn; d->hid=(kbd||mouse); d->cls=cls0; d->t=g_ticks;
     if(slot>=g_usbdev_n)g_usbdev_n=slot+1; g_usbdev_gen++;
     if(fresh&&usb_seen_init){ extern void notify(const char*,const char*); char b[80],*p=b; p=scopy(p,d->kind); p=scopy(p," connected"); *p=0; notify(b,d->name[0]?d->name:"USB"); } }
 void usbdev_gone(int port){ for(int k=0;k<USBDEV_MAX;k++) if(g_usbdev[k].used&&g_usbdev[k].ctl==g_xcur&&g_usbdev[k].port==port){ g_usbdev[k].used=0; g_usbdev_gen++; } }
@@ -109,6 +112,7 @@ static void usb_hotplug_poll_one(void){
     for(int p=0;p<xhci_ports;p++){ u32 v=XMR(xhci_op+0x400+p*0x10); int cc=v&1;
         if(cc && !usb_seen[p]){ usb_seen[p]=1; xhci_port_conn[p]=1; int done=0;
             if(!msd_ok){ if(xhci_msd_enum(p)){ msd_ctl=g_xcur; ufat_mount(); if(ufat_ok){ g_usb_arrived=1; msd_port=p; } done=1; } else { xh_disable_slot(msd_slot); msd_slot=0; } }
+            if(!done&&!usn_active()){ if(usn_enum_root(p))done=1; else usn_noslot(); }
             if(!done&&xhid_free_region(-1,-1)>=0){ if(xhci_hid_enum(p))klog("usb: keyboard/mouse connected"); } }
         else if(!cc && usb_seen[p]){ usb_seen[p]=0; xhci_port_conn[p]=0;
             if(msd_ok && msd_ctl==g_xcur && msd_port==p){ if(msd_slot){ xh_disable_slot(msd_slot); msd_slot=0; } msd_ok=0; ufat_ok=0; ufs_n=0; msd_port=-1; g_files_usb=0; }

@@ -16,4 +16,5 @@ struct fb_info {
 };
 int vbe_set_mode(uint16_t w, uint16_t h, struct fb_info* out);
 int vbe_edid_native(uint16_t* w, uint16_t* h);
+void vbe_edid_handoff(void);
 #endif

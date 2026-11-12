@@ -387,6 +387,15 @@ The page's script posts to `https://www.youtube.com/youtubei/v1/player` with the
 
 Limits: this could not be tested against youtube.com from the development machine; YouTube changes these clients often and may ask for sign-in or proof-of-origin tokens, and then the page shows the reason it was given. Adaptive-only videos (most above 720p), live streams and age-restricted videos do not play.
 
+
+### Player page again (v10.83)
+
+The real youtube.com watch page still does not play in the engine (its player uses streaming protocols and checks the engine does not have). From v10.83 `yt_try` is called again from `browser_go`, but only for watch addresses (`/watch?v=`, `youtu.be/`, `/shorts/`, `/embed/`, `/live/`); the home page and search load the real site. The page is shown under the real watch address, so its requests to `youtubei/v1/player` are same-origin. A link "Open this video on the full YouTube page" adds `nvxfull=1`, which skips the player page.
+
+Clients, in order, taken from yt-dlp 2026.10.26 (`yt_dlp/extractor/youtube/_base.py`): `VISIONOS` 1.02 (needs no player JavaScript and no proof-of-origin token), `IOS` 21.26.4, `TVHTML5` 5.20260707 (Samsung Tizen), `WEB_EMBEDDED_PLAYER` 1.20260707.01.00 and `ANDROID_VR` 1.65.10 last (yt-dlp notes that YouTube has refused all its formats since 2026-08-17; v9.14 to v10.82 used 1.60.19). Each request sends `X-Youtube-Client-Name` and `X-Youtube-Client-Version` like the real apps. A progressive format (video and sound in one file) up to 720p is played directly. When there is none, which is now usual, the page picks the best H.264 or VP9 video up to 720p and the best AAC or Opus sound in the same container and feeds both into MediaSource source buffers, downloading 1 MB ranges with YouTube's `&range=` parameter (three tries each). AV1 is skipped.
+
+Tested: the page script under Node with a mocked `fetch`, DOM and MediaSource (first client refused, second answers with adaptive formats only): it falls back, sends the headers, picks 360p H.264 + AAC, downloads 2.6 MB and 0.7 MB in 1 MB ranges, appends all of it and ends the stream. Not tested against youtube.com (no network on the build machine). YouTube may still ask for sign-in or a proof-of-origin token for some videos; the page then shows the client and the reason.
+
 ## 13.24 Limits raised for large web apps
 
 | Limit | Value | Where |

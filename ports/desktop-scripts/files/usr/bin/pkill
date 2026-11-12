@@ -1,0 +1,34 @@
+#!/bin/bash
+me=$(basename "$0"); full=0; exact=0; sig=TERM; list=0; count=0; newest=0; oldest=0; users=""; parents=""; pat=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f|--full) full=1;; -x|--exact) exact=1;; -l|--list-name) list=1;; -c|--count) count=1;; -n|--newest) newest=1;; -o|--oldest) oldest=1;;
+    -u|-U|--euid|--uid) shift; users="$1";; -u*|-U*) users="${1:2}";; --euid=*|--uid=*) users="${1#*=}";;
+    -P|--parent) shift; parents="$1";; -P*) parents="${1:2}";; --parent=*) parents="${1#*=}";;
+    --signal) shift; sig="$1";; --signal=*) sig="${1#*=}";;
+    -[0-9]*|-[A-Z]*) if [ "$me" = pkill ]; then sig="${1#-}"; else echo "$me: invalid option $1" >&2; exit 2; fi;;
+    --) shift; pat="$1"; break;;
+    -*) echo "$me: invalid option $1" >&2; exit 2;;
+    *) pat="$1";;
+  esac; shift
+done
+[ -z "$pat" ] && [ -z "$users" ] && [ -z "$parents" ] && { echo "usage: $me [-f] [-x] [-u user] [-P ppid] pattern" >&2; exit 2; }
+uids=""; for u in ${users//,/ }; do case "$u" in *[!0-9]*) n=$(id -u "$u" 2>/dev/null) || { echo "$me: invalid user name: $u" >&2; exit 2; }; uids="$uids $n";; *) uids="$uids $u";; esac; done
+hits=(); self=$$
+for d in /proc/[0-9]*; do
+  p=${d#/proc/}; [ "$p" = "$self" ] && continue; [ "$p" = "$PPID" ] && continue
+  st=$(cat "$d/status" 2>/dev/null) || continue
+  if [ -n "$uids" ]; then uid=$(printf '%s\n' "$st" | awk '/^Uid:/{print $2}'); m=0; for x in $uids; do [ "$x" = "$uid" ] && m=1; done; [ $m = 1 ] || continue; fi
+  if [ -n "$parents" ]; then pp=$(printf '%s\n' "$st" | awk '/^PPid:/{print $2}'); m=0; for x in ${parents//,/ }; do [ "$x" = "$pp" ] && m=1; done; [ $m = 1 ] || continue; fi
+  if [ $full = 1 ]; then t=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null); t="${t% }"; else t=$(cat "$d/comm" 2>/dev/null); fi
+  [ -z "$t" ] && continue
+  if [ -n "$pat" ]; then if [ $exact = 1 ]; then [ "$t" = "$pat" ] || continue; else printf '%s' "$t" | grep -Eq -- "$pat" || continue; fi; fi
+  hits+=("$p $t")
+done
+[ ${#hits[@]} = 0 ] && { [ $count = 1 ] && echo 0; exit 1; }
+if [ $newest = 1 ] || [ $oldest = 1 ]; then s=$(printf '%s\n' "${hits[@]}" | sort -n); if [ $newest = 1 ]; then hits=("$(printf '%s\n' "$s" | tail -1)"); else hits=("$(printf '%s\n' "$s" | head -1)"); fi; fi
+[ $count = 1 ] && { echo ${#hits[@]}; [ "$me" = pkill ] || exit 0; }
+for h in "${hits[@]}"; do p=${h%% *}
+  if [ "$me" = pkill ]; then kill -s "$sig" "$p" 2>/dev/null; elif [ $count = 1 ]; then :; elif [ $list = 1 ]; then echo "$h"; else echo "$p"; fi
+done
+exit 0

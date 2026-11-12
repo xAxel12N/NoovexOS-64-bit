@@ -51,7 +51,20 @@ typedef struct {
     EFI_HANDLE StandardErrorHandle; EFI_TEXT_OUT* StdErr; void* RuntimeServices; EFI_BOOT_SERVICES* BootServices;
     UINTN NumberOfTableEntries; EFI_CONFIG_TABLE* ConfigurationTable;
 } EFI_SYSTEM_TABLE;
+typedef struct {
+    u8 Hdr[24];
+    void* GetTime; void* SetTime; void* GetWakeupTime; void* SetWakeupTime; void* SetVirtualAddressMap; void* ConvertPointer;
+    EFI_STATUS (EFIAPI *GetVariable)(u16*,EFI_GUID*,u32*,UINTN*,void*);
+    void* GetNextVariableName;
+    EFI_STATUS (EFIAPI *SetVariable)(u16*,EFI_GUID*,u32,UINTN,void*);
+} EFI_RUNTIME_SERVICES;
+static EFI_GUID GLOBAL_GUID={0x8be4df61,0x93ca,0x11d2,{0xaa,0x0d,0x00,0xe0,0x98,0x03,0x2b,0x8c}};
+static EFI_GUID NVX_GUID={0xeb01d052,0xb83d,0x4ba2,{0xaf,0x32,0x09,0x8c,0xb2,0x02,0x47,0xc5}};
+#include "nvxkey.h"
+#include "../../lib/crypto/nvxsigv.c"
 static EFI_GUID GOP_GUID  ={0x9042a9de,0x23dc,0x4a38,{0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a}};
+static EFI_GUID EDA_GUID  ={0xbd8c1056,0x9f36,0x44ec,{0x92,0xa8,0xa6,0x33,0x7f,0x81,0x79,0x86}};
+static EFI_GUID EDD_GUID  ={0x1c0c34f6,0xd380,0x41fa,{0xa0,0x49,0x8a,0xd0,0x6c,0x1a,0x66,0xaa}};
 static EFI_GUID SFS_GUID  ={0x964e5b22,0x6459,0x11d2,{0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
 static EFI_GUID LIP_GUID  ={0x5b1b31a1,0x9562,0x11d2,{0x8e,0x3f,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
 static EFI_GUID FINFO_GUID={0x09576e92,0x6d3f,0x11d2,{0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
@@ -169,7 +182,7 @@ static int upd_state(EFI_FILE* root){
     u8 b[4]; UINTN n=4; int r=1;
     if(f->Read(f,&n,b)||n!=4){ f->Close(f); return 0; }
     if(same4(b,"TRY0")||same4(b,"TRY1")){
-        if(upd_put(f,b[3]=='0'?"TRY1":"TRY2")==0){ print(b[3]=='0'?"  starting the new version (try 1 of 2)\n":"  starting the new version (try 2 of 2)\n"); r=1; }
+        if(upd_put(f,b[3]=='0'?"TRY1":"TRY2")==0){ print(b[3]=='0'?"  starting the new version (try 1 of 2)\n":"  starting the new version (try 2 of 2)\n"); r=3; }
         else { print("  cannot record the start attempt, starting the previous version\n"); r=2; }
     } else if(same4(b,"TRY2")){ upd_put(f,"FAIL"); print("  the new version did not start twice, starting the previous version\n"); r=2; }
     else if(same4(b,"FAIL")||same4(b,"SWAP")||same4(b,"OLD ")){ print("  starting the previous version\n"); r=2; }
@@ -183,27 +196,69 @@ static int want_prev(EFI_FILE* root,u16* pold){
     EFI_INPUT_KEY k; for(int i=0;i<8;i++){ if(ST->ConIn->ReadKeyStroke(ST->ConIn,&k)==0&&(k.UnicodeChar=='p'||k.UnicodeChar=='P'))return 1; BS->Stall(75000); }
     return 0;
 }
-static EFI_FILE* open_kernel(EFI_FILE* root,const char** which){
+static EFI_FILE* open_kernel(EFI_FILE* root,const char** which,int st){
     static u16 p1[]={'\\','K','E','R','N','E','L','6','4','.','B','I','N',0};
     static u16 p2[]={'\\','b','o','o','t','\\','k','e','r','n','e','l','6','4','.','b','i','n',0};
     static u16 p3[]={'\\','b','o','o','t','\\','k','e','r','n','e','l','6','4','.','o','l','d',0};
     u16* ps[3]; ps[0]=p1; ps[1]=p2; ps[2]=p3;
-    int st=upd_state(root);
+    if(st==3)st=1;
     if(st!=2&&want_prev(root,p3)){ print("  previous version chosen\n"); st=2; }
     int ord[3]; if(st==2){ ord[0]=2; ord[1]=1; ord[2]=0; } else if(st==1){ ord[0]=1; ord[1]=0; ord[2]=2; } else { ord[0]=0; ord[1]=1; ord[2]=2; }
     for(int i=0;i<3;i++){ EFI_FILE* f=0; if(root->Open(root,&f,ps[ord[i]],1,0)==0&&f){ *which=ord[i]==0?"\\KERNEL64.BIN":ord[i]==1?"\\boot\\kernel64.bin":"\\boot\\kernel64.old"; if(i>0&&st)print("  kernel file missing, using the next one\n"); return f; } }
+    return 0;
+}
+static u32 rd32le(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
+static int key_wait(int secs,u16 want){
+    if(!ST->ConIn)return 0; EFI_INPUT_KEY k; ST->ConIn->Reset(ST->ConIn,0);
+    for(int i=0;i<secs*20;i++){ if(ST->ConIn->ReadKeyStroke(ST->ConIn,&k)==0)return (k.UnicodeChar|32)==(want|32); BS->Stall(50000); }
+    return 0; }
+static int sb_check(EFI_HANDLE image,const u8* k,u64 n,const u8* sr,u64 srlen,int ustate,u8* sbi){
+    (void)image;
+    EFI_RUNTIME_SERVICES* RT=(EFI_RUNTIME_SERVICES*)ST->RuntimeServices;
+    static u16 vsb[]={'S','e','c','u','r','e','B','o','o','t',0};
+    static u16 vmin[]={'N','o','o','v','e','x','M','i','n','S','v','n',0};
+    u8 fwsb=0; u32 minsvn=0, attr=0; int have_min=0;
+    if(RT&&RT->GetVariable){ UINTN sz=1; if(RT->GetVariable(vsb,&GLOBAL_GUID,&attr,&sz,&fwsb)||sz!=1)fwsb=0;
+        u32 v=0; sz=4; attr=0; if(RT->GetVariable(vmin,&NVX_GUID,&attr,&sz,&v)==0&&sz==4){ if(attr&4){ print("  the rollback counter could be changed by the running system, making a new one\n"); if(RT->SetVariable(vmin,&NVX_GUID,attr,0,0)==0){ if(RT->SetVariable(vmin,&NVX_GUID,3,4,&v)==0){ minsvn=v; have_min=1; } } } else { minsvn=v; have_min=1; } } }
+    print("  firmware Secure Boot: "); print(fwsb==1?"on\n":"off\n");
+    print("  checking the kernel signature...\n");
+    u64 off=0; int r=sv_kernel_verify(k,n,g_nvx_pub,&off);
+    u32 svn=r==0||r==-4||r==-7?rd32le(k+off+SV_O_SVN):0;
+    if(r==0&&svn<minsvn)r=-9;
+    int srok=0;
+    if(r==0){ u32 want=rd32le(k+off+SV_O_SRLEN);
+        if(!want){ srok=1; }
+        else if(srlen==want){ print("  checking the Linux files...\n"); sv_sha c; sv_sha_init(&c); sv_sha_update(&c,sr,srlen); u8 d[32]; sv_sha_final(&c,d); u8 bad=0; for(int i=0;i<32;i++)bad|=d[i]^k[off+SV_O_SRHASH+i]; if(bad)r=-8; else srok=1; }
+        else if(srlen){ r=-8; } }
+    u32 flags=0;
+    if(r==0){ flags|=1; if(srok)flags|=2;
+        ST->ConOut->SetAttribute(ST->ConOut,0x0A); print("  kernel signature OK (key "); for(int i=0;i<4;i++){ u8 b=g_nvx_keyid[i]; char h[3]; h[0]="0123456789abcdef"[b>>4]; h[1]="0123456789abcdef"[b&15]; h[2]=0; print(h); } print(", version "); printnum(svn,10); print(srok&&srlen?", Linux files OK)\n":")\n"); ST->ConOut->SetAttribute(ST->ConOut,0x07);
+        if(svn>minsvn&&(ustate==0||ustate==1)&&RT&&RT->SetVariable){ u32 v=svn; if(RT->SetVariable(vmin,&NVX_GUID,3,4,&v)==0){ print("  lowest allowed version is now "); printnum(svn,10); print("\n"); minsvn=svn; have_min=1; } else print("  warning: could not store the rollback counter\n"); }
+        if(have_min)flags|=16; }
+    else {
+        ST->ConOut->SetAttribute(ST->ConOut,0x0C);
+        print("\n  THE KERNEL FAILED THE SIGNATURE CHECK: "); print(sv_why(r));
+        if(r==-9){ print(" (kernel "); printnum(svn,10); print(", lowest allowed "); printnum(minsvn,10); print(")"); }
+        print("\n"); ST->ConOut->SetAttribute(ST->ConOut,0x07);
+        if(fwsb==1){ print("  Secure Boot is on, so it will not be started.\n"); return 1; }
+        print("  Someone may have changed the kernel or the Linux files.\n  Press U within 15 seconds to start it anyway as UNTRUSTED,\n  or any other key to go back to the firmware.\n");
+        if(!key_wait(15,'u')){ print("  start cancelled\n"); BS->Stall(1000000); return 2; }
+        print("  starting an untrusted kernel\n"); flags|=8; }
+    if(fwsb==1)flags|=4;
+    *(u32*)(sbi+0)=0x4253564Eu; *(u32*)(sbi+4)=flags; *(u32*)(sbi+8)=minsvn; *(u32*)(sbi+12)=svn; *(u32*)(sbi+16)=(u32)(-r); *(u32*)(sbi+20)=3;
+    for(int i=0;i<8;i++)sbi[24+i]=g_nvx_keyid[i];
     return 0;
 }
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
     ST=systab; BS=ST->BootServices; EFI_STATUS st;
     BS->SetWatchdogTimer(0,0,0,0);
     ST->ConOut->ClearScreen(ST->ConOut);
-    print("NoovexOS UEFI loader 2.0\n");
+    print("NoovexOS UEFI loader 3.0 (signed boot)\n");
     EFI_LOADED_IMAGE* li=0; EFI_SFS* fs=0;
     if(BS->HandleProtocol(image,&LIP_GUID,(void**)&li)==0&&li&&li->DeviceHandle) BS->HandleProtocol(li->DeviceHandle,&SFS_GUID,(void**)&fs);
     if(!fs){ print("  boot device has no file system, searching other disks\n"); st=BS->LocateProtocol(&SFS_GUID,0,(void**)&fs); if(st||!fs)return fail("no readable FAT volume found",st); }
     EFI_FILE* root=0; st=fs->OpenVolume(fs,&root); if(st||!root)return fail("cannot open the boot volume",st);
-    const char* which=0; EFI_FILE* kf=open_kernel(root,&which);
+    const char* which=0; int ustate=upd_state(root); EFI_FILE* kf=open_kernel(root,&which,ustate);
     if(!kf)return fail("kernel not found (looked for \\KERNEL64.BIN, \\boot\\kernel64.bin and \\boot\\kernel64.old)",EFI_NOT_FOUND);
     u64 fsize=0; { u8 ib[512]; UINTN isz=sizeof ib; if(kf->GetInfo(kf,&FINFO_GUID,&isz,ib)==0)fsize=*(u64*)(ib+8); }
     if(fsize==0)fsize=KERNEL_MAX;
@@ -219,7 +274,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
     if(kbss<0x10000000||kbss>0x18000000)kbss=0x18000000;
     u64 srbuf=0, srlen=0;
     { u32 want=*(u32*)((u8*)kbuf+20), crc=*(u32*)((u8*)kbuf+16);
-      if(want&&want<=0x10000000u){ static u16 sp[]={'\\','s','y','s','r','o','o','t','\\','0','0','0','0','0','0','0','0','.','B','I','N',0};
+      if(want&&want<=0x18000000u){ static u16 sp[]={'\\','s','y','s','r','o','o','t','\\','0','0','0','0','0','0','0','0','.','B','I','N',0};
           for(int i=0;i<8;i++){ u32 v=(crc>>((7-i)*4))&15u; sp[9+i]=(u16)(v<10?'0'+v:'A'+v-10); }
           EFI_FILE* sf=0; int ok=0;
           if(root->Open(root,&sf,sp,1,0)==0&&sf){ srbuf=alloc_low((UINTN)((want+4095)/4096));
@@ -227,6 +282,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
               sf->Close(sf); }
           if(ok){ print("  Linux files: "); printnum(srlen/1024,10); print(" KB\n"); } else print("  Linux files not found on the boot disk\n"); } }
     if(!uentry||uentry<KERNEL_PHYS||uentry>=KERNEL_PHYS+total)return fail("this file is not a NoovexOS 64 kernel (no UEFI entry point)",EFI_LOAD_ERROR);
+    u8 sbi[32]; for(int i=0;i<32;i++)sbi[i]=0;
+    { int r=sb_check(image,(const u8*)kbuf,total,(const u8*)srbuf,srlen,ustate,sbi); if(r)return r==1?fail("the kernel is not trusted, start refused",EFI_LOAD_ERROR):EFI_LOAD_ERROR; }
     EFI_GOP* gop=0;
     if(BS->HandleProtocol(ST->ConsoleOutHandle,&GOP_GUID,(void**)&gop)||!gop){ gop=0; st=BS->LocateProtocol(&GOP_GUID,0,(void**)&gop); if(st||!gop)return fail("no graphics output (GOP) available",st); }
     { int best=-1; u64 bscore=0;
@@ -285,6 +342,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
         } } }
 #endif
     *(u32*)(edblk+4)=ndisp;
+    u8 edh[136]; for(int i=0;i<(int)sizeof edh;i++)edh[i]=0;
+    { typedef struct { u32 SizeOfEdid; u8* Edid; } EFI_EDID; EFI_GUID* gs[2]={&EDA_GUID,&EDD_GUID};
+      for(int k=0;k<2&&!edh[0];k++){ EFI_EDID* ed=0; if(BS->HandleProtocol(ST->ConsoleOutHandle,gs[k],(void**)&ed)||!ed){ ed=0; if(BS->LocateProtocol(gs[k],0,(void**)&ed))ed=0; }
+        if(ed&&ed->Edid&&ed->SizeOfEdid>=128){ const u8* e=ed->Edid; u8 sum=0; for(int i=0;i<128;i++)sum=(u8)(sum+e[i]);
+          if(!sum&&e[0]==0&&e[1]==0xFF&&e[7]==0){ for(int i=0;i<128;i++)edh[4+i]=e[i]; edh[132]=(u8)(2+k); *(u32*)edh=0x31444945u; } } } }
     { const u64 FR[4][2]={{KERNEL_PHYS,KERNEL_PHYS+total},{0x9800000,0x9E00000},{0x0E000000,0x10000000},{0x10000000,kbss}};
       if(fws_plan(mmap,msz,dsz,FR,4,0,0x800000)>0){ g_fws_cap=0x800000; g_fws=(fw_save*)alloc_low((UINTN)(g_fws_cap/4096)); if(g_fws){ for(u64 i=0;i<sizeof(fw_save);i++)((u8*)g_fws)[i]=0; *(u64*)(blk+56)=(u64)g_fws; } } }
     print("  starting the kernel...\n");
@@ -306,7 +368,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image,EFI_SYSTEM_TABLE* systab){
         for(int i=0;i<n;i++) kcopy((u8*)g_fws+g_fws->r[i].off,PHYS(g_fws->r[i].s),g_fws->r[i].len);
         g_fws->n=(u32)n; g_fws->magic=0x5358564Eu; }
     kcopy(PHYS(KERNEL_PHYS),(u8*)kbuf,total);
-    kcopy(PHYS(0x5000),blk,64); kcopy(PHYS(0x5040),edblk,sizeof edblk); kcopy(PHYS(0x6000),mbi,136); kcopy(PHYS(0x7000),g_mmsum,sizeof(g_mmsum));
+    kcopy(PHYS(0x5000),blk,64); kcopy(PHYS(0x5040),edblk,sizeof edblk); kcopy(PHYS(0x5100),sbi,32); kcopy(PHYS(0x5200),edh,sizeof edh); kcopy(PHYS(0x6000),mbi,136); kcopy(PHYS(0x7000),g_mmsum,sizeof(g_mmsum));
     mark(fbb,fpitch,fh,1,0x00FF9020u);
 #ifdef UEFI_TEST
     test_jump(uentry); return 0;

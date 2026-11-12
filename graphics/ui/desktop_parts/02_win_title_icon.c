@@ -31,17 +31,24 @@ static void draw_classic_bar(void){
         else if(k==3){ if(bat_present){ fill_rect(ix+3,cy-4,14,9,ic); fill_rect(ix+4,cy-3,12,7,C_FACE); fill_rect(ix+17,cy-2,2,5,ic); int fw=bat_pct*10/100; fill_rect(ix+5,cy-2,fw,5,bat_pct<=15?rgb(200,0,0):rgb(0,128,0)); }
             else { fill_rect(ix+6,cy-6,2,4,ic); fill_rect(ix+12,cy-6,2,4,ic); fill_rect(ix+4,cy-2,12,5,ic); fill_rect(ix+9,cy+3,2,4,ic); } }
         else { fill_round(ix+6,cy-6,8,10,3,15,ic); fill_rect(ix+4,cy+3,12,2,ic); fill_rect(ix+8,cy+5,4,2,ic); if(g_notif_n>0&&!g_dnd) fill_circle(ix+15,cy-5,3,rgb(220,0,0)); { focus_mode* f=focus_get(g_focus_cur); if(f&&f->show_tb){ fill_rect(ix,g_tby+6,20,g_tbh-11,C_FACE); fill_circle(ix+10,cy,8,f->color); focus_glyph(ix+10,cy,f->icon,rgb(255,255,255)); } } } }
+    if(bat_present&&mx>=g_tray_x0+3*22&&mx<g_tray_x0+4*22&&my>=g_tby){ extern void bat_tip(int,int,int); bat_tip(g_tray_x0+3*22+10,g_tby-4,0); }
     g_bellx=(int)W+100; g_qsx=-1000; g_wifix=(int)W-24; g_wsx=-1000; g_tray_left=bx0;
-    { extern int dl_active(void); extern int dl_progress(char*,int); if(dl_active()){ char nm[48]; int pc=dl_progress(nm,sizeof nm); int pw2=150, px=bx0-64-pw2, py=g_tby+4, ph=g_tbh-7;
+    { extern int xtray_bar(int,int,int,int); g_tray_left=xtray_bar(bx0-62,g_tby,g_tbh,0)+62; }
+    { extern int dl_active(void); extern int dl_progress(char*,int); if(dl_active()){ char nm[48]; int pc=dl_progress(nm,sizeof nm); int pw2=150, px=g_tray_left-64-pw2, py=g_tby+4, ph=g_tbh-7;
         bevel(px,py,pw2,ph,1); fill_rect(px+2,py+2,pw2-4,ph-4,C_FACE); dstr(px+6,py+3,nm,rgb(0,0,0),1);
         int bw2=pw2-12; fill_rect(px+6,py+ph-8,bw2,4,rgb(128,128,128)); if(pc>=0) fill_rect(px+6,py+ph-8,pc*bw2/100,4,rgb(0,0,128)); else { int t=(int)(g_ticks/2%(u64)(bw2-30)); fill_rect(px+6+t,py+ph-8,30,4,rgb(0,0,128)); }
         g_tray_left=px; } }
-    g_tbtn_n=0; int bx=g_lbx_end_ql+4, avail=g_tray_left-64-6-bx; int n=0; for(int i=0;i<NWIN;i++) if(WN[i].open&&WN[i].ws==g_ws)n++;
+    g_tbtn_n=0; int bx=g_lbx_end_ql+4, avail=g_tray_left-64-6-bx; int n=0; for(int i=0;i<NWIN;i++) if(WN[i].open&&WN[i].ws==g_ws)n++; extern int xwin_count(void); n+=xwin_count();
     int bw=n?avail/n:160; if(bw>160)bw=160; if(bw<40)bw=40;
     for(int i=0;i<NWIN&&g_tbtn_n<16;i++){ if(!WN[i].open||WN[i].ws!=g_ws)continue; if(bx+bw>g_tray_left-64)break; int act=(focus==i&&!WN[i].min);
         bevel(bx,g_tby+4,bw-3,g_tbh-7,act); if(act)fill_rect(bx+2,g_tby+6,bw-7,g_tbh-11,rgb(227,223,219));
         mini_icon(i,bx+5+act,g_tby+7+act); char tt[24]; int k=0; const char* nm=APPNAME[i]; int maxc=(bw-34)/8; if(maxc>22)maxc=22; while(nm[k]&&k<maxc){ tt[k]=nm[k]; k++; } tt[k]=0;
         dstr(bx+26+act,g_tby+8+act,tt,rgb(0,0,0),1); { extern int g_web_badge; if(i==W_BROWSER&&g_web_badge>0){ char bd[8],*q=bd; q=udec(q,(u32)(g_web_badge>99?99:g_web_badge)); *q=0; int bwx=bx+bw-24; fill_circle(bwx+8,g_tby+12,8,rgb(210,30,30)); dstr_ctr(bwx+8,g_tby+5,bd,rgb(255,255,255),1); } } g_tbtn_x[g_tbtn_n]=bx; g_tbtn_w[g_tbtn_n]=bw-3; g_tbtn_app[g_tbtn_n]=i; g_tbtn_n++; bx+=bw; }
+    { extern int xwin_active(int); extern const char* xwin_title(int); extern void xwin_icon(int,int,int,int);
+      for(int k=0;k<xwin_count()&&g_tbtn_n<16;k++){ if(bx+bw>g_tray_left-64)break; int act=xwin_active(k);
+        bevel(bx,g_tby+4,bw-3,g_tbh-7,act); if(act)fill_rect(bx+2,g_tby+6,bw-7,g_tbh-11,rgb(227,223,219));
+        xwin_icon(k,bx+5+act,g_tby+7+act,16); char tt[24]; int q=0; const char* nm=xwin_title(k); int maxc=(bw-34)/8; if(maxc>22)maxc=22; while(nm[q]&&q<maxc){ tt[q]=nm[q]; q++; } tt[q]=0;
+        dstr(bx+26+act,g_tby+8+act,tt,rgb(0,0,0),1); g_tbtn_x[g_tbtn_n]=bx; g_tbtn_w[g_tbtn_n]=bw-3; g_tbtn_app[g_tbtn_n]=1000+k; g_tbtn_n++; bx+=bw; } }
 }
 void focus_glyph(int cx,int cy,int k,u32 c){
     if(k==0){ for(int j=-7;j<=7;j++)for(int i=-7;i<=7;i++){ int a=i*i+j*j, b=(i-3)*(i-3)+(j+3)*(j+3); if(a<=42&&b>30)putpx(cx+i,cy+j,c); } }
@@ -112,10 +119,10 @@ int classic_qs_click(int mx0,int my0){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph
 int classic_tray_click(int px){ if(px<g_tray_x0||px>=g_tray_x0+5*22) return 0; int k=(px-g_tray_x0)/22;
     if(k==4){ g_notifpanel^=1; g_qs=0; g_fpop=0; } else { g_qs^=1; g_fpop=0; g_notifpanel=0; g_clockpop=0; } return 1; }
 static void night_tint(int y0,int y1){ if(!g_nightlight)return; if(g_gfx){ gq_tint(g_rt,0,y0,(int)W,y1-y0); return; } for(int y=y0;y<y1;y++){ u32* r=&SCENE[(u64)y*SW]; for(u32 x=0;x<W;x++){ u32 c=r[x]; u32 g=(c>>8)&255, b=c&255; r[x]=(c&0xFF0000)|((g*15/16)<<8)|(b*5/8); } } }
-void classic_taskbtn_click(int px){ for(int k=0;k<g_tbtn_n;k++) if(px>=g_tbtn_x[k]&&px<g_tbtn_x[k]+g_tbtn_w[k]){ int i=g_tbtn_app[k]; if(focus==i&&!WN[i].min)win_min(i); else focus_win(i); return; } }
+void classic_taskbtn_click(int px){ for(int k=0;k<g_tbtn_n;k++) if(px>=g_tbtn_x[k]&&px<g_tbtn_x[k]+g_tbtn_w[k]){ int i=g_tbtn_app[k]; if(i>=1000){ extern void xwin_toggle(int); xwin_toggle(i-1000); return; } if(focus==i&&!WN[i].min)win_min(i); else focus_win(i); return; } }
 static void draw_dock(void){
     if(g_dstyle==1){ draw_classic_bar(); return; }
-    int n=12; g_tbh=64; g_tby=(int)H-g_tbh-12; DOCK_h=g_tbh; DOCK_y=g_tby; DOCK_w=n*DOCK_IC+(n-1)*DOCK_GAP+2*DOCK_PAD;
+    int n=12; g_tbh=64; g_tby=(int)H-g_tbh-12; DOCK_h=g_tbh; DOCK_y=g_tby; extern int xwin_count(void); int nx=xwin_count(); if(nx>8)nx=8; DOCK_w=(n+nx)*DOCK_IC+(n+nx-1)*DOCK_GAP+2*DOCK_PAD+(nx?8:0);
     int bx0=12, bw0=(int)W-24, cy=g_tby+g_tbh/2;
     shadow_soft(bx0,g_tby,bw0,g_tbh,18); glass(bx0,g_tby,bw0,g_tbh,18,rgb(28,26,46),205);
     for(int i=18;i<bw0-18;i++){ u32*p=&SCENE[(u64)g_tby*SW+bx0+i]; *p=mix(*p,rgb(255,255,255),46); }
@@ -132,6 +139,9 @@ static void draw_dock(void){
         if(hov){ glass(ix-3,cy-26,DOCK_IC+6,52,12,rgb(255,255,255),34); hovk=k; }
         dock_icon(k,ix,iy-1);
         if(WN[app].open) fill_round(cxk-(focus==app?9:4),g_tby+g_tbh-7,focus==app?18:8,3,1,15,(focus==app)?ACC:rgb(200,204,222)); }
+    { extern void xwin_icon(int,int,int,int); extern int xwin_active(int);
+      for(int j=0;j<nx;j++){ int ix=DOCK_x+DOCK_PAD+(n+j)*(DOCK_IC+DOCK_GAP)+8, cxk=ix+DOCK_IC/2; int hov=(my>=g_tby&&my<g_tby+g_tbh&&mx>=ix-5&&mx<ix+DOCK_IC+5);
+        if(hov)glass(ix-3,cy-26,DOCK_IC+6,52,12,rgb(255,255,255),34); xwin_icon(j,ix+4,iy+3,DOCK_IC-8); int a=xwin_active(j); fill_round(cxk-(a?9:4),g_tby+g_tbh-7,a?18:8,3,1,15,a?ACC:rgb(200,204,222)); } }
     if(hovk>=0){ const char*nm=APPNAME[IC_APP[hovk]]; int cxk=DOCK_x+DOCK_PAD+hovk*(DOCK_IC+DOCK_GAP)+DOCK_IC/2;
         int tw=pw_str(nm,1)+28, tx=cxk-tw/2, ty=g_tby-38; if(tx<6)tx=6; if(tx+tw>(int)W-6)tx=(int)W-6-tw;
         shadow_soft(tx,ty,tw,28,8); glass(tx,ty,tw,28,8,rgb(28,26,46),225); pdstr_ctr(tx+tw/2,ty+8,nm,rgb(240,244,252),1); }

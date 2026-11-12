@@ -14,6 +14,15 @@ struct nvx_g_buildsig_t {
     unsigned long long uefi_entry; /* physical addr of uefi_entry, patched post-link */
     unsigned char sha256_full[32];
     unsigned long long bss_end;
+    unsigned int  sb_version;
+    unsigned int  svn;
+    unsigned char keyid[8];
+    unsigned char sr_sha256[32];
+    unsigned int  sr_len;
+    unsigned int  imm_size;
+    unsigned char sig[64];
+    unsigned char pub[65];
+    unsigned char pad[7];
 };
 
 extern char __bss_end[];

@@ -195,27 +195,45 @@ static void host_of(const char* u,char* out){ const char* p=u; while(*p&&*p!=':'
 
 
 static const char YT_JS[]=
-"<div class=card><p id=s>Loading the video from YouTube...</p><video id=v controls autoplay style=\"width:100%;max-width:960px;background:#000\"></video><h2 id=t></h2><p class=muted id=a></p><p class=muted id=q></p></div>"
-"<script>(async function(){var id=document.body.getAttribute('data-v');var S=document.getElementById('s');var last='no playable format';"
-"var C=[{clientName:'ANDROID_VR',clientVersion:'1.60.19',deviceMake:'Oculus',deviceModel:'Quest 3',androidSdkVersion:32,osName:'Android',osVersion:'12L',hl:'en',gl:'US'},"
-"{clientName:'IOS',clientVersion:'20.10.4',deviceMake:'Apple',deviceModel:'iPhone16,2',osName:'iPhone',osVersion:'18.3.2.22D82',hl:'en',gl:'US'},"
-"{clientName:'TVHTML5_SIMPLY_EMBEDDED_PLAYER',clientVersion:'2.0',hl:'en',gl:'US'},{clientName:'WEB_EMBEDDED_PLAYER',clientVersion:'1.20250310.01.00',hl:'en',gl:'US'}];"
-"for(var i=0;i<C.length;i++){try{S.textContent='Asking YouTube for the video ('+C[i].clientName+')...';"
-"var r=await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({videoId:id,context:{client:C[i]},contentCheckOk:true,racyCheckOk:true})});"
-"var j=await r.json();var ps=j.playabilityStatus||{};var sd=j.streamingData;if(!sd){last=ps.reason||ps.status||'no streams';continue;}"
-"var f=(sd.formats||[]).filter(function(x){return x.url&&/mp4|webm/.test(x.mimeType||'')&&!/av01/.test(x.mimeType||'');});"
-"f.sort(function(a,b){return (b.height||0)-(a.height||0);});var ok=f.filter(function(x){return (x.height||0)<=720;});var pick=ok[0]||f[0];"
-"if(!pick){last='only adaptive or protected streams';continue;}"
-"var d=j.videoDetails||{};document.getElementById('t').textContent=d.title||'';document.getElementById('a').textContent=(d.author||'')+(d.viewCount?' - '+Number(d.viewCount).toLocaleString()+' views':'');"
-"document.title=(d.title||'YouTube')+' - YouTube';document.getElementById('q').textContent=(pick.qualityLabel||'')+' '+(pick.mimeType||'').split(';')[0]+' via '+C[i].clientName;"
-"var v=document.getElementById('v');v.src=pick.url;v.play&&v.play();S.textContent='';return;}catch(e){last=String(e&&e.message||e);}}"
-"S.textContent='This video could not be played here: '+last+'. YouTube may require sign-in or a newer client for it.';})();</script>";
+"<div class=card><p id=s>Loading the video from YouTube...</p><video id=v controls autoplay style=\"width:100%;max-width:960px;background:#000\"></video><h2 id=t></h2><p class=muted id=a></p><p class=muted id=q></p><p class=muted><a id=full href=\"#\">Open this video on the full YouTube page</a></p></div>\n"
+"<script>(async function(){var id=document.body.getAttribute('data-v');var S=document.getElementById('s');var V=document.getElementById('v');var last='no playable format';\n"
+"document.getElementById('full').href='https://www.youtube.com/watch?v='+id+'&nvxfull=1';\n"
+"var C=[{n:101,c:{clientName:'VISIONOS',clientVersion:'1.02',deviceMake:'Apple',deviceModel:'RealityDevice17,1',osName:'visionOS',osVersion:'26.5.23O471',hl:'en',gl:'US'},ua:'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15'},\n"
+"{n:5,c:{clientName:'IOS',clientVersion:'21.26.4',deviceMake:'Apple',deviceModel:'iPhone16,2',osName:'iPhone',osVersion:'18.3.2.22D82',hl:'en',gl:'US'},ua:'com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)'},\n"
+"{n:7,c:{clientName:'TVHTML5',clientVersion:'5.20260707',deviceMake:'Samsung',deviceModel:'UKS9800',osName:'Tizen',osVersion:'2.4.0',hl:'en',gl:'US'},ua:'Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1'},\n"
+"{n:56,c:{clientName:'WEB_EMBEDDED_PLAYER',clientVersion:'1.20260707.01.00',hl:'en',gl:'US'},ua:''},\n"
+"{n:28,c:{clientName:'ANDROID_VR',clientVersion:'1.65.10',deviceMake:'Oculus',deviceModel:'Quest 3',androidSdkVersion:32,osName:'Android',osVersion:'12L',hl:'en',gl:'US'},ua:'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip'}];\n"
+"function mt(x){return x.mimeType||'';}\n"
+"function show(j,c,label){var d=j.videoDetails||{};document.getElementById('t').textContent=d.title||'';document.getElementById('a').textContent=(d.author||'')+(d.viewCount?' - '+Number(d.viewCount).toLocaleString()+' views':'');document.title=(d.title||'YouTube')+' - YouTube';document.getElementById('q').textContent=label+' via '+c.clientName;}\n"
+"async function chunks(url,len,sb,onerr){var CH=1048576;for(var o=0;o<len;o+=CH){var e=Math.min(len,o+CH)-1;var r=null;for(var t=0;t<3&&!r;t++){try{var x=await fetch(url+'&range='+o+'-'+e);if(x.ok)r=new Uint8Array(await x.arrayBuffer());}catch(er){}}\n"
+"if(!r){onerr('a part of the stream could not be downloaded');return false;}await new Promise(function(res){var done=function(){sb.removeEventListener('updateend',done);res();};sb.addEventListener('updateend',done);try{sb.appendBuffer(r);}catch(er){res();}});}return true;}\n"
+"async function mse(j,c){var sd=j.streamingData||{};var af=(sd.adaptiveFormats||[]).filter(function(x){return x.url&&!/av01/.test(mt(x))&&x.contentLength;});\n"
+"var vids=af.filter(function(x){return /^video\\//.test(mt(x))&&(x.height||0)<=720;});var aus=af.filter(function(x){return /^audio\\//.test(mt(x));});\n"
+"if(!window.MediaSource)return 'this browser has no MediaSource';\n"
+"var pv=null,pa=null;['mp4','webm'].forEach(function(k){if(pv)return;var vv=vids.filter(function(x){return mt(x).indexOf('/'+k)>0&&MediaSource.isTypeSupported(mt(x));}).sort(function(a,b){return (b.height||0)-(a.height||0)||(b.bitrate||0)-(a.bitrate||0);});\n"
+"var aa=aus.filter(function(x){return mt(x).indexOf('/'+k)>0&&MediaSource.isTypeSupported(mt(x));}).sort(function(a,b){return (b.bitrate||0)-(a.bitrate||0);});if(vv.length&&aa.length){pv=vv[0];pa=aa[0];}});\n"
+"if(!pv)return 'only formats this browser cannot decode';\n"
+"var ms=new MediaSource();V.src=URL.createObjectURL(ms);await new Promise(function(r){ms.addEventListener('sourceopen',r,{once:true});});\n"
+"var vb=ms.addSourceBuffer(mt(pv)),ab=ms.addSourceBuffer(mt(pa));var dur=+(j.videoDetails||{}).lengthSeconds;if(dur>0)try{ms.duration=dur;}catch(e){}\n"
+"show(j,c,(pv.qualityLabel||'')+' '+mt(pv).split(';')[0]+' + '+mt(pa).split(';')[0]);S.textContent='Buffering...';var err='';\n"
+"var p1=chunks(pv.url,+pv.contentLength,vb,function(m){err=m;}),p2=chunks(pa.url,+pa.contentLength,ab,function(m){err=m;});V.play&&V.play();\n"
+"setTimeout(function(){if(!err)S.textContent='';},4000);await Promise.all([p1,p2]);if(err){S.textContent='Playback stopped: '+err;}else{try{ms.endOfStream();}catch(e){}}return '';}\n"
+"for(var i=0;i<C.length;i++){var c=C[i].c;try{S.textContent='Asking YouTube for the video ('+c.clientName+')...';\n"
+"var h={'Content-Type':'application/json','X-Youtube-Client-Name':String(C[i].n),'X-Youtube-Client-Version':c.clientVersion};if(C[i].ua)h['User-Agent']=C[i].ua;\n"
+"var r=await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false',{method:'POST',headers:h,body:JSON.stringify({videoId:id,context:{client:c},contentCheckOk:true,racyCheckOk:true,playbackContext:{contentPlaybackContext:{html5Preference:'HTML5_PREF_WANTS'}}})});\n"
+"var j=await r.json();var ps=j.playabilityStatus||{};var sd=j.streamingData;if(!sd||ps.status&&ps.status!=='OK'){last=c.clientName+': '+(ps.reason||ps.status||'no streams');continue;}\n"
+"var f=(sd.formats||[]).filter(function(x){return x.url&&/mp4|webm/.test(mt(x))&&!/av01/.test(mt(x));});\n"
+"f.sort(function(a,b){return (b.height||0)-(a.height||0);});var ok=f.filter(function(x){return (x.height||0)<=720;});var pick=ok[0]||f[0];\n"
+"if(pick){show(j,c,(pick.qualityLabel||'')+' '+mt(pick).split(';')[0]);V.src=pick.url;V.play&&V.play();S.textContent='';return;}\n"
+"var m=await mse(j,c);if(!m)return;last=c.clientName+': '+m;}catch(e){last=c.clientName+': '+String(e&&e.message||e);}}\n"
+"S.textContent='This video could not be played here ('+last+'). Try the full YouTube page link below.';})();</script>\n";
 static const char YT_CSS[]="<style>body{font-family:Arial,sans-serif;margin:0;background:#fff;color:#0f0f0f}.yh{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid #e5e5e5;background:#fff}.yl{display:flex;align-items:center;gap:6px;font-size:20px;font-weight:bold;color:#0f0f0f;text-decoration:none}.yp{display:inline-block;width:30px;height:21px;background:#f00;border-radius:6px;color:#fff;font-size:12px;line-height:21px;text-align:center}.yf{display:flex;flex:1;max-width:600px}.yf input{flex:1;padding:8px 14px;border:1px solid #ccc;border-radius:20px 0 0 20px;font-size:15px}.yf button{padding:8px 18px;border:1px solid #ccc;border-left:0;border-radius:0 20px 20px 0;background:#f8f8f8;font-size:14px}.ym{padding:16px 20px}.ys{color:#606060;margin:4px 0 14px}.yg{display:flex;flex-wrap:wrap;gap:18px}.vid{display:block;width:320px;color:#0f0f0f;text-decoration:none}.th{position:relative;width:320px;height:180px;background:#ddd;border-radius:10px;overflow:hidden}.th img{display:block;width:320px;height:180px}.len{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.8);color:#fff;font-size:12px;padding:1px 4px;border-radius:4px}.tt{font-weight:bold;font-size:14px;margin:8px 0 4px;line-height:19px;max-height:38px;overflow:hidden}.mu{color:#606060;font-size:13px}.card{max-width:980px}.muted{color:#606060}</style>\n";
 static const char YT_HDR[]="<div class=yh><a class=yl href=\"https://www.youtube.com/\"><span class=yp>&#9654;</span>YouTube</a><form class=yf id=yf action=\"https://www.youtube.com/results\" method=get><input id=yq name=search_query placeholder=\"Search\"><button>Search</button></form></div><script>(function(){var f=document.getElementById('yf'),i=document.getElementById('yq');var q=document.body.getAttribute('data-q');if(q)i.value=q;f.addEventListener('submit',function(e){e.preventDefault();var v=i.value.trim();if(v)location.href='https://www.youtube.com/results?search_query='+encodeURIComponent(v);});})();</script>\n";
-static const char YT_HOME_JS[]="<div class=ym><p class=ys id=s>Loading...</p><div class=yg id=g></div></div><script>(async function(){\n"
+static const char YT_HOME_JS[]=
+"<div class=ym><p class=ys id=s>Loading...</p><div class=yg id=g></div></div><script>(async function(){\n"
 "var q=document.body.getAttribute('data-q')||'';\n"
 "var S=document.getElementById('s'),G=document.getElementById('g');\n"
-"var W={clientName:'WEB',clientVersion:'2.20250312.04.00',hl:'en',gl:'US'};\n"
+"var W={clientName:'WEB',clientVersion:'2.20260708.00.00',hl:'en',gl:'US'};\n"
 "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}\n"
 "function txt(o){if(!o)return '';if(typeof o=='string')return o;if(o.simpleText)return o.simpleText;if(o.content)return o.content;if(o.runs)return o.runs.map(function(r){return r.text;}).join('');return '';}\n"
 "function collect(o,out,seen,d){if(!o||typeof o!='object'||d>60)return;if(Array.isArray(o)){for(var i=0;i<o.length;i++)collect(o[i],out,seen,d+1);return;}\n"
@@ -225,7 +243,7 @@ static const char YT_HOME_JS[]="<div class=ym><p class=ys id=s>Loading...</p><di
 "out.push({id:L.contentId,t:txt(m.title),c:rows[0]||'',v:rows.slice(1).join(' - '),l:'',p:''});}return;}\n"
 "var R=o.reelItemRenderer||o.shortsLockupViewModel;if(R){var rid=R.videoId||(R.onTap&&R.onTap.innertubeCommand&&R.onTap.innertubeCommand.reelWatchEndpoint&&R.onTap.innertubeCommand.reelWatchEndpoint.videoId);if(rid&&!seen[rid]){seen[rid]=1;out.push({id:rid,t:txt(R.headline||(R.overlayMetadata&&R.overlayMetadata.primaryText)),c:'Shorts',v:txt(R.viewCountText||(R.overlayMetadata&&R.overlayMetadata.secondaryText)),l:'',p:''});}return;}\n"
 "for(var k in o)collect(o[k],out,seen,d+1);}\n"
-"async function api(ep,body){body.context={client:W};var r=await fetch('https://www.youtube.com/youtubei/v1/'+ep+'?prettyPrint=false',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return await r.json();}\n"
+"async function api(ep,body){body.context={client:W};var r=await fetch('https://www.youtube.com/youtubei/v1/'+ep+'?prettyPrint=false',{method:'POST',headers:{'Content-Type':'application/json','X-Youtube-Client-Name':'1','X-Youtube-Client-Version':W.clientVersion},body:JSON.stringify(body)});if(!r.ok)throw new Error('YouTube answered '+r.status);return await r.json();}\n"
 "var list=[],seen={},err='';\n"
 "try{\n"
 "if(q){S.textContent='Searching for \"'+q+'\"...';collect(await api('search',{query:q}),list,seen,0);}\n"
@@ -233,28 +251,30 @@ static const char YT_HOME_JS[]="<div class=ym><p class=ys id=s>Loading...</p><di
 "if(list.length<8){try{collect(await api('browse',{browseId:'FEtrending'}),list,seen,0);}catch(e){}}\n"
 "if(list.length<8){collect(await api('search',{query:'popular videos today'}),list,seen,0);}}\n"
 "}catch(e){err=String(e&&e.message||e);}\n"
-"if(!list.length){S.textContent='No videos could be loaded'+(err?': '+err:'')+'.';return;}\n"
-"S.textContent=q?list.length+' results for \"'+q+'\"':'Recommended';\n"
+"if(!list.length){S.innerHTML='No videos could be loaded'+(err?': '+esc(err):'')+'. <a href=\"https://www.youtube.com/?nvxfull=1\">Open the full YouTube site</a>';return;}\n"
+"S.innerHTML=esc(q?list.length+' results for \"'+q+'\"':'Recommended')+' &middot; <a href=\"https://www.youtube.com/'+(q?'results?search_query='+encodeURIComponent(q)+'&':'?')+'nvxfull=1\">Full site</a>';\n"
 "var h='';for(var i=0;i<list.length&&i<60;i++){var x=list[i];var meta=[x.v,x.p].filter(function(s){return s;}).join(' - ');\n"
 "h+='<a class=vid href=\"https://www.youtube.com/watch?v='+esc(x.id)+'\"><div class=th><img src=\"https://i.ytimg.com/vi/'+esc(x.id)+'/mqdefault.jpg\" width=320 height=180 alt=\"\">'+(x.l?'<span class=len>'+esc(x.l)+'</span>':'')+'</div><div class=tt>'+esc(x.t)+'</div><div class=mu>'+esc(x.c)+'</div><div class=mu>'+esc(meta)+'</div></a>';}\n"
 "G.innerHTML=h;\n"
-"})();</script>\n";
+"})();</script>\n"
+"\n";
 static int yt_idch(char c){ return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'; }
-__attribute__((unused)) static int yt_try(const char* full){
+static int yt_try(const char* full){
+    if(stristr(full,"nvxfull=1"))return 0;
     const char* h=full; if(istarts_(h,"https://"))h+=8; else if(istarts_(h,"http://"))h+=7;
     const char* hs[6]={"www.youtube.com/","m.youtube.com/","youtube.com/","music.youtube.com/","youtu.be/","www.youtube-nocookie.com/"};
-    int which=-1; for(int i=0;i<6;i++) if(istarts_(h,hs[i])){ which=i; h+=slen(hs[i]); break; } if(which<0)return 0;
+    int which=-1; for(int i=0;i<6;i++){ int L=slen(hs[i])-1; if(istarts_(h,hs[i])){ which=i; h+=L+1; break; } if(i!=4&&!h[L]){ int ok=1; for(int k=0;k<L;k++) if(!ci_eq(h[k],hs[i][k]))ok=0; if(ok){ which=i; h+=L; break; } } } if(which<0)return 0;
     char id[16]; int n=0; const char* q=0;
     if(which==4)q=h; else if(istarts_(h,"watch")){ const char* a=h; while(*a&&*a!='#'){ if((*a=='?'||*a=='&')&&a[1]=='v'&&a[2]=='='){ q=a+3; break; } a++; } }
     else if(istarts_(h,"shorts/"))q=h+7; else if(istarts_(h,"embed/"))q=h+6; else if(istarts_(h,"live/"))q=h+5;
     if(!q){ if(which==4)return 0; int home=(!*h||*h=='?'||*h=='#'||istarts_(h,"results")||istarts_(h,"feed")||istarts_(h,"index")); if(!home)return 0;
         char qs[256]; int qn=0; const char* a=h; while(*a&&*a!='#'){ if((*a=='?'||*a=='&')&&istarts_(a+1,"search_query=")){ a+=14; while(*a&&*a!='&'&&*a!='#'&&qn<250){ char c=*a++; if(c=='+')c=' '; else if(c=='%'&&a[0]&&a[1]){ int v=0; for(int k=0;k<2;k++){ char d=a[k]; v=v*16+(d>='0'&&d<='9'?d-'0':(d|32)>='a'&&(d|32)<='f'?(d|32)-'a'+10:0); } a+=2; c=(char)v; } if((unsigned char)c>=32)qs[qn++]=c; } break; } a++; } qs[qn]=0;
         hb b={0,0,0}; hb_put(&b,"<!doctype html><html><head><title>YouTube</title>"); hb_put(&b,YT_CSS); hb_put(&b,"</head><body data-q=\""); hb_esc(&b,qs); hb_put(&b,"\">"); hb_put(&b,YT_HDR); hb_put(&b,YT_HOME_JS); hb_put(&b,"</body></html>");
-        show_page("about:youtube",&b,qn?"YouTube search":"YouTube"); return 1; }
+        show_page(full,&b,qn?"YouTube search":"YouTube"); return 1; }
     while(yt_idch(q[n])&&n<15){ id[n]=q[n]; n++; } id[n]=0; if(n<6)return 0;
     hb b={0,0,0}; hb_put(&b,"<!doctype html><html><head><title>YouTube</title>"); hb_put(&b,YT_CSS); hb_put(&b,"</head><body data-v=\""); hb_put(&b,id); hb_put(&b,"\">"); hb_put(&b,YT_HDR); hb_put(&b,"<div class=ym>");
     hb_put(&b,YT_JS); hb_put(&b,"</div></body></html>");
-    show_page("about:youtube",&b,"YouTube"); return 1; }
+    show_page(full,&b,"YouTube"); return 1; }
 #define PERM_N 256
 static const char* PERM_NAMES[6]={"notifications","geolocation","camera","microphone","popups","clipboard-read"};
 static const char* PERM_TEXT[6]={"show notifications","know your location","use your camera","use your microphone","open pop-up windows","see text and images you copy"};

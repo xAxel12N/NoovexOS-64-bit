@@ -41,4 +41,5 @@ void syn_poll(void){
     if(!g_syn_ready)return;
     { extern int g_lap_tp_off; if(g_lap_tp_off)return; }
     if(g_syn_eng.pulse){ tpout o; tpe_frame(&g_syn_eng,0,0,g_syn_btn&1,(u32)(g_ticks*10ULL),&o); if(o.btn_changed)in_buttons(o.btn_l,o.btn_r,o.btn_m); }
+    { tpout o; if(tpe_coast(&g_syn_eng,&o))in_scroll(o.scroll_v,o.scroll_h); }
     for(int n=0;n<64&&g_syn_rh!=g_syn_rt;n++){ u8 p[6]; for(int i=0;i<6;i++)p[i]=g_syn_ring[g_syn_rh][i]; g_syn_rh=(g_syn_rh+1)&63; syn_packet(p); } }

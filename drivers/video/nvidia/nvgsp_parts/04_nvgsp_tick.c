@@ -74,18 +74,20 @@ const char* nvgsp_mon_sig(const nvgsp_mon_t* m){
     if(m->or_type==1)return "VGA (analog)"; if(m->or_type!=2)return m->or_type?"other output":"not routed";
     if(m->proto==8||m->proto==9)return "DisplayPort"; if(m->proto==1||m->proto==2)return (m->dfp_flags&(1u<<8))?"HDMI":"DVI"; if(m->proto==5)return "DVI dual link"; return "digital"; }
 int nvgsp_mon_get(const nvgsp_mon_t** list,u32* heads,u32* headmask,const char** why){ if(list)*list=g_mon; if(heads)*heads=g_mon_heads; if(headmask)*headmask=g_mon_hmask; if(why)*why=g_mon_why; return g_mon_n; }
+static u8 g_mon_edid[8][256]; static int g_kd_live=0; static u32 g_kd_live_gen=0;
 static int mon_fail(const char* w){ char* q=g_mon_why; q=scopy(q,w); *q=0; nvl_s("  "); nvl_s(w); nvl_nl(); return 0; }
-int nvgsp_monitors(void){
+static int mon_scan(void){
     nvl_s("[19] monitors through GSP-RM (read only, like nouveau's r535_disp_oneinit): NV04_DISPLAY_COMMON, supported and connected outputs, output type, EDID"); nvl_nl();
+    int keep=g_kd_live&&g_kd_live_gen==g_gsp_boots;
     g_mon_n=-1; g_mon_why[0]=0;
     if(G.state<7)return mon_fail("the NVIDIA card is not running - run nvgsp all first");
     if(g_disp_gen!=g_gsp_boots||!g_disp_inst){ u64 v=nvv_alloc(0x10000,0x10000); if(!v)return mon_fail("no VRAM for the display instance memory");
         u8 w[24]; for(int i=0;i<24;i++)w[i]=0; *(u64*)w=v; *(u64*)(w+8)=0x10000; *(u32*)(w+16)=2; *(u32*)(w+20)=2;
         if(rm_ctrl(G.hclient,G.hsubdev,0x20800A49u,w,24)){ nvv_free(v); return mon_fail("GSP-RM refused the display instance memory (WRITE_INST_MEM)"); }
         g_disp_inst=v; g_disp_gen=g_gsp_boots; nvl_kv("display instance memory (64 KB VRAM)",v); }
-    if(!client_dev(2)){ rm_free(HC(2),HC(2)); return mon_fail("could not create the display client"); }
     int ok=0; u32 hd=0x00730000u;
-    if(rm_alloc(HC(2),HDEV,hd,0x0073,0,0)){ mon_fail("GSP-RM refused NV04_DISPLAY_COMMON"); goto done; }
+    if(!keep){ if(!client_dev(2)){ rm_free(HC(2),HC(2)); return mon_fail("could not create the display client"); }
+        if(rm_alloc(HC(2),HDEV,hd,0x0073,0,0)){ mon_fail("GSP-RM refused NV04_DISPLAY_COMMON"); goto done; } }
     { u32 p[3]={0,0,0}; if(rm_ctrl(HC(2),hd,0x730102u,p,12)==0)g_mon_heads=p[2]; u32 q[2]={0,0}; if(rm_ctrl(HC(2),hd,0x730287u,q,8)==0)g_mon_hmask=q[1]; }
     nvl_kv("display heads",g_mon_heads); nvl_kv("head mask",g_mon_hmask);
     u32 sup=0, con=0; { u32 p[3]={0,0,0}; if(rm_ctrl(HC(2),hd,0x730120u,p,12)){ mon_fail("GET_SUPPORTED failed"); goto done; } sup=p[1]; }
@@ -93,18 +95,19 @@ int nvgsp_monitors(void){
     { u32 p[4]={0,0,sup,0}; if(rm_ctrl(HC(2),hd,0x730122u,p,16)==0)con=p[2]&sup; }
     nvl_kv("connected outputs",con);
     int n=0;
-    for(int b=0;b<32&&n<8;b++){ if(!(sup&(1u<<b)))continue; nvgsp_mon_t* m=&g_mon[n]; u8* z=(u8*)m; for(u32 i=0;i<sizeof(*m);i++)z[i]=0; m->id=1u<<b; m->connected=(con>>b)&1;
+    for(int b=0;b<32&&n<8;b++){ if(!(sup&(1u<<b)))continue; nvgsp_mon_t* m=&g_mon[n]; u8* z=(u8*)m; for(u32 i=0;i<sizeof(*m);i++)z[i]=0; for(int i=0;i<256;i++)g_mon_edid[n][i]=0; m->head=-1; m->id=1u<<b; m->connected=(con>>b)&1;
         { u8 o[56]; for(int i=0;i<56;i++)o[i]=0; *(u32*)(o+4)=m->id; if(rm_ctrl(HC(2),hd,0x73028Bu,o,56)==0){ m->or_type=*(u32*)(o+12); m->proto=*(u32*)(o+16); } }
         if(m->or_type==0)continue;
         if(m->connected){ u32 f[4]={0,m->id,0,0}; if(rm_ctrl(HC(2),hd,0x731140u,f,16)==0)m->dfp_flags=f[2];
             static u8 ed[16+2048]; for(int i=0;i<(int)sizeof(ed);i++)ed[i]=0; *(u32*)(ed+4)=m->id;
-            if(rm_ctrl(HC(2),hd,0x730245u,ed,sizeof(ed))==0){ u32 len=*(u32*)(ed+8); if(len>2048)len=2048; m->edid_len=(int)len; m->edid_ok=edid_read(ed+16,(int)len,m); } }
+            if(rm_ctrl(HC(2),hd,0x730245u,ed,sizeof(ed))==0){ u32 len=*(u32*)(ed+8); if(len>2048)len=2048; m->edid_len=(int)len; m->edid_ok=edid_read(ed+16,(int)len,m); for(u32 i=0;i<len&&i<256;i++)g_mon_edid[n][i]=ed[16+i]; } }
         nvl_s("  output "); nvl_x(m->id); nvl_s(": "); nvl_s(nvgsp_mon_sig(m)); nvl_s(m->connected?", connected":", nothing connected");
         if(m->connected){ if(m->edid_ok){ nvl_s(", monitor "); nvl_s(m->name[0]?m->name:"(no name)"); nvl_s(" ("); nvl_s(m->maker); nvl_s(")"); for(int k=0;k<m->nmodes;k++){ nvl_s(k?", ":", native "); nvl_d(m->mw[k]); nvl_s("x"); nvl_d(m->mh[k]); nvl_s("@"); nvl_d(m->mhz[k]); } }
             else { nvl_s(", EDID not read ("); nvl_d((u64)m->edid_len); nvl_s(" bytes)"); } }
         nvl_nl(); n++; }
     g_mon_n=n; ok=1;
-    { int c=0; for(int i=0;i<n;i++)if(g_mon[i].connected)c++; nvl_s("  "); nvl_d((u64)c); nvl_s(" monitor(s) connected; nothing on the screen was changed (mode setting is stage 6)"); nvl_nl(); }
+    { int c=0; for(int i=0;i<n;i++)if(g_mon[i].connected)c++; nvl_s("  "); nvl_d((u64)c); nvl_s(" monitor(s) connected; nothing on the screen was changed (nvgsp mode turns the second screen on)"); nvl_nl(); }
     done:
-    rm_free(HC(2),hd); rm_free(HC(2),HC(2));
+    if(!keep){ rm_free(HC(2),hd); rm_free(HC(2),HC(2)); }
     return ok; }
+int nvgsp_monitors(void){ int r=mon_scan(); if(r){ extern void nvgsp_mode_marks(void); nvgsp_mode_marks(); } return r; }

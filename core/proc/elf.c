@@ -9,6 +9,7 @@
 #include "include/nvx/shell/terminal.h"
 #include "include/nvx/sys/native/syscall.h"
 #include "include/nvx/core/proc/jobs.h"
+#include "include/nvx/core/secboot.h"
 /* ================= STAGE 6: ELF loader for user programs =================
    Parse an ELF64, map its PT_LOAD segments into a fresh user address space at
    their virtual addresses (user-accessible), set up a user stack, run in ring 3. */
@@ -41,14 +42,22 @@ static int elf_ph_ok(u32 len,u64 phoff,u16 phentsz,u16 phnum){
     if(phoff>len||(u64)phentsz*phnum>len-phoff)return 0;
     return 1;
 }
-static int elf_map_segs(u64 sp,const u8* elf,u64 phoff,u16 phentsz,u16 phnum,u64 base){
+extern int sysroot_pc_handle_ptr(const u8* data,u32 len) __attribute__((weak));
+extern u64 sysroot_pc_page(int h,u32 pg) __attribute__((weak));
+u64 g_elf_lazy_pages, g_elf_copy_pages;
+static int elf_map_segs(u64 sp,const u8* elf,u64 phoff,u16 phentsz,u16 phnum,u64 base,int pch){
     for(int i=0;i<phnum;i++){ const u8* ph=elf+phoff+(u64)i*phentsz; if(*(const u32*)ph!=1)continue;
         u64 off=*(const u64*)(ph+8), va=*(const u64*)(ph+16)+base, filesz=*(const u64*)(ph+32), memsz=*(const u64*)(ph+40);
         u64 vs=va&~0xFFFULL, ve=(va+memsz+0xFFF)&~0xFFFULL;
+        int al=pch>=0&&sysroot_pc_page&&((va^off)&0xFFFULL)==0;
         for(u64 v=vs;v<ve;v+=0x1000){
             u64* e=vm_walk(sp,v,0); u64 f;
+            if(al&&v>=va&&v+0x1000ULL<=va+filesz&&!(e&&vm_pte_used(*e))){ e=vm_walk(sp,v,1); if(!e)return -1; *e=vm_file_marker((u32)pch,(u32)((off+(v-va))>>12),0); g_elf_lazy_pages++; continue; }
             if(e&&(*e&1))f=*e&0x000FFFFFFFFFF000ULL;
+            else if(e&&(*e&PTE_FILE)&&(*e&PTE_LAZY)){ u64 m=*e; u64 cf=sysroot_pc_page((int)((m>>PTE_FH_SHIFT)&0xFFFFFu),(u32)((m&PTE_FP_MASK)>>12)); f=pframe_alloc(); if(!f||!cf){ if(f)pframe_free(f); if(cf)pframe_free(cf); return -1; }
+                const u8* q=(const u8*)cf; u8* w=(u8*)f; for(int b=0;b<4096;b++)w[b]=q[b]; pframe_free(cf); if(vm_map(sp,v,f,0x7ULL)){ pframe_free(f); return -1; } }
             else { f=pframe_alloc(); if(!f||vm_map(sp,v,f,0x7ULL)){ if(f)pframe_free(f); return -1; } }
+            g_elf_copy_pages++;
             u8* dst=(u8*)f;
             u64 lo=v<va?va:v, hi=v+0x1000ULL; if(hi>va+memsz)hi=va+memsz;
             for(u64 a=lo;a<hi;a++) dst[a-v]=(a<va+filesz)?elf[off+(a-va)]:0; } }
@@ -63,7 +72,7 @@ static u64 elf_load_interp(u64 sp,const char* path,u64* ient){
     for(int i=0;i<phnum;i++){ const u8* ph=ie+phoff+(u64)i*phentsz; if(*(const u32*)ph!=1)continue;
         u64 off=*(const u64*)(ph+8), va=*(const u64*)(ph+16), filesz=*(const u64*)(ph+32), memsz=*(const u64*)(ph+40);
         if(filesz>memsz||off>il||filesz>il-off||va>0x100000000ULL||memsz>0x100000000ULL)return 0; }
-    if(elf_map_segs(sp,ie,phoff,phentsz,phnum,ELF_INTERP_BASE))return 0;
+    if(elf_map_segs(sp,ie,phoff,phentsz,phnum,ELF_INTERP_BASE,sysroot_pc_handle_ptr?sysroot_pc_handle_ptr(ie,il):-1))return 0;
     *ient=ELF_INTERP_BASE+*(const u64*)(ie+24);
     return ELF_INTERP_BASE;
 }
@@ -94,7 +103,7 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
     if(!phdr_va&&have_off0)phdr_va=first_off0+phoff;
     if(interp[0]&&etype!=3)return 0;
     u64 sp=vm_new_pml4(); if(!sp)return 0;
-    if(elf_map_segs(sp,elf,phoff,phentsz,phnum,base)){ vm_free_user(sp); return 0; }
+    if(elf_map_segs(sp,elf,phoff,phentsz,phnum,base,sysroot_pc_handle_ptr?sysroot_pc_handle_ptr(elf,len):-1)){ vm_free_user(sp); return 0; }
     u64 ibase=0, ient=0;
     if(interp[0]){ ibase=elf_load_interp(sp,interp,&ient); if(!ibase){ vm_free_user(sp); return 0; } }
     if(!g_xa_set)elf_args_from_string(g_exec_args);
@@ -110,7 +119,8 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
         for(int i=g_xe_n-1;i>=0;i--){ const char* z=g_xe_buf+g_xe_off[i]; int L=0; while(z[L])L++; top-=L+1; for(int k=0;k<=L;k++)S[top+k]=(u8)z[k]; uenv[i]=SB+(u64)top; }
         for(int i=g_xa_n-1;i>=0;i--){ const char* z=g_xa_buf+g_xa_off[i]; int L=0; while(z[L])L++; top-=L+1; for(int k=0;k<=L;k++)S[top+k]=(u8)z[k]; uargv[i]=SB+(u64)top; }
         u64 execfn=g_xa_n?uargv[0]:0;
-        u64 aux[]={3,phdr_va,4,phentsz,5,phnum,6,4096,7,ibase,8,0,9,ent+base,11,(u64)g_uid,12,(u64)g_uid,13,(u64)g_gid,14,(u64)g_gid,16,0,17,100,23,0,25,rnd,31,execfn,0,0};
+        extern u64 vdso_map(u64); u64 vds=vdso_map(sp);
+        u64 aux[]={3,phdr_va,4,phentsz,5,phnum,6,4096,7,ibase,8,0,9,ent+base,11,(u64)g_uid,12,(u64)g_uid,13,(u64)g_gid,14,(u64)g_gid,16,0,17,100,23,0,25,rnd,31,execfn,33,vds,0,0};
         int na=(int)(sizeof(aux)/8);
         int words=1+g_xa_n+1+g_xe_n+1+na;
         top-=words*8; top&=~0xF;
@@ -151,6 +161,7 @@ static void* ksym_find(const char* name){ for(int i=0;NVX_KSYMS[i].name;i++){ co
 
 /* Load a relocatable ELF64 from a buffer. Returns 0 on success, fills mod. */
 int nvx_dlload(const u8* elf,u32 len,nvx_module* mod){
+    if(secboot_locked("loading a kernel module"))return -99;
     mod->ok=0;
     if(len<64||elf[0]!=0x7F||elf[1]!='E'||elf[2]!='L'||elf[3]!='F')return -1;
     u16 etype=*(const u16*)(elf+16);            /* 2=ET_EXEC 3=ET_DYN */

@@ -89,7 +89,7 @@ static int vprobe(nvol* v,int disk,u64 st,u64 sz){
     return 0; }
 static int vguid_is(const u8* g,u32 a){ return r32(g)==a; }
 static void vadd(int disk,int kind,int part,u64 st,u64 sz){
-    if(g_vol_n>=VOL_MAX||!sz)return; nvol* v=&g_vol[g_vol_n]; v->disk=disk; v->kind=kind; v->part=part; v->start=(u32)st; v->letter=0;
+    if(g_vol_n>=VOL_MAX||!sz)return; nvol* v=&g_vol[g_vol_n]; v->disk=disk; v->kind=kind; v->part=part; v->start=(u32)st; v->psz=sz; v->letter=0;
     if(!vprobe(v,disk,st,sz))return;
     if(kind!=VOL_USB&&disk==gdisk_current()&&disk_ok&&v->fs[0]=='N'&&v->fs[1]=='V')return;
     if(disk>=0){ char* p=scopy(v->dev,(char*)gdisk_name_of(disk)); p=scopy(p,", partition "); p=udec(p,(u32)part); *p=0; } else { char* p=scopy(v->dev,"USB mass storage"); if(part){ p=scopy(p,", partition "); p=udec(p,(u32)part); } *p=0; }

@@ -1782,7 +1782,7 @@ const char nwe_prelude[] =
 "G.history = history;\n"
 "G.History = function History() {};\n"
 "\n"
-"const UA = 'Mozilla/5.0 (X11; NoovexOS x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Noovex/10.60';\n"
+"const UA = 'Mozilla/5.0 (X11; NoovexOS x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Noovex/10.81';\n"
 "G.navigator = {\n"
 "  userAgent: UA, appName: 'Netscape', appCodeName: 'Mozilla', appVersion: UA.slice(8), platform: 'Linux x86_64', product: 'Gecko', productSub: '20030107', vendor: 'Google Inc.', vendorSub: '',\n"
 "  language: 'en-US', languages: ['en-US', 'en'], onLine: true, cookieEnabled: true, hardwareConcurrency: 4, deviceMemory: 4, maxTouchPoints: 0, doNotTrack: null, webdriver: false, pdfViewerEnabled: false,\n"

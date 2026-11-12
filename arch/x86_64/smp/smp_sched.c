@@ -17,6 +17,7 @@
   
 
 static volatile int g_smp_sched=0;
+int smp_sched_on(void){ return g_smp_sched; }
 volatile int g_ncpu=1;
 #define IPI_RESCHED 0xF0
 #define IPI_TLB     0xF1
@@ -39,7 +40,7 @@ void smp_tlb_sync(u64 cr3){
     for(int i=0;i<g_ncpu&&i<NCPU;i++){ sent[i]=0; if(i!=me&&g_cpu[i].online&&g_cpu[i].js_running&&(g_cpu[i].ucr3&~0xFFFULL)==a){ g_cpu[i].tlb_pending=1; ipi_send(i,IPI_TLB); sent[i]=1; any=1; } }
     if(!any)return;
     for(int spin=0;spin<200000;spin++){ int wait=0;
-        for(int i=0;i<g_ncpu&&i<NCPU;i++) if(sent[i]&&g_cpu[i].tlb_pending&&g_cpu[i].js_running&&(g_cpu[i].ucr3&~0xFFFULL)==a)wait=1;
+        for(int i=0;i<g_ncpu&&i<NCPU;i++) if(sent[i]&&g_cpu[i].tlb_pending&&!g_cpu[i].bkl_wait&&g_cpu[i].js_running&&(g_cpu[i].ucr3&~0xFFFULL)==a)wait=1;
         if(!wait)return; __asm__ volatile("pause"); }
 }
 void smp_halt_others(void){ if(g_ncpu>1)ipi_others(IPI_HALT); }
@@ -74,7 +75,8 @@ static void ap_loop(void){
         int ran=0;
         if(g_smp_sched){ bkl_lock(); int pick=g_smp_sched?jc_pick():-1; if(pick>=0){ jc_enter(pick); ran=1; } bkl_unlock(); }
         { extern int wk_ap_turn(void); if(wk_ap_turn())ran=1; }
-        if(!ran&&!smp_work_step()){ cpu_idle(); cpu_irq_off(); }
+        if(!ran&&!smp_work_step()){ u64 it0=cpu_tsc(); cpu_idle(); cpu_irq_off(); extern void cpupower_idle_add(u64); cpupower_idle_add(cpu_tsc()-it0); }
+        { extern void cpupower_tick(void); cpupower_tick(); }
     }
 }
 void ap_entry_c(int id){
@@ -84,6 +86,7 @@ void ap_entry_c(int id){
     { extern void pat_cpu_init(void); pat_cpu_init(); }
     { extern int g_nx_on; extern void cpu_nx_init(void); if(g_nx_on)cpu_nx_init(); }
     idt_load();
+    { extern void cpupower_init(int); cpupower_init(0); }
     { u64 b=cpu_rdmsr(0x1B); if(g_lapic_x2&&!(b&(1ULL<<10)))cpu_wrmsr(0x1B,b|(1ULL<<10)|(1ULL<<11)); else if(!(b&(1ULL<<11)))cpu_wrmsr(0x1B,b|(1ULL<<11)); }
     lapic_wr(0x80,0); lapic_wr(0xF0,0x1FF); lapic_wr(0x350,0x10000); lapic_wr(0x360,0x10000);
     us_init();

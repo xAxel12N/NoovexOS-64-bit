@@ -39,9 +39,9 @@ static int procfs_build(const char* p,char* out,int cap){
     char* o=out; const char* leaf=p+5; while(*leaf=='/')leaf++;
     #define PW(str) do{ const char* z=str; while(*z&&(o-out)<cap-1)*o++=*z++; }while(0)
     #define PN(n) do{ char nb[16]; int L=0; unsigned v=(unsigned)(n); if(!v)nb[L++]='0'; char t[16]; int ti=0; while(v){t[ti++]='0'+v%10;v/=10;} while(ti)nb[L++]=t[--ti]; for(int q=0;q<L&&(o-out)<cap-1;q++)*o++=nb[q]; }while(0)
-    if(seq((char*)leaf,"meminfo")){ extern void mem_summary(u64*,u64*,u64*); u64 mt,mu,mh; mem_summary(&mt,&mu,&mh); PW("MemTotal: "); PN(mt); PW(" kB\nMemFree: "); PN(mt-mu); PW(" kB\nKernelHeap: "); PN(mh); PW(" kB\nMemArch: x86-64\n"); }
+    if(seq((char*)leaf,"meminfo")){ extern int proc_gen(const char*,char*,int); if(cap>=1024){ int n=proc_gen("/proc/meminfo",o,cap-1); if(n>0)o+=n; } }
     else if(seq((char*)leaf,"uptime")){ PN((unsigned)(g_ticks/100)); PW(" ticks\n"); }
-    else if(seq((char*)leaf,"version")){ PW("NoovexOS 64 v10.60 (from-scratch, Unix-like)\n"); }
+    else if(seq((char*)leaf,"version")){ PW("NoovexOS 64 v10.86 (from-scratch, Unix-like)\n"); }
     else if(seq((char*)leaf,"fb")){ PN(W); PW(" "); PN(H); PW(" 32 "); PN(W*4); PW("\n"); }
     else if(seq((char*)leaf,"mounts")){ for(int i=0;i<g_vfs_n;i++){ PW(g_vfs[i]->name); PW("\n"); } PW("rootfs\n"); }
     else if(!*leaf){ PW("meminfo\nuptime\nversion\ncpuinfo\nmounts\nfb\n"); }
@@ -110,6 +110,9 @@ int vfs_read(int fd,char* buf,int len){ fd_init(); int* T=fdt(); if(fd<0||fd>=FD
     if(v->dev==6) return jc_pipe_read(v,buf,len);
     if(v->dev==9||v->dev==10||v->dev==16) return ux_dev_read(v,buf,len);
     if(v->dev==17){ extern int fid_dev_read(char*,int); return fid_dev_read(buf,len); }
+    if(v->dev==40){ extern int xtray_read(char*,int); return xtray_read(buf,len); }
+    if(v->dev==41){ extern int xclip_read(char*,int); return xclip_read(buf,len); }
+    if(v->dev==42){ extern int xwin_read(char*,int); return xwin_read(buf,len); }
     if(v->dev==7) return -1;
     if(v->dev==14){ int n=lxs_recv(v->fs_idx,(u8*)buf,len,0,0,0); return n==JS_BLOCK?n:(n<0?-1:n); }
     if(v->dev==12) return snd_dev_read(buf,len);
@@ -132,8 +135,15 @@ int vfs_write(int fd,const char* buf,int len){ fd_init();
     if(v->dev==7) return jc_pipe_write(v,buf,len);
     if(v->dev==9||v->dev==10) return ux_dev_write(v,buf,len);
     if(v->dev==17){ extern int fid_dev_write(const char*,int); return fid_dev_write(buf,len); }
+    if(v->dev==40){ extern int xtray_write(const char*,int); return xtray_write(buf,len); }
+    if(v->dev==41){ extern int xclip_write(const char*,int); return xclip_write(buf,len); }
+    if(v->dev==42){ extern int xwin_write(const char*,int); return xwin_write(buf,len); }
     if(v->dev==12) return snd_dev_write(buf,len);
     if(v->dev==14){ int n=lxs_send(v->fs_idx,(const u8*)buf,len,0,0,0); return n==JS_BLOCK?n:(n<0?-1:n); }
+    if(v->dev==13&&len>9&&buf[0]=='n'&&buf[1]=='v'&&buf[2]=='x'&&buf[3]=='-'&&buf[4]=='p'&&buf[5]=='a'&&buf[6]=='c'&&buf[7]=='k'&&buf[8]==':'){ extern char g_pack_req[32]; char t[32]; int i=9,k=0; while(i<len&&buf[i]!='\n'&&k<31){ char c=buf[i++]; if(!((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'))return -22; t[k++]=c; } t[k]=0; if(!k||(i<len&&buf[i]!='\n'))return -22; for(int q=0;q<=k;q++)g_pack_req[q]=t[q]; { extern void pack_queued(void); pack_queued(); } return len; }
+    if(v->dev==13&&len>9&&buf[0]=='n'&&buf[1]=='v'&&buf[2]=='x'&&buf[3]=='-'&&buf[4]=='o'&&buf[5]=='p'&&buf[6]=='e'&&buf[7]=='n'&&buf[8]==':'){ extern char g_open_req[512]; static u64 last; static char t[512]; int i=9,k=0,ok=1; while(i<len&&buf[i]!='\n'){ unsigned char c=(unsigned char)buf[i++]; if(c<33||c>126||k>=511){ ok=0; break; } t[k++]=(char)c; } t[k]=0;
+        int hs=(k>7&&t[0]=='h'&&t[1]=='t'&&t[2]=='t'&&t[3]=='p'&&t[4]==':'&&t[5]=='/'&&t[6]=='/')||(k>8&&t[0]=='h'&&t[1]=='t'&&t[2]=='t'&&t[3]=='p'&&t[4]=='s'&&t[5]==':'&&t[6]=='/'&&t[7]=='/');
+        if(!ok||!hs)return -22; if(last&&g_ticks-last<200)return -16; last=g_ticks; for(int q=0;q<=k;q++)g_open_req[q]=t[q]; return len; }
     if(v->dev==13&&len>11&&buf[0]=='n'&&buf[1]=='v'&&buf[2]=='x'&&buf[3]=='-'&&buf[4]=='n'&&buf[5]=='o'&&buf[6]=='t'&&buf[7]=='i'&&buf[8]=='f'&&buf[9]=='y'&&buf[10]==':'){ extern void notify(const char*,const char*); char t[40], b[72]; int i=11, k=0; while(i<len&&buf[i]!=0x1f&&buf[i]!='\n'&&k<39){ unsigned char c=(unsigned char)buf[i++]; t[k++]=(c>=32&&c<127)?(char)c:' '; } t[k]=0; while(i<len&&buf[i]!=0x1f&&buf[i]!='\n')i++; if(i<len&&buf[i]==0x1f)i++; k=0; while(i<len&&buf[i]!='\n'&&k<71){ unsigned char c=(unsigned char)buf[i++]; b[k++]=(c>=32&&c<127)?(char)c:' '; } b[k]=0; notify(t[0]?t:"Notification",b); return len; }
     if(v->dev==13){ { extern int g_lxtrace; const char* on="lxtrace on"; const char* of="lxtrace off"; const char* ox="lxtrace exec"; const char* oe="lxtrace errors"; int a=1,b=1,c=1,e=1; for(int i=0;on[i];i++) if(i>=len||buf[i]!=on[i])a=0; for(int i=0;of[i];i++) if(i>=len||buf[i]!=of[i])b=0; for(int i=0;ox[i];i++) if(i>=len||buf[i]!=ox[i])c=0; for(int i=0;oe[i];i++) if(i>=len||buf[i]!=oe[i])e=0; if(a)g_lxtrace=-1; if(b)g_lxtrace=0; if(c)g_lxtrace=-2; if(e)g_lxtrace=-3; { const char* pp="lxtrace ps"; int f2=1; for(int i=0;pp[i];i++) if(i>=len||buf[i]!=pp[i])f2=0; if(f2)g_lxtrace=-4; } { const char* ps="lxps"; int f=1; for(int i=0;ps[i];i++) if(i>=len||buf[i]!=ps[i])f=0; if(f){ extern void lx_ps_dump(void); lx_ps_dump(); } } }
         char ln[160]; int o=0; for(int i=0;i<len;i++){ char c=buf[i]; if(c=='\n'||o>=159){ ln[o]=0; if(o)klog(ln); o=0; if(c!='\n')ln[o++]=c; } else if(c>=32&&c<127)ln[o++]=c; } if(o){ ln[o]=0; klog(ln); } return len; }

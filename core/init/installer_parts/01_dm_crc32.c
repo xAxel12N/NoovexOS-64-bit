@@ -179,7 +179,7 @@ void nvx_mark_file(const char* path,const char* txt){
         for(int i=0;i<FS_N;i++) if(!FS[i].used){ k=i; break; } if(k<0)return;
         fs_newslot(k); int q=0; while(base[q]&&q<63){ FS[k].name[q]=base[q]; q++; } FS[k].name[q]=0; FS[k].used=1; FS[k].folder=0; FS[k].dir=d; FS[k].mode=0100644u; FS[k].uid=0; FS[k].gid=0; }
     long n=0; while(txt[n])n++; fs_set(k,txt,n); g_fs_dirty[k]=1; if(disk_ok)fs_sync(k); }
-#define INST_BOOTP 1048576u
+#define INST_BOOTP 3145728u
 #define INST_DATAP (((NVX_REGION_SECS)+2047u)&~2047u)
 #define KSNAP_MAX 0x6000000u
 #define KDATA_MAX 0x400000u
@@ -195,6 +195,7 @@ void inst_snapshot_data(void){
     const u8* k=(const u8*)0x100000ULL; for(u32 i=imm;i<klen;i++)g_kdata_snap[i-imm]=k[i];
     { extern char boot_pt_first[], boot_pt_last[]; u64 a=(u64)boot_pt_first, e=(u64)boot_pt_last; if(a>=0x100000ULL+imm&&e<=0x100000ULL+klen&&a<e) for(u64 x=a;x<e;x++)g_kdata_snap[x-0x100000ULL-imm]=0; }
     { extern u64 early_idt_image(u64*,u64*); u64 f=0,n=0; u64 a=early_idt_image(&f,&n); if(a>=0x100000ULL+imm&&a+n<=0x100000ULL+klen){ u8* d=g_kdata_snap+(a-0x100000ULL-imm); for(u64 x=0;x<n;x++)d[x]=0; for(int x=0;x<8;x++)d[x]=(u8)(f>>(x*8)); } }
+    { extern void early_remap_unsnap(u8*,u64,u64); early_remap_unsnap(g_kdata_snap,0x100000ULL+imm,(u64)(klen-imm)); }
     for(u32 pg=0;pg*4096u<code&&pg<KPG_MAX;pg++){ u32 n=code-pg*4096u; if(n>4096u)n=4096u; g_kpg_sum[pg]=kpg_hash(k+pg*4096u,n); }
     g_kimg_len=klen; g_kimm_len=imm; g_inst_datalen=klen-imm;
 }
@@ -206,12 +207,12 @@ static const u8* kimg_full(void){
 static int kimg_check(const u8* img,u32 klen,int* imm_ok,int* full_ok){
     extern char __immutable_end[];
     u32 imm=(u32)((u64)__immutable_end-0x100000ULL); u32 so=(u32)((u64)&g_buildsig-0x100000ULL), ho=so+32, fo=so+88;
-    *imm_ok=-1; *full_ok=-1; if(!klen||imm>klen||fo+32>klen)return -1;
+    *imm_ok=-1; *full_ok=-1; if(!klen||imm>klen||so+320>klen)return -1;
     int zero=1; for(int i=0;i<32;i++) if(g_buildsig.sha256_full[i])zero=0; if(zero)return 1;
     u8* t=(u8*)kmalloc(klen); if(!t)return -1; for(u32 i=0;i<klen;i++)t[i]=img[i];
     for(int i=0;i<32;i++)t[ho+i]=0; u8 d[32]; sha256_hash(t,(int)imm,d);
     *imm_ok=1; for(int i=0;i<32;i++) if(d[i]!=g_buildsig.sha256[i])*imm_ok=0;
-    for(int i=0;i<32;i++)t[fo+i]=0; sha256_hash(t,(int)klen,d);
+    for(int i=0;i<32;i++)t[fo+i]=0; for(int i=0;i<64;i++)t[so+184+i]=0; sha256_hash(t,(int)klen,d);
     *full_ok=1; for(int i=0;i<32;i++) if(d[i]!=g_buildsig.sha256_full[i])*full_ok=0;
     kfree(t); return 0;
 }

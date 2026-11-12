@@ -151,6 +151,9 @@ int main(int argc,char** argv){
     if(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)||prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&fp))h_fatal("seccomp");
     u32 fr0=hk_free_frames(); int vf0=hk_free_vfiles(), pp0=hk_free_pipes(), fs0=hk_used_files();
     static char out[16384]; int st;
+    if(getenv("HH_ONLY")&&argc>1){ FILE* f=fopen(argv[1],"rb"); static unsigned char fb[4<<20]; int n=f?(int)fread(fb,1,sizeof fb,f):0; if(f)fclose(f);
+        int k=hk_addfile("/tmp","hhprog",fb,n); run_prog(argc>2?argv[2]:"/tmp/hhprog",&st,out,sizeof out); printf("%s",out); printf("exit status %d\n",st); hk_delfile(k);
+        printf("  (%lu Linux system calls handled)\n",g_syscalls); return st==0?0:1; }
     run_prog("mhello",&st,out,sizeof out);
     printf("---- mhello ----\n%s",out);
     rec(st==0&&strstr(out,"Hello from musl libc on NoovexOS ")&&strstr(out," (x86_64)")&&strstr(out,"argc=1 pi=3.14159"),"mhello: static-PIE musl program loads, prints and exits 0",out);
@@ -218,6 +221,9 @@ int main(int argc,char** argv){
     while(l){ if(!strncmp(l,"FAIL ",5))rec(0,l+5,0); else if(!strncmp(l,"ok   ",5))np++; l=strtok(0,"\n"); }
     rec(st==0&&np>=80,"musltest: every libc self-test passes under the NoovexOS kernel",0);
     rec(hk_used_files()==fs0,"musltest cleans up its files",0);
+    run_prog("abi2test",&st,out,sizeof out);
+    printf("---- abi2test ----\n%s",out);
+    { int ap=0,af=1; char* q=strstr(out,"abi2: done "); if(q)sscanf(q,"abi2: done %d passed, %d failed",&ap,&af); rec(st==0&&af==0&&ap>=31,"abi2test: real-time signals, Unix datagrams, IPv6, socket options, netlink, ping sockets, flag checks",out); }
     if(argc>1){ FILE* f=fopen(argv[1],"rb"); static unsigned char fb[1<<20]; int n=f?(int)fread(fb,1,sizeof fb,f):0; if(f)fclose(f);
         int k=hk_addfile("/tmp","lxfuzz",fb,n);
         run_prog(argc>2?argv[2]:"/tmp/lxfuzz 30000",&st,out,sizeof out);

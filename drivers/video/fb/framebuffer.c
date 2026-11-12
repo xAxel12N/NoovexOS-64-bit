@@ -82,7 +82,12 @@ void dchar(int x,int y,char ch,u32 c,int s){
     (void)SCENE; for(int r=0;r<14;r++) for(int col=0;col<8;col++){ int a=g[r*8+col]; if(a<6)continue;
         for(int dy=0;dy<s;dy++) for(int dx=0;dx<s;dx++){ int px=x+col*s+dx, py=y+r*s+dy; if((u32)px<W&&(u32)py<H){ u32*p=&g_scene[(u64)py*SW+px]; *p=a>=250?c:mix(*p,c,a); } } }
 }
-int dstr(int x,int y,const char*s,u32 c,int sc){ while(*s){dchar(x,y,*s,c,sc);x+=8*sc;s++;} return x; }
+static const char U8L1[65]="AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPsaaaaaaaceeeeiiiidnooooo/ouuuuypy";
+char u8fold(const char* s,int* n){ u8 c=(u8)s[0]; if(c<0x80){ *n=1; return (char)c; }
+    if(c==0xC3&&((u8)s[1]&0xC0)==0x80){ *n=2; return U8L1[(u8)s[1]-0x80]; }
+    if(c>=0xC2){ int k=c>=0xF0?4:c>=0xE0?3:2, i=1; while(i<k&&((u8)s[i]&0xC0)==0x80)i++; *n=i; return '?'; }
+    *n=1; return (char)c; }
+int dstr(int x,int y,const char*s,u32 c,int sc){ while(*s){ int n; char ch=u8fold(s,&n); dchar(x,y,ch,c,sc); x+=8*sc; s+=n; } return x; }
 void dstr_ctr(int cx,int y,const char*s,u32 c,int sc){ dstr(cx-(slen(s)*8*sc)/2,y,s,c,sc); }
 /* ---- proportional text (variable width from the 8x14 bitmap ink bounds) ---- */
 int g_gl[95], g_gw[95], g_gm_ready=0;
@@ -91,12 +96,12 @@ void gmetrics(void){ for(int idx=0;idx<95;idx++){ const unsigned char*g=fontaa[i
         if(hi<0){ g_gl[idx]=0; g_gw[idx]=0; } else { g_gl[idx]=lo; g_gw[idx]=hi-lo+1; } } g_gm_ready=1; }
 int gadv(char ch,int s){ int idx=(u8)ch-32; if(idx<0||idx>=95)return 4*s; if(g_gw[idx]==0)return 4*s; return (g_gw[idx]+1)*s; }
 int pw_sub(const char*str,int a,int b,int s){ int w=0; for(int i=a;str[i]&&i<b;i++)w+=gadv(str[i],s); return w; }
-int pw_str(const char*str,int s){ int w=0; for(int i=0;str[i];i++)w+=gadv(str[i],s); return w; }
+int pw_str(const char*str,int s){ int w=0; for(int i=0;str[i];){ int n; char ch=u8fold(str+i,&n); w+=gadv(ch,s); i+=n; } return w; }
 static void pdch(int x,int y,char ch,u32 c,int s){ int idx=(u8)ch-32; if(idx<0||idx>=95||g_gw[idx]==0)return; const unsigned char*gp=fontaa[idx]; int ox=x-g_gl[idx]*s; if(g_gfx){ gfx_glyph(ox,y,ch,c,s,1); return; }
     (void)SCENE; for(int r=0;r<14;r++){ for(int col=0;col<8;col++){ int a=gp[r*8+col]; if(a<6)continue;
         if(s==1){ int px=ox+col,py=y+r; if((u32)px<W&&(u32)py<H){ u32*p=&g_scene[(u64)py*SW+px]; *p=mix(*p,c,a); } }
         else { for(int dy=0;dy<s;dy++)for(int dx=0;dx<s;dx++){ int px=ox+col*s+dx,py=y+r*s+dy; if((u32)px<W&&(u32)py<H){ u32*p=&g_scene[(u64)py*SW+px]; *p=mix(*p,c,a); } } } } } }
-int pdstr(int x,int y,const char*str,u32 c,int s){ for(int i=0;str[i];i++){ pdch(x,y,str[i],c,s); x+=gadv(str[i],s); } return x; }
+int pdstr(int x,int y,const char*str,u32 c,int s){ for(int i=0;str[i];){ int n; char ch=u8fold(str+i,&n); pdch(x,y,ch,c,s); x+=gadv(ch,s); i+=n; } return x; }
 int pdsub(int x,int y,const char*str,int a,int b,u32 c,int s){ for(int i=a;str[i]&&i<b;i++){ pdch(x,y,str[i],c,s); x+=gadv(str[i],s); } return x; }
 void pdstr_ctr(int cx,int y,const char*s,u32 c,int sc){ pdstr(cx-pw_str(s,sc)/2,y,s,c,sc); }
 
@@ -111,13 +116,14 @@ static int sh_ready(void){
     if(!g_shadow||g_sh_w!=W||g_sh_h!=H||g_sh_sw!=SW){ if(g_shadow)kfree(g_shadow); g_shadow=(u32*)kmalloc((unsigned long)SW*H*4UL+64UL); g_sh_valid=0;
         if(!g_shadow){ g_dmg_on=0; return 0; } g_sh_w=W; g_sh_h=H; g_sh_sw=SW; }
     return 1; }
-static void sh_rect(int x,int y,int w,int h){ for(int r=0;r<h;r++){ u32* d=g_shadow+(u64)(y+r)*SW+(u32)x; const u32* s=SCENE+(u64)(y+r)*SW+(u32)x; if(g_accel2d)sse_copy32(d,s,w); else for(int i=0;i<w;i++)d[i]=s[i]; } }
+void bkl_yield(void);
+static void sh_rect(int x,int y,int w,int h){ for(int r=0;r<h;r++){ if((r&63)==63)bkl_yield(); u32* d=g_shadow+(u64)(y+r)*SW+(u32)x; const u32* s=SCENE+(u64)(y+r)*SW+(u32)x; if(g_accel2d)sse_copy32(d,s,w); else for(int i=0;i<w;i++)d[i]=s[i]; } }
 void fb_shadow_note(int x,int y,int w,int h){
     if(!g_sh_valid||!g_shadow||g_sh_w!=W||g_sh_h!=H||g_sh_sw!=SW)return;
     if(x<0){w+=x;x=0;} if(y<0){h+=y;y=0;} if(x+w>(int)W)w=(int)W-x; if(y+h>(int)H)h=(int)H-y; if(w<=0||h<=0)return;
     sh_rect(x,y,w,h); }
 static void cpu_rect(int x,int y,int w,int h){
-    for(int r=0;r<h;r++){ u32* d=(u32*)(FBB+(u64)(y+r)*PITCHB)+x; const u32* s=SCENE+(u64)(y+r)*SW+(u32)x;
+    for(int r=0;r<h;r++){ if((r&31)==31)bkl_yield(); u32* d=(u32*)(FBB+(u64)(y+r)*PITCHB)+x; const u32* s=SCENE+(u64)(y+r)*SW+(u32)x;
         if(g_fb_rgb)copy_swap32(d,s,w); else if(g_accel2d)sse_copy32(d,s,w); else for(int i=0;i<w;i++)d[i]=s[i]; } }
 static int dmg_present(void){
     const u32* sc=SCENE; int full=!g_sh_valid; int n=0;

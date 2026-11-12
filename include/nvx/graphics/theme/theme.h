@@ -10,7 +10,7 @@
 #define GREY rgb(150,160,180)
 #define WHT  rgb(230,235,245)
 #define RED  rgb(224,96,90)
-enum { ST_SETUP, ST_LOGIN, ST_DESKTOP, ST_BOOTMENU, ST_RECOVERY, ST_DISKMGR, ST_INSTALL, ST_LIVE };
+enum { ST_SETUP, ST_LOGIN, ST_DESKTOP, ST_BOOTMENU, ST_RECOVERY, ST_DISKMGR, ST_INSTALL, ST_LIVE, ST_APP };
 
 extern u32 ACC , ACC2;
 extern int g_theme , g_showsec , g_cursor , g_accent , g_safemode;

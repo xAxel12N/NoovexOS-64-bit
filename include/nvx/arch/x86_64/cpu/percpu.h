@@ -19,7 +19,7 @@ struct pcpu {
     int dcwd, uid, gid, umask;
     u64 ubrk, mmap_next;
     int us_ready;
-    volatile int online, stop, parked, tlb_pending, in_user;
+    volatile int online, stop, parked, tlb_pending, in_user, bkl_wait;
     volatile u64 ucr3;
     volatile u64 ticks, user_ticks, idle_ticks, switches, syscalls, ipis;
     struct tss64 tss __attribute__((aligned(16)));
@@ -62,6 +62,7 @@ void percpu_init_bsp(void);
 void bkl_lock(void);
 void bkl_unlock(void);
 int bkl_held(void);
+int bkl_try(void);
 int bkl_drop(void);
 void bkl_take(int depth);
 void bkl_yield(void);

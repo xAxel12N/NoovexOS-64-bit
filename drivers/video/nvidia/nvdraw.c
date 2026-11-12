@@ -93,6 +93,7 @@ static int nd_usb_flag(void){ extern int msd_ok, ufat_ok, ufs_n; extern int msd_
     return -1; }
 static void nd_usb_set(char v){ extern int msd_ok, ufat_ok; extern int ufat_write_file(const char*,const char*,int); if(msd_ok&&ufat_ok){ char b[2]={v,'\n'}; ufat_write_file("NVSTART.TXT",b,2); } }
 static int nd_turing(void){ extern u16 g_nv_dev; u32 d=g_nv_dev; return (d>=0x1E00u&&d<=0x1FFFu)||(d>=0x2180u&&d<=0x21FFu); }
+void nvd_mode_remember(int on){ if(nd_flag_get("nvgsp-mode.cfg")!=(on?'1':'0'))nd_flag_set("nvgsp-mode.cfg",on?'1':'0'); }
 void nvd_set_auto(int on){ g_nvd_auto=on; nd_flag_set("nvgsp-auto.cfg",on?'1':'0'); }
 static void nd_auto(void){
     extern int nv_probe(void); extern int nvgsp_cmd(const char*); extern volatile u64 g_ticks;
@@ -102,7 +103,8 @@ static void nd_auto(void){
     if(!nv_probe()||!nd_turing())return;
     if(nd_flag_get("nvgsp-start.flag")=='1'||nd_usb_flag()=='1'){ g_nvd_auto_skipped=1; nd_flag_set("nvgsp-start.flag",'0'); nd_usb_set('0'); klog("nvgsp: the NVIDIA start-up did not finish last time - skipped this boot (press G in Gears or run nvgsp all to try again)"); return; }
     nd_flag_set("nvgsp-start.flag",'1'); nd_usb_set('1');
-    klog("nvgsp: starting the NVIDIA GPU for 2D acceleration"); nvgsp_cmd("all");
+    klog("nvgsp: starting the NVIDIA GPU for 2D acceleration"); int r=nvgsp_cmd("all");
+    if(r>0&&nd_flag_get("nvgsp-mode.cfg")=='1'){ extern int nvgsp_mode(int); klog("nvgsp: turning the second screen on as it was last time"); nd_flag_set("nvgsp-mode.cfg",'0'); if(nvgsp_mode(0))nd_flag_set("nvgsp-mode.cfg",'1'); }
     nd_flag_set("nvgsp-start.flag",'0'); nd_usb_set('0'); }
 static int nd_run=0, nd_run_res=0;
 void nvd_run_request(void){ if(!nd_run)nd_run=1; }

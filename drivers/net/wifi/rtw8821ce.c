@@ -159,9 +159,9 @@ int rtw_mac_trx_init(u32 m){
     rtw_w16(m,0x0424,(u16)rsvd_boundary);
     rtw_w16(m,0x0206,(u16)rsvd_boundary);
     rtw_w16(m,0x0456,(u16)rsvd_boundary);
-    rtw_w32(m,0x011C,16384u-256u-1u);              /* REG_RXFF_BNDY = rxff - C2H_BUF - 1 */
-    rtw_w16(m,0x0116,(u16)(16384u-128u-1u));       /* REG_TRXFF_BNDY+2 = rxff - REPORT_BUF - 1 */
-    rtw_w8(m,0x060F,4);                            /* REG_RX_DRVINFO_SZ = PHY_STATUS_SIZE(4) - critical for RX parse offset */
+    rtw_w32(m,0x011C,16384u-256u-1u);
+    rtw_w16(m,0x0116,(u16)(16384u-128u-1u));
+    rtw_w8(m,0x060F,4);
     rtw_w8(m,0x0208,(u8)(rtw_r8(m,0x0208)|1u));
     int llt=0; for(int t=0;t<1000;t++){ if(!(rtw_r8(m,0x0208)&1u)){llt=1;break;} rtw_delay_us(10); }
     if(!llt)return -1;
@@ -315,12 +315,12 @@ void rtw_set_channel_2g(u32 m,u8 ch){
     g_chstep=6;
 }
 static int rtw_rx_enable_safe(u32 m){
-    rtw_w32(m,0x0608,0xE400220Eu);   /* WLAN_RCR_CFG: accept all beacons (no CBSSID filter) */
+    rtw_w32(m,0x0608,0xE400220Eu);
     return 1;
 }
 static u32 rtw_rx_count(u32 m){ return rtw_r32(m,0x02B0); }
 int rtw_rx_enable(u32 m){
-    rtw_w32(m,0x0608,0xE400220Eu);   /* WLAN_RCR_CFG (no CBSSID_BCN filter) */
+    rtw_w32(m,0x0608,0xE400220Eu);
     rtw_w32(m,0x0608,rtw_r32(m,0x0608)|(1u<<28));
     u32 cr=rtw_r32(m,0x0100); cr|=(1u<<3)|(1u<<1); rtw_w32(m,0x0100,cr);
     return 1;
@@ -330,17 +330,14 @@ int rtw_rx_ring_up(u32 m){
     for(u32 i=0;i<g_rxnum;i++){ u8* d=g_rxring+i*8; u64 pb=(u64)(g_rxbuf+i*2048);
         *(volatile u16*)(d)=2048; *(volatile u16*)(d+2)=0; *(volatile u32*)(d+4)=(u32)pb; }
     cpu_wmb();
-    /* rtw88 rtw_pci_reset_buf_desc order: NUM, DESA, RWPTR_CLR, rp=0; THEN dma_reset (CTRL). */
-    rtw_w16(m,0x0382,(u16)(g_rxnum & 0x0FFF));      /* RXBD_NUM_MPDUQ */
-    rtw_w32(m,0x0338,(u32)(u64)g_rxring);           /* RXBD_DESA_MPDUQ */
-    rtw_w32(m,0x039C,0xFFFFFFFFu);                  /* TXBD_RWPTR_CLR: reset all r/w pointers */
-    rtw_w16(m,0x03B4,0);                            /* RXBD_IDX_MPDUQ: host rp = 0 (matches source) */
-    /* dma_reset LAST: arm the TRX DMA interface + rx tag */
-    rtw_w32(m,0x0300,rtw_r32(m,0x0300)|(1u<<20)|(1u<<15));   /* RST_TRXDMA_INTF | RX_TAG_EN */
+    rtw_w16(m,0x0382,(u16)(g_rxnum & 0x0FFF));
+    rtw_w32(m,0x0338,(u32)(u64)g_rxring);
+    rtw_w32(m,0x039C,0xFFFFFFFFu);
+    rtw_w16(m,0x03B4,0);
+    rtw_w32(m,0x0300,rtw_r32(m,0x0300)|(1u<<20)|(1u<<15));
     g_rxidx=0;
-    /* MAC TRX enable */
     u32 cr=rtw_r32(m,0x0100); cr|=(1u<<2)|(1u<<3)|(1u<<4)|(1u<<5)|(1u<<6)|(1u<<7); rtw_w32(m,0x0100,cr);
-    rtw_w16(m,0x0522,0);   /* clear TXPAUSE */
+    rtw_w16(m,0x0522,0);
     rtw_delay_us(2000);
     return 1;
 }
@@ -349,10 +346,10 @@ int rtw_rx_hw_wp(u32 m){ u32 t=rtw_r32(m,0x03B4); return (int)((t>>16)&0x0FFF); 
 scan_ap g_aps[24]; int g_apn=0;
 extern volatile u64 g_ticks;
 u8 g_scan_grp=0;
-static void scan_add(const u8* bssid,const char* ssid,u8 ch,u8 sec,int rssi,u8 ht,u8 akm,u8 pmf,u8 wmm){
+static void scan_add(const u8* bssid,const char* ssid,u8 ch,u8 sec,int rssi,u8 ht,u8 akm,u8 pmf,u8 wmm,int offch){
     int hid=!ssid[0]; if(rssi<-127)rssi=-127;
     for(int i=0;i<g_apn;i++){ int eq=1; for(int b=0;b<6;b++)if(g_aps[i].bssid[b]!=bssid[b])eq=0;
-        if(eq){ g_aps[i].seen++; if(ch)g_aps[i].ch=ch; g_aps[i].sec=sec; if(rssi>-127)g_aps[i].rssi=(signed char)(g_aps[i].rssi<=-127?rssi:(g_aps[i].rssi*3+rssi)/4); g_aps[i].ht=ht; g_aps[i].akm=akm; g_aps[i].pmf=pmf; g_aps[i].wmm=wmm; g_aps[i].grp=g_scan_grp; g_aps[i].last=g_ticks;
+        if(eq){ g_aps[i].seen++; if(ch&&!offch)g_aps[i].ch=ch; else if(ch&&!g_aps[i].ch)g_aps[i].ch=ch; g_aps[i].sec=sec; if(rssi>-127&&(!offch||g_aps[i].rssi<=-127))g_aps[i].rssi=(signed char)(g_aps[i].rssi<=-127?rssi:(g_aps[i].rssi*3+rssi)/4); g_aps[i].ht=ht; g_aps[i].akm=akm; g_aps[i].pmf=pmf; g_aps[i].wmm=wmm; g_aps[i].grp=g_scan_grp; g_aps[i].last=g_ticks;
             if(!hid&&g_aps[i].hidden){ int j=0; while(ssid[j]&&j<32){g_aps[i].ssid[j]=ssid[j];j++;} g_aps[i].ssid[j]=0; g_aps[i].hidden=0; } return; } }
     if(g_apn>=24){ int w=-1, wr=0; for(int i=0;i<g_apn;i++) if(g_aps[i].rssi<wr||w<0){ wr=g_aps[i].rssi; w=i; } if(w<0||rssi<=wr)return; g_aps[w]=g_aps[--g_apn]; }
     scan_ap* a=&g_aps[g_apn]; for(int b=0;b<6;b++)a->bssid[b]=bssid[b];
@@ -370,46 +367,51 @@ static void rtw_rsn_parse(const u8* b,int l,u8* akm,u8* pmf){
     int o=2; if(l<o+4)return; g_rsn_grp=(b[2]==0x00&&b[3]==0x0F&&b[4]==0xAC)?b[5]:0xFF; o+=4; if(l<o+2)return; int pc=b[o]|(b[o+1]<<8); o+=2+4*pc; if(l<o+2)return; int ac=b[o]|(b[o+1]<<8); o+=2;
     for(int k=0;k<ac&&o+4<=l;k++,o+=4) if(b[o]==0x00&&b[o+1]==0x0F&&b[o+2]==0xAC){ u8 t=b[o+3]; if(t==2)*akm|=AKM_PSK; else if(t==8)*akm|=AKM_SAE; else if(t==1)*akm|=AKM_8021X; else if(t==6)*akm|=AKM_PSK256; }
     if(o+2<=l){ u16 cap=(u16)(b[o]|(b[o+1]<<8)); if(cap&(1u<<7))*pmf|=1; if(cap&(1u<<6))*pmf|=2; } }
+u8 g_scan_ch;
+static int rtw_frame_kind(const u8* base){
+    u32 w0=*(const volatile u32*)base; u32 plen=w0&0x3FFFu, crc=(w0>>14)&1u, drvsz=((w0>>16)&0xFu)*8u, shift=(w0>>24)&3u; u32 hoff=24u+drvsz+shift;
+    if(crc||plen<24||hoff+24u>2048u)return -1; u8 fc=base[hoff]&0xFC; if(fc==0x80||fc==0x50)return 1;
+    extern const u8* wnd_bssid(void); const u8* bs=wnd_bssid(); const u8* a2=base+hoff+10; const u8* a3=base+hoff+16; int m2=1, m3=1; for(int k=0;k<6;k++){ if(a2[k]!=bs[k])m2=0; if(a3[k]!=bs[k])m3=0; } return (m2||m3)?0:-1; }
+int rtw_scan_frame(const u8* base,u8 ch){
+    u32 w0=*(const volatile u32*)base;
+    u32 plen=w0&0x3FFFu; u32 crc=(w0>>14)&1u; u32 drvsz=((w0>>16)&0xFu)*8u; u32 shift=(w0>>24)&3u;
+    u32 hoff=24u+drvsz+shift;
+    u32 frame_end=hoff+plen; if(frame_end>2048u)frame_end=2048u;
+    if(plen<40||crc||hoff+36u>frame_end)return 0;
+    const u8* fr=base+hoff; u8 fc=fr[0];
+    if((fc&0xFC)!=0x80&&(fc&0xFC)!=0x50)return 0;
+    u8 bssid[6]; for(int b=0;b<6;b++)bssid[b]=fr[16+b];
+    u8 sec=0, ht=0, akm=0, pmf=0, wmm=0, dsch=0, htch=0, rsn=0, wpa1=0; g_rsn_grp=0; int rssi=rtw_rx_rssi(base);
+    u32 capoff=hoff+24u+10u;
+    if(capoff+2u<=frame_end){ u16 cap=base[capoff]|(base[capoff+1]<<8); if(cap&(1u<<4))sec=1; }
+    u32 iep=hoff+24u+12u; char ss[33]; ss[0]=0; int gotssid=0;
+    while(iep+2u<=frame_end){
+        u8 tag=base[iep], tl=base[iep+1];
+        if((u32)(iep+2u+tl)>frame_end)break;
+        if(tag==0&&!gotssid){ int n=tl<32?tl:32, z=1; for(int c=0;c<n;c++){ u8 c2=base[iep+2u+c]; if(c2)z=0; ss[c]=(char)c2; } ss[n]=0; if(!tl||z)ss[0]=0; gotssid=1; }
+        else if(tag==48){ sec=2; rsn=1; rtw_rsn_parse(base+iep+2,tl,&akm,&pmf); }
+        else if(tag==3&&tl>=1){ dsch=base[iep+2]; }
+        else if(tag==61&&tl>=1){ htch=base[iep+2]; }
+        else if(tag==45&&tl>=26){ ht=(u8)(1|((base[iep+2]&0x20)?2:0)); }
+        else if(tag==221&&tl>=5&&base[iep+2]==0x00&&base[iep+3]==0x50&&base[iep+4]==0xF2&&base[iep+5]==0x02){ wmm=1; }
+        else if(tag==221&&tl>=4&&base[iep+2]==0x00&&base[iep+3]==0x50&&base[iep+4]==0xF2&&base[iep+5]==0x01){ wpa1=1; if(sec<2)sec=2; }
+        iep+=2u+tl;
+    }
+    if(wpa1&&!rsn)g_rsn_grp=2;
+    if(sec==2&&!akm)akm=AKM_PSK;
+    u8 rch=dsch?dsch:htch?htch:ch; if(!rch)return 0;
+    g_scan_grp=g_rsn_grp;
+    int off=!ch||rch!=ch;
+    scan_add(bssid,ss,rch,sec,(off&&rssi>-100)?rssi-12:rssi,ht,akm,pmf,wmm,off);
+    return 1; }
 int rtw_scan_drain(u32 m,u8 ch){
-    int found=0;
-    for(int guard=0; guard<(int)g_rxnum && found<64; guard++){
+    extern int g_wnd_up; int found=0;
+    for(int guard=0;guard<(int)g_rxnum&&found<64;guard++){
         int wp=rtw_rx_hw_wp(m);
         if((int)(g_rxidx%g_rxnum)==(wp%(int)g_rxnum))break;
-        u32 i=g_rxidx % g_rxnum;
-        u8* base=g_rxbuf+i*2048;
-        u32 w0=*(volatile u32*)(u64)base;
-        u32 plen=w0&0x3FFFu; u32 crc=(w0>>14)&1u; u32 drvsz=((w0>>16)&0xFu)*8u; u32 shift=(w0>>24)&3u;
-        /* HARD read-side clamp: nothing below may ever index base[] past RXBUFSZ, no matter what the chip wrote. */
-        #define RXBUFSZ 2048u
-        u32 hoff=24u+drvsz+shift;
-        u32 frame_end=hoff+plen; if(frame_end>RXBUFSZ)frame_end=RXBUFSZ;   /* clamp true frame extent into the buffer */
-        if(plen>=40 && !crc && hoff+36u<=frame_end){
-            const u8* fr=base+hoff; u8 fc=fr[0];
-            if((fc&0xFC)==0x80||(fc&0xFC)==0x50){
-                u8 bssid[6]; for(int b=0;b<6;b++)bssid[b]=fr[16+b];
-                u8 sec=0, ht=0, akm=0, pmf=0, wmm=0, dsch=0; g_rsn_grp=0; int rssi=rtw_rx_rssi(base);
-                /* capability field is 2 bytes at body+10 (after 8-byte timestamp + 2-byte beacon int) */
-                u32 capoff=hoff+24u+10u;
-                if(capoff+2u<=frame_end){ u16 cap=base[capoff]|(base[capoff+1]<<8); if(cap&(1u<<4))sec=1; } /* Privacy bit -> WEP/WPA */
-                u32 iep=hoff+24u+12u; char ss[33]; ss[0]=0; int gotssid=0;
-                while(iep+2u<=frame_end){
-                    u8 tag=base[iep], tl=base[iep+1];
-                    if((u32)(iep+2u+tl)>frame_end)break;
-                    if(tag==0 && !gotssid){ int n=tl<32?tl:32; for(int c=0;c<n && (iep+2u+(u32)c)<RXBUFSZ;c++){u8 c2=base[iep+2u+c]; ss[c]=(c2>=32&&c2<127)?(char)c2:'.';} ss[n]=0; if(!tl||!base[iep+2])ss[0]=0; gotssid=1; }
-                    else if(tag==48){ sec=2; rtw_rsn_parse(base+iep+2,tl,&akm,&pmf); }
-                    else if(tag==3&&tl>=1){ dsch=base[iep+2]; }
-                    else if(tag==45&&tl>=26){ ht=(u8)(1|((base[iep+2]&0x20)?2:0)); }
-                    else if(tag==221 && tl>=5 && base[iep+2]==0x00 && base[iep+3]==0x50 && base[iep+4]==0xF2 && base[iep+5]==0x02){ wmm=1; }
-                    else if(tag==221 && tl>=4 && base[iep+2]==0x00 && base[iep+3]==0x50 && base[iep+4]==0xF2 && base[iep+5]==0x01){ if(sec<2)sec=2; } /* WPA vendor IE */
-                    iep+=2u+tl;
-                }
-                if(sec==2&&!akm)akm=AKM_PSK;
-                { extern u8 g_scan_grp; g_scan_grp=g_rsn_grp; }
-                scan_add(bssid,ss,dsch?dsch:ch,sec,(dsch&&dsch!=ch&&rssi>-100)?rssi-12:rssi,ht,akm,pmf,wmm);
-                found++;
-            }
-        }
-        #undef RXBUFSZ
+        u32 i=g_rxidx%g_rxnum; u8* base=g_rxbuf+i*2048;
+        if(g_wnd_up&&rtw_frame_kind(base)==0)break;
+        if(rtw_scan_frame(base,ch))found++;
         *(volatile u32*)(u64)base=0;
         *(volatile u16*)(u64)(g_rxring+i*8)=2048;
         *(volatile u32*)(u64)(g_rxring+i*8+4)=(u32)(u64)base;
@@ -460,48 +462,42 @@ int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid){
     u8 mac[6]; for(int i=0;i<6;i++)mac[i]=rtw_r8(m,0x0610+i);
     int zero=1; for(int i=0;i<6;i++) if(mac[i])zero=0;
     if(zero && rtw_efuse_valid){ for(int i=0;i<6;i++)mac[i]=rtw_logmap[0xD0+i]; for(int i=0;i<6;i++)rtw_w8(m,0x0610+i,mac[i]); }
-    /* build 802.11 probe request: FC=0x0040 subtype4, dur, DA=bcast, SA=mac, BSSID=bcast, seq */
     u8 frame[128]; int fl=0;
-    frame[fl++]=0x40; frame[fl++]=0x00;      /* frame control: mgmt, probe req */
-    frame[fl++]=0; frame[fl++]=0;            /* duration */
-    for(int i=0;i<6;i++)frame[fl++]=0xFF;    /* DA broadcast */
-    for(int i=0;i<6;i++)frame[fl++]=mac[i];  /* SA */
-    for(int i=0;i<6;i++)frame[fl++]=0xFF;    /* BSSID broadcast */
-    frame[fl++]=0; frame[fl++]=0;            /* seq ctrl (hw fills) */
-    frame[fl++]=0; frame[fl++]=0;            /* IE SSID: wildcard (len 0) */
-    frame[fl++]=1; frame[fl++]=8;            /* IE supported rates */
+    frame[fl++]=0x40; frame[fl++]=0x00;
+    frame[fl++]=0; frame[fl++]=0;
+    for(int i=0;i<6;i++)frame[fl++]=0xFF;
+    for(int i=0;i<6;i++)frame[fl++]=mac[i];
+    for(int i=0;i<6;i++)frame[fl++]=0xFF;
+    frame[fl++]=0; frame[fl++]=0;
+    frame[fl++]=0; frame[fl++]=0;
+    frame[fl++]=1; frame[fl++]=8;
     frame[fl++]=0x82;frame[fl++]=0x84;frame[fl++]=0x8B;frame[fl++]=0x96;
     frame[fl++]=0x0C;frame[fl++]=0x12;frame[fl++]=0x18;frame[fl++]=0x24;
-    /* TX descriptor: 48 bytes, then frame */
     u32 total=48+fl;
     for(u32 i=0;i<total;i++)pkt[i]=0;
-    u32 w0=((u32)fl & 0xFFFFu) | ((48u&0xFFu)<<16) | (1u<<24) | (1u<<26);   /* broadcast probe: BMC ok, LS, no DISQSELSEQ */
+    u32 w0=((u32)fl & 0xFFFFu) | ((48u&0xFFu)<<16) | (1u<<24) | (1u<<26);
     *(volatile u32*)(pkt+0)=w0;
-    u32 w1=((u32)18u<<8) | ((u32)8u<<16);    /* QSEL=MGMT(18), RATE_ID=B_20M(8) */
+    u32 w1=((u32)18u<<8) | ((u32)8u<<16);
     *(volatile u32*)(pkt+4)=w1;
-    *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10); /* w3: USE_RATE|DISDATAFB */
-    *(volatile u32*)(pkt+16)=0x00u;          /* w4: DATARATE=1M(0) */
+    *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10);
+    *(volatile u32*)(pkt+16)=0x00u;
     rtw_txdesc_rate(pkt,1);
-    *(volatile u32*)(pkt+32)=(1u<<15);       /* w8: EN_HWSEQ */
+    *(volatile u32*)(pkt+32)=(1u<<15);
     for(int i=0;i<fl;i++)pkt[48+i]=frame[i];
-    /* BE ring buffer descriptor: two 8-byte entries */
     u32 i=g_beidx % g_benum;
     u8* bd=g_bering+i*16;
     u32 psb=((total-1)/128)+1;
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
     cpu_wmb();
-    /* make sure BE ring regs are live (base/num/rwptr) */
     rtw_w32(m,0x0328,(u32)(u64)g_bering);
     rtw_w16(m,0x0388,(u16)(g_benum&0x0FFF));
     u32 hw_before=(rtw_r32(m,0x03A8)>>16)&0x0FFF;
     g_beidx=(g_beidx+1)%g_benum;
-    rtw_w16(m,0x03A8,(u16)g_beidx);   /* TXBD_IDX_BEQ: kick */
-    /* poll HW read-index to see if the frame was consumed (transmitted) */
+    rtw_w16(m,0x03A8,(u16)g_beidx);
     u32 hw_after=hw_before; int txok=0;
     for(int t=0;t<20000;t++){ hw_after=(rtw_r32(m,0x03A8)>>16)&0x0FFF; if(hw_after!=hw_before){txok=1;break;} rtw_delay_us(50); }
     g_probe_txok=txok; g_probe_hwb=hw_before; g_probe_hwa=hw_after;
-    /* now listen for a probe response (subtype 5, FC 0x50) in the RX ring */
     *got_resp=0; resp_ssid[0]=0;
     for(int t=0;t<40000 && !*got_resp;t++){
         int wp=rtw_rx_hw_wp(m);
@@ -512,7 +508,7 @@ int rtw_tx_probe(u32 m,int* got_resp,char* resp_ssid){
             u32 hoff=24u+drvsz+shift; u32 fe=hoff+plen; if(fe>2048u)fe=2048u;
             if(plen>=40 && !crc && hoff+36u<=fe){
                 const u8* fr=base+hoff; u8 fc=fr[0];
-                if((fc&0xFC)==0x50){   /* probe response */
+                if((fc&0xFC)==0x50){
                     u32 iep=hoff+24u+12u;
                     while(iep+2u<=fe){ u8 tag=base[iep],tl=base[iep+1]; if((u32)(iep+2u+tl)>fe)break;
                         if(tag==0){ int n=tl<32?tl:32; for(int c=0;c<n && iep+2u+(u32)c<2048u;c++){u8 c2=base[iep+2u+c]; resp_ssid[c]=(c2>=32&&c2<127)?(char)c2:'.';} resp_ssid[n]=0; break; }
@@ -533,14 +529,13 @@ int rtw_tx_mgmt(u32 m,const u8* frame,int fl){
     if(!g_mgring||!g_mgnum)return -1;
     static u8* pkt=0; if(!pkt)pkt=(u8*)dma_alloc(2048); if(!pkt)return -1;
     u32 total=48+(u32)fl; for(u32 i=0;i<total;i++)pkt[i]=0;
-    /* unicast mgmt: NO BMC bit. LS set. EN_HWSEQ handles seq, so DISQSELSEQ off. */
     u32 w0=((u32)fl&0xFFFFu)|((48u&0xFFu)<<16)|(1u<<26);
     *(volatile u32*)(pkt+0)=w0;
-    *(volatile u32*)(pkt+4)=((u32)18u<<8)|((u32)8u<<16);   /* QSEL=MGMT(18), RATE_ID=B */
-    *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10);             /* USE_RATE|DISDATAFB */
-    *(volatile u32*)(pkt+16)=0x00u;                        /* DATARATE=1M CCK */
+    *(volatile u32*)(pkt+4)=((u32)18u<<8)|((u32)8u<<16);
+    *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10);
+    *(volatile u32*)(pkt+16)=0x00u;
     rtw_txdesc_rate(pkt,1);
-    *(volatile u32*)(pkt+32)=(1u<<15);                     /* EN_HWSEQ */
+    *(volatile u32*)(pkt+32)=(1u<<15);
     for(int i=0;i<fl;i++)pkt[48+i]=frame[i];
     u32 i=g_mgidx % g_mgnum; u8* bd=g_mgring+i*16;
     u32 psb=((total-1)/128)+1;
@@ -548,7 +543,7 @@ int rtw_tx_mgmt(u32 m,const u8* frame,int fl){
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
     cpu_wmb();
     rtw_w32(m,0x0310,(u32)(u64)g_mgring); rtw_w16(m,0x0380,(u16)(g_mgnum&0x0FFF));
-    g_mgidx=(g_mgidx+1)%g_mgnum; rtw_w16(m,0x03B0,(u16)g_mgidx);   /* TXBD_IDX_MGMTQ */
+    g_mgidx=(g_mgidx+1)%g_mgnum; rtw_w16(m,0x03B0,(u16)g_mgidx);
     return 0;
 }
 u8 g_eap_stash[512]; int g_eap_stashlen=0;
@@ -564,7 +559,7 @@ int rtw_rx_wait_mgmt(u32 m,u8 want_fc,const u8* from_bssid,u8* body_out,int* bod
             int match=0; int blen=0;
             if(plen>=28 && !crc && hoff+24u<=fe){
                 const u8* fr=base+hoff; u8 fc=fr[0];
-                if((fc&0x0C)==0x08 && g_eap_stashlen==0){   /* stash an early EAPOL msg1 so it isn't lost */
+                if((fc&0x0C)==0x08 && g_eap_stashlen==0 && (!from_bssid||(fr[10]==from_bssid[0]&&fr[11]==from_bssid[1]&&fr[12]==from_bssid[2]&&fr[13]==from_bssid[3]&&fr[14]==from_bssid[4]&&fr[15]==from_bssid[5]))){
                     u32 hl=24u; if(fc&0x80)hl+=2u; u32 llc=hoff+hl;
                     if(llc+8u<=fe && base[llc]==0xAA && base[llc+6]==0x88 && base[llc+7]==0x8E){
                         u32 ep=llc+8; int el2=(int)(fe-ep); if(el2>512)el2=512;
@@ -597,40 +592,36 @@ int rtw_assoc_ies(u8* f,const scan_ap* ap){ int n=0;
 int rtw_assoc(u32 m,const scan_ap* ap,const char* ssid){
     u8 mac[6]; for(int i=0;i<6;i++)mac[i]=rtw_r8(m,0x0610+i);
     { int z=1; for(int i=0;i<6;i++) if(mac[i])z=0; if(z&&rtw_efuse_valid){ for(int i=0;i<6;i++){mac[i]=rtw_logmap[0xD0+i]; rtw_w8(m,0x0610+i,mac[i]);} } }
-    /* program BSSID + infra net type so hw accepts the AP's replies */
     for(int i=0;i<6;i++)rtw_w8(m,0x0618+i,ap->bssid[i]);
     u32 nt=rtw_r32(m,0x0100); nt=(nt&~0x30000u)|(2u<<16); rtw_w32(m,0x0100,nt);
     rtw_set_channel_2g(m,ap->ch?ap->ch:6);
     rtw_rx_ring_up(m);
     u8 f[256]; int fl;
-    /* ---- AUTH request (open system, seq 1) ---- */
     fl=0; f[fl++]=0xB0; f[fl++]=0x00; f[fl++]=0;f[fl++]=0;
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     for(int i=0;i<6;i++)f[fl++]=mac[i];
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     f[fl++]=(u8)(g_seq<<4); f[fl++]=(u8)(g_seq>>4); g_seq++;
-    f[fl++]=0;f[fl++]=0;   /* auth algorithm = open */
-    f[fl++]=1;f[fl++]=0;   /* auth seq = 1 */
-    f[fl++]=0;f[fl++]=0;   /* status = 0 */
+    f[fl++]=0;f[fl++]=0;
+    f[fl++]=1;f[fl++]=0;
+    f[fl++]=0;f[fl++]=0;
     rtw_tx_mgmt(m,f,fl);
     u8 body[256]; int blen=0;
-    if(!rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,800)) return 1;   /* no auth resp */
-    /* auth resp: algo(2) seq(2) status(2) - status 0 == success */
-    if(blen>=6 && (body[4]|(body[5]<<8))!=0) return 2;                 /* auth rejected */
-    /* ---- ASSOC request ---- */
+    if(!rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,800)) return 1;
+    if(blen>=6 && (body[4]|(body[5]<<8))!=0) return 2;
     fl=0; f[fl++]=0x00; f[fl++]=0x00; f[fl++]=0;f[fl++]=0;
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     for(int i=0;i<6;i++)f[fl++]=mac[i];
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     f[fl++]=(u8)(g_seq<<4); f[fl++]=(u8)(g_seq>>4); g_seq++;
-    f[fl++]=0x21;f[fl++]=0x00;  /* capability: ESS + short preamble */
-    f[fl++]=0x0A;f[fl++]=0x00;  /* listen interval */
+    f[fl++]=0x21;f[fl++]=0x00;
+    f[fl++]=0x0A;f[fl++]=0x00;
     int sl=0; while(ssid[sl]&&sl<32)sl++;
-    f[fl++]=0; f[fl++]=(u8)sl; for(int i=0;i<sl;i++)f[fl++]=(u8)ssid[i];   /* SSID IE */
+    f[fl++]=0; f[fl++]=(u8)sl; for(int i=0;i<sl;i++)f[fl++]=(u8)ssid[i];
     fl+=rtw_assoc_ies(f+fl,ap);
     rtw_tx_mgmt(m,f,fl);
-    if(!rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,800)) return 3;   /* no assoc resp */
-    if(blen>=4 && (body[2]|(body[3]<<8))!=0) return 4;                 /* assoc rejected: status */
-    return 0;   /* associated! */
+    if(!rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,800)) return 3;
+    if(blen>=4 && (body[2]|(body[3]<<8))!=0) return 4;
+    return 0;
 }
 

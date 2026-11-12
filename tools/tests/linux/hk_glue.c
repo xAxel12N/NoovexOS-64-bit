@@ -56,3 +56,6 @@ void xfb_track(u64 cr3,u64 va,int n){ (void)cr3; (void)va; (void)n; }
 int xfb_has_window(void){ return 0; }
 int g_xfb_live=0;
 int hk_shm_clear(void){ int n=0; for(int i=0;i<64;i++) if(g_lxshm[i].used){ lx_shm_free(i); n++; } return n; }
+nvol g_vol[VOL_MAX]; int g_vol_n;
+void vol_scan(int force){ (void)force; }
+int virtio_blk_probe(u64* out){ (void)out; return 0; }

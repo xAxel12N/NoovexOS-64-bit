@@ -88,6 +88,7 @@ static void browser_click_now(int px,int py){
         int t=lk_tgt[k];
         if(t==10){ sset(g_url,"example.com"); } else if(t==11){ sset(g_url,"noovexos.site"); } else if(t==13){ sset(g_url,"https://en.wikipedia.org/"); } else if(t==14){ sset(g_url,"about:js"); }
         else if(t==15){ sset(g_url,"https://en.wikipedia.org/wiki/Special:Random"); }
+        else if(t>=40&&t<48){ sset(g_url,g_nt_site[t-40].url); }
         else if(t==20){ sset(g_url,"about:bookmarks"); } else if(t==21){ sset(g_url,"about:history"); }
         else if(t==30){ g_urlfocus=1; g_urlsel=1; g_url[0]=0; g_urllen=0; return; }
         else if(t==1){ g_page=1; return; } else if(t==0){ g_page=0; return; }

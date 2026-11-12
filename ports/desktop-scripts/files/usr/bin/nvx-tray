@@ -1,0 +1,308 @@
+#!/usr/bin/python3
+import os, sys, select, socket, struct, zlib, subprocess, urllib.parse, importlib.machinery, importlib.util
+
+def load_bus():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in ('/usr/bin/nvx-keyring', os.path.join(here, 'nvx-keyring')):
+        if os.path.exists(p):
+            ld = importlib.machinery.SourceFileLoader('nvxbus', p)
+            spec = importlib.util.spec_from_loader('nvxbus', ld)
+            m = importlib.util.module_from_spec(spec); ld.exec_module(m); return m
+    raise SystemExit('nvx-tray: nvx-keyring not found')
+
+WI = 'org.kde.StatusNotifierWatcher'
+WP = '/StatusNotifierWatcher'
+SI = 'org.kde.StatusNotifierItem'
+MI = 'com.canonical.dbusmenu'
+PI = 'org.freedesktop.DBus.Properties'
+DB = ('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus')
+PN = 'org.freedesktop.portal.Desktop'
+PP = '/org/freedesktop/portal/desktop'
+FC = 'org.freedesktop.portal.FileChooser'
+PICK = r'''
+import sys, os, tkinter, tkinter.filedialog as fd
+mode, title, folder, name, multi = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == '1'
+r = tkinter.Tk(); r.withdraw()
+o = {'title': title or None, 'initialdir': folder or os.path.expanduser('~'), 'parent': r}
+if mode == 'save': x = fd.asksaveasfilename(initialfile=name or None, **o); x = [x] if x else []
+elif mode == 'dir': x = fd.askdirectory(**o); x = [x] if x else []
+elif multi: x = list(fd.askopenfilenames(**o))
+else: x = fd.askopenfilename(**o); x = [x] if x else []
+r.destroy()
+for f in x: print(f)
+'''
+
+def png_rgba(data):
+    if data[:8] != b'\x89PNG\r\n\x1a\n': return None
+    o = 8; w = h = 0; bd = ct = il = 0; idat = b''; pal = None; trns = None
+    while o + 8 <= len(data):
+        n, t = struct.unpack('>I4s', data[o:o + 8]); c = data[o + 8:o + 8 + n]; o += 12 + n
+        if t == b'IHDR': w, h, bd, ct, _, _, il = struct.unpack('>IIBBBBB', c)
+        elif t == b'PLTE': pal = c
+        elif t == b'tRNS': trns = c
+        elif t == b'IDAT': idat += c
+        elif t == b'IEND': break
+    if bd != 8 or il or ct not in (2, 3, 6, 0, 4) or not w or not h: return None
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ct]; raw = zlib.decompress(idat); st = w * ch
+    out = bytearray(); prev = bytearray(st); p = 0
+    for y in range(h):
+        f = raw[p]; line = bytearray(raw[p + 1:p + 1 + st]); p += 1 + st
+        for i in range(st):
+            a = line[i - ch] if i >= ch else 0; b = prev[i]; cc = prev[i - ch] if i >= ch else 0
+            if f == 1: line[i] = (line[i] + a) & 255
+            elif f == 2: line[i] = (line[i] + b) & 255
+            elif f == 3: line[i] = (line[i] + (a + b) // 2) & 255
+            elif f == 4:
+                pp = a + b - cc; pa = abs(pp - a); pb = abs(pp - b); pc = abs(pp - cc)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else cc)) & 255
+        for x in range(w):
+            q = line[x * ch:x * ch + ch]
+            if ct == 6: out += bytes([q[3], q[0], q[1], q[2]])
+            elif ct == 2: out += bytes([255, q[0], q[1], q[2]])
+            elif ct == 0: out += bytes([255, q[0], q[0], q[0]])
+            elif ct == 4: out += bytes([q[1], q[0], q[0], q[0]])
+            else:
+                k = q[0]; r, g, bb = pal[k * 3:k * 3 + 3] if pal and k * 3 + 3 <= len(pal) else (0, 0, 0)
+                al = trns[k] if trns and k < len(trns) else 255; out += bytes([al, r, g, bb])
+        prev = line
+    return (w, h, bytes(out))
+
+def scale16(w, h, argb):
+    out = []
+    for y in range(16):
+        sy = min(h - 1, y * h // 16)
+        for x in range(16):
+            sx = min(w - 1, x * w // 16); i = (sy * w + sx) * 4
+            a, r, g, b = argb[i:i + 4]; out.append('%02x%02x%02x%02x' % (a, r, g, b))
+    return ''.join(out)
+
+def clean_label(s):
+    out = []; i = 0
+    while i < len(s):
+        if s[i] == '_':
+            if i + 1 < len(s) and s[i + 1] == '_': out.append('_'); i += 2; continue
+            i += 1; continue
+        out.append(s[i]); i += 1
+    t = ''.join(out)
+    return ''.join(c if 32 <= ord(c) < 127 else '?' for c in t)[:38]
+
+class Tray:
+    def __init__(self, nb):
+        self.nb = nb; nb.SERVICE = WI
+        self.bus = nb.Bus()
+        self.dev = os.open(os.environ.get('NVX_TRAY_DEV', '/dev/nvxtray'), os.O_RDWR)
+        self.items = {}
+        self.dbuf = b''
+        self.bus.call(*DB, 'AddMatch', 's', ["type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged'"])
+        self.bus.call(*DB, 'RequestName', 'su', [PN, 4])
+        self.picks = {}
+        self.bus.signal(WP, WI, 'StatusNotifierHostRegistered', '', [])
+        try:
+            with open('/tmp/.nvx-tray.ready', 'w') as f: f.write(str(os.getpid()))
+        except OSError: pass
+
+    def call(self, *a):
+        self.bus.s.settimeout(5)
+        try: return self.bus.call(*a)
+        except (socket.timeout, OSError): return {'type': 3, 'body': [], 'fields': {}}
+        finally: self.bus.s.settimeout(None)
+
+    def dwrite(self, s):
+        try: os.write(self.dev, s.encode('latin-1', 'replace'))
+        except OSError: pass
+
+    def free_slot(self):
+        for i in range(6):
+            if i not in self.items: return i
+        return -1
+
+    def prop_all(self, svc, path):
+        m = self.call(svc, path, PI, 'GetAll', 's', [SI])
+        if m['type'] != 2 or not m['body']: return {}
+        return {k: self.nb.unvar(v) for k, v in m['body'][0].items()}
+
+    def icon_hex(self, p):
+        pm = p.get('IconPixmap') or []
+        best = None
+        for e in pm:
+            try: w, h, d = e
+            except (TypeError, ValueError): continue
+            if w <= 0 or h <= 0 or len(d) < w * h * 4: continue
+            if best is None or abs(w - 16) < abs(best[0] - 16): best = (w, h, d)
+        if best: return scale16(*best)
+        name = p.get('IconName') or ''; tp = p.get('IconThemePath') or ''
+        for c in ([name] if name.startswith('/') else []) + ([os.path.join(tp, name + '.png'), os.path.join(tp, name)] if tp and name else []):
+            try:
+                with open(c, 'rb') as f: r = png_rgba(f.read())
+                if r: return scale16(*r)
+            except (OSError, ValueError, zlib.error): pass
+        return ''
+
+    def push(self, slot):
+        it = self.items[slot]; p = self.prop_all(it['svc'], it['path'])
+        title = p.get('Title') or p.get('Id') or 'App'
+        tt = p.get('ToolTip')
+        if isinstance(tt, tuple) and len(tt) >= 3 and tt[2]: title = tt[2]
+        it['menu'] = p.get('Menu') or ''
+        it['ismenu'] = bool(p.get('ItemIsMenu'))
+        ic = self.icon_hex(p)
+        t = ''.join(c if 32 <= ord(c) < 127 else '?' for c in str(title))[:46]
+        self.dwrite('add %d %s\x1f%s\n' % (slot, t, ic))
+        self.push_menu(slot)
+
+    def walk(self, node, out, depth):
+        try: nid, props, kids = node
+        except (TypeError, ValueError): return
+        props = {k: self.nb.unvar(v) for k, v in props.items()}
+        if depth > 0 and props.get('visible', True) is not False:
+            if props.get('type') == 'separator': out.append((0, '-'))
+            else:
+                lab = clean_label(str(props.get('label', ''))) or '?'
+                en = props.get('enabled', True) is not False
+                if kids and depth > 0: out.append((-nid if nid else 0, lab))
+                else: out.append((nid if en else -nid, lab))
+        for k in kids or []:
+            self.walk(self.nb.unvar(k), out, depth + 1)
+
+    def push_menu(self, slot):
+        it = self.items.get(slot)
+        if not it or not it['menu'] or it['menu'] == '/': self.dwrite('mnu %d\n' % slot); return
+        m = self.call(it['svc'], it['menu'], MI, 'GetLayout', 'iias', [0, -1, []])
+        out = []
+        if m['type'] == 2 and len(m['body']) >= 2: self.walk(m['body'][1], out, 0)
+        s = 'mnu %d' % slot
+        for nid, lab in out[:16]: s += '\x1f%d\x1e%s' % (nid, lab)
+        self.dwrite(s + '\n')
+
+    def register(self, m, arg):
+        sender = m['fields'].get(7, '')
+        if arg.startswith('/'): svc, path = sender, arg
+        else: svc, path = arg, '/StatusNotifierItem'
+        for s, it in self.items.items():
+            if it['svc'] == svc and it['path'] == path: return
+        slot = self.free_slot()
+        if slot < 0: return
+        owner = sender
+        if not svc.startswith(':'):
+            r = self.call(*DB, 'GetNameOwner', 's', [svc])
+            if r['type'] == 2 and r['body']: owner = r['body'][0]
+        self.items[slot] = {'svc': svc, 'path': path, 'owner': owner, 'menu': '', 'ismenu': False}
+        self.call(*DB, 'AddMatch', 's', ["type='signal',sender='%s'" % owner])
+        self.bus.signal(WP, WI, 'StatusNotifierItemRegistered', 's', [svc + path if svc.startswith(':') else svc])
+        self.push(slot)
+
+    def drop_owner(self, owner):
+        for s in [s for s, it in self.items.items() if it['owner'] == owner or it['svc'] == owner]:
+            it = self.items.pop(s); self.dwrite('del %d\n' % s)
+            self.bus.signal(WP, WI, 'StatusNotifierItemUnregistered', 's', [it['svc']])
+
+    def regs(self):
+        return [it['svc'] for it in self.items.values()]
+
+    def on_msg(self, m):
+        f = m['fields']; path = f.get(1, ''); iface = f.get(2, ''); member = f.get(3, ''); a = m['body']; noreply = m['flags'] & 1
+        if m['type'] == 4:
+            if member == 'NameOwnerChanged' and len(a) >= 3 and a[2] == '': self.drop_owner(a[0])
+            elif member in ('NewIcon', 'NewTitle', 'NewToolTip', 'NewStatus', 'NewAttentionIcon'):
+                snd = f.get(7, '')
+                for s, it in list(self.items.items()):
+                    if it['owner'] == snd: self.push(s)
+            elif member in ('LayoutUpdated', 'ItemsPropertiesUpdated'):
+                snd = f.get(7, '')
+                for s, it in list(self.items.items()):
+                    if it['owner'] == snd: self.push_menu(s)
+            return
+        if m['type'] != 1: return
+        if path == PP or path.startswith(PP + '/'):
+            self.on_portal(m); return
+        def ok(sig='', body=()):
+            if not noreply: self.bus.reply(m, sig, list(body))
+        if member == 'Introspect': ok('s', [self.nb.INTRO % ('<interface name="%s"/>' % WI if path == WP else '<node name="StatusNotifierWatcher"/>')]); return
+        if member == 'Ping': ok(); return
+        props = {'RegisteredStatusNotifierItems': ('as', self.regs()), 'IsStatusNotifierHostRegistered': ('b', True), 'ProtocolVersion': ('i', 0)}
+        if iface == PI and path == WP:
+            if member == 'Get' and len(a) >= 2 and a[1] in props: ok('v', [props[a[1]]]); return
+            if member == 'GetAll': ok('a{sv}', [props]); return
+            if member == 'Set': ok(); return
+        if path == WP and iface in (WI, ''):
+            if member == 'RegisterStatusNotifierItem': ok(); self.register(m, a[0] if a else ''); return
+            if member == 'RegisterStatusNotifierHost': ok(); return
+        if not noreply: self.bus.error(m, 'org.freedesktop.DBus.Error.UnknownMethod', 'No such method %s.%s' % (iface, member))
+
+    def on_portal(self, m):
+        f = m['fields']; path = f.get(1, ''); iface = f.get(2, ''); member = f.get(3, ''); a = m['body']; noreply = m['flags'] & 1
+        def ok(sig='', body=()):
+            if not noreply: self.bus.reply(m, sig, list(body))
+        if member == 'Introspect': ok('s', [self.nb.INTRO % ('<interface name="%s"><property name="version" type="u" access="read"/></interface>' % FC)]); return
+        if iface == 'org.freedesktop.DBus.Properties':
+            if member == 'Get' and len(a) >= 2 and a[0] == FC and a[1] == 'version': ok('v', [('u', 4)]); return
+            if member == 'GetAll' and a and a[0] == FC: ok('a{sv}', [{'version': ('u', 4)}]); return
+        if iface == FC and member in ('OpenFile', 'SaveFile') and len(a) >= 3:
+            opts = {k: self.nb.unvar(v) for k, v in a[2].items()}
+            self.ntok = getattr(self, 'ntok', 0) + 1; tok = str(opts.get('handle_token') or 'nvx%d' % self.ntok)
+            snd = f.get(7, '').lstrip(':').replace('.', '_')
+            h = '%s/request/%s/%s' % (PP, snd, tok)
+            ok('o', [h])
+            folder = opts.get('current_folder') or b''
+            if isinstance(folder, (bytes, bytearray)): folder = bytes(folder).rstrip(b'\0').decode('utf-8', 'replace')
+            mode = 'save' if member == 'SaveFile' else ('dir' if opts.get('directory') else 'open')
+            try:
+                p = subprocess.Popen([sys.executable, '-c', PICK, mode, str(a[1]), str(folder), str(opts.get('current_name') or ''), '1' if opts.get('multiple') else '0'], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+                self.picks[p.stdout.fileno()] = (p, h, b'')
+            except OSError:
+                self.bus.signal(h, 'org.freedesktop.portal.Request', 'Response', 'ua{sv}', [2, {}])
+            return
+        if not noreply: self.bus.error(m, 'org.freedesktop.DBus.Error.UnknownMethod', 'No such method %s.%s' % (iface, member))
+
+    def pick_done(self, fd):
+        p, h, buf = self.picks.pop(fd)
+        try: buf += p.stdout.read()
+        except OSError: pass
+        p.wait()
+        files = [l for l in buf.decode('utf-8', 'replace').split('\n') if l.strip()]
+        if files: self.bus.signal(h, 'org.freedesktop.portal.Request', 'Response', 'ua{sv}', [0, {'uris': ('as', ['file://' + urllib.parse.quote(x) for x in files])}])
+        else: self.bus.signal(h, 'org.freedesktop.portal.Request', 'Response', 'ua{sv}', [1, {}])
+
+    def on_dev(self, line):
+        p = line.split()
+        if len(p) < 2 or not p[1].isdigit(): return
+        slot = int(p[1]); it = self.items.get(slot)
+        if not it: return
+        if p[0] == 'act':
+            if it['ismenu'] and it['menu']: return
+            self.bus.send(1, [(1, ('o', it['path'])), (2, ('s', SI)), (3, ('s', 'Activate')), (6, ('s', it['svc']))], 'ii', [0, 0], 1)
+        elif p[0] == 'menu':
+            self.bus.send(1, [(1, ('o', it['path'])), (2, ('s', SI)), (3, ('s', 'ContextMenu')), (6, ('s', it['svc']))], 'ii', [0, 0], 1)
+        elif p[0] == 'open' and it['menu']:
+            self.call(it['svc'], it['menu'], MI, 'AboutToShow', 'i', [0]); self.push_menu(slot)
+        elif p[0] == 'sel' and len(p) >= 3 and it['menu']:
+            self.bus.send(1, [(1, ('o', it['menu'])), (2, ('s', MI)), (3, ('s', 'Event')), (6, ('s', it['svc']))], 'isvu', [int(p[2]), 'clicked', ('i', 0), 0], 1)
+
+    def run(self):
+        while True:
+            if not self.bus.pending and len(self.bus.buf) < 16:
+                r, _, _ = select.select([self.bus.s, self.dev] + list(self.picks.keys()), [], [])
+            else:
+                r = []
+            for fd in [x for x in r if x in self.picks]:
+                try: self.pick_done(fd)
+                except Exception as e: sys.stderr.write('nvx-tray: %r\n' % (e,))
+            if self.dev in r:
+                try: d = os.read(self.dev, 1024)
+                except OSError: d = b''
+                self.dbuf += d
+                while b'\n' in self.dbuf:
+                    l, self.dbuf = self.dbuf.split(b'\n', 1)
+                    try: self.on_dev(l.decode('latin-1'))
+                    except Exception as e: sys.stderr.write('nvx-tray: %r\n' % (e,))
+            if self.bus.s in r or self.bus.pending or len(self.bus.buf) >= 16:
+                m = self.bus.recv()
+                try: self.on_msg(m)
+                except Exception as e: sys.stderr.write('nvx-tray: %r\n' % (e,))
+
+def main():
+    if '--version' in sys.argv: print('nvx-tray 1'); return
+    Tray(load_bus()).run()
+
+if __name__ == '__main__':
+    main()

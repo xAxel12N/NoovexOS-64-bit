@@ -51,10 +51,19 @@ static void about_page(const char* p){
     web_load_html("about:blank","<html><body><h1>Unknown about: page</h1></body></html>",52,0);
 }
 
+void read_clock(int*hh,int*mm,int*ss,int*yr,int*mo,int*dy);
+static const struct { const char* label; const char* url; u32 col; char ini; } g_nt_site[8]={
+    {"YouTube","https://www.youtube.com/",0xFF0000u,'Y'},{"Wikipedia","https://en.wikipedia.org/",0x5F6368u,'W'},{"GitHub","https://github.com/",0x24292Fu,'G'},{"Google","https://www.google.com/",0x4285F4u,'G'},
+    {"DuckDuckGo","https://duckduckgo.com/",0xDE5833u,'D'},{"News","https://news.ycombinator.com/",0xFF6600u,'N'},{"NoovexOS","https://noovexos.site/",0x34A853u,'N'},{"Random article","https://en.wikipedia.org/wiki/Special:Random",0x9334E6u,'?'}};
 static int g_nav_from_page;
 void browser_go(int push){
     while(g_url[0]==' '){ int i=0; for(;g_url[i];i++)g_url[i]=g_url[i+1]; }
     g_urllen=slen(g_url);
+    { const char* u=g_url; if(istarts_(u,"https://"))u+=8; else if(istarts_(u,"http://"))u+=7; if(istarts_(u,"www."))u+=4; const char* c=0;
+      if(istarts_(u,"discord.gg/"))c=u+11; else if(istarts_(u,"discord.com/invite/"))c=u+19; else if(istarts_(u,"discordapp.com/invite/"))c=u+22;
+      if(c){ char code[40]; int k=0; while(k<39&&((c[k]>='a'&&c[k]<='z')||(c[k]>='A'&&c[k]<='Z')||(c[k]>='0'&&c[k]<='9')||c[k]=='-'))code[k]=c[k],k++; code[k]=0;
+        extern int xapps_is_gui(const char*); extern void xrun_launch(const char*);
+        if(k>=2&&(!c[k]||c[k]=='/'||c[k]=='?')&&xapps_is_gui("discord")){ static char ln[120]; char* w=ln; w=scopy(w,"discord --url -- discord://-/invite/"); w=scopy(w,code); *w=0; xrun_launch(ln); toast("Opening the invite in Discord"); return; } } }
     if(istarts_(g_url,"about:")){
         if(push && g_cururl[0] && !seq(g_cururl,g_url)){ if(backn<16)sset(backstk[backn++],g_cururl); else { for(int i=1;i<16;i++)sset(backstk[i-1],backstk[i]); sset(backstk[15],g_cururl); } }
         if(istarts_(g_url+6,"perf")&&g_cururl[0]&&!istarts_(g_cururl,"about:")) perf_after();
@@ -78,6 +87,7 @@ void browser_go(int push){
     if(!g_host[0]){ nwk_status("Enter a URL, e.g. example.com"); return; }
     { extern int web_err_total(void); extern void nwk_error_mark(const char*); nwk_error_mark(full); g_go_err0=web_err_total(); extern void web_pending_clear(void); web_pending_clear(); }
     if(push && g_cururl[0] && !seq(g_cururl,full)){ if(backn<16)sset(backstk[backn++],g_cururl); else { for(int i=1;i<16;i++)sset(backstk[i-1],backstk[i]); sset(backstk[15],g_cururl); } }
+    if(!g_post_body&&yt_try(full)){ sset(g_cururl,full); sset(g_url,full); g_urllen=slen(g_url); return; }
     { char b[300],*p=b; p=scopy(p,"Connecting to "); p=scopy(p,g_host); *p=0; nwk_status(b); }
     g_title[0]=0; compose_present();
     nwk_resp r;
@@ -114,6 +124,7 @@ void browser_go(int push){
     if(r.status>=400){ char b[80],*p=b; p=scopy(p,"HTTP error "); p=udec(p,(u32)r.status); *p=0; nwk_status(b); }
     else nwk_status("Done");
 }
+char g_open_req[512];
 void nvx_open_url(const char* u){ sset(g_url,u); g_urllen=slen(g_url); open_win(W_BROWSER); browser_go(1); }
 
 static void web_process_nav(nwe_req* r){
@@ -142,6 +153,7 @@ void browser_profile_switch(void){
 }
 static void tab_new(void){ if(g_ntab>=NTAB)return; save_tab(g_tab); int t=g_ntab++; g_tab=t; tabs[t].used=1; tabs[t].url[0]=0; tabs[t].title[0]=0;
     g_url[0]=0; g_urllen=0; g_cururl[0]=0; g_host[0]=0; g_title[0]=0; g_isimg=0; g_page=0; backn=0; g_haspage=0; sset(web_stat,"New Tab"); }
+void nvx_open_url_tab(const char* u){ if(WN[W_BROWSER].open&&g_cururl[0]&&g_ntab<NTAB)tab_new(); nvx_open_url(u); }
 static void tab_close(int t){ if(g_ntab<=1||t<0||t>=g_ntab)return; int cur=(t==g_tab); if(!cur)save_tab(g_tab); for(int k=t;k<g_ntab-1;k++)tabs[k]=tabs[k+1]; g_ntab--; if(!cur){ if(g_tab>t)g_tab--; return; } if(g_tab>=g_ntab)g_tab=g_ntab-1; load_tab(g_tab); }
 static void browser_save(void){
     if(g_page!=3||!g_lastdoc){ sset(web_stat,"Nothing to save"); return; }
@@ -358,7 +370,10 @@ void browser_draw(int i){
         char bb[32],*bp=bb; bp=scopy(bp,"Bookmarks"); *bp=0; char hb2[32],*hp=hb2; hp=scopy(hp,"History"); *hp=0;
         { int rx=cx+cw-18; const char* tl[3]={"About",hb2,bb}; int tt[3]={1,21,20};
           for(int k=0;k<3;k++){ int w=pw_str((char*)tl[k],1); rx-=w; pdstr(rx,cy+16,(char*)tl[k],rgb(32,33,36),1); lk_tgt[lk_n]=tt[k]; lk_y[lk_n]=cy+12; lk_bx[lk_n]=rx; lk_bw[lk_n]=w; lk_bh[lk_n]=20; lk_n++; rx-=18; } }
-        int ly=cy+(ch>460?ch/2-170:44);
+        int ly=cy+(ch>520?ch/2-200:44);
+        { int hh,mm,ss,yy,mo,dd; read_clock(&hh,&mm,&ss,&yy,&mo,&dd); (void)ss;(void)yy;(void)mo;(void)dd; const char* gr=hh<5?"Good night":hh<12?"Good morning":hh<18?"Good afternoon":"Good evening";
+          char gb[64],*gp=gb; gp=scopy(gp,gr); gp=scopy(gp,"  -  "); *gp++=(char)('0'+hh/10); *gp++=(char)('0'+hh%10); *gp++=':'; *gp++=(char)('0'+mm/10); *gp++=(char)('0'+mm%10); *gp=0;
+          if(ch>520)pdstr_ctr(ccx,ly-34,gb,rgb(95,99,104),1); }
         { const char* L="Noovex"; u32 lc[6]={rgb(66,133,244),rgb(234,67,53),rgb(251,188,5),rgb(66,133,244),rgb(52,168,83),rgb(234,67,53)}; int sz=4; int tw=0; char c1[2]={0,0};
           for(int k=0;k<6;k++){ c1[0]=L[k]; tw+=pw_str(c1,sz); } int lx=ccx-tw/2;
           for(int k=0;k<6;k++){ c1[0]=L[k]; pdstr(lx,ly,c1,lc[k],sz); pdstr(lx+1,ly,c1,lc[k],sz); lx+=pw_str(c1,sz); } }
@@ -372,14 +387,13 @@ void browser_draw(int i){
         { const char* bl[2]={"Noovex Search","I'm Feeling Lucky"}; int bt[2]={30,15}; int bw[2]; int gap=12, tot=0; for(int k=0;k<2;k++){ bw[k]=pw_str((char*)bl[k],1)+32; tot+=bw[k]; } tot+=gap; int bx=ccx-tot/2, by=pyp+ph+28;
           for(int k=0;k<2;k++){ int h2=(mx>=bx&&mx<bx+bw[k]&&my>=by&&my<by+36); fill_round(bx,by,bw[k],36,4,15,h2?rgb(232,234,237):rgb(248,249,250)); if(h2){ fill_rect(bx+4,by,bw[k]-8,1,rgb(218,220,224)); fill_rect(bx+4,by+35,bw[k]-8,1,rgb(218,220,224)); }
             pdstr_ctr(bx+bw[k]/2,by+11,(char*)bl[k],rgb(60,64,67),1); lk_tgt[lk_n]=bt[k]; lk_y[lk_n]=by; lk_bx[lk_n]=bx; lk_bw[lk_n]=bw[k]; lk_bh[lk_n]=36; lk_n++; bx+=bw[k]+gap; } }
-        { const char* tlabel[4]={"Wikipedia","Example","Engine demo","noovexos"}; int ttgt[4]={13,10,14,11};
-          u32 tcol[4]={rgb(95,99,104),rgb(52,168,83),rgb(66,133,244),rgb(234,67,53)}; char tini[4]={'W','E','J','M'};
-          int nt=4, tw=112, gap=8, tot=nt*tw+(nt-1)*gap; if(tot>CW-40){ tw=(CW-40-(nt-1)*gap)/nt; tot=nt*tw+(nt-1)*gap; } int tx0=ccx-tot/2, ty=pyp+ph+96;
-          if(ty+104<=cy+ch) for(int t=0;t<nt;t++){ int txx=tx0+t*(tw+gap); int h2=(mx>=txx&&mx<txx+tw&&my>=ty&&my<ty+104);
-            if(h2) fill_round(txx,ty,tw,104,8,15,rgb(241,243,244));
-            fill_circle(txx+tw/2,ty+36,24,rgb(241,243,244)); fill_circle(txx+tw/2,ty+36,14,tcol[t]); { char c1[2]={tini[t],0}; pdstr_ctr(txx+tw/2,ty+28,c1,rgb(255,255,255),1); }
-            pdstr_ctr(txx+tw/2,ty+74,(char*)tlabel[t],rgb(32,33,36),1);
-            lk_tgt[lk_n]=ttgt[t]; lk_y[lk_n]=ty; lk_bx[lk_n]=txx; lk_bw[lk_n]=tw; lk_bh[lk_n]=104; lk_n++; } }
+        { int nt=8, cols=CW>=760?8:4, rows=(nt+cols-1)/cols, tw=96, gap=10; int tot=cols*tw+(cols-1)*gap; if(tot>CW-40){ tw=(CW-40-(cols-1)*gap)/cols; tot=cols*tw+(cols-1)*gap; }
+          int tx0=ccx-tot/2, ty0=pyp+ph+88;
+          for(int t=0;t<nt;t++){ int txx=tx0+(t%cols)*(tw+gap), ty=ty0+(t/cols)*100; if(ty+92>cy+ch-44)break; int h2=(mx>=txx&&mx<txx+tw&&my>=ty&&my<ty+92);
+            if(h2) fill_round(txx,ty,tw,92,8,15,rgb(241,243,244));
+            fill_circle(txx+tw/2,ty+32,24,rgb(241,243,244)); fill_circle(txx+tw/2,ty+32,16,g_nt_site[t].col); { char c1[2]={g_nt_site[t].ini,0}; pdstr_ctr(txx+tw/2,ty+24,c1,rgb(255,255,255),1); }
+            pdstr_ctr(txx+tw/2,ty+66,(char*)g_nt_site[t].label,rgb(32,33,36),1);
+            lk_tgt[lk_n]=40+t; lk_y[lk_n]=ty; lk_bx[lk_n]=txx; lk_bw[lk_n]=tw; lk_bh[lk_n]=92; lk_n++; } (void)rows; }
         { int fy=cy+ch-40; if(fy>pyp+ph+210){ fill_rect(cx,fy,cw,40,rgb(242,242,242)); fill_rect(cx,fy,cw,1,rgb(218,220,224));
             if(g_nvx_signedin){ char ac[100],*ap=ac; ap=scopy(ap,"Signed in as ");ap=scopy(ap,g_nvx_user[0]?g_nvx_user:g_nvx_name); *ap=0; pdstr(cx+24,fy+13,ac,rgb(112,117,122),1); }
             else pdstr(cx+24,fy+13,"NoovexOS",rgb(112,117,122),1);

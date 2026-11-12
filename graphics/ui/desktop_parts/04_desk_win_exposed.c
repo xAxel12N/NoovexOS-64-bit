@@ -62,6 +62,7 @@ void compose_present(void){ extern u64 hr_ns(void); u64 t0=hr_ns(); g_comp_depth
 static void compose_present_body(void){
     { extern int pm_screen_off_draw(void); if(pm_screen_off_draw())return; }
     compose_build();
+    { extern void bkl_yield(void); bkl_yield(); }
     fps_cnt++; if(g_ticks-fps_t0>=100){ fps_val=fps_cnt; fps_cnt=0; fps_t0=g_ticks; }
     if(g_fps_overlay){ char b[16],*p=b; p=udec(p,(u32)fps_val); p=scopy(p," FPS"); *p=0;
         extern u32 g_gfx_frame_us, g_gfx_gpu_us, g_gfx_pres_us, g_gq_frame_syncs; extern int g_nvd_on; extern int nvgsp_present_on(void);

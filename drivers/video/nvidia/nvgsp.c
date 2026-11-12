@@ -18,3 +18,5 @@
 #include "drivers/video/nvidia/nvgsp_parts/02_boot_gsp.c"
 #include "drivers/video/nvidia/nvgsp_parts/03_nvgsp_fb_present.c"
 #include "drivers/video/nvidia/nvgsp_parts/04_nvgsp_tick.c"
+#include "drivers/video/nvidia/nvgsp_parts/05_nvdisp_mode.c"
+#include "drivers/video/nvidia/nvgsp_parts/06_nv3d.c"

@@ -20,7 +20,20 @@ extern void run_cmd(char* line);
 static int xs_len(const char* s){ int n=0; while(s[n])n++; return n; }
 static int xs_pre(const char* s,const char* p){ while(*p){ if(*s!=*p)return 0; s++; p++; } return 1; }
 int g_apps_gen;
-static const u8* anyread(const char* path,u32* len){ const u8* d=sysroot_get(path,len,0); if(d)return d; int k=k_find_file(path); if(k>=0){ *len=(u32)FS[k].len; return (const u8*)fsd(k); } return 0; }
+static const u8* anyread1(const char* path,u32* len){ const u8* d=sysroot_get(path,len,0); if(d)return d; int k=k_find_file(path); if(k>=0){ *len=(u32)FS[k].len; return (const u8*)fsd(k); } return 0; }
+static const u8* anyread(const char* path,u32* len){
+    const u8* d=anyread1(path,len); if(d)return d;
+    extern int sysroot_readlink(const char*,char*,int); extern int ux_resolve_links(const char*,char*,int);
+    static char cur[192], tg[192], nx[192]; int k=0; for(;path[k]&&k<191;k++)cur[k]=path[k]; cur[k]=0;
+    for(int hop=0;hop<8;hop++){
+        int n=sysroot_readlink(cur,tg,(int)sizeof tg); if(n<=0){ if(ux_resolve_links(cur,nx,(int)sizeof nx)==0&&nx[0]=='/'){ d=anyread1(nx,len); if(d)return d; } return 0; }
+        if(n>=(int)sizeof tg)n=(int)sizeof tg-1; tg[n]=0;
+        if(tg[0]=='/'){ k=0; for(;tg[k]&&k<191;k++)nx[k]=tg[k]; nx[k]=0; }
+        else { int b=0; for(int i=0;cur[i];i++) if(cur[i]=='/')b=i; int o=0; for(int i=0;i<=b&&o<191;i++)nx[o++]=cur[i]; nx[o]=0;
+            const char* t=tg; while(t[0]=='.'&&t[1]=='.'&&t[2]=='/'){ t+=3; if(o>1){ o--; while(o>0&&nx[o-1]!='/')o--; nx[o]=0; } } while(t[0]=='.'&&t[1]=='/')t+=2;
+            for(int i=0;t[i]&&o<191;i++)nx[o++]=t[i]; nx[o]=0; }
+        d=anyread1(nx,len); if(d)return d; k=0; for(;nx[k]&&k<191;k++)cur[k]=nx[k]; cur[k]=0; }
+    return 0; }
 static u32* load_png_scaled(const char* path){
     u32 L=0; const u8* d=anyread(path,&L); if(!d||L<8||d[0]!=0x89||d[1]!='P')return 0;
     int cap=1024*1024*4; u8* tmp=(u8*)kmalloc((unsigned long)cap); if(!tmp)return 0; int w=0,h=0;
@@ -101,6 +114,7 @@ static void ff_cause(int exited,int code){
     extern u32 g_enosys_nr[48], g_enosys_last[48]; extern int g_enosys_n; extern u32 g_gap_kind[40], g_gap_last[40]; extern u64 g_gap_val[40]; extern int g_gap_n;
     static const u16 benign[]={334,425,426,427,444,445,446,435,437,439,0};
     char b[160],*p=b; tcol(rgb(240,190,90)); rp("Most likely cause:\n"); tcol(WHT);
+    { int k=k_find_file(g_wlog); if(k>=0){ const char* d=fsd(k); int n=FS[k].len; const char* w="nvx-pack: "; for(int i=0;i+10<n;i++){ int j=0; while(w[j]&&d[i+j]==w[j])j++; if(!w[j]){ int e=i+10; while(e<n&&d[e]!='\n'&&e-i<150)e++; char m[160]; int q=0; m[q++]=' '; m[q++]=' '; for(int t=i+10;t<e&&q<156;t++)m[q++]=d[t]; m[q++]='\n'; m[q]=0; rp("  the program files of the app were not loaded:\n"); rp(m); return; } } } }
     if(exited&&code==127){ int k=k_find_file(g_wlog); int ni=0; if(k>=0){ const char* d=fsd(k); int n=FS[k].len; for(int i=0;i+13<n;i++){ const char* w="not installed"; int j=0; while(w[j]&&d[i+j]==w[j])j++; if(!w[j]){ ni=1; break; } } }
         p=scopy(p,ni?"  ":"  the program or a library it needs was not found"); if(ni){ p=scopy(p,g_wt); p=scopy(p," is not installed (see the log lines below)"); } p=scopy(p,".\n"); *p=0; rp(b); return; }
     int bi=-1; u32 bs=0; for(int i=0;i<g_enosys_n;i++){ int ok=1; for(int k=0;benign[k];k++) if(g_enosys_nr[i]==benign[k])ok=0; if(ok&&g_enosys_last[i]>=bs){ bs=g_enosys_last[i]; bi=i; } }
@@ -208,6 +222,7 @@ void firefox_tick(void){
         if(code==0&&g_ff_full){ g_ff_watch=0; g_ff_onwin=0; xfull_exit(); { extern void xover_invalidate(void); xover_invalidate(); } return; }
         g_ff_watch=0; g_ff_onwin=0; xfull_exit(); ff_report(1,code); return; }
     if(g_ff_lost==1&&g_ticks-g_ff_lt>1500){ g_ff_lost=2; ff_report(0,0); }
+    { extern const char* pack_status(void); const char* ps=pack_status(); if(ps[0]=='b'&&ps[1]=='u')g_ff_t0=g_ticks; }
     if(g_ff_onwin&&!g_ff_warned&&g_ticks-g_ff_t0>12000){ g_ff_warned=1; ff_report(0,0); } }
 void app_launch(int id){
     if(id==1001){ x_launch("idle3"); return; }

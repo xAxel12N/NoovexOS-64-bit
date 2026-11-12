@@ -207,6 +207,10 @@ int main(void){
     reset_mouse(); { fin f[2]={{1,500,200,1,1},{2,700,200,1,1}}; report(f,2,2,0); step(); f[0].tip=f[1].tip=0; report(f,2,2,0); step(); int r=mouse_rbtn; step(); chk("two-finger tap: right click", r&&!mouse_rbtn&&!mouse_btn); }
     reset_mouse(); { fin f[2]={{1,500,200,1,1},{2,700,200,1,1}}; for(int i=0;i<14;i++){ f[0].y=f[1].y=200+i*10; report(f,2,2,0); step(); } f[0].tip=f[1].tip=0; report(f,2,2,0); step(); step();
         chk("two fingers moving down scroll (natural direction), no pointer motion, no click", mouse_scroll>=5&&mouse_dx==0&&mouse_dy==0&&!mouse_btn&&!mouse_rbtn); }
+    reset_mouse(); { fin f[2]={{1,500,150,1,1},{2,700,150,1,1}}; for(int i=0;i<8;i++){ f[0].y=f[1].y=150+i*45; report(f,2,2,0); step(); } f[0].tip=f[1].tip=0; report(f,2,2,0); step(); int at=mouse_scroll; for(int i=0;i<30;i++)step(); int mid=mouse_scroll; for(int i=0;i<150;i++)step(); int end=mouse_scroll; for(int i=0;i<50;i++)step();
+        chk("two-finger flick keeps scrolling after the fingers lift, then stops", at>0&&mid>at&&end>=mid&&mouse_scroll==end&&end<at*6+20&&!mouse_btn&&!mouse_rbtn); }
+    reset_mouse(); { fin f[2]={{1,500,150,1,1},{2,700,150,1,1}}; for(int i=0;i<8;i++){ f[0].y=f[1].y=150+i*45; report(f,2,2,0); step(); } f[0].tip=f[1].tip=0; report(f,2,2,0); step(); step(); step(); f[0].tip=f[1].tip=1; f[0].y=f[1].y=500; report(f,1,1,0); step(); int at=mouse_scroll; for(int i=0;i<30;i++){ report(f,1,1,0); step(); } f[0].tip=0; report(f,1,1,0); step();
+        chk("touching the pad again stops the coasting at once", mouse_scroll==at&&!mouse_btn); }
     reset_mouse(); { fin f[2]={{1,500,200,1,1},{2,700,200,1,1}}; for(int i=0;i<14;i++){ f[0].x=f[1].x=500-i*12+(i?0:0); f[1].x=700-i*12; report(f,2,2,0); step(); } f[0].tip=f[1].tip=0; report(f,2,2,0); step(); step();
         chk("two fingers moving left scroll horizontally", mouse_hscroll!=0&&mouse_scroll==0); }
     reset_mouse(); { fin f[3]={{1,400,500,1,1},{2,550,500,1,1},{3,700,500,1,1}}; for(int i=0;i<14;i++){ for(int k=0;k<3;k++)f[k].y=500-i*20; report(f,3,3,0); step(); } int g=g_gesture; for(int k=0;k<3;k++)f[k].tip=0; report(f,3,3,0); step(); step();

@@ -1,4 +1,5 @@
-import sys, os, lzma, struct
+import sys, os, lzma, struct, ctypes
+from concurrent.futures import ProcessPoolExecutor
 
 BLK = 8 << 20
 out = sys.argv[1]
@@ -33,17 +34,47 @@ for name, path in items:
 blocks = []
 entries = []
 
-def pack(group, x86):
+ZLEVEL = int(os.environ.get('NVX_SR_ZSTD', '19'))
+try:
+    ctypes.CDLL('libzstd.so.1')
+except OSError:
+    if ZLEVEL > 0:
+        print('  WARNING: libzstd.so.1 not found on the build machine, packing programs with xz (slower start)')
+    ZLEVEL = 0
+_zl = None
+def zstd_compress(b):
+    global _zl
+    if _zl is None:
+        _zl = ctypes.CDLL('libzstd.so.1')
+        _zl.ZSTD_compressBound.restype = ctypes.c_size_t
+        _zl.ZSTD_compress.restype = ctypes.c_size_t
+        _zl.ZSTD_compress.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        _zl.ZSTD_isError.restype = ctypes.c_uint
+        _zl.ZSTD_isError.argtypes = [ctypes.c_size_t]
+    cap = _zl.ZSTD_compressBound(len(b))
+    o = ctypes.create_string_buffer(cap)
+    n = _zl.ZSTD_compress(o, cap, b, len(b), ZLEVEL)
+    if _zl.ZSTD_isError(n):
+        raise SystemExit('zstd compression failed')
+    return o.raw[:n]
+
+def compress_block(job):
+    kind, data, x86 = job
+    if kind == 3:
+        return 3, zstd_compress(data), len(data)
+    filt = [{'id': lzma.FILTER_X86}] if x86 else []
+    filt.append({'id': lzma.FILTER_LZMA2, 'preset': 9 | lzma.PRESET_EXTREME, 'dict_size': max(1 << 16, min(BLK, len(data)))})
+    return 2, lzma.compress(data, format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=filt), len(data)
+
+jobs = []
+def pack(group, x86, kind):
     cur = bytearray()
     pend = []
     def flush():
         if not pend:
             return
-        filt = [{'id': lzma.FILTER_X86}] if x86 else []
-        filt.append({'id': lzma.FILTER_LZMA2, 'preset': 9 | lzma.PRESET_EXTREME, 'dict_size': max(1 << 16, min(BLK, len(cur)))})
-        z = lzma.compress(bytes(cur), format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=filt)
-        bi = len(blocks)
-        blocks.append((2, z, len(cur)))
+        bi = len(jobs)
+        jobs.append((kind, bytes(cur), x86))
         for name, mode, off, ln in pend:
             entries.append((name, '', mode, bi, off, ln))
         cur.clear()
@@ -55,8 +86,14 @@ def pack(group, x86):
         cur += data
     flush()
 
-pack(elfs, True)
-pack(others, False)
+pack(elfs, True, 3 if ZLEVEL > 0 else 2)
+ZPRE = tuple(x for x in os.environ.get('NVX_SR_ZSTD_DIRS', '/opt/Vesktop/').split(':') if x)
+fast = [o for o in others if ZLEVEL > 0 and o[0].startswith(ZPRE)]
+others = [o for o in others if not (ZLEVEL > 0 and o[0].startswith(ZPRE))]
+pack(fast, False, 3)
+pack(others, False, 3 if ZLEVEL > 0 and os.environ.get('NVX_SR_ALLZSTD') else 2)
+with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as ex:
+    blocks = list(ex.map(compress_block, jobs))
 for name, tgt in links:
     entries.append((name, tgt, 2, 0, 0, 0))
 
@@ -84,4 +121,4 @@ res += strtab
 res += b'\0' * (data_off - len(res))
 res += blob
 open(out, 'wb').write(bytes(res))
-print(f"  sysroot: {len(entries)} entries in {len(blocks)} xz blocks, {len(res)} bytes, {sum(len(d) for _, _, d in elfs + others)} bytes unpacked")
+print(f"  sysroot: {len(entries)} entries in {len(blocks)} blocks ({sum(1 for b in blocks if b[0] == 3)} zstd, {sum(1 for b in blocks if b[0] == 2)} xz), {len(res)} bytes, {sum(len(d) for _, _, d in elfs + others)} bytes unpacked")

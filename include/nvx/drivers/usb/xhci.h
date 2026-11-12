@@ -8,7 +8,7 @@
 #define XHID_MAX 10
 #define XHUB_MAX 6
 typedef struct { int used, ctl, reg, slot, root, depth, speed, nports, ttt, tt_slot, tt_port, parent, pport, ss; u32 route, e0_enq, e0_cyc, conn; } xhub_t;
-typedef struct { u8 id, kind; short btn_off, btn_cnt, x_off, x_sz, y_off, y_sz, w_off, w_sz, mod_off, arr_off, arr_cnt, bm_off, bm_min, bm_cnt; } hidlay_t;
+typedef struct { u8 id, kind; short btn_off, btn_cnt, x_off, x_sz, y_off, y_sz, w_off, w_sz, mod_off, arr_off, arr_cnt, bm_off, bm_min, bm_cnt, cc_off, cc_sz, cc_cnt, cv_cnt, cc_base; u16 cv_us[12]; short cv_off[12]; } hidlay_t;
 #define HIDLAY_MAX 4
 struct nvx_ufs_t { char name[16]; u32 size, clus; };
 
@@ -55,7 +55,7 @@ void xhc_select(int i);
 void usb_hotplug_poll(void);
 
 #define USBDEV_MAX 16
-typedef struct { int used, ctl, port, cam, prn, hid; u16 vid, pid; char kind[32]; char name[40]; u64 t; } usbdev_t;
+typedef struct { int used, ctl, port, cam, prn, hid; u16 vid, pid; char kind[32]; char name[40]; u64 t; int cls; } usbdev_t;
 extern usbdev_t g_usbdev[USBDEV_MAX]; extern int g_usbdev_n; extern u32 g_usbdev_gen;
 void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name);
 void usbdev_gone(int port);

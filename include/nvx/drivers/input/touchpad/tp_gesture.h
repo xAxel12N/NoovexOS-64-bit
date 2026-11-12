@@ -26,11 +26,14 @@ typedef struct {
     tptrack tr[TPF_MAX]; int ntr;
     u32 last_ms, tap_ms; int tap_armed, drag, drag_moved; int v_prev;
     u32 zones_used, palms, dwt_skips, drags;
+    int kv, kh, kvv, kvh, kon, kzoom; u32 kt, kmove; u32 coasts;
 } tpeng;
 
 extern int g_tp_tap, g_tp_speed, g_tp_natural, g_tp_dwt, g_tp_zones;
 extern volatile u32 g_kbd_last_tick;
 void tpe_init(tpeng* E,int xmin,int xmax,int ymin,int ymax,u32 xum,u32 yum);
 void tpe_frame(tpeng* E,const tpcontact* c,int n,int button,u32 ms,tpout* o);
+int tpe_coast(tpeng* E,tpout* o);
+extern int g_tp_kinetic;
 
 #endif

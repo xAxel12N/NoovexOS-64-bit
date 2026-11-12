@@ -197,6 +197,16 @@ def main():
         assert len(sr) == sz and (zlib.crc32(sr) & 0xffffffff) == crc, f"{src} does not match the kernel (want {sz} bytes crc {crc:08X})"
         tree.append((f'sysroot/{crc:08X}.BIN', sr))
         print(f'  + Linux files: /sysroot/{crc:08X}.BIN ({len(sr)} bytes)')
+    _pk = os.environ.get('NVX_PACKS') or os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), '..', 'build', 'packs')
+    if os.path.isdir(_pk):
+        for _f in sorted(os.listdir(_pk)):
+            if _f.upper().endswith('.NVS') and not any(t[0].upper() == 'PACKS/' + _f.upper() for t in tree):
+                tree.append(('PACKS/' + _f.upper(), open(os.path.join(_pk, _f), 'rb').read()))
+                print(f'  + app pack: /PACKS/{_f.upper()} ({os.path.getsize(os.path.join(_pk, _f))} bytes)')
+    _inst = os.environ.get('NVX_INSTALLER') or os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), '..', 'build', 'install.nvx')
+    if os.path.exists(_inst) and not any(t[0].lower() == 'install.nvx' for t in tree):
+        tree.append(('INSTALL.NVX', open(_inst, 'rb').read()))
+        print(f'  + installer program: /INSTALL.NVX ({os.path.getsize(_inst)} bytes)')
     assert len(boot) == 512 and len(stage2) <= 63 * S512, "boot must be 512B, stage2 <= 63 sectors"
 
     # --- FAT32 partition sized to contents (+ 8 MB slack), min 16 MB ---

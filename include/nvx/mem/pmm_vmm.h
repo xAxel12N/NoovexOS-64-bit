@@ -14,11 +14,20 @@ typedef struct { u64 s,e; u32 t; } mmreg;
 #define PTE_COW  0x200ULL
 #define PTE_LAZY 0x400ULL
 #define PTE_SHR  0x800ULL
+#define PTE_FILE 0x100ULL
+#define PTE_FH_SHIFT 32
+#define PTE_FP_MASK 0x00000000FFFFF000ULL
+static inline u64 vm_file_marker(u32 h,u32 pg,u64 bits){ return 0x400ULL|PTE_FILE|((u64)(pg&0xFFFFFu)<<12)|((u64)(h&0xFFFFFu)<<PTE_FH_SHIFT)|(bits&(0x0010000000000000ULL|0x0020000000000000ULL|0x8000000000000000ULL)); }
 #define PTE_ADDR 0x000FFFFFFFFFF000ULL
 #define PTE_PRO  0x0010000000000000ULL
 #define PTE_PNO  0x0020000000000000ULL
 #define PTE_NX   0x8000000000000000ULL
 #define PTE_PBITS (PTE_PRO|PTE_PNO|PTE_NX)
+#define PTE_SWP  0x80ULL
+#define PTE_ANON 0x0040000000000000ULL
+int swap_in(u64 e,u64 dst) __attribute__((weak)); int swap_read(u64 e,u64 dst) __attribute__((weak)); int swap_dup(u64 e) __attribute__((weak)); void swap_put(u64 e) __attribute__((weak));
+u32 mem_reclaim(u32 want) __attribute__((weak)); u32 swap_pageout(u64 cr3,u64 a,u64 e) __attribute__((weak));
+static inline int pte_is_swap(u64 x){ return (x&(1ULL|PTE_SWP|PTE_LAZY|PTE_FILE))==(PTE_SWP|PTE_LAZY); }
 extern int g_nx_on;
 u64 vm_prot_bits(int prot);
 u64 vm_live(u64 pa,u64 old);
@@ -56,6 +65,7 @@ u64 mm_ram_total(void);
 u64 pframe_alloc(void);
 u64 hp_alloc_run(u32 pages);
 void pframe_free(u64 pa);
+u64 vm_skip(u64 pml4pa,u64 v);
 void pframe_ref(u64 pa);
 u32 pframe_free_count(void);
 u64 vm_new_pml4(void);

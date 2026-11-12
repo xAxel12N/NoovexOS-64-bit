@@ -119,7 +119,9 @@ static void report_protocol_tests(void){
   mouse_dx=mouse_dy=mouse_scroll=0; { u8 r[]={1,0x05,0xD4,0xFE,20,0,0xFF}; send(e,r,sizeof r); }
   chk("16-bit X/Y, wheel and buttons decoded (-300,+20, wheel -1, left+middle)", mouse_dx==-300&&mouse_dy==-20&&mouse_scroll==-1&&mouse_btn==1&&mouse_mid==1&&mouse_rbtn==0);
   xhid_reset(); n=plugrd(1,RD_LOGI,sizeof RD_LOGI); e=entry_on(1,3);
-  chk("Logitech-style mouse (ID 2, 12-bit X/Y) accepted; consumer collection ignored", n==1&&e>=0&&xhid_nlay[e]==1);
+  chk("Logitech-style mouse (ID 2, 12-bit X/Y) accepted, with its media-key collection", n==1&&e>=0&&xhid_nlay[e]==2&&xhid_lay[e][0].kind==2&&xhid_lay[e][1].kind==3);
+  g_hk_last=-1; if(e>=0){ u8 r[]={3,0xE9,0,0,0}; send(e,r,sizeof r); } int h1=g_hk_last; g_hk_last=-1; if(e>=0){ u8 r[]={3,0xE9,0,0,0}; send(e,r,sizeof r); } int h2=g_hk_last; if(e>=0){ u8 r[]={3,0,0,0,0}; send(e,r,sizeof r); }
+  chk("media key report (ID 3, volume up 0xE9): one volume-up press, held key not repeated", h1==1&&h2==-1);
   mouse_dx=mouse_dy=mouse_scroll=0; { u8 r[]={2,0x02,0x00,0xFB,0x7F,0x00,0x01,0x00}; send(e,r,sizeof r); }
   chk("12-bit packed X/Y decoded (-5,+7), right button, wheel +1", mouse_dx==-5&&mouse_dy==-7&&mouse_rbtn==1&&mouse_btn==0&&mouse_scroll==1);
   int dx0=mouse_dx; { u8 r[]={3,0xE9,0x00,0,0}; send(e,r,sizeof r); } chk("report ID 3 (media keys) does not move the mouse", mouse_dx==dx0);
@@ -141,11 +143,27 @@ static const u8 FOURIF[]={9,2,109,0,4,1,0,0xA0,0x32,
  9,4,2,0,1,3,0,0,0, 9,0x21,0x11,1,0,1,0x22,23,0, 7,5,0x83,3,32,0,1,
  9,4,3,0,1,3,1,2,0, 9,0x21,0x11,1,0,1,0x22,68,0, 7,5,0x84,3,8,0,1};
 static const u8 BOOTMOUSE_NORD[]={9,2,25,0,1,1,0,0xA0,0x32, 9,4,0,0,1,3,1,2,0, 7,5,0x81,3,4,0,10};
+static void hid_fuzz(void){
+  printf("== 14. report descriptor and report fuzzing ==\n");
+  const u8* src[4]={RD_LOGI,RD_COMBO,RD_CONSUMER,RD_NKRO}; int sl[4]={sizeof RD_LOGI,sizeof RD_COMBO,sizeof RD_CONSUMER,sizeof RD_NKRO};
+  unsigned seed=12345; int okl=1, layouts=0; u8 d[256];
+  for(int it=0;it<40000;it++){ int w=it&3, n=sl[w]; memcpy(d,src[w],(size_t)n);
+    int m=1+(int)((seed=seed*1103515245u+12345u)>>16)%5;
+    for(int j=0;j<m;j++){ unsigned r=(seed=seed*1103515245u+12345u)>>8; int at=(int)(r%(unsigned)n); int op=(int)((r>>12)%3); if(op==0)d[at]=(u8)(r>>16); else if(op==1)d[at]^=(u8)(1u<<((r>>20)&7)); else n=at+1; }
+    hidlay_t L[HIDLAY_MAX]; int hid=0; int k=hid_parse(d,n,L,HIDLAY_MAX,&hid); if(k<0||k>HIDLAY_MAX){ okl=0; break; } layouts+=k;
+    for(int q=0;q<k;q++){ if(L[q].kind<1||L[q].kind>3)okl=0; if(L[q].cv_cnt<0||L[q].cv_cnt>12||L[q].cc_cnt<0||L[q].cc_cnt>4||L[q].arr_cnt>6||L[q].btn_cnt>16)okl=0; }
+    xhid_used[0]=1; xhid_nlay[0]=k; xhid_hasid[0]=hid; for(int q=0;q<k;q++)xhid_lay[0][q]=L[q];
+    for(int rr=0;rr<4;rr++){ u8 rep[64]; int rl=1+(int)((seed=seed*1103515245u+12345u)>>16)%64; for(int i=0;i<rl;i++)rep[i]=(u8)((seed=seed*1103515245u+12345u)>>16); if(hid)rep[0]=k?(u8)L[rr%k].id:1; hid_report_decode(0,rep,rl); } }
+  xhid_reset();
+  chk("40000 mutated descriptors and 160000 random reports: no crash, layouts within limits", okl&&layouts>0); }
 static void more_mouse_tests(void){
   printf("== 10. combo receiver with 4 interfaces, mouse is the 4th ==\n");
   xhid_reset(); g_conf=FOURIF; g_conflen=sizeof FOURIF; g_rd[0]=0; g_rdl[0]=0; g_rd[1]=RD_CONSUMER; g_rdl[1]=sizeof RD_CONSUMER; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; g_rd[3]=RD_MOUSE16; g_rdl[3]=sizeof RD_MOUSE16;
   plug(0,1); int n=xhci_hid_enum(0); int kb=entry_on(0,3), ms=entry_on(0,9);
-  chk("keyboard and the 4th-interface mouse both set up; media + vendor skipped", n==2&&kb>=0&&ms>=0);
+  int md=entry_on(0,5);
+  chk("keyboard, media keys and the 4th-interface mouse set up; vendor skipped", n==3&&kb>=0&&ms>=0&&md>=0);
+  g_hk_last=-1; if(md>=0){ u8 r[]={3,0xCD,0}; send(md,r,sizeof r); u8 z[]={3,0,0}; send(md,z,sizeof z); }
+  chk("media interface: play/pause (0xCD) reaches the hotkey queue", g_hk_last==4);
   mouse_dx=mouse_dy=0; if(ms>=0){ u8 r[]={1,0x01,10,0,0xF6,0xFF,0}; send(ms,r,sizeof r); }
   chk("that mouse moves (+10,+10) and clicks", mouse_dx==10&&mouse_dy==10&&mouse_btn==1);
   printf("== 11. boot mouse without a report descriptor ==\n");
@@ -330,4 +348,5 @@ int main(void){
   stall_and_queue_tests();
   multi_controller_tests();
   hub_tests();
+  hid_fuzz();
   printf("%s\n",ok?"ALL PASS":"FAILURES"); return !ok; }

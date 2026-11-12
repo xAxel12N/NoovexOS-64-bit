@@ -1,0 +1,18 @@
+#!/bin/bash
+N="$1"; F=/usr/share/noovex/packs/$N
+[ -f "$F" ] || { echo "nvx-pack: no pack named $N" >&2; exit 2; }
+P=$(head -1 "$F")
+[ -e "$P" ] && exit 0
+echo "nvx-pack:$N" > /dev/kmsg 2>/dev/null
+S=""
+for i in $(seq 9000); do
+  [ -e "$P" ] && exit 0
+  S=$(cat /proc/nvxpack 2>/dev/null)
+  case "$S" in fail*) break;; esac
+  [ $i -gt 600 ] && case "$S" in busy*) ;; *) break;; esac
+  sleep 0.2
+done
+[ -e "$P" ] && exit 0
+M="${S#fail }"; [ -n "$M" ] && [ "$M" != "$S" ] || M="The app files could not be loaded."
+echo "nvx-pack: $N: $M" >&2
+exit 1

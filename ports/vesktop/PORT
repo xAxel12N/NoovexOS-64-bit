@@ -1,0 +1,6 @@
+name=vesktop
+version=1.6.9-1
+summary=Vesktop, an open-source Discord app (Electron), with the Vencord files, built into the Linux files
+kind=script
+license=GPL-3.0-or-later (Vesktop, Vencord); Electron and Chromium under their own licences
+source=https://github.com/Vencord/Vesktop/releases/tag/v1.6.9 and https://github.com/Vendicated/Vencord/releases/latest

@@ -258,12 +258,13 @@ void neofetch_draw(int i){
     { char b[48],*p=b; p=scopy(p,g_user);*p++='@';p=scopy(p,"noovex64");*p=0; dstr(x,y,b,ACC,2); } y+=26;
     { int w=WN[i].w-80; for(int k=0;k<w/8;k++)dchar(x+k*8,y,'-',rgb(150,158,176),1); } y+=20;
     char v[80],*p;
-    nf_line(x,&y,"OS: ","NoovexOS 64 v10.60 (x86-64)");
+    nf_line(x,&y,"OS: ","NoovexOS 64 v10.86 (x86-64)");
     nf_line(x,&y,"Kernel: ","NoovexOS monolithic x86_64");
-    nf_line(x,&y,"Build: ","v10.60");
+    nf_line(x,&y,"Build: ","v10.86");
     nf_line(x,&y,"Firmware: ","BIOS / VESA LFB");
     { u32 up=(u32)(g_ticks/100); p=v; p=udec(p,up/3600);*p++='h';*p++=' ';p=udec(p,(up/60)%60);*p++='m';*p++=' ';p=udec(p,up%60);*p++='s';*p=0; nf_line(x,&y,"Uptime: ",v); }
     { p=v; { const char*b=g_brand[0]?g_brand:"x86-64 CPU"; while(*b)*p++=*b++; } *p=0; nf_line(x,&y,"CPU: ",v); }
+    { extern int cpupower_info(char*,int); cpupower_info(v,(int)sizeof v); nf_line(x,&y,"CPU power: ",v); }
     { u32 a,bb,c,d; cpuid(1,&a,&bb,&c,&d); int th=(bb>>16)&0xFF; if(th<1)th=1; p=v; p=udec(p,(u32)th); p=scopy(p," logical (CPUID)"); *p=0; nf_line(x,&y,"Threads: ",v); }
     { p=v; p=udec(p,W);*p++='x';p=udec(p,H);p=scopy(p," @ ");p=udec(p,BPP);p=scopy(p,"bpp");*p=0; nf_line(x,&y,"Display: ",v); }
     { p=v; p=udec(p,(u32)((u64)W*H*4/1024));p=scopy(p," KiB (framebuffer)");*p=0; nf_line(x,&y,"Video mem: ",v); }

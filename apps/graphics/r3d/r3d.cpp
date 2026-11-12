@@ -273,7 +273,15 @@ public:
         depth_ = (float*)work;
         mask_ = (unsigned char*)work + (unsigned long)w * h * sizeof(float);
     }
+    void bind_sink(int w, int h, r3d_tri_fn fn, void* ctx) { color_ = nullptr; depth_ = nullptr; mask_ = nullptr; w_ = w; h_ = h; pitch_ = w; sink_ = fn; sctx_ = ctx; }
+    void unbind_sink() { sink_ = nullptr; sctx_ = nullptr; }
     void clear(const V3& top, const V3& bottom) {
+        if (sink_) {
+            float v[24];
+            sink_vert(v, -1, 1, 0.99999f, 1, top); sink_vert(v + 8, 1, 1, 0.99999f, 1, top); sink_vert(v + 16, -1, -1, 0.99999f, 1, bottom); sink_(sctx_, v);
+            sink_vert(v, 1, 1, 0.99999f, 1, top); sink_vert(v + 8, 1, -1, 0.99999f, 1, bottom); sink_vert(v + 16, -1, -1, 0.99999f, 1, bottom); sink_(sctx_, v);
+            return;
+        }
         for (int y = 0; y < h_; ++y) {
             float t = (float)y / (float)(h_ > 1 ? h_ - 1 : 1);
             unsigned c = pack(lerp(top, bottom, t));
@@ -289,6 +297,7 @@ public:
     void draw(const Mesh& m, const M4& model, const Material& mat, r3d_stats& st, bool wire) {
         if (!m.ok()) return;
         st.objects++;
+        if (sink_ && mat.checker) { sink_floor(m, model, mat, st); return; }
         for (int t = 0; t < m.nt; ++t) {
             ClipVert cv[3];
             for (int k = 0; k < 3; ++k) {
@@ -328,7 +337,72 @@ private:
         return ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
     }
 
+    static void sink_vert(float* d, float x, float y, float z, float w, const V3& c) {
+        d[0] = x; d[1] = y; d[2] = z; d[3] = w;
+        d[4] = fsqrt(clamp01(c.x)); d[5] = fsqrt(clamp01(c.y)); d[6] = fsqrt(clamp01(c.z)); d[7] = 1.0f;
+    }
+    void sink_tri(const ClipVert* in, const V3* col, bool cull, r3d_stats& st) {
+        const float zn = 0.02f;
+        ClipVert out[4]; V3 oc[4]; int n = 0;
+        for (int i = 0; i < 3; ++i) {
+            const ClipVert& a = in[i]; const ClipVert& b = in[(i + 1) % 3];
+            float da = a.c.w - zn, db = b.c.w - zn;
+            if (da >= 0) { out[n] = a; oc[n] = col[i]; n++; }
+            if ((da >= 0) != (db >= 0)) {
+                float t = da / (da - db);
+                ClipVert m;
+                m.c = V4{ a.c.x + (b.c.x - a.c.x) * t, a.c.y + (b.c.y - a.c.y) * t, a.c.z + (b.c.z - a.c.z) * t, a.c.w + (b.c.w - a.c.w) * t };
+                m.p = a.p; m.n = a.n;
+                out[n] = m; oc[n] = lerp(col[i], col[(i + 1) % 3], t); n++;
+                if (n == 4) break;
+            }
+        }
+        if (n < 3) return;
+        if (n == 4) st.clipped++;
+        float sx[4], sy[4];
+        for (int i = 0; i < n; ++i) { float iw = 1.0f / out[i].c.w; sx[i] = (out[i].c.x * iw * 0.5f + 0.5f) * (float)w_; sy[i] = (0.5f - out[i].c.y * iw * 0.5f) * (float)h_; }
+        float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
+        if (cull && area >= 0) return;
+        if (fabs_(area) < 1e-6f && n == 3) return;
+        float v[24];
+        for (int t = 0; t + 2 < n; ++t) {
+            const int idx[3] = { 0, t + 1, t + 2 };
+            for (int k = 0; k < 3; ++k) { const ClipVert& q = out[idx[k]]; float z = q.c.w - zn; if (z < 0) z = 0; sink_vert(v + k * 8, q.c.x, q.c.y, z, q.c.w, oc[idx[k]]); }
+            sink_(sctx_, v);
+            st.tris_drawn++;
+        }
+    }
+    void sink_floor(const Mesh& m, const M4& model, const Material& mat, r3d_stats& st) {
+        float x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f, y = 0;
+        for (int i = 0; i < m.nt * 3; ++i) { V3 p = model.point(m.v[m.idx[i]].p); x0 = fminf_(x0, p.x); x1 = fmaxf_(x1, p.x); z0 = fminf_(z0, p.z); z1 = fmaxf_(z1, p.z); y = p.y; }
+        const float reach = 36.0f;
+        x0 = fmaxf_(x0, eye_.x - reach); x1 = fminf_(x1, eye_.x + reach); z0 = fmaxf_(z0, eye_.z - reach); z1 = fminf_(z1, eye_.z + reach);
+        int cx0 = ifloor(x0 * 0.5f), cx1 = ifloor(x1 * 0.5f) + 1, cz0 = ifloor(z0 * 0.5f), cz1 = ifloor(z1 * 0.5f) + 1;
+        if (cx1 - cx0 > 64) cx1 = cx0 + 64;
+        if (cz1 - cz0 > 64) cz1 = cz0 + 64;
+        V3 N(0, 1, 0);
+        for (int cz = cz0; cz < cz1; ++cz)
+            for (int cx = cx0; cx < cx1; ++cx) {
+                bool odd = ((cx + cz) & 1) != 0;
+                V3 albedo = odd ? V3(0.20f, 0.24f, 0.30f) : V3(0.62f, 0.66f, 0.72f);
+                V3 P[4] = { V3((float)cx * 2.0f, y, (float)cz * 2.0f), V3((float)(cx + 1) * 2.0f, y, (float)cz * 2.0f), V3((float)(cx + 1) * 2.0f, y, (float)(cz + 1) * 2.0f), V3((float)cx * 2.0f, y, (float)(cz + 1) * 2.0f) };
+                ClipVert cv[4]; V3 col[4];
+                for (int k = 0; k < 4; ++k) { cv[k].p = P[k]; cv[k].n = N; cv[k].c = vp_.clip(P[k]); col[k] = shade_albedo(P[k], N, mat, albedo); }
+                st.tris_in += 2;
+                ClipVert a[3] = { cv[0], cv[1], cv[2] }; V3 ca[3] = { col[0], col[1], col[2] };
+                ClipVert b[3] = { cv[0], cv[2], cv[3] }; V3 cb[3] = { col[0], col[2], col[3] };
+                sink_tri(a, ca, false, st); sink_tri(b, cb, false, st);
+            }
+    }
+
     void clip_and_fill(const ClipVert* in, const Material& mat, r3d_stats& st, Pass pass) {
+        if (sink_) {
+            if (pass != Pass::Shade) return;
+            V3 col[3];
+            for (int k = 0; k < 3; ++k) col[k] = shade(in[k].p, in[k].n, mat);
+            sink_tri(in, col, true, st);
+            return;
+        }
         const float zn = 0.02f;
         ClipVert out[4]; int n = 0;
         for (int i = 0; i < 3; ++i) {
@@ -360,9 +434,6 @@ private:
     }
 
     V3 shade(const V3& P, const V3& Nin, const Material& mat) const {
-        V3 N = norm(Nin);
-        V3 V = norm(eye_ - P);
-        if (dot(N, V) < 0) N = N * -1.0f;
         V3 albedo = mat.albedo;
         if (mat.checker) {
             int cx = ifloor(P.x * 0.5f), cz = ifloor(P.z * 0.5f);
@@ -372,6 +443,12 @@ private:
             float edge = fminf_(fminf_(lx, 1 - lx), fminf_(lz, 1 - lz));
             if (edge < 0.02f) albedo = V3(0.36f, 0.86f, 0.70f);
         }
+        return shade_albedo(P, Nin, mat, albedo);
+    }
+    V3 shade_albedo(const V3& P, const V3& Nin, const Material& mat, const V3& albedo) const {
+        V3 N = norm(Nin);
+        V3 V = norm(eye_ - P);
+        if (dot(N, V) < 0) N = N * -1.0f;
         float hemi = N.y * 0.5f + 0.5f;
         V3 amb = lerp(light_.ground, light_.sky, hemi);
         float diff = fmaxf_(0.0f, dot(N, light_.dir));
@@ -467,6 +544,8 @@ private:
         st.tris_drawn++;
     }
 
+    r3d_tri_fn sink_ = nullptr;
+    void* sctx_ = nullptr;
     unsigned* color_ = nullptr;
     float* depth_ = nullptr;
     unsigned char* mask_ = nullptr;
@@ -498,7 +577,7 @@ public:
     bool ready() const { return ready_; }
     unsigned long used() const { return arena_.used(); }
 
-    void frame(unsigned* color, int w, int h, int pitch, void* work, const r3d_view& v, r3d_stats& st) {
+    void frame(unsigned* color, int w, int h, int pitch, void* work, const r3d_view& v, r3d_stats& st, r3d_tri_fn fn = nullptr, void* ctx = nullptr) {
         float t = (float)(v.t_us % 3600000000ULL) * 1e-6f;
         float yaw = (float)v.yaw_md * (kPi / 180000.0f);
         float pitch_a = (float)v.pitch_md * (kPi / 180000.0f);
@@ -515,21 +594,24 @@ public:
         light.sky = V3(0.30f, 0.38f, 0.52f);
         light.ground = V3(0.10f, 0.09f, 0.11f);
         V3 fog(0.07f, 0.09f, 0.14f);
-        rast_.bind(color, w, h, pitch, work);
+        if (fn) rast_.bind_sink(w, h, fn, ctx); else rast_.bind(color, w, h, pitch, work);
         if (gears) { light.sky = V3(0.16f, 0.16f, 0.18f); light.ground = V3(0.08f, 0.08f, 0.09f); fog = V3(0.012f, 0.012f, 0.03f); }
-        if (gears) rast_.clear(V3(0.010f, 0.010f, 0.026f), V3(0.016f, 0.016f, 0.036f));
+        if (fn) { }
+        else if (gears) rast_.clear(V3(0.010f, 0.010f, 0.026f), V3(0.016f, 0.016f, 0.036f));
         else rast_.clear(V3(0.03f, 0.04f, 0.08f), V3(0.10f, 0.13f, 0.20f));
         rast_.set_camera(proj * view, eye, light, fog);
+        if (fn) rast_.clear(gears ? V3(0.010f, 0.010f, 0.026f) : V3(0.03f, 0.04f, 0.08f), gears ? V3(0.016f, 0.016f, 0.036f) : V3(0.10f, 0.13f, 0.20f));
 
         Material floor_mat{ V3(0.5f, 0.5f, 0.5f), 0.15f, 3, 0.0f, true };
-        if (!gears) rast_.draw(floor_, M4::identity(), floor_mat, st, v.wire != 0);
+        if (!gears) rast_.draw(floor_, M4::identity(), floor_mat, st, v.wire != 0 && !fn);
 
         int n = 0;
         Item* items = items_;
         build(v.scene, t, items, n);
-        if (v.shadows && !v.wire && !gears)
+        if (v.shadows && !v.wire && !gears && !fn)
             for (int i = 0; i < n; ++i) rast_.draw_shadow(*items[i].mesh, items[i].model, st);
-        for (int i = 0; i < n; ++i) rast_.draw(*items[i].mesh, items[i].model, items[i].mat, st, v.wire != 0);
+        for (int i = 0; i < n; ++i) rast_.draw(*items[i].mesh, items[i].model, items[i].mat, st, v.wire != 0 && !fn);
+        if (fn) rast_.unbind_sink();
     }
 
 private:
@@ -608,6 +690,18 @@ void r3d_frame(unsigned* color, int w, int h, int pitch, void* work, const r3d_v
     if (g_world && g_world->ready() && color && work && v && w > 0 && h > 0 && pitch >= w)
         g_world->frame(color, w, h, pitch, work, *v, s);
     if (st) *st = s;
+}
+
+void r3d_frame_tris(int w, int h, const r3d_view* v, r3d_stats* st, r3d_tri_fn fn, void* ctx) {
+    r3d_stats s{ 0, 0, 0, 0, 0 };
+    if (g_world && g_world->ready() && fn && v && w > 0 && h > 0)
+        g_world->frame(nullptr, w, h, w, nullptr, *v, s, fn, ctx);
+    if (st) *st = s;
+}
+
+void r3d_clear_colour(const r3d_view* v, float* rgb) {
+    bool gears = v && v->scene == 0;
+    rgb[0] = fsqrt(gears ? 0.010f : 0.03f); rgb[1] = fsqrt(gears ? 0.010f : 0.04f); rgb[2] = fsqrt(gears ? 0.026f : 0.08f);
 }
 
 const char* r3d_scene_name(int scene) {

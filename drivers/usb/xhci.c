@@ -20,3 +20,4 @@ static u32 g_xhc_mem[XHC_MAX-1];
 #include "drivers/usb/xhci_parts/02_hid2ascii.c"
 #include "drivers/usb/xhci_parts/03_ufat_poke.c"
 #include "drivers/usb/xhci_parts/04_uvc_er_init.c"
+#include "drivers/usb/xhci_parts/05_usbnet.c"

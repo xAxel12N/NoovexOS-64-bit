@@ -20,7 +20,8 @@ All paths below are relative to the repository root.
 | `drivers/net/ethernet/nic_names.c` | `nic_name()`, `nic_index()` (PCI ID to name) | unit |
 | `drivers/net/ethernet/nic.c` | PCnet DMA memory, globals (`my_ip`, `gw_ip`, ...), byte helpers, `netlog` | unit |
 | `drivers/storage/ahci.c` | also holds PCnet CSR access, `nic_detect`, `nic_up_raw`, `nic_send`, `nic_recv`, `arp_request`, `net_poll` | unit |
-| `drivers/net/ethernet/e1000.c`, `rtl8139.c`, `rtl8169.c` | Wired NIC modules | separate `.o` |
+| `drivers/net/ethernet/e1000.c`, `e1000e.c`, `igb.c`, `vmxnet3.c`, `rtl8139.c`, `rtl8169.c` | Wired NIC modules | separate `.o` |
+| `drivers/usb/xhci_parts/05_usbnet.c`, `drivers/usb/usbnet_proto.h` | USB Ethernet (CDC-ECM, CDC-NCM, RNDIS), part of the xHCI driver | unit (with `xhci.c`) |
 | `drivers/virtio/virtio.c`, `virtio.h`, `virtio_net.c` | Legacy virtio-PCI transport + virtio-net | separate `.o` |
 | `net/stack/tcpip.c` | netdev indirection, ARP resolve, ping, UDP, DHCP, DNS, TCP | unit |
 | `net/stack/sockets.c` | 8-slot TCP socket table (native `int 0x80` sockets) | unit |
@@ -45,7 +46,7 @@ Each of these files is a unit with a header under `include/nvx/` (for example `i
 `CFLAGS` as the kernel (`-m64 -Os -ffreestanding -mno-red-zone -mno-sse ... -I.`):
 
 ```sh
-MODS="drivers/net/e1000.c drivers/net/rtl8139.c drivers/net/rtl8169.c drivers/virtio/virtio.c drivers/virtio/virtio_net.c drivers/virtio/virtio_blk.c drivers/sound/ac97.c drivers/sound/hda.c"
+MODS="drivers/net/ethernet/e1000.c drivers/net/ethernet/e1000e.c drivers/net/ethernet/igb.c drivers/net/ethernet/vmxnet3.c drivers/net/ethernet/rtl8139.c drivers/net/ethernet/rtl8169.c drivers/virtio/virtio.c drivers/virtio/virtio_net.c drivers/virtio/virtio_blk.c drivers/sound/ac97.c drivers/sound/hda.c"
 for m in $MODS; do o=$B/mod_$(basename $m .c).o; gcc $CFLAGS -c $m -o $o || { echo "MODULE BUILD FAILED: $m"; exit 1; }; MODOBJS="$MODOBJS $o"; done
 ```
 
@@ -70,6 +71,7 @@ They are compiled into `kernel64.o`.
 | `kapi_delay_us`, `kapi_ns` | `hr_delay_us`, `hr_ns` (high-resolution timer) |
 | `kapi_log` | `klog` |
 | `kapi_mb` | `cpu_wmb()` |
+| `kapi_mmio(pa,len)` (v10.82) | Returns a pointer to device registers. Below 4 GiB the identity map is used; above it `acpi_hi_map` maps the 1 GiB regions that hold the first and the last byte. Returns 0 if that is not possible. Used by e1000e, igb and vmxnet3, so a 64-bit BAR above 4 GiB works |
 
 ### 9.2.3 `struct nvx_nic`
 
@@ -81,12 +83,14 @@ struct nvx_nic {
     int (*recv)(u8* out,int max);   /* 0 = nothing pending */
     int (*link)(void);
 };
-int e1000_probe(struct nvx_nic*); int rtl8139_probe(struct nvx_nic*);
+int e1000_probe(struct nvx_nic*); int e1000e_probe(struct nvx_nic*); int igb_probe(struct nvx_nic*);
+int vmxnet3_probe(struct nvx_nic*); int rtl8139_probe(struct nvx_nic*);
 int rtl8169_probe(struct nvx_nic*); int virtio_net_probe(struct nvx_nic*);
 ```
 
-A probe returns 1 after it has filled `out`. The kernel keeps a single instance,
-`g_mnic` (`drivers/net/ethernet/nic.c`).
+A probe returns 1 after it has filled `out`. Since v10.82 the kernel keeps a list of
+up to 8 adapters (`g_nics` in `drivers/net/ethernet/nic.c`); the one in use is
+copied to `g_mnic`. Each driver handles one device of its kind.
 
 ## 9.3 NIC bring-up and probe order
 
@@ -95,10 +99,26 @@ A probe returns 1 after it has filled `out`. The kernel keeps a single instance,
 ```
 nic_detect()                       PCnet 1022:2000 on buses 0..3, slot fn0 only
   + found -> nic_kind=0, program PCnet directly
-  + not found -> e1000_probe || rtl8169_probe || rtl8139_probe || virtio_net_probe
-                 -> nic_kind=2, my_mac = g_mnic.mac, net_ok=1
-  + none -> netlog("no supported NIC (PCnet, e1000, RTL8139, RTL8111/8168, VirtIO)")
+  + not found -> nic_probe_all(): e1000, e1000e, igb, rtl8169, rtl8139, vmxnet3,
+                 virtio_net, then usbnet_scan(); every adapter found goes into the list
+                 -> nic_pick(): the first with link; with several adapters it waits
+                    up to 1.5 s for one to report link
+                 -> nic_use(k): g_mnic = list[k], nic_kind=2, my_mac, net_ok=1
+  + none -> netlog("no supported network adapter found")
 ```
+
+Adapter changes while running (v10.82):
+- `nic_watch()` runs from the main loop every 2 s. If the adapter in use has no
+  link and another one has, it switches (`nic_use`), which clears the DHCP state so
+  the next network use asks for a new address. A link that comes back logs
+  `cable connected` and allows DHCP again.
+- `nic_offer(i)` is called when a USB adapter appears: it is used at once if there
+  is no adapter, none is up, or the current one has no link.
+- `nic_drop(i)` is called when a USB adapter goes away: the next adapter in the list
+  takes over; if there is none, `net_ok` becomes 0.
+- `nic_active_name()` gives the name of the adapter in use; the `net` command,
+  Settings and the Task Manager show it, and `net` lists all adapters with their
+  link state when there are several.
 
 PCnet is tried first because the driver's comment calls it "prefer PCnet - proven".
 `nic_send`/`nic_recv` dispatch on `nic_kind`: kind 2 forwards to `g_mnic.send/recv`,
@@ -115,10 +135,11 @@ Helper routines in `ahci.c`:
   PIT counts, about 1 ms. ARP requests for our address are answered inside the
   loop (`arp_auto_reply`) and never returned to the caller.
 
-`nic_names.c` provides `nic_name(ven,dev)`, which returns the display names
-"Intel e1000", "Realtek RTL8168", "Realtek RTL8139", "VirtIO-net", "AMD PCnet" or
-"unknown NIC". It also provides `nic_index()`, the first PCI entry with class 2.
-The `net` command uses both.
+`nic_names.c` provides `nic_name(ven,dev)`, which returns display names for the
+known IDs, falls back to the vendor ("Intel Ethernet", "Realtek Ethernet",
+"Broadcom Ethernet", "Qualcomm Atheros Ethernet") and otherwise returns
+"unknown NIC". `nic_index()` returns the first wired PCI network device (class 2,
+not subclass 0x80), or the first class-2 device if there is none.
 
 ## 9.4 Wired NIC drivers
 
@@ -147,7 +168,7 @@ TDMD (`CSR0=0x000A`) and spins until OWN clears.
 
 ### 9.4.2 Intel e1000 (`drivers/net/ethernet/e1000.c`)
 
-- IDs: 8086: 100E 100F 1004 1010 1015 1017 1019 101A 1026-1028 1013 1014 1076-107B 10D3.
+- IDs: 8086: 100E 100F 1004 1010 1015 1017 1019 101A 1026-1028 1013 1014 1076-107B (82574L 10D3 moved to `e1000e.c` in v10.82).
 - BAR: BAR0 must be MMIO and below 4 GiB, because it is used through the identity map.
 - Reset: writes `CTRL.RST` (bit 26), masks interrupts (`IMC 0xD8`), then sets SLU|ASDE (`|0x60`) and clears the bits in mask `0x88080000`.
 - MAC: comes from `RAL/RAH` (0x5400/0x5404). If RAH.AV is clear or the value is zero, it is read through EERD (`0x14`, 3 words). The result is written back with AV set. MTA (0x5200) is cleared.
@@ -170,6 +191,7 @@ TDMD (`CSR0=0x000A`) and spins until OWN clears.
 - Init: unlocks config (`9346CR=0xC0`), RCR=`0xE70F`, TCR=`0x03000700`, `RMS=2047`, `MTPS=0x3B`, TNPDS at `0x20`, RDSAR at `0xE4`, then `CMD=RE|TE`.
 - TX: sets OWN|FS|LS (plus EOR on the last slot) and kicks with `TPOLL=0x40`. RX: drops frames that are not FS+LS or have the RES bit (21) set, then strips the 4-byte CRC.
 - Link: `PHYS & 0x02`.
+- RTL8125/8126 2.5G (v10.82, IDs 10EC: 8125 8126 3000): the interrupt mask and status are 32-bit at `0x38`/`0x3C` (on the 8168 `0x38` is TPOLL), so the driver clears them as 32-bit values, writes `0x34=0`, uses RCR = `(8<<27)|(7<<8)|0x0F`, TCR = `0x03000780` (auto FIFO) and kicks transmission with `0x90=1` (16-bit). MTPS is not written. Registers above `0xFF` are not reachable through the 256-byte I/O window, so nothing there is touched. The PHY firmware patches Linux loads are not loaded; whether the link comes up without them needs a test on a real card.
 
 ### 9.4.5 VirtIO (legacy PCI transport)
 
@@ -198,6 +220,59 @@ tracked by `rxid[]`) and queue 1 for TX (up to 32 in flight). Every frame carrie
 a 10-byte zeroed `virtio_net_hdr` (`HDR 10`). Without F_MAC the driver makes up a
 MAC that starts `52:54:`. `vn_link` reads status bit 0, or returns 1 when the
 device has no status field.
+
+### 9.4.6 Intel e1000e family (`e1000e.c`, v10.82)
+
+Common to `e1000e.c` and `igb.c`: before the reset the device is put into power state D0 through the PCI power-management capability (a device left in D3 would read as all ones) and bus mastering is stopped (`CTRL` bit 2, wait for `STATUS` bit 19). Sending keeps one ring slot free and counts the slots in flight (`txn`, oldest `txc`), so the tail never catches up with the head; while `STATUS.LU` is 0 frames are refused instead of queued, because these chips do not transmit without link.
+
+- IDs: 82571/82572/82573/82574/82583 (`105E 105F 10A4 10BC 10D9 10DA 10A5 10D5 107D-107F 10B9 108B 108C 109A 10D3 10F6 150C`), PCH 82579/I217/I218 (`1502 1503 153A 153B 155A 1559 15A0-15A3`) and I219 (`156F 1570 15B7-15B9 15D6-15D8 15E3 15BB-15BE 15DF-15E2 0D4C-0D4F 0D53 0D55 15F4 15F5 15F9-15FC 1A1C-1A1F 550A-5511`). Every probe also checks that the PCI class is 0x0200, so an unrelated device with a matching ID is left alone.
+- Registers through BAR0 (`kapi_mmio`, 128 KB). Legacy descriptors as in `e1000.c`, 256 RX and 64 TX.
+- PHY access (`MDIC 0x20`; PHY address 2 on PCH parts, 1 otherwise) takes the software flag (`EXTCNF_CTRL 0x0F00` bit 5) on PCH parts.
+- PCH low-power PHY: if the PHY does not answer (ID registers 2/3 read as 0 or 0xFFFF), the driver sets `CTRL_EXT.FORCE_SMBUS` and tries again; if it still does not answer it toggles `LANPHYPC` (CTRL bit 16 override with bit 17 value 0, 1 ms, release), waits for `CTRL_EXT.LPCD` (bit 2), then clears `FORCE_SMBUS`. This is skipped when `FWSM` bit 6 (`RSPCIPHY`) is clear, because the management engine then blocks PHY resets.
+- Reset: `CTRL.RST`, plus `CTRL.PHY_RST` (bit 31) on PCH parts when `FWSM` bit 6 allows it; then waits for `STATUS.LAN_INIT_DONE` (bit 9) and clears it. Then `CTRL_EXT.DRV_LOAD`, `CTRL.SLU`, and the PHY control register gets power-up, auto-negotiation enable and restart.
+- MAC: RAR0 after the reset, or RAR0 from before the reset, or the NVM through `EERD` (82571+ format: address at bit 2, done bit 1) on non-PCH parts, or a random locally administered address.
+- I219 only: `IOSFPC 0x0F28 |= 0x10000` and `TARC0 0x3840` bits 28-29, the two settings Linux uses against transmit hangs on these chips.
+- TXDCTL = GRAN | bit 22 | WTHRESH 1 | HTHRESH 1 | PTHRESH 0x1F; TIPG = `0x00602008`. The 82573/82574/82583 also take the software flag for PHY access.
+
+### 9.4.7 Intel igb and igc (`igb.c`, v10.82)
+
+- igb IDs: 82576 (`10C9 10E6-10E8 1526 150A 1518 150D`), 82580 (`150E 150F 1510 1511 1516 1527`), I350 (`1521-1524`), I354 (`1F40 1F41 1F45`), I210 (`1533 1536-1538 157B 157C`), I211 (`1539`). igc IDs: I225 (`15F2 15F3 15F7 15F8 15FD 0D9F`), I226 (`125B-125D`).
+- Queue 0 registers at `0xC000` (RX) and `0xE000` (TX). Interrupts masked through `IMC` and `EIMC 0x1528`.
+- Reset: `CTRL.RST`, wait until it clears, wait for `EECD.AUTO_RD` (bit 9); `CTRL_EXT.DRV_LOAD`; `CTRL.SLU`; PHY register 0 gets power-up, auto-negotiation enable and restart (QEMU's igb model only brings the link up after this restart).
+- Receive: advanced one-buffer descriptors (`SRRCTL` = 2 KB buffers, descriptor type 1, drop when full), 256 descriptors. The write-back has status in bytes 8-11 (DD bit 0, EOP bit 1, RXE bit 31) and the length in bytes 12-13; the driver rewrites the buffer address before handing a descriptor back. A frame that does not fit in one buffer (no EOP) is dropped with its continuation.
+- Transmit: advanced data descriptors (DTYP 3, DEXT, EOP, IFCS, RS, `PAYLEN = len<<14`), 64 descriptors. The write-back overwrites the command word, so a separate `busy[]` array records which slots are in flight.
+- `RXDCTL`/`TXDCTL` enable (bit 25) is set and read back before the rings are used.
+- MAC: RAR0, then `EERD` (address at bit 2, done bit 1; at `0x12014` on igc), then a random local address.
+- The 82575 is not included: it may not mirror queue 0 at `0xC000/0xE000`.
+
+### 9.4.8 VMware vmxnet3 (`vmxnet3.c`, v10.82)
+
+- ID 15AD:07B0. BAR0 holds the producer registers (TXPROD `0x600`, RXPROD `0x800`, interrupt masks), BAR1 the command registers (version `0x00`, UPT version `0x08`, shared-area address `0x10/0x18`, command `0x20`, MAC `0x28/0x30`).
+- The driver selects revision 1 and UPT version 1, quiesces and resets the device, fills the driver-shared area (magic `0xBABEFEE1`, one TX and one RX queue, MTU 1500, interrupts disabled, receive mode unicast+multicast+broadcast+all-multicast+promiscuous) and the two 256-byte queue descriptors, then sends `ACTIVATE` (`0xCAFE0000`); the command register must read 0 afterwards.
+- Rings with generation bits: 64 TX descriptors with their completion ring and data ring, 64 RX descriptors (ring 1 has 32 empty entries that are never handed to the device), and a 96-entry RX completion ring. A TX descriptor gets its generation bit last, after a barrier. RX completions with `rqID != 0` (ring 1) are skipped; a frame must have both SOP and EOP and no error bit.
+- After activation the driver also sends `UPDATE_RX_MODE` (`0xCAFE0003`) and `UPDATE_MAC_FILTERS` (`0xCAFE0004`), as Linux does.
+- Link: command `GET_LINK` (`0xF00D0002`), bit 0.
+
+### 9.4.9 USB Ethernet (`drivers/usb/xhci_parts/05_usbnet.c`, v10.82)
+
+Works over the xHCI driver (section 10.6) and handles one USB network adapter at a time:
+
+| Kind | Interfaces | Data framing |
+|---|---|---|
+| CDC-ECM | control class 2/6, data class 0x0A | one Ethernet frame per bulk transfer |
+| CDC-NCM | control class 2/0x0D, data class 0x0A | NTB16 blocks: `NCMH` header, `NCM0` datagram table; the datagram offset follows the device's divisor and remainder (`GET_NTB_PARAMETERS`) |
+| RNDIS | class 2/2/0xFF, 0xE0/1/3 or 0xEF/4/1 | `RNDIS_PACKET_MSG` (44-byte header) per frame; several messages may arrive in one transfer |
+
+- Enumeration (`un_enum_loc`): own slot, contexts and rings in a 96-page DMA block. All configurations (up to 4) are read; `un_parse` finds a control interface, its data interface (from the Union descriptor or the next data interface), the alternate setting with a bulk IN and OUT endpoint, and the `iMACAddress` string index. CDC-ECM is preferred, then CDC-NCM, then RNDIS; `usbnet ecm|ncm|rndis|auto` changes the preference and sets the adapter up again. Many RTL8153 dongles and phones offer a CDC configuration besides their vendor or RNDIS one, so they work through this.
+- Set-up: `SET_CONFIGURATION`; NCM asks for the block parameters and limits incoming blocks to 16 KB (`SET_NTB_INPUT_SIZE`); the data interface goes to alternate setting 0 and then to the one with the endpoints; the two bulk endpoints are configured in the xHCI. ECM/NCM: MAC from the string descriptor (12 hex digits; multicast or all-zero is refused), packet filter directed+broadcast+all-multicast (`0x43`, value `0x0E`). RNDIS: `INITIALIZE`, query `OID_802_3_PERMANENT_ADDRESS`, set `OID_GEN_CURRENT_PACKET_FILTER` to `0x0F`; each reply is polled with `GET_ENCAPSULATED_RESPONSE` (50 tries, 20 ms apart) and must carry the request ID. Without a MAC the adapter gets a random local one.
+- Receive: up to 8 bulk IN transfers stay queued in a 128 KB area (2 KB each for ECM, 16 KB for NCM and RNDIS; buffers are aligned so that none crosses a 64 KB boundary). Transfer events reach `un_xfer` from the normal event handler and from `xh_event_t` (so receptions that arrive while another device waits for a control transfer are not lost); the data is unpacked into a 64-frame queue and the transfer is queued again. `un_events` rings the IN doorbell before it polls, because QEMU's USB network device only retries a waiting IN transfer on a doorbell.
+- Send: 16 buffers of 2 KB; a transfer whose length is a multiple of the endpoint's packet size gets one padding byte (for NCM the block length includes it), so the device sees the end of the transfer without a zero-length packet.
+- Errors: a failed transfer marks the endpoint halted; the next poll resets the endpoint, moves the ring's dequeue pointer, sends `CLEAR_FEATURE(ENDPOINT_HALT)` and queues the receive buffers again.
+- Hot-plug: a new device is tried as a USB stick first, then as a network adapter, then as a keyboard or mouse; the same order applies behind hubs. At start-up `usbnet_scan` tries ports whose recorded device class could be a network adapter (0, 2, 0x0A, 0xE0, 0xEF, 0xFF) and skips ports that hold a keyboard, mouse, camera, printer, hub, USB stick or audio device. Unplugging (`un_remove_below`) frees the slot and calls `nic_drop`.
+- `usbnet` shows the kind, vendor:product, frames in and out, errors and dropped frames.
+- A USB adapter reports link while it is plugged in (the cable state from the device is not read). To keep this from trapping the system on a USB adapter without a cable, `nic_watch` switches back to the adapter that was chosen first (`g_nic_pref`) as soon as that one has link again.
+- Recovery after an error first checks that the device is still on its root port (else `un_gone`) and runs at most every 50 ms. The `usb` command resets the controllers; `xhid_reset` then releases the adapter (`un_reset_all`). A port claimed by `usbnet_scan` is marked as seen, so the hot-plug poll does not reset it again. NCM devices that do not accept a 16 KB block size get 32 or 64 KB receive buffers (the receive area is 64 KB aligned).
+- Not supported: vendor-only adapters without a CDC or RNDIS configuration (for example ASIX AX88179 and RTL8152/8153 dongles that only offer their vendor mode).
 
 ## 9.5 The netdev indirection (Ethernet vs Wi-Fi)
 
@@ -510,6 +585,101 @@ to the real DNS server when one is known.
 `featest server` checks this over loopback, and the network check
 (section 12.2) has the host connect to `featest listen` on port 9200 through
 the tap device, which tests the same path over the network card.
+
+### 9.7.5 Unix datagram sockets and credentials (v10.66)
+
+`socket(AF_UNIX, SOCK_DGRAM)` gives a `struct unsock` with `dg` set
+(`sys/linux/linux_parts/02_ivl_muldivk.c`). Each datagram is stored as one
+record together with the sender's address key, its pid and any `SCM_RIGHTS`
+descriptors (`un_dsend`); `sendto` to a bound name finds the receiver with
+`un_dfind` (ENOENT for a missing path name, ECONNREFUSED for an abstract one).
+`connect` only stores a default destination (`dkey`; `AF_UNSPEC` clears it).
+`recvfrom`/`recvmsg` return the sender's address, set `MSG_TRUNC` when the
+buffer was too small, and add `SCM_CREDENTIALS` (pid, uid, gid) when
+`SO_PASSCRED` is on. `poll` reports POLLIN while records are queued.
+
+`SO_PEERCRED` returns the pid, uid and gid of the process that created the
+peer socket (`cpid`, `cuid`, `cgid`, set in `un_new`; the server end made by
+`accept` takes them from the listener); before v10.66 the uid and gid were the
+caller's own. `SO_TYPE` reports 1, 2 or 5
+for stream, datagram and seqpacket.
+
+### 9.7.6 IPv6 sockets over IPv4 (v10.66)
+
+The network stack has no IPv6. `socket(AF_INET6, SOCK_STREAM or SOCK_DGRAM)`
+still works: it is an ordinary `g_lxs` socket with `v6` set, and
+`lx_sa_inx` turns the address into an IPv4 one:
+
+| IPv6 address | Used as |
+|---|---|
+| `::` | `INADDR_ANY` (so a listener on `::` also takes IPv4 clients) |
+| `::1` | `127.0.0.1`; the socket gets `lo6` |
+| `::ffff:a.b.c.d` | `a.b.c.d` (refused with ENETUNREACH when `IPV6_V6ONLY` is on) |
+| anything else | ENETUNREACH (connect, sendto), EADDRNOTAVAIL (bind) |
+
+Addresses going back to the program (`accept`, `recvfrom`, `recvmsg`,
+`getsockname`, `getpeername`) are 28-byte `sockaddr_in6` (`lx_sa_mk`): `::1`
+when the other end is a local socket that used `::1` (`lx_port_lo6`),
+otherwise the IPv4-mapped form `::ffff:a.b.c.d`, as Linux shows IPv4 clients
+of an IPv6 listener. `IPV6_V6ONLY` can be set before `bind`. Accepted sockets
+inherit `v6` and the socket options of the listener.
+
+### 9.7.7 Socket options (v10.66)
+
+`lx_setsockopt` stores the options in `struct lxsock` and `lx_getsockopt`
+returns them: `SO_REUSEADDR`, `SO_REUSEPORT`, `SO_KEEPALIVE`, `SO_LINGER`,
+`SO_RCVTIMEO`, `SO_SNDTIMEO` (microseconds in `rcvus`/`sndus`),
+`TCP_NODELAY`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT` and
+`IPV6_V6ONLY`. `bind` uses them (`lxs_clash`): two sockets that both set
+`SO_REUSEPORT` may share a port; with `SO_REUSEADDR` a TCP socket may bind a
+port that only has connected or closing sockets on it, but never one with a
+listener or a plain bound socket. `SO_RCVTIMEO`/`SO_SNDTIMEO` make a blocking
+`read`, `recv*`, `accept`, `write` or `send*` return EAGAIN after the time
+(`lx_sock_wt`, 10 ms steps; the deadline is kept in `sockwake`, separate from the `poll` deadline). `readv`/`writev` on a UDP or netlink socket send or receive one datagram, as on Linux. `TCP_INFO` returns the state byte and the MSS;
+the other fields are zero. The options are kept but do not change the TCP
+code: Nagle is not used anyway, and keep-alive probes are not sent.
+
+### 9.7.8 Netlink and interface information (v10.66)
+
+`socket(AF_NETLINK, SOCK_RAW or SOCK_DGRAM, NETLINK_ROUTE)` is a `g_lxs`
+socket of type 16. A request written to it is answered at once by
+`lxs_nl_send` (`sys/linux/lxsock.c`), which puts the reply messages as one
+record into the socket's receive buffer:
+
+| Request | Reply |
+|---|---|
+| `RTM_GETLINK` dump | one `RTM_NEWLINK` per interface (`IFLA_IFNAME`, `IFLA_ADDRESS`, `IFLA_BROADCAST`, `IFLA_MTU`, `IFLA_TXQLEN`, `IFLA_OPERSTATE`), then `NLMSG_DONE` |
+| `RTM_GETLINK` by index or `IFLA_IFNAME` | that interface, or `NLMSG_ERROR` ENODEV |
+| `RTM_GETADDR` dump | `RTM_NEWADDR` for `127.0.0.1/8` and `::1/128` on `lo` and the DHCP address on the network card |
+| `RTM_GETROUTE` dump | the default route through the gateway and the local subnet |
+| `RTM_GETNEIGH`, `RTM_GETRULE` and other dumps | only `NLMSG_DONE` |
+| `RTM_NEW*` (changes) | `NLMSG_ERROR` EPERM |
+| anything else | `NLMSG_ERROR` EOPNOTSUPP |
+
+`NLM_F_ACK` adds an `NLMSG_ERROR` 0. If the receive buffer (256 KiB) cannot take the reply, the send fails with ENOBUFS. `bind` sets `nl_pid` (the process id, or
+a unique number if that is taken; 0 picks one), `getsockname` returns it, and
+`MSG_PEEK|MSG_TRUNC` reports the size of the next reply, which libnl uses.
+`NETLINK_KOBJECT_UEVENT` sockets can be created and bound but never receive
+anything. This is enough for musl's and glibc's `getifaddrs` and
+`if_nameindex`.
+
+The interfaces come from `lxs_ifinfo`: index 1 is `lo` (`127.0.0.1/8`, flags
+UP, LOOPBACK, RUNNING), index 2 is `eth0` or `wlan0` with the address, mask
+and MAC address of the active network device (RUNNING once DHCP gave an
+address). The same data answers the `SIOCGIF*` ioctls on any socket
+(`lx_ifioctl`): `if_nametoindex` and `if_indextoname` use them.
+
+### 9.7.9 ICMP ping sockets (v10.66)
+
+`socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)` works as on Linux with ping
+sockets allowed for every user. `sendto` takes an ICMP echo request (type 8);
+`lxs_icmp_send` replaces the identifier with the socket's own one (its
+`lport`), fixes the checksum and sends it in an IPv4 packet, over the
+loopback queue for `127.x` (where `lxs_icmp_in` answers it) or through the
+network card. Echo replies whose identifier matches the socket are queued like
+UDP datagrams; `recvfrom` returns the ICMP header and data without the IP
+header and the sender's address. Only echo is supported; other ICMP types are
+EINVAL.
 
 ## 9.8 HTTP, entropy and HTTPS (`net/http/http.c`)
 

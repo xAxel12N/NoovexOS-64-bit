@@ -49,9 +49,16 @@ static void usb_kbd_repeat(void){
     extern int g_krep_delay, g_krep_rate, g_krep_flag;
     if(g_ticks-usbk_rep_t0>=(u64)g_krep_delay&&g_ticks-usbk_rep_last>=(u64)g_krep_rate){ g_krep_flag=1; kpush(usbk_rep_code); g_krep_flag=0; usbk_rep_last=g_ticks; }
 }
+static int cc_hk(int u){ switch(u){ case 0xE9: return 1; case 0xEA: return 2; case 0xE2: return 3; case 0xCD: return 4; case 0xB5: return 5; case 0xB6: return 6; case 0xB7: return 7; case 0x6F: return 13; case 0x70: return 14; } return 0; }
 static void hid_report_decode(int e,const u8* b,int len){
     int id=0; const u8* p=b; int pl=len; if(xhid_hasid[e]){ if(len<1)return; id=b[0]; p=b+1; pl=len-1; }
     for(int q=0;q<xhid_nlay[e];q++){ hidlay_t* L=&xhid_lay[e][q]; if(L->id!=id)continue;
+        if(L->kind==3){ u16 now[16]; int nn=0;
+            for(int i=0;i<L->cc_cnt&&nn<16;i++){ int u=hid_bits(p,pl,L->cc_off+i*L->cc_sz,L->cc_sz,0)+L->cc_base; if(u>0)now[nn++]=(u16)u; }
+            for(int i=0;i<L->cv_cnt&&nn<16;i++) if(hid_bits(p,pl,L->cv_off[i],1,0))now[nn++]=L->cv_us[i];
+            for(int i=0;i<nn;i++){ int was=0; for(int j=0;j<xhid_ccn[e];j++) if(xhid_ccp[e][j]==now[i])was=1; if(was)continue;
+                int h=cc_hk(now[i]); if(h){ extern void hk_push(int); hk_push(h); } }
+            xhid_ccn[e]=nn; for(int i=0;i<nn;i++)xhid_ccp[e][i]=now[i]; continue; }
         if(L->kind==2){ int btn=0; for(int i=0;i<L->btn_cnt&&i<8;i++) if(hid_bits(p,pl,L->btn_off+i,1,0))btn|=1<<i;
             int dx=hid_bits(p,pl,L->x_off,L->x_sz,1), dy=hid_bits(p,pl,L->y_off,L->y_sz,1), wz=L->w_off>=0?hid_bits(p,pl,L->w_off,L->w_sz,1):0;
             if(dx||dy){ mouse_dx+=dx; mouse_dy-=dy; mouse_evt=1; }
@@ -64,6 +71,7 @@ static void hid_report_decode(int e,const u8* b,int len){
         return; }
 }
 static void hid_xfer(u8 sl,int epid,u8 cc,u32 res,u32 ptr){
+    if(usn_xfer(sl,epid,cc,res,ptr))return;
     int d=-1; for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==g_xcur&&xhid_slot[i]==sl&&xhid_dci[i]==epid){d=i;break;} if(d<0)return;
     if(cc==1||cc==13){
         u32 ba=xhid_dbuf[d]; if(ptr>=xhid_epin[d]&&ptr<xhid_epin[d]+256*16){ u32 b2=((volatile u32*)(u64)ptr)[0]; if(b2>=xhid_dbuf[d]&&b2<xhid_dbuf[d]+XHID_INFLIGHT*64u)ba=b2; }
@@ -91,7 +99,7 @@ static void xhci_poll_one(void){
     }
 }
 void xhci_mouse_poll(void){
-    if(!xhid_n)return;
+    if(!xhid_n&&!usn_active())return;
     usb_kbd_repeat();
     for(int c=0;c<g_xhc_n;c++){ xhc_select(c); if(xhci_init_ok)xhci_poll_one(); }
 }

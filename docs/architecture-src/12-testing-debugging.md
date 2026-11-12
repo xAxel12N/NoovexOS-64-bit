@@ -31,7 +31,7 @@ Run from `source/`: `python3 tools/check.py [options]`. It needs Linux with gcc,
 | `--iso IMAGE` | image for `boot` and `qemu`; default `tools/out/check.iso` (the one `--build` writes) |
 | `--quick` | smaller random sizes: `pfuzz` loop `i<100000` to `i<20000`, strtod inputs 30 000 to 8 000 |
 | `--sanitize` | sets `SAN = -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g` for the generated driver tests and `drivers`, and `LIBC_SAN = -fsanitize=undefined -fsanitize-trap=all` for the host libc |
-| `--only a,b,c` | comma list from `build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,linux,fs,tls,fetch,qemu,net,drivers,analyze,libc,coreutils` |
+| `--only a,b,c` | comma list from `build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,linux,fs,tls,fetch,qemu,net,drivers,analyze,libc,coreutils,wifi,secboot` |
 
 Environment variables:
 
@@ -44,7 +44,7 @@ Environment variables:
 | `NVX_TAP_NAME` | tap interface name for `net` (default `nvxtap0`) |
 | `NVX_TAP_CREATE` | `0` makes `netpeer.py` use an existing, already configured tap instead of creating one |
 
-Groups run in a fixed order (build, static, boot, usb, acpi, gpu, nvme, touchpad, memory, aml, timers, linux, fs, tls, fetch, qemu, net, drivers, analyze, libc, coreutils). Each check is a `record(group, name, ok, detail)`; at the end the script prints `==== N of M checks passed in Ts ====`, lists every `FAIL [group] name: detail` and exits with 1 if anything failed. Note that `tools/README.md` still lists only the older subset of groups for `--only`; the authoritative list is the `argparse` help string.
+Groups run in a fixed order (build, static, boot, usb, acpi, gpu, nvme, touchpad, memory, aml, timers, linux, fs, tls, fetch, qemu, net, nics, drivers, analyze, libc, coreutils). Each check is a `record(group, name, ok, detail)`; at the end the script prints `==== N of M checks passed in Ts ====`, lists every `FAIL [group] name: detail` and exits with 1 if anything failed. Note that `tools/README.md` still lists only the older subset of groups for `--only`; the authoritative list is the `argparse` help string.
 
 Most generated tests print lines ending in ` ok` / ` FAIL` and a final `ALL PASS` or `FAILURES`; `check.py` counts those lines for the "(N checks)" in the summary and shows the first failing lines.
 
@@ -129,6 +129,13 @@ qemu-system-x86_64 [-L $NVX_QEMU_BIOS] -m 1024 -smp 4 -accel tcg,thread=multi \
 6. `dyntest >/dev/kmsg` to expects `dyntest: done N passed, 0 failed` (dynamic linker, shared libc, `dlopen`);
 7. `smp off` to expects `smp: secondary cores parked`.
 
+After each typed line the group waits 2 s; if a new `command not found` appeared in the serial log, a keystroke was lost and the line is typed again (with a `note:` line in the output). In v10.82 testing one run in five lost the first letter of `swaptest` under emulation load (it ran as `waptest`), which showed up as "no result" for swaptest.
+
+### Group `secboot` (`g_secboot`, v10.61)
+`tests/secboot/run.py` builds `tests/secboot/sv_t.c`, which includes `lib/crypto/nvxsigv.c` (the code shared by the UEFI loader and the kernel), and compares it with Python's `hashlib` and `cryptography`: SHA-256 for lengths around the block edges, ECDSA P-256 with good signatures, a changed hash, a changed signature, s = 0, r = n and a public key off the curve, and a 300 KB fake kernel signed with `tools/nvxsign.py` with bytes changed in the code, the data, the version, the Linux-files hash, the signature and the public key, signed with another key and unsigned. With `--sanitize` it runs under ASan and UBSan. A second check verifies `build/kernel64.bin` with `nvxsign.py verify --sysroot build/sysroot.bin` and that the signature magic appears exactly once.
+
+Testing the loader in QEMU: the `edk2.fd` used for the emulator runs is the code part of a 4 MB OVMF build. Without a second flash unit OVMF keeps variables in memory only, so `NoovexMinSvn` is lost at every start. Pass a variable store as a second unit: `-drive if=pflash,format=raw,readonly=on,file=edk2.fd -drive if=pflash,format=raw,file=nv.fd`, where `nv.fd` is 540,672 bytes with a firmware-volume header (`fff12b8d-...`), an authenticated variable store header (`aaf32c78-...`, size 0x40000) and a fault-tolerant-write header at 0x40000.
+
 ### Group `tls` (`g_tls`)
 Builds `tests/tls/x509h.c` (the kernel's `nvxcrypto.c`, `nvxtls.c`, `nvxcrypto2.c`, `nvxx509.c` and `nvxroots.c` compiled for the host, with `--sanitize` under ASan+UBSan) and checks:
 1. every embedded root's public key parses (120);
@@ -148,8 +155,11 @@ Runs only when `NVX_NET_TAP=1` and QEMU is available. `tests/net/netpeer.py` cre
 6. `fetch` with the test CA installed: ECDSA on 9443 and RSA on 9444 (`/chunked`) must say `certificate verified` and print the expected SHA-256, plain HTTP `/redir` must follow the redirect, `https://10.0.2.2:9443/` must verify through the IP SAN, `wrong.test` must be refused;
 7. `featest listen >/dev/kmsg` to the peer's log must show `inbound pong from noovex`, i.e. a musl server accepted a connection that came in through the network card.
 
+### Group `nics` (`g_nics`, v10.82)
+Boots the image once per adapter model with QEMU user networking (`-net none -netdev user,id=n0` and one device), two at a time (`NVX_NIC_PAR`, `NVX_NIC_ONLY` picks models by name). A small HTTP server on 127.0.0.1 serves 300 KB; the guest reaches it as 10.0.2.2. For each model: `net` (DHCP), then `fetch -s -o /dev/null http://10.0.2.2:PORT/big`, which must print the expected SHA-256, and the boot log must name the expected driver. Models: e1000, e1000e (82574L), igb (82576), vmxnet3, RTL8139, VirtIO-net, USB CDC-ECM and USB RNDIS (`usbnet rndis`) on `qemu-xhci`, a USB adapter added with `device_add` after boot, and an e1000 without link (`set_link n1 off`) next to an igb that has link, where the igb must be chosen.
+
 ### Group `drivers` (`g_drivers`)
-Compiles each file in `MODS` (`build.sh` line 21: `drivers/net/ethernet/e1000.c rtl8139.c rtl8169.c drivers/virtio/virtio.c virtio_net.c virtio_blk.c drivers/sound/ac97.c hda.c`) for the host, links them with `tests/drivers/drvsim.c`, see 12.4.3.
+Compiles each file in `MODS` (`build.sh`: `drivers/net/ethernet/e1000.c e1000e.c igb.c vmxnet3.c rtl8139.c rtl8169.c drivers/virtio/virtio.c virtio_net.c virtio_blk.c drivers/sound/ac97.c hda.c`) for the host, links them with `tests/drivers/drvsim.c`, see 12.4.3. Since v10.82 the simulator also models igb (I210) and igc (I225-V) with advanced descriptors, e1000e on an I219 with a sleeping PHY and with the management engine blocking resets, and the RTL8125. `tests/usbnet/proto_main.c` checks the USB network framing (NCM blocks with several datagrams and divisor/remainder, RNDIS messages, MAC strings, RNDIS replies) and feeds 200000 corrupted or random blocks to the parsers under ASan/UBSan.
 
 ### Groups `libc` and `coreutils`
 - `host_libc()` builds `usr/libc/src/{libc.c, printf.c, stdlib2.c, stdio2.c, sys_host.c, crt0_host.S}` with `-ffreestanding -nostdinc` against nvxlibc's own headers into `libc.a`; `sys_host.c` maps NoovexOS syscall numbers to Linux ones, so real nvxlibc programs run on Linux.
@@ -525,3 +535,8 @@ Firmware with many devices: `tools/tests/aml` style tables can be passed to QEMU
 
 When a Linux program gets a fault or exception, the kernel log (serial port) shows a line like `lx fault: pid 38 sig 11 vec 14 rip ... addr ... err ... rsp ... (libfoo.so+0x1234) handled 48 c7 07 ...`, followed by the last 16 system calls of that thread (`sc nr(a1, a2) = result`), for the first 24 faults after boot. `tgkill`/`kill` with SIGABRT, SIGSEGV and similar signals and `exit_group` with a non-zero code are logged too. `echo lxtrace on > /dev/kmsg` (from bash) logs every Linux system call with its name and the path argument (`T pid openat("/etc/passwd", ...) = 0x3`) until `echo lxtrace off > /dev/kmsg`; this slows programs down a lot. The ring of recent calls (`lx_sc_dump`) has 512 entries. More modes (v10.44): `lxtrace exec` logs only program starts, exits and missing files, `lxtrace errors` logs failed calls except the common harmless ones (EAGAIN, EINTR, ETIMEDOUT, ENOENT), `lxtrace ps` writes the list of Linux processes every minute (pid, parent, state, thread count, last system call of each thread) and `lxps` writes it once. Since v10.45 the list has one line per thread with the system call it is in now (`in`), its first argument and, for calls on a descriptor, the kind of file; for a Unix socket also its state, bytes and messages waiting on both ends. `nvx-abitest` (24 checks, also run on a normal Linux system for comparison) covers `/proc/cpuinfo`, pseudo-terminals and epoll with reused descriptor numbers; `nvx-sndtest [device] [rate] [seconds]` plays a tone through libasound, reports how long it took and records from the microphone.
 
+
+
+Since v10.69: `tracelog on` (all system calls), `tracelog on errors` or `tracelog on exec` keeps the kernel messages and Linux system-call trace in a 4 MB ring in memory, `tracelog save` writes it to `tracelog.txt` (and `TRACELOG.TXT` on the USB stick), `tracelog off` stops. `lxps` (or `echo lxps > /dev/kmsg`) also prints `lat:` lines: page faults (count, total and longest time) and the ten system calls with the longest single call, and every system call over 150 ms is logged once as `slow: <ms>` with its arguments (first 40). These times include unpacking that runs without the big kernel lock.
+
+Since v10.72: `echo lxps > /dev/kmsg` also prints `cpu` (ticks) and `sc` (system calls) per thread, `lat: bkl cpu ...` lock waits, `lat: main loop ms by stage` and `lat: redraw reasons by stage` for the desktop loop, and `gap:` lines for Linux options and system calls programs used that NoovexOS does not have. A detached helper that writes `lxps` after a delay lets you measure while an X app has the keyboard.

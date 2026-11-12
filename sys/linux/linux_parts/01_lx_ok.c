@@ -1,5 +1,14 @@
-static int lx_ok(u64 p,u64 n){ return jc_umapped(p,n); }
-static int lx_okw(u64 p,u64 n){ extern int jc_umapped_w(u64,u64); return jc_umapped_w(p,n); }
+static u64 g_kb_lo, g_kb_n; static int g_kio_vi=-1, g_kio_nb; static struct sysregs* g_lxr;
+static void lxm_fxv_reset(int j);
+static int lxm_fifo_open(int k,int flags,int cloexec);
+static int lxn_on(void);
+static int lxn_path0(int dirfd,const char* rel,char* out);
+int lxn_proc_vis(int s);
+static int lxn_ovl_ent(const char* dp,int idx,char* name,int* type);
+static void lxn_unmap(const char* host,char* out,int cap);
+static void lxn_cpy(char* d,const char* s,int cap);
+static int lx_ok(u64 p,u64 n){ if(g_kb_n&&p>=g_kb_lo&&p+n>=p&&p+n<=g_kb_lo+g_kb_n)return 1; return jc_umapped(p,n); }
+static int lx_okw(u64 p,u64 n){ extern int jc_umapped_w(u64,u64); if(g_kb_n&&p>=g_kb_lo&&p+n>=p&&p+n<=g_kb_lo+g_kb_n)return 1; return jc_umapped_w(p,n); }
 static int lx_str(u64 p,char* out,int cap){
     if(!p)return -LX_EFAULT;
     for(int i=0;i<cap;i++){ u64 a=p+(u64)i; if(i==0||(a&0xFFFULL)==0){ if(!lx_ok(a,1))return -LX_EFAULT; }
@@ -28,6 +37,7 @@ static int lx_path0(int dirfd,u64 up,char* out,int empty_ok){
               for(int k=0;k<46;k++)mg[o++]=rel[i+k]; mg[o++]='~'; for(int k=15;k>=0;k--)mg[o++]="0123456789abcdef"[(h>>(k*4))&15]; }
           i=j; }
         mg[o]=0; for(int k=0;k<=o;k++)rel[k]=mg[k]; n=o; } }
+    if(lxn_on())return lxn_path0(dirfd,rel,out);
     if(rel[0]=='/'){ for(int i=0;i<=n;i++)out[i]=rel[i]; return n; }
     int node=g_dcwd; const char* srb=0;
     if(dirfd!=LX_AT_FDCWD){ struct vfile* v=lx_vf(dirfd); if(!v)return -LX_EBADF; if(v->dev==LX_SRDIR)srb=v->vpath; else if(v->dev!=LX_DIRDEV)return -LX_ENOTDIR; else node=v->fs_idx; }
@@ -52,8 +62,8 @@ static int lx_noent(const char* p){
 extern int vfs_materialize_parent(const char* p);
 static int lx_parent_ok(const char* p){ int d; char b[64]; if(k_split(p,&d,b)==0)return 1; return vfs_materialize_parent(p)==0; }
 
-static u32 lx_k2l(u32 k){ return k>>1; }
-static u32 lx_l2k(u64 l){ return ((u32)l<<1)&~1u; }
+static u64 lx_k2l(u64 k){ return sig_k2l(k); }
+static u64 lx_l2k(u64 l){ return sig_l2k(l); }
 
 static void lx_stat_out(u8* st,const u32* o,int dev_ino){
     lx_zero(st,144);
@@ -81,9 +91,9 @@ static char* lx_utoa(char* o,unsigned v){ char b[12]; int q=0; do{ b[q++]=(char)
 static int lx_procent(const char* dp,int idx,char* name,int* type){
     int ix; int k=lx_procdir(dp,&ix); *type=8;
     if(k==3){ int* t=fdt(); int c=0; for(int i=0;i<FDMAX;i++) if(t[i]>=0){ if(c==idx){ lx_utoa(name,(unsigned)i); *type=10; return 1; } c++; } return 0; }
-    if(k==1){ static const char* const f[]={"self","thread-self","cpuinfo","meminfo","version","uptime","loadavg","mounts","filesystems","stat",0};
+    if(k==1){ static const char* const f[]={"self","thread-self","cpuinfo","meminfo","swaps","version","uptime","loadavg","mounts","filesystems","stat",0};
         int n=0; while(f[n])n++; if(idx<n){ const char* z=f[idx]; int o=0; while(z[o]){ name[o]=z[o]; o++; } name[o]=0; *type=idx<2?10:8; return 1; }
-        int c=n; for(int i=0;i<JMAX;i++) if(g_jp[i].state!=S_FREE&&g_jp[i].state!=S_TDEAD&&g_jp[i].tg==i){ if(c==idx){ lx_utoa(name,(unsigned)g_jp[i].pid); *type=4; return 1; } c++; } return 0; }
+        int c=n; for(int i=0;i<JMAX;i++) if(g_jp[i].state!=S_FREE&&g_jp[i].state!=S_TDEAD&&g_jp[i].tg==i){ int vp=lxn_proc_vis(i); if(!vp)continue; if(c==idx){ lx_utoa(name,(unsigned)vp); *type=4; return 1; } c++; } return 0; }
     if(k==2||k==5){ static const char* const f[]={"fd","task","exe","cmdline","comm","maps","stat","status",0}; static const char* const g[]={"comm","stat","status",0};
         const char* const* l=k==2?f:g; for(int i=0;l[i];i++) if(i==idx){ const char* z=l[i]; int o=0; while(z[o]){ name[o]=z[o]; o++; } name[o]=0; *type=(k==2&&i<2)?4:(k==2&&i==2)?10:8; return 1; } return 0; }
     if(k==4){ int c=0, tg=g_jp[ix].tg; for(int i=0;i<JMAX;i++) if(g_jp[i].state!=S_FREE&&g_jp[i].state!=S_TDEAD&&g_jp[i].state!=S_ZOMB&&g_jp[i].tg==tg){ if(c==idx){ lx_utoa(name,(unsigned)g_jp[i].pid); *type=4; return 1; } c++; } return 0; }
@@ -197,8 +207,14 @@ static int asnd_list(int n,char* name,int* type);
 static int lx_shm_name(const char* p);
 static int lx_shm_stato(const char* p,int st,u32* o);
 static long lx_shm_open(const char* p,int st,int flags);
+int sx_stat(const char* p,int follow,u32* mode,u64* size); int dx_stat(const char* p,u32* mode,u64* rdev,u64* size); long sx_open(const char* p,int flags); long dx_open(const char* p,int flags);
+int sx_list(const char* p,int idx,char* name,int* type); int dx_list(const char* dir,int idx,char* name,int* type); int sx_readlink(const char* p,char* out,int cap);
+long dx_pread(int k,u64 buf,u64 len,long off,int adv); long dx_lseek(int k,long off,int wh); long dx_ioctl(int k,u32 cmd,u64 arg); void dx_close(int k);
+long sx_wfd_write(const char* vp,u64 buf,u64 len); long sx_wfd_read(const char* vp,u64 buf,u64 len,int* off);
 static int lx_stat_path(const char* p,u64 ubuf,int follow){
     u32 o[10];
+    { u32 m=0; u64 sz=0, rd=0; int r=sx_stat(p,follow,&m,&sz); if(!r&&p[0]=='/'&&p[1]=='d'&&p[2]=='e'&&p[3]=='v'&&p[4]=='/')r=dx_stat(p,&m,&rd,&sz); if(r<0)return -LX_ENOENT;
+      if(r>0){ for(int i=0;i<10;i++)o[i]=0; o[0]=m; o[3]=(m&0170000u)==0040000u?2:1; o[4]=(u32)sz; u32 h=2166136261u; for(int q=0;p[q];q++)h=(h^(u8)p[q])*16777619u; o[5]=0x38000000u|(h&0x07FFFFFFu); o[6]=o[7]=o[8]=1760000000u; u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; *(u64*)(st2+48)=sz; return lx_put(ubuf,st2,144); } }
     { int st=lx_shm_name(p); if(st>=0){ if(lx_shm_stato(p,st,o))return -LX_ENOENT; u8 st2[144]; lx_stat_out(st2,o,0); return lx_put(ubuf,st2,144); } }
     { u64 rd=0; if(asnd_stat(p,o,&rd)){ u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
     { int pk=pty_index(p); int pm=lx_streq(p,"/dev/ptmx"), pd=lx_streq(p,"/dev/pts"); if(pk>=0||pm||pd){ if(pk>=0&&(!g_pty[pk].used||g_pty[pk].locked))return -LX_ENOENT; for(int i=0;i<10;i++)o[i]=0; o[3]=1; o[6]=o[7]=o[8]=1760000000u;
@@ -221,9 +237,10 @@ static int lx_fstat(int fd,u64 ubuf){
     u32 o[10]; for(int i=0;i<10;i++)o[i]=0; o[3]=1;
     if(v->dev==0&&v->fs_idx>=0){ int k=v->fs_idx; o[0]=FS[k].mode?FS[k].mode:0100644u; o[1]=(u32)FS[k].uid; o[2]=(u32)FS[k].gid; o[3]=FS[k].orphan?0:(FS[k].nlink?FS[k].nlink:1); o[4]=(u32)FS[k].len; o[5]=(u32)k+1; o[6]=FS[k].mtime; o[7]=FS[k].atime; o[8]=FS[k].ctime; }
     else if(v->dev==LX_DIRDEV){ char dp[LX_PATH]; dt_path(v->fs_idx,dp); return lx_stat_path(dp,ubuf,1); }
-    else if(v->dev==LX_SRDIR){ return lx_stat_path(v->vpath,ubuf,1); }
+    else if(v->dev==LX_SRDIR||v->dev==LX_BLKD||v->dev==LX_SYSW){ return lx_stat_path(v->vpath,ubuf,1); }
     else if(v->dev==14||v->dev==LX_AFU){ o[0]=0140777u; o[5]=7000u+(u32)v->fs_idx; }
     else if(v->dev==LX_MFD){ o[0]=0100600u; o[3]=1; o[4]=(u32)g_mfd[v->fs_idx].size; o[5]=30000u+(u32)v->fs_idx; }
+    else if(v->dev==27){ o[0]=0100444u; o[3]=1; o[5]=0xF0000000u+(u32)v->fs_idx; }
     else if(v->dev==6||v->dev==7){ o[0]=0010600u; o[5]=5000u+(u32)v->fs_idx; }
     else if(v->dev==100&&v->vfs){ o[0]=0100444u; int n=v->vfs->size(v->vpath); o[4]=n>0?(u32)n:0; u32 h=sysroot_ino(v->vpath,1); if(!h){ h=2166136261u; for(int q=0;v->vpath[q];q++)h=(h^(u8)v->vpath[q])*16777619u; } o[5]=0x10000000u|(h&0x0FFFFFFFu); }
     else if(v->dev==LX_SNDCTL||v->dev==LX_SNDPCM){ u64 rd=0; if(asnd_stat(v->vpath,o,&rd)){ u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
@@ -242,6 +259,9 @@ static int lx_open(int dirfd,u64 up,int flags,int mode){
     { int L=lx_slen(p); const char* t1="/oom_score_adj"; const char* t2="/oom_adj"; int m1=L>14, m2=L>8; for(int i=0;m1&&i<14;i++) if(p[L-14+i]!=t1[i])m1=0; for(int i=0;m2&&i<8;i++) if(p[L-8+i]!=t2[i])m2=0;
       if((m1||m2)&&p[0]=='/'&&p[1]=='p'&&p[2]=='r'&&p[3]=='o'&&p[4]=='c'&&p[5]=='/'){ char np[LX_PATH]; for(int i=0;i<L-(m1?14:8);i++)np[i]=p[i]; np[L-(m1?14:8)]=0; int ix; if(lx_procdir(np,&ix)!=2)return -LX_ENOENT;
         if((flags&3)!=0){ int fd=vfs_open("/dev/null",flags&~(0x40|0x80|0x200)); return fd<0?-LX_EACCES:fd; } } }
+    { long sr=sx_open(p,flags); if(sr!=-9999)return (int)sr; }
+    if(lx_streq(p,"/dev")&&(flags&3)==0){ int vi=jc_newvf(LX_SRDIR,0,flags); if(vi<0)return -LX_EMFILE; const char* z="/dev"; int q=0; for(;z[q];q++)g_vf[vi].vpath[q]=z[q]; g_vf[vi].vpath[q]=0; int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
+    if(p[0]=='/'&&p[1]=='d'&&p[2]=='e'&&p[3]=='v'&&p[4]=='/'){ long dr=dx_open(p,flags); if(dr!=-9999)return (int)dr; }
     { int ar=asnd_open(p,flags); if(ar!=-9999)return ar; }
     if(lx_streq(p,"/dev/snd")){ if((flags&3)!=0)return -LX_EISDIR; int vi=jc_newvf(LX_SRDIR,0,flags); if(vi<0)return -LX_EMFILE; const char* z="/dev/snd"; int q=0; for(;z[q];q++)g_vf[vi].vpath[q]=z[q]; g_vf[vi].vpath[q]=0; int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
     if(lx_streq(p,"/dev/ptmx"))return pty_open_master(flags);
@@ -271,6 +291,7 @@ static int lx_open(int dirfd,u64 up,int flags,int mode){
         created=!ex;
         if(ex&&(acc!=0||(flags&0x200))){ int isd2; int k=ux_lookup(p,&isd2,1); if(k>=0&&!isd2&&!ux_perm_ok(k,2))return -LX_EACCES; }
         if(ex&&acc!=1){ int isd2; int k=ux_lookup(p,&isd2,1); if(k>=0&&!isd2&&!ux_perm_ok(k,4))return -LX_EACCES; }
+        if(ex){ int isd3; int k=ux_lookup(p,&isd3,1); if(k>=0&&!isd3&&(FS[k].mode&0170000u)==0010000u)return lxm_fifo_open(k,flags,cloexec); }
     } else if(dir) return -LX_ENOTDIR;
     int fd=vfs_open(p,flags);
     if(fd<0){ int fv=0; for(int i=0;i<VMAXOPEN;i++) if(!g_vf[i].used)fv++; int ff=0; int* t=fdt(); for(int i=0;i<FDMAX;i++) if(t[i]==-1)ff++;
@@ -284,6 +305,9 @@ static int lx_open(int dirfd,u64 up,int flags,int mode){
 
 static int lx_nonblock(struct vfile* v){ return (v->flags&0x800)!=0; }
 static long lx_sock_wait(struct sysregs* r,int n,int nb);
+static long lx_sock_wt(struct sysregs* r,int n,int nb,long us);
+static long lx_rtmo(struct vfile* v);
+static long lx_stmo(struct vfile* v);
 struct ivl { u32 min, max; int omin, omax, integer, empty; };
 static int ivl_check(struct ivl* i){ if(i->empty)return 1; if(i->min>i->max||(i->min==i->max&&(i->omin||i->omax))){ i->empty=1; return 1; } return 0; }
 static int ivl_refine(struct ivl* i,const struct ivl* v){

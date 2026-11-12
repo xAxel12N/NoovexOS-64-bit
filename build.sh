@@ -17,10 +17,14 @@ gcc $CFLAGS -c arch/x86_64/boot/ap_trampoline.S -o $B/ap_trampoline.o
 
 echo "[3/6] compile kernel units (incremental, $(nproc 2>/dev/null || echo 4) at a time)"
 CXXFLAGS="$(echo "$CFLAGS" | sed 's/-Werror=implicit-function-declaration//; s/-Werror=int-conversion//; s/-Werror=incompatible-pointer-types//') -std=gnu++20 -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -fno-unwind-tables -Wno-missing-field-initializers"
+VD=arch/x86_64/vdso
+gcc -O2 -fPIC -fno-stack-protector -fno-asynchronous-unwind-tables -fno-plt -mno-red-zone -nostdlib -shared -Wl,-T,$VD/vdso.lds -Wl,--version-script=$VD/vdso.ver -Wl,-soname=linux-vdso.so.1 -Wl,--hash-style=both -Wl,-Bsymbolic -Wl,-z,max-page-size=4096 -Wl,--no-undefined -Wl,--build-id=none -o $B/vdso.so $VD/vdso.c || { echo "VDSO BUILD FAILED"; exit 1; }
+python3 tools/bin2c.py $B/vdso.so vdso_so $B/vdso_so.h
+echo "#define VDSO_VVAR_OFF 0x$(nm $B/vdso.so | awk '/ nvx_vvar$/{print $1}')u" >> $B/vdso_so.h
 CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" python3 tools/kbuild.py $B/units $KBUILD_ARGS || exit 1
 UNITOBJS=$(cat $B/units/objects.txt)
 echo "[3m] compile separately built kernel modules (drivers/*: network, VirtIO, sound)"
-MODS="drivers/net/ethernet/e1000.c drivers/net/ethernet/rtl8139.c drivers/net/ethernet/rtl8169.c drivers/virtio/virtio.c drivers/virtio/virtio_net.c drivers/virtio/virtio_blk.c drivers/sound/ac97.c drivers/sound/hda.c"
+MODS="drivers/net/ethernet/e1000.c drivers/net/ethernet/e1000e.c drivers/net/ethernet/igb.c drivers/net/ethernet/vmxnet3.c drivers/net/ethernet/rtl8139.c drivers/net/ethernet/rtl8169.c drivers/virtio/virtio.c drivers/virtio/virtio_net.c drivers/virtio/virtio_blk.c drivers/sound/ac97.c drivers/sound/hda.c"
 MODOBJS=""
 for m in $MODS; do o=$B/mod_$(basename $m .c).o; gcc $CFLAGS -c $m -o $o || { echo "MODULE BUILD FAILED: $m"; exit 1; }; MODOBJS="$MODOBJS $o"; done
 
@@ -41,7 +45,8 @@ echo "[3a3] embed myboot bootloader + boot.cfg (for the disk installer)"
 ( cd boot && make build/boot.bin build/stage2.bin >/dev/null ) && cp boot/build/stage2.bin assets/installer/inst_stage2.bin && cp boot/build/boot.bin assets/installer/inst_boot.bin || { echo "BOOT LOADER BUILD FAILED"; exit 1; }
 ( cd assets/installer && ld -r -b binary -o ../../$B/inst_boot.o inst_boot.bin && ld -r -b binary -o ../../$B/inst_stage2.o inst_stage2.bin && ld -r -b binary -o ../../$B/inst_cfg.o inst_boot.cfg )
 echo "[efi] rebuild UEFI bootloader (BOOTX64.EFI) and embed it for the installer"
-( cd boot/uefi &&   gcc -I. -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -m64 -Os -fno-jump-tables -Werror=implicit-function-declaration -c uefiboot.c -o uefiboot.o &&   gcc -ffreestanding -c dummyreloc.S -o dummyreloc.o &&   ld -nostdlib -znocombreloc -shared -Bsymbolic -T efi.ld uefiboot.o dummyreloc.o -o uefiboot.so 2>/dev/null &&   objcopy -j .text -j .data -j .reloc --target=pei-x86-64 --subsystem=10 uefiboot.so BOOTX64.EFI &&   echo "  BOOTX64.EFI rebuilt" ) || echo "  (EFI build skipped)"
+python3 tools/nvxsign.py pub --header $B/nvxkey.h || { echo "SIGNING KEY MISSING OR BROKEN"; exit 1; }
+( cd boot/uefi &&   gcc -I. -I../../$B -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -m64 -Os -fno-jump-tables -Werror=implicit-function-declaration -c uefiboot.c -o uefiboot.o &&   gcc -ffreestanding -c dummyreloc.S -o dummyreloc.o &&   ld -nostdlib -znocombreloc -shared -Bsymbolic -T efi.ld uefiboot.o dummyreloc.o -o uefiboot.so 2>/dev/null &&   objcopy -j .text -j .data -j .reloc --target=pei-x86-64 --subsystem=10 uefiboot.so BOOTX64.EFI &&   echo "  BOOTX64.EFI rebuilt" ) || { echo "UEFI LOADER BUILD FAILED"; exit 1; }
 cp boot/uefi/BOOTX64.EFI $B/inst_efi.bin
 ( cd $B && ld -r -b binary -o inst_efi.o inst_efi.bin )
 echo "[u] build the user-space demo programs (crt0 + mini-libc)"
@@ -76,6 +81,13 @@ for p in count spin sigdemo upper greet pipetest nvxbox init libc8; do
   objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents $B/user_${p}_bin.o
 done
 
+echo "[inst] build the installer program (INSTALL.NVX, signed)"
+gcc $LFLAGS -I$U -c $U/nvxinstall.c -o $B/$U/nvxinstall.o || { echo "INSTALLER BUILD FAILED"; exit 1; }
+ld -m elf_x86_64 -nostdlib -no-pie --gc-sections -T $U/user.ld -o $B/user/nvxinstall.elf $LB/crt0.o $B/$U/nvxinstall.o $LB/libc.a || { echo "INSTALLER LINK FAILED"; exit 1; }
+strip $B/user/nvxinstall.elf
+python3 tools/nvxsign.py signfile $B/user/nvxinstall.elf $B/install.nvx || { echo "INSTALLER SIGNING FAILED"; exit 1; }
+python3 tools/nvxsign.py verifyfile $B/install.nvx || { echo "INSTALLER SIGNATURE CHECK FAILED"; exit 1; }
+
 echo "[musl] build musl libc 1.2.6 (static, position independent) for Linux-ABI programs"
 M=$(pwd)/$B/musl
 if [ ! -f $M/lib/libc.a ] || [ ! -f $M/lib/rcrt1.o ]; then
@@ -83,7 +95,7 @@ if [ ! -f $M/lib/libc.a ] || [ ! -f $M/lib/rcrt1.o ]; then
   ( cd $B/musl-obj && CC=gcc ../../third_party/musl/configure --prefix=$M --disable-shared --disable-wrapper CFLAGS="-fPIE -O2" >/dev/null && make -j"$(nproc 2>/dev/null || echo 4)" >/dev/null 2>&1 && make install >/dev/null 2>&1 ) || { echo "MUSL BUILD FAILED"; exit 1; }
 fi
 MCFLAGS="-fPIE -O2 -nostdinc -isystem $M/include -isystem $(gcc -print-file-name=include) -Wall -Wno-unused-result -Wno-format-zero-length"
-for p in mhello musltest smptest nettest featest afutest kfeat; do
+for p in mhello musltest smptest nettest featest afutest kfeat abi2test schedtest sysfstest swaptest abi3test contest container; do
   gcc $MCFLAGS -c usr/musl/$p.c -o $B/user/musl_$p.o || { echo "MUSL PROGRAM BUILD FAILED: $p"; exit 1; }
   gcc -static-pie -nostdlib -Wl,--no-dynamic-linker -Wl,-z,noexecstack -o $B/user/$p.elf $M/lib/rcrt1.o $M/lib/crti.o $B/user/musl_$p.o $M/lib/libc.a $(gcc -print-libgcc-file-name) $M/lib/crtn.o || { echo "MUSL PROGRAM LINK FAILED: $p"; exit 1; }
   strip $B/user/$p.elf
@@ -204,6 +216,7 @@ for f in $N/mkntfs/*.c; do o=$B/ntfs/mk_$(basename $f .c).o; gcc $NTFS_CFLAGS -I
 echo "[3d] glibc 2.44 + CPython 3.13 sysroot (/lib64, /opt/gnu/bin, /usr/bin/python3)"
 bash tools/build_glibc.sh $B/glibc-root || echo "  (glibc build failed - sysroot without glibc)"
 SR=$B/sysroot-stage; rm -rf $SR; mkdir -p $SR/lib64 $SR/lib $SR/usr/lib $SR/opt/gnu/bin $SR/etc
+mkdir -p $SR/usr/libexec/noovex && cp $B/user/contest.elf $SR/usr/libexec/noovex/contest
 if [ -f $B/glibc-root/lib64/libc.so.6 ]; then
   for f in ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libresolv.so.2 libutil.so.1 libanl.so.1 libnss_files.so.2 libnss_dns.so.2 libmvec.so.1; do cp $B/glibc-root/lib64/$f $SR/lib64/ && strip --strip-unneeded $SR/lib64/$f 2>/dev/null; done
   for f in libtinfo.so.6 libselinux.so.1 libpcre2-8.so.0 libz.so.1 libexpat.so.1 libgcc_s.so.1 libcrypt.so.1; do [ -f /lib/x86_64-linux-gnu/$f ] && cp -L /lib/x86_64-linux-gnu/$f $SR/lib64/ && strip --strip-unneeded $SR/lib64/$f 2>/dev/null; done
@@ -228,7 +241,7 @@ if [ -f $B/glibc-root/lib64/libc.so.6 ]; then
   mkdir -p $SR/usr/bin $SR/usr/share/X11 $SR/usr/lib/xorg
   for x in Xvfb xkbcomp; do cp -L /usr/bin/$x $SR/usr/bin/ && strip $SR/usr/bin/$x 2>/dev/null; done
   gcc -O2 -o $SR/usr/bin/xdemo usr/x11/xdemo.c -lX11 -lm && strip $SR/usr/bin/xdemo
-  gcc -O2 -o $SR/usr/bin/nvx-xinput usr/x11/nvx-xinput.c -lX11 /usr/lib/x86_64-linux-gnu/libXtst.so.6 && strip $SR/usr/bin/nvx-xinput
+  gcc -O2 -o $SR/usr/bin/nvx-xinput usr/x11/nvx-xinput.c -lX11 /usr/lib/x86_64-linux-gnu/libXtst.so.6 /usr/lib/x86_64-linux-gnu/libXfixes.so.3 && strip $SR/usr/bin/nvx-xinput
   gcc -O2 -o $SR/usr/bin/nvxwm usr/x11/nvxwm.c -lX11 && strip $SR/usr/bin/nvxwm
   GL=/usr/lib/x86_64-linux-gnu; if [ -f $GL/libgtk-3.so.0 ]; then gcc -O2 -o $SR/usr/bin/gtkdemo usr/x11/gtkdemo.c $GL/libgtk-3.so.0 $GL/libgobject-2.0.so.0 $GL/libglib-2.0.so.0 && strip $SR/usr/bin/gtkdemo; mkdir -p $SR/etc/fonts $SR/usr/share/mime; cp -rL /etc/fonts/. $SR/etc/fonts/; for f in mime.cache magic globs globs2 aliases subclasses types icons generic-icons treemagic XMLnamespaces version; do [ -f /usr/share/mime/$f ] && cp /usr/share/mime/$f $SR/usr/share/mime/; done; else echo "  (GTK 3 runtime not found on the build machine - sysroot without gtkdemo)"; fi
   cp -rL /usr/share/X11/xkb $SR/usr/share/X11/xkb; cp /usr/share/X11/XErrorDB $SR/usr/share/X11/ 2>/dev/null; cp /usr/lib/xorg/protocol.txt $SR/usr/lib/xorg/ 2>/dev/null
@@ -239,11 +252,13 @@ if [ -f $B/glibc-root/lib64/libc.so.6 ]; then
   if [ -x /usr/bin/update-alternatives ]; then cp -L /usr/bin/update-alternatives $SR/usr/bin/ && strip $SR/usr/bin/update-alternatives; mkdir -p $SR/etc/alternatives $SR/var/lib/dpkg/alternatives; fi
   if [ -x /usr/bin/findmnt ]; then cp -L /usr/bin/findmnt $SR/usr/bin/ && strip $SR/usr/bin/findmnt; ldd /usr/bin/findmnt | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n; }; done; fi
   if [ -f /usr/share/alsa/alsa.conf ]; then mkdir -p $SR/usr/share/alsa $SR/etc; cp -rL /usr/share/alsa/alsa.conf /usr/share/alsa/pcm /usr/share/alsa/cards /usr/share/alsa/ctl $SR/usr/share/alsa/ 2>/dev/null; printf 'pcm.!default {\n    type plug\n    slave.pcm "nvxemu"\n}\npcm.nvxemu {\n    type mmap_emul\n    slave.pcm "hw:0,0"\n}\nctl.!default {\n    type hw\n    card 0\n}\n' > $SR/etc/asound.conf; fi
+  if [ -f /usr/share/glib-2.0/schemas/gschemas.compiled ]; then mkdir -p $SR/usr/share/glib-2.0/schemas; cp /usr/share/glib-2.0/schemas/gschemas.compiled $SR/usr/share/glib-2.0/schemas/; fi
+  if pkg-config --exists gio-2.0 2>/dev/null; then gcc -O2 -shared -fPIC -Wl,-soname,libnotify.so.4 -o $SR/lib64/libnotify.so.4 usr/x11/nvx-libnotify.c $(pkg-config --cflags --libs gio-2.0) && strip --strip-unneeded $SR/lib64/libnotify.so.4; fi
   CRL=/usr/lib/x86_64-linux-gnu; CRX=""
   for n in libnss3.so libnssutil3.so libsmime3.so libssl3.so libnspr4.so libplc4.so libplds4.so libsoftokn3.so libfreebl3.so libfreeblpriv3.so libasound.so.2 libcups.so.2 libdrm.so.2 libgbm.so.1 libudev.so.1 libX11-xcb.so.1 libxshmfence.so.1 libXss.so.1 libxkbcommon-x11.so.0 libXtst.so.6 libXi.so.6 libxcb-dri3.so.0 libxcb-randr.so.0 libnotify.so.4 libuuid.so.1 libstdc++.so.6 libatomic.so.1; do
     if [ -f $CRL/$n ] && [ ! -f $SR/lib64/$n ]; then cp -L $CRL/$n $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; CRX="$CRX $SR/lib64/$n"; fi; done
   if [ -z "$CRX" ]; then echo "  note: the Chromium/Electron libraries (libnss3, libgbm, libasound, libcups) are not on this build machine; Electron apps will need them from apt"; fi
-  for b in $SR/usr/bin/Xvfb $SR/usr/bin/xkbcomp $SR/usr/bin/xdemo $SR/usr/bin/nvx-xinput $SR/usr/bin/gtkdemo $SR/usr/bin/dbus-daemon $CRX; do ldd $b 2>/dev/null | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; }; done; done
+  for b in $SR/usr/bin/Xvfb $SR/usr/bin/xkbcomp $SR/usr/bin/xdemo $SR/usr/bin/nvx-xinput $SR/usr/bin/gtkdemo $SR/usr/bin/dbus-daemon $SR/lib64/libnotify.so.4 $CRX; do ldd $b 2>/dev/null | awk '/=> \//{print $3}' | while read l; do n=$(basename $l); [ -f $SR/lib64/$n ] || { cp -L $l $SR/lib64/$n && strip --strip-unneeded $SR/lib64/$n 2>/dev/null; }; done; done
   echo "[distro] ports from ${NVX_PROFILE:-distro/noovexos.profile} (tools/nvxport.py; see ports/README.md)"
   python3 tools/nvxport.py stage --profile ${NVX_PROFILE:-distro/noovexos.profile} --root $SR --build $B || exit 1
   R=$SR/usr/share/noovex/repo; mkdir -p $R/pool
@@ -256,7 +271,7 @@ sh tools/build_ports2.sh $B/ports2 > $B/ports2.log 2>&1 && cp -a $B/ports2/root/
 echo "[netsurf] NetSurf web browser (framebuffer, NoovexOS surface) with libcss, libdom, libhubbub, FreeType, libpng, libjpeg-turbo, expat (cached in build/netsurf)"
 sh tools/build_netsurf.sh $B/netsurf $B/ports2/sys > $B/netsurf.log 2>&1 && cp -a $B/netsurf/root/. $SR/ || { echo "NETSURF BUILD FAILED (see build/netsurf.log)"; exit 1; }
 if command -v cargo >/dev/null 2>&1 && sh tools/build_rust_apps.sh $B/rust-apps > $B/rust-apps.log 2>&1; then mkdir -p $SR/usr/bin; cp $B/rust-apps/x86_64-unknown-linux-gnu/release/rustinfo $SR/usr/bin/rustinfo; cp $B/rust-apps/x86_64-unknown-linux-gnu/release/nvx-mem $SR/usr/bin/nvx-mem; echo "  rust: rustinfo ($(stat -c %s $SR/usr/bin/rustinfo) bytes), nvx-mem ($(stat -c %s $SR/usr/bin/nvx-mem) bytes)"; else echo "  rust: rustinfo skipped (see build/rust-apps.log)"; fi
-if command -v dpkg-query >/dev/null 2>&1; then mkdir -p $SR/usr/share/noovex; for f in $SR/lib64/*; do b=$(basename $f); for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do [ -e $d/$b ] && { echo $d/$b; break; }; done; done | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | tr ',' '\n' | sed 's/ //g' | sort -u | xargs -r dpkg-query -W -f '${Package} ${Version}|${Provides}\n' 2>/dev/null | python3 tools/provided.py > $SR/usr/share/noovex/provided.txt; echo "  provided.txt: $(wc -l < $SR/usr/share/noovex/provided.txt) packages the Linux files already contain"; fi
+if command -v dpkg-query >/dev/null 2>&1; then mkdir -p $SR/usr/share/noovex; for f in $SR/lib64/*; do b=$(basename $f); for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do [ -e $d/$b ] && { echo $d/$b; break; }; done; done | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | tr ',' '\n' | sed 's/ //g' | sort -u | xargs -r dpkg-query -W -f '${Package} ${Version}|${Provides}\n' 2>/dev/null | python3 tools/provided.py > $SR/usr/share/noovex/provided.txt; [ -f $SR/lib64/libnotify.so.4 ] && ! grep -q "^libnotify4 " $SR/usr/share/noovex/provided.txt && echo "libnotify4 0.8.3-1" >> $SR/usr/share/noovex/provided.txt; [ -x $SR/usr/bin/xdg-open ] && ! grep -q "^xdg-utils " $SR/usr/share/noovex/provided.txt && echo "xdg-utils 1.1.3-4.1" >> $SR/usr/share/noovex/provided.txt; [ -f $SR/usr/share/noovex/provided-extra.txt ] && { cat $SR/usr/share/noovex/provided-extra.txt >> $SR/usr/share/noovex/provided.txt; rm -f $SR/usr/share/noovex/provided-extra.txt; }; echo "  provided.txt: $(wc -l < $SR/usr/share/noovex/provided.txt) packages the Linux files already contain"; fi
 echo "[faceid] face engine for Face ID sign-in (dlib, cached in build/faceid)"
 sh tools/build_faceid.sh $B/faceid > $B/faceid.log 2>&1 && cp -a $B/faceid/root/. $SR/ && tail -1 $B/faceid.log || echo "  face engine skipped (see build/faceid.log)"
 mkdir -p $SR/usr/bin $SR/usr/share/applications $SR/usr/share/icons/hicolor/48x48/apps
@@ -269,11 +284,13 @@ echo "[apps] built-in LibreOffice Writer and Calc (part of the Linux files)"
 rm -f $B/apps.bin $B/apps.hash
 if sh tools/stage_libreoffice.sh $B/apps-stage $SR; then cp -a $B/apps-stage/. $SR/; else rm -f $SR/usr/share/applications/nvx-libreoffice-*.desktop; fi
 rm -rf $B/apps-stage
+mkdir -p $SR/usr/lib/noovex && cp $B/install.nvx $SR/usr/lib/noovex/install.nvx
+rm -rf $B/packs; mkdir -p $B/packs; for d in $B/packs-root/*/; do [ -d "$d" ] || continue; n=$(basename $d); M=$SR/usr/share/noovex/packs/$n; [ -f $M ] || continue; F=$B/packs/$(echo $n | tr a-z A-Z).NVS; NVX_SR_ALLZSTD=1 python3 tools/mksysroot.py $F =$d >/dev/null || continue; head -1 $M > $M.t; python3 -c "import zlib,sys,os; d=open(sys.argv[1],'rb').read(); print(len(d), '%08X' % (zlib.crc32(d)&0xffffffff))" $F >> $M.t; mv $M.t $M; echo "  pack $n: $(tail -1 $M) (/PACKS on the boot disk, loaded on first start)"; done
 python3 tools/mksysroot.py $B/sysroot.bin =$SR
 
 echo "[4/6] link (elf_x86_64, base 0x100000)"
 OBJS="boot64.o isr64.o userspace.o ap_trampoline.o"
-BLOBS="rune_gfx.o rtw_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
+BLOBS="rune_gfx.o rtw_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_abi2test_bin.o user_schedtest_bin.o user_sysfstest_bin.o user_swaptest_bin.o user_abi3test_bin.o user_contest_bin.o user_container_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
 ld -m elf_x86_64 -nostdlib -no-pie -z noexecstack -T arch/x86_64/kernel64.ld \
    -o $B/kernel64.elf $(for o in $OBJS; do printf '%s ' $B/$o; done) $UNITOBJS $MODOBJS $NTFSOBJ $(for o in $BLOBS; do printf '%s ' $B/$o; done)
 
@@ -288,7 +305,7 @@ assert len(b)<=104857600, f"kernel {len(b)} > 100 MiB (loader limit)"
 struct.pack_into('<I', b, 24, len(b))
 import zlib, os
 _sr=open('build/sysroot.bin','rb').read() if os.path.exists('build/sysroot.bin') else b''
-assert len(_sr)<=0x10000000, f"sysroot {len(_sr)} > 256 MiB (loader area 0x20000000-0x30000000)"
+assert len(_sr)<=0x18000000, f"sysroot {len(_sr)} > 384 MiB (loader area 0x20000000-0x38000000)"
 struct.pack_into('<II', b, 16, zlib.crc32(_sr)&0xffffffff if _sr else 0, len(_sr))
 print(f"  sysroot: {len(_sr)} bytes, crc32 {zlib.crc32(_sr)&0xffffffff:08X}, loaded by the boot loader from /sysroot/{zlib.crc32(_sr)&0xffffffff:08X}.BIN")
 
@@ -326,8 +343,9 @@ except Exception as e:
     print("  WARNING: function name table not written:",e)
 
 # --- stamp the build signature (find NVX64SIG magic, patch epoch/size/sha256) ---
-import time, hashlib
+import time, hashlib, sys
 off = b.find(b'NVX64SIG')
+assert b.count(b'NVX64SIG') == 1, f"the signature magic appears {b.count(b'NVX64SIG')} times in the kernel; only the real block may contain it"
 if off >= 0:
     import subprocess
     # resolve symbols from the ELF (links at 0x100000)
@@ -352,12 +370,11 @@ if off >= 0:
     struct.pack_into('<I', b, size_off, len(b))      # image_size = full flat size (for loading/display)
     struct.pack_into('<Q', b, ue_off, ue)
     full_off  = ue_off + 8
-    for i in range(32): b[hash_off+i] = 0
-    for i in range(32): b[full_off+i] = 0
-    full = hashlib.sha256(bytes(b)).digest()
-    b[full_off:full_off+32] = full
-    digest = hashlib.sha256(bytes(b[:imm_sz])).digest()
-    b[hash_off:hash_off+32] = digest
+    sys.path.insert(0,'tools'); import nvxsign
+    _key=nvxsign.load_key(nvxsign.key_path())
+    _o,full=nvxsign.sign_image(b,_key,None,_sr,imm_sz)
+    digest=bytes(b[hash_off:hash_off+32])
+    print(f"  signed with key {nvxsign.key_id(nvxsign.pub_raw(_key)).hex()}, svn {struct.unpack_from('<I',b,off+132)[0]}, Linux files sha256 {bytes(b[off+144:off+152]).hex()}...")
     print(f"  build signature stamped @ {off}: sha256={digest[:8].hex()}... imm_size={imm_sz} file={len(b)} uefi_entry=0x{ue:x}")
 else:
     print("  WARNING: NVX64SIG signature block not found")

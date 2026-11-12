@@ -168,7 +168,7 @@ static void performance(int x,int y,int w,int h){
         p=b; p=udec(p,g_gfx_frame_us/1000); *p++='.'; p=udec(p,(g_gfx_frame_us/100)%10); p=scopy(p," ms"); *p=0; row2(gx,gy,"Last frame",b); gy+=22;
         p=b; p=udec(p,st); p=scopy(p," MB shared"); *p=0; row2(gx,gy,"Graphics memory",b); gy+=22; row2(gx,gy,"GPU drawing",g_gfx==GFX_GPU?"on":g_gfx==GFX_EMU?"emulated":"off"); gy+=22; row2(gx,gy,"Tear-free",tf?"on":"off"); }
     else if(tmperf==3){ int n=gdisk_count(); for(int k=0;k<n&&k<8;k++){ p=b; p=mb(p,(u64)gdisk_size_of(k)*512ULL/1048576ULL); if(k==gdisk_current())p=scopy(p,"  system disk"); *p=0; row2(gx,gy,gdisk_name_of(k),b); gy+=22; } if(!n)row2(gx,gy,"Disks","none found"); }
-    else { int ek=nic_index(); row2(gx,gy,"Adapter",ek>=0?nic_name(pci_ven[ek],pci_dev[ek]):"none"); gy+=22; row2(gx,gy,"Wired",net_ok?"connected":"not connected"); gy+=22; row2(gx,gy,"Wi-Fi",g_wnd_up?"connected":"not connected"); gy+=22;
+    else { int ek=nic_index(); row2(gx,gy,"Adapter",nic_active_name()?nic_active_name():ek>=0?nic_name(pci_ven[ek],pci_dev[ek]):"none"); gy+=22; row2(gx,gy,"Wired",net_ok?"connected":"not connected"); gy+=22; row2(gx,gy,"Wi-Fi",g_wnd_up?"connected":"not connected"); gy+=22;
         if(net_ok||g_wnd_up){ p=b; for(int q=3;q>=0;q--){ p=udec(p,(my_ip>>(8*(3-q)))&0xFF); if(q)*p++='.'; } *p=0; row2(gx,gy,"IPv4 address",b); } } }
 
 #define DMAX 28
@@ -310,7 +310,9 @@ void sysmon_draw(int i){
         if(on)fill_round(sx,Y+8,bw[k],32,8,15,rgb(220,220,224)); else if(hov)fill_round(sx,Y+8,bw[k],32,8,15,rgb(232,232,235));
         rail_icon(sx+14,Y+16,k,INK_,on?rgb(220,220,224):hov?rgb(232,232,235):rgb(242,242,244)); if(lab){ if(on)tbold(sx+40,Y+16,RAIL[k],INK_); else pdstr(sx+40,Y+16,RAIL[k],INK_,1); } hit(sx,Y+8,bw[k],32,10+k); sx+=bw[k]+4; }
     if(tmt==0){ int en=(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open)||(tm_jsel>=0&&g_jp[tm_jsel].state!=S_FREE&&g_jp[tm_jsel].state!=S_ZOMB&&g_jp[tm_jsel].pid>1); int ew=pw_str("End task",1)+34; int ex=X+10, ey=Y+8; int hov=en&&in_rect(mx,my,ex,ey,ew,32);
-        fill_round(ex,ey,ew,32,8,15,hov?rgb(222,222,226):rgb(232,232,236)); if(en)tbold(ex+17,ey+8,"End task",rgb(192,28,40)); else pdstr(ex+17,ey+8,"End task",rgb(160,160,166),1); hit(ex,ey,ew,32,399); }
+        fill_round(ex,ey,ew,32,8,15,hov?rgb(222,222,226):rgb(232,232,236)); if(en)tbold(ex+17,ey+8,"End task",rgb(192,28,40)); else pdstr(ex+17,ey+8,"End task",rgb(160,160,166),1); hit(ex,ey,ew,32,399);
+        if(tm_jsel>=0&&tm_jsel<JMAX&&g_jp[tm_jsel].state!=S_FREE&&g_jp[tm_jsel].state!=S_ZOMB&&g_jp[tm_jsel].pid>1){ int nv=g_jp[g_jp[tm_jsel].tg].nice; const char* pl=nv<0?"Priority: High":nv==0?"Priority: Normal":nv<15?"Priority: Below normal":"Priority: Low";
+            int pw=pw_str(pl,1)+34, px=ex+ew+8; int ph=in_rect(mx,my,px,ey,pw,32); fill_round(px,ey,pw,32,8,15,ph?rgb(222,222,226):rgb(232,232,236)); pdstr(px+17,ey+8,pl,INK_,1); hit(px,ey,pw,32,398); } }
     for(int b=0;b<3;b++){ int cx=X+ww-6-18; int bx=(b==2)?cx:(b==1)?cx-2-18:cx-2-18-18; twinbtn(b,bx,Y+16); }
     int cx=X+16, cy=Y+HB+16, cw=ww-32; tm_ybot=Y+wh-16;
     if(tmt==0)processes(cx,cy,cw,wh); else if(tmt==1)performance(cx,cy,cw,wh); else if(tmt==2)devices(cx,cy,cw,wh); else services(cx,cy,cw,wh); }
@@ -321,6 +323,7 @@ void sysmon_click(int px,int py){
         if(id>=100&&id<111){ tmdev=(tmdev==id-100)?-1:id-100; dscroll=0; return; }
         if(id>=200&&id<205){ tmperf=id-200; return; }
         if(id>=300&&id<300+NWIN){ tmsel=id-300; tm_jsel=-1; return; }
+        if(id==398){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1){ int tg=jp->tg; int nv=g_jp[tg].nice; int nn=nv==0?10:nv==10?19:nv==19?-5:0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB&&g_jp[j].tg==tg)g_jp[j].nice=nn; toast(nn<0?"Priority set to High":nn==0?"Priority set to Normal":nn==10?"Priority set to Below normal":"Priority set to Low"); } } return; }
         if(id==399){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1){ jc_kill(jp->pid,9,0); toast("The program was ended"); } tm_jsel=-1; return; } if(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open){ close_win(tmsel); tmsel=-1; } return; }
         if(id==698){ tm_showhid=!tm_showhid; return; }
         if(id>=700&&id<716){ const char *nm,*ds,*st; int on=0, req=0; if(svc_info(id-700,&nm,&ds,&st,&on,&req)&&!req){ svc_set(id-700,!on); toast(on?"Service stopped":"Service started"); } return; }

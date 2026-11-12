@@ -24,6 +24,8 @@ void crash_panic(regs_t* r,const char* msg,u64 rip,u64 rbp);
 void freeze_tick(regs_t* r);
 int crash_tick(void);
 void crash_init(void);
+int crash_rec_pending(void);
+const char* crash_report_text(int* n);
 void crash_cmd(const char* args);
 
 void stk_watch(const char* nm,int idx,void* base);

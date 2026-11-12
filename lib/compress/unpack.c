@@ -24,6 +24,19 @@ u8* unp_xz(const u8* in,long n,long* outlen){
         if(b.out_pos==b.out_size){ long c=cap; if(!ugrow(&out,&c,cap+1)){ xz_dec_end(s); kfree(out); return 0; } cap=c; b.out=out; b.out_size=(size_t)cap; }
         else if(b.in_pos==b.in_size){ xz_dec_end(s); kfree(out); return 0; } }
     xz_dec_end(s); *outlen=(long)b.out_pos; return out; }
+extern int bkl_held(void); extern int bkl_drop(void); extern void bkl_take(int);
+long xzk_decode_unlocked(const u8* in,long n,u8* out,long cap){
+    xzk_init(); struct xz_dec* s=xz_dec_init(XZ_SINGLE,0); if(!s)return -1;
+    struct xz_buf b; b.in=in; b.in_pos=0; b.in_size=(size_t)n; b.out=out; b.out_pos=0; b.out_size=(size_t)cap;
+    int h=bkl_held(), d=h?bkl_drop():0; u64 fl=cpu_irq_save(); cpu_irq_on(); enum xz_ret r=xz_dec_run(s,&b); cpu_irq_off(); cpu_irq_restore(fl); if(h)bkl_take(d);
+    xz_dec_end(s); if(r!=XZ_STREAM_END)return -1; return (long)b.out_pos; }
+long zstk_decode_unlocked(const u8* in,long n,u8* out,long cap){
+    ZSTD_DCtx* c=ZSTD_createDCtx(); if(!c)return -1;
+    int h=bkl_held(), d=h?bkl_drop():0; u64 fl=cpu_irq_save(); cpu_irq_on(); size_t r=ZSTD_decompressDCtx(c,out,(size_t)cap,in,(size_t)n); cpu_irq_off(); cpu_irq_restore(fl); if(h)bkl_take(d);
+    ZSTD_freeDCtx(c); if(ZSTD_isError(r))return -1; return (long)r; }
+long zstk_decode_into(const u8* in,long n,u8* out,long cap){
+    size_t r=ZSTD_decompress(out,(size_t)cap,in,(size_t)n);
+    if(ZSTD_isError(r))return -1; return (long)r; }
 u8* unp_zst(const u8* in,long n,long* outlen){
     ZSTD_DStream* d=ZSTD_createDStream(); if(!d)return 0; ZSTD_initDStream(d);
     long cap=n*4+65536; u8* out=(u8*)kmalloc((unsigned long)cap); if(!out){ ZSTD_freeDStream(d); return 0; }

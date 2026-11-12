@@ -17,6 +17,8 @@ struct lxsock {
     u64 tlast; int tries;
     int rd_shut, wr_shut, fin_in, fin_out, ws_ok, pws;
     int parent, backlog, qn, q[LXS_QMAX];
+    int v6, v6only, reuseaddr, reuseport, keepalive, nodelay, kidle, kintvl, kcnt, lon, lsec, icmp, nlproto;
+    u32 nlpid, nlgroups; long rcvus, sndus; int lo6, passcred;
 };
 
 extern struct lxsock g_lxs[NLXS];
@@ -36,5 +38,8 @@ int lxs_listen(int i,int backlog);
 int lxs_accept(int i);
 int lxs_is_lo(u32 ip);
 void lxs_lo_tx(const u8* f,int n);
+int lxs_new_nl(int proto);
+int lxs_nl_send(int i,const u8* b,int n);
+int lxs_ifinfo(int idx,char* name,u32* ip,u32* mask,u8* mac,u32* flags,int* mtu);
 
 #endif

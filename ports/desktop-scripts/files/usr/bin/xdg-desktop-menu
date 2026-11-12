@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$1" in
+  --version) echo "xdg-desktop-menu 1.1.3 (NoovexOS)"; exit 0;;
+  query|get|check) exit 1;;
+esac
+exit 0

@@ -82,8 +82,8 @@ static int ux_lookup_ex(const char* p,int* isdir,int follow,char* last,int cap){
         if(!follow||(FS[k].mode&0170000u)!=S_IFLNK)return k;
         if(last&&!ux_dir_ok(FS[k].dir,1)){ last[0]=0; return -1; }
         char t[192]; if(FS[k].len>191)return -1; int tl=FS[k].len; const char* sd=fsd(k); for(int i=0;i<tl;i++)t[i]=sd[i]; t[tl]=0;
-        if(t[0]=='/'){ for(int i=0;i<=tl;i++)cur[i]=t[i]; }
-        else { char dp[192]; dt_path(FS[k].dir,dp); int o=0; for(int i=0;dp[i];i++){ if(o>=190)return -1; cur[o++]=dp[i]; } if(o>1)cur[o++]='/'; for(int i=0;t[i];i++){ if(o>=191)return -1; cur[o++]=t[i]; } cur[o]=0; }
+        if(t[0]=='/'){ extern int lxn_absmap(const char*,char*,int) __attribute__((weak)); int mr=lxn_absmap?lxn_absmap(t,cur,192):-1; if(mr==-2)return -1; if(mr!=0) for(int i=0;i<=tl;i++)cur[i]=t[i]; }
+        else { char dp[192]; dt_path(FS[k].dir,dp); { extern int lxn_relmap(const char*,const char*,char*,int) __attribute__((weak)); int mr=lxn_relmap?lxn_relmap(dp,t,cur,192):-1; if(mr==-2)return -1; if(mr==0)continue; } int o=0; for(int i=0;dp[i];i++){ if(o>=190)return -1; cur[o++]=dp[i]; } if(o>1)cur[o++]='/'; for(int i=0;t[i];i++){ if(o>=191)return -1; cur[o++]=t[i]; } cur[o]=0; }
     }
     return -1;
 }
@@ -263,12 +263,19 @@ int proc_gen(const char* p,char* out,int cap){ (void)cap;
     if(seq((char*)p,"/proc/hostname")){ char* o=out; o=pc_(o,g_hostname); o=pc_(o,"\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/uptime")){ extern volatile u64 g_ticks; char* o=out; o=pn_(o,(long)(g_ticks/100)); o=pc_(o,".00 0.00\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/meminfo")){ extern void mem_summary(u64*,u64*,u64*); u64 mt,mu,mh; mem_summary(&mt,&mu,&mh); char* o=out;
+        extern void sysroot_cache_stats(u64*,u64*,u64*,u64*); extern void swap_stats(u64*,u64*,u64*,u64*);
+        extern u32 pframe_free_count(void); long fr=(long)pframe_free_count()*4; if(fr>(long)(mt-mu))fr=(long)(mt-mu); if(fr<0)fr=0;
+        u64 pcf=0,pcr=0,bcb=0,bcu=0; sysroot_cache_stats(&pcf,&pcr,&bcb,&bcu); u64 st=0,su=0,ss=0,sc=0; swap_stats(&st,&su,&ss,&sc);
+        long cached=(long)(pcf*4+bcb/1024), avail=fr+(long)(pcr*4+bcu/1024); if(avail>(long)mt)avail=(long)mt;
         o=pc_(o,"MemTotal:       "); o=pn_(o,(long)mt); o=pc_(o," kB\n");
-        o=pc_(o,"MemFree:        "); o=pn_(o,(long)(mt-mu)); o=pc_(o," kB\n");
-        o=pc_(o,"MemAvailable:   "); o=pn_(o,(long)(mt-mu)); o=pc_(o," kB\n");
-        o=pc_(o,"Buffers:        0 kB\nCached:         0 kB\nSwapCached:     0 kB\n");
-        o=pc_(o,"SwapTotal:      0 kB\nSwapFree:       0 kB\n");
+        o=pc_(o,"MemFree:        "); o=pn_(o,fr); o=pc_(o," kB\n");
+        o=pc_(o,"MemAvailable:   "); o=pn_(o,avail); o=pc_(o," kB\n");
+        o=pc_(o,"Buffers:        0 kB\nCached:         "); o=pn_(o,cached); o=pc_(o," kB\nSwapCached:     0 kB\n");
+        o=pc_(o,"SwapTotal:      "); o=pn_(o,(long)st); o=pc_(o," kB\nSwapFree:       "); o=pn_(o,(long)(st-su)); o=pc_(o," kB\n");
+        o=pc_(o,"Zswap:          "); o=pn_(o,(long)ss); o=pc_(o," kB\nZswapped:       "); o=pn_(o,(long)su); o=pc_(o," kB\n");
         o=pc_(o,"KernelHeap:     "); o=pn_(o,(long)mh); o=pc_(o," kB\n"); return (int)(o-out); }
+    if(seq((char*)p,"/proc/swaps")){ extern void swap_stats(u64*,u64*,u64*,u64*); extern int g_swap_on; u64 st=0,su=0,ss=0,sc=0; swap_stats(&st,&su,&ss,&sc); char* o=out; o=pc_(o,"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n");
+        if(g_swap_on){ o=pc_(o,"/dev/zram0                              partition\t"); o=pn_(o,(long)st); o=pc_(o,"\t\t"); o=pn_(o,(long)su); o=pc_(o,"\t\t100\n"); } return (int)(o-out); }
     if(seq((char*)p,"/proc/filesystems")){ char* o=out; o=pc_(o,"nodev\tproc\nnodev\tsysfs\n\tnvxfs\n\tramfs\n\tvfat\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/loadavg")){ char* o=out; o=pc_(o,"0.00 0.00 0.00 1/"); { int n=0; for(int i=0;i<FS_N;i++)if(FS[i].used)n++; o=pn_(o,n); } o=pc_(o," 1\n"); return (int)(o-out); }
     if(seq((char*)p,"/proc/mounts")){ char* o=out;
@@ -287,7 +294,7 @@ int proc_gen(const char* p,char* out,int cap){ (void)cap;
     if(seq((char*)p,"/dev/console")||seq((char*)p,"/dev/tty")){ char* o=out; o=pc_(o,"console\n"); return (int)(o-out); }
     /* ---- SysFS ---- */
     if(seq((char*)p,"/sys/kernel/ostype")){ char* o=out; o=pc_(o,"NoovexOS\n"); return (int)(o-out); }
-    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"10.60\n"); return (int)(o-out); }
+    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"10.86\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/hostname")){ char* o=out; o=pc_(o,g_hostname); o=pc_(o,"\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/arch")){ char* o=out; o=pc_(o,"x86_64\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/devices/system/cpu/online")){ extern volatile int g_cores_online; char* o=out; int n=g_smp_on?g_cores_online:1; if(n<=1)o=pc_(o,"0\n"); else { o=pc_(o,"0-"); o=pn_(o,n-1); o=pc_(o,"\n"); } return (int)(o-out); }
@@ -427,7 +434,7 @@ int ux_stat2(const char* p,u32* o,int follow){
     if(k<0){ int sx=0; u32 SL=0; u32 h=sysroot_ino(p,follow); if(!h){ h=2166136261u; for(int q=0;p[q];q++)h=(h^(u8)p[q])*16777619u; } o[6]=o[7]=o[8]=1760000000u;
         if(!follow&&sysroot_islink(p)){ char lb[256]; int ln=sysroot_readlink(p,lb,255); o[0]=0120777u; o[3]=1; o[4]=(u32)(ln>0?ln:0); o[5]=0x10000000u|(h&0x0FFFFFFFu); return 0; }
         if(sysroot_isdir(p)){ o[0]=0040755u; o[3]=2; o[4]=4096; o[5]=0x10000000u|(h&0x0FFFFFFFu); o[9]=1; return 0; }
-        if(sysroot_get(p,&SL,&sx)){ o[0]=sx?0100755u:0100644u; o[3]=1; o[4]=SL; o[5]=0x10000000u|(h&0x0FFFFFFFu); return 0; }
+        if(sysroot_meta(p,&SL,&sx)){ o[0]=sx?0100755u:0100644u; o[3]=1; o[4]=SL; o[5]=0x10000000u|(h&0x0FFFFFFFu); return 0; }
         o[6]=o[7]=o[8]=0; }
     if(k<0){ u32 L; char ab[192]; int n=0; if(p[0]!='/'){ dt_path_n(g_dcwd,ab,128); while(ab[n])n++; if(n>1)ab[n++]='/'; if(p[0]=='.'&&p[1]=='/')p+=2; } for(int q=0;p[q]&&n<191;q++)ab[n++]=p[q]; ab[n]=0;
         int d=n; while(d>0&&ab[d-1]!='/')d--; int dl=d>1?d-1:d; ab[dl]=0; int okd=ux_peq(ab,"/bin")||ux_peq(ab,"/sbin")||ux_peq(ab,"/usr/bin")||ux_peq(ab,"/usr/sbin"); ab[dl]='/';

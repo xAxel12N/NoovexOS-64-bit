@@ -26,6 +26,7 @@ lib/base/fmt.c
 lib/cxx/cxxrt.cpp
 arch/x86_64/cpu/simd.c
 drivers/video/fb/framebuffer.c
+drivers/video/fb/edid.c
 drivers/video/fb/damage.c
 arch/x86_64/cpu/cpuinfo.c
 arch/x86_64/cpu/cputemp.c
@@ -71,6 +72,7 @@ fs/nvx/nvxfs.c
 fs/fat/fat_ata.c
 drivers/net/wifi/rtw_efuse.c
 core/buildsig.c
+core/secboot.c
 drivers/net/wifi/rtw8821ce.c
 net/wifi/wpa2.c
 drivers/net/wifi/rtw_sec.c
@@ -121,6 +123,8 @@ graphics/ui/uifont.c
 fs/fat/vfat.c
 fs/ntfs/ntfsk.c
 sys/linux/linux.c
+mem/swap.c
+sys/linux/vdso.c
 shell/commands.c
 apps/office/editor.c
 apps/office/calculator.c
@@ -162,6 +166,9 @@ lib/compress/unpack.c
 fs/pkg/apt.c
 apps/x11/xdisplay.c
 apps/x11/xapps.c
+apps/x11/xtray.c
+apps/x11/xwin.c
+arch/x86_64/cpu/cpupower.c
 drivers/input/vm/vmmouse.c
 fs/vfs/volumes.c
 drivers/video/intel/igpu.c

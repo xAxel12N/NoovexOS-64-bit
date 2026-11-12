@@ -23,6 +23,7 @@ int ufat_poke(const char*,const char*,int);
 int ufat_read(int,char*,int);
 int msd_autoinit_safe(void);
 void power_reboot(void);
+u64 hr_ns(void);
 void notify(const char*,const char*);
 void toast(const char*);
 void editor_open_buf(const char*,int);
@@ -39,7 +40,7 @@ int kpop(void);
 #define CX_CL_W 120
 #define CX_STK_MAX 80
 #define CX_STK_MAGIC 0x5AFE57AC4B0C0DE5ULL
-#define CX_VERS "NoovexOS 64 v10.60"
+#define CX_VERS "NoovexOS 64 v10.86"
 
 u8 g_ksyms[CX_KSYM_CAP] __attribute__((section(".data.ksyms"),aligned(16)))={'N','V','X','K','S','Y','M','1'};
 u64 __stack_chk_guard=0x00E4B79A5C3D2F17ULL;
@@ -153,6 +154,9 @@ static int cx_lines(int x,int y,const char* s,u32 c,int maxw,int maxy){
     return y; }
 
 static int g_cx_nousb, g_cx_nofs;
+static int cx_flag_files(const char* nm);
+static int cx_usb_find(const char* nm);
+static int cx_flag_usb(const char* nm);
 static void cx_save(const char* t,int n,int* usb,int* files){
     *usb=0; *files=0;
     if(msd_ok&&ufat_ok&&!g_cx_nousb){ if(ufat_write_file("CRASH.TXT",t,n)==0){ *usb=1; ufat_poke("CRASHNEW.TXT","1\n",2); } }
@@ -160,21 +164,55 @@ static void cx_save(const char* t,int n,int* usb,int* files){
     if(fs_save_bin("crash-report.txt",(const u8*)t,n,0)>=0){ *files=1; fs_save_bin("crash-new.flag",(const u8*)"1\n",2,0); if(disk_ok)nvx3_sync_all(); } }
 
 static int cx_in_usb(u64 rip){ const char* nm=0; u64 off=0; return kname_find(rip,&nm,&off)&&nm&&((nm[0]=='x'&&nm[1]=='h')||(nm[0]=='u'&&nm[1]=='f')||(nm[0]=='u'&&nm[1]=='m')||(nm[0]=='s'&&nm[1]=='c'&&nm[2]=='s')||(nm[0]=='m'&&nm[1]=='s'&&nm[2]=='d')); }
-static void cx_panic_wait(void){
+static int g_cx_rec_checked;
+static int cx_rec_note(void){
+    int ok=0;
+    if(!g_cx_rec_checked||g_state==4)return 0;
+    if(msd_ok&&ufat_ok&&!g_cx_nousb&&ufat_poke("RECNEXT.TXT","1\n",2)==0)ok=1;
+    if(!g_cx_nofs&&disk_ok&&fs_save_bin("rec-next.flag",(const u8*)"1\n",2,0)>=0){ nvx3_sync_all(); ok=1; }
+    return ok; }
+static u32 cx_pit(void){ outb(0x43,0x00); u32 lo=inb(0x40); u32 hi=inb(0x40); return lo|(hi<<8); }
+static u32 cx_ms(u64 t0,u64* lt,u32* pp,u32 ms){
+    u64 t=hr_ns(); if(t!=*lt||t!=t0){ *lt=t; return (u32)((t-t0)/1000000ULL); }
+    u32 c=cx_pit(); if(c>*pp)ms+=5; *pp=c; return ms; }
+static void cx_panic_wait(int secs,int mx,int ys,int mw){
+    u64 t0=hr_ns(), lt=t0; u32 pp=cx_pit(), ms=0; int shown=-1, stop=secs<=0;
+    for(int i=0;i<64&&(inb(0x64)&1);i++)inb(0x60);
+    while(kpop()>=0){}
     for(;;){
-        if(inb(0x64)&1){ u8 st=inb(0x64); u8 sc=inb(0x60); if(!(st&0x20)&&sc==0x13)power_reboot(); }
-        if(xhid_n&&!g_cx_nousb)xhci_mouse_poll(); int k=kpop(); if(k=='r'||k=='R')power_reboot();
-        for(volatile int i=0;i<20000;i++)cpu_pause(); } }
+        int k=-1;
+        if(inb(0x64)&1){ u8 st=inb(0x64); u8 sc=inb(0x60); if(!(st&0x20)){ if(sc==0x13)power_reboot(); if(!(sc&0x80))k=0; } }
+        if(xhid_n&&!g_cx_nousb)xhci_mouse_poll(); { int q=kpop(); if(q=='r'||q=='R')power_reboot(); if(q>=0)k=q; }
+        if(!stop&&k>=0){ stop=1; cx_box(0,ys+18,(int)W,30,rgb(80,10,18)); cx_text(mx,ys+24,"Countdown stopped. Press R to restart into Recovery.   " CX_VERS,rgb(255,190,196),1,mw); }
+        for(volatile int i=0;i<20000;i++)cpu_pause();
+        if(stop)continue;
+        ms=cx_ms(t0,&lt,&pp,ms);
+        int left=secs-(int)(ms/1000); if(left<=0)power_reboot();
+        if(left!=shown){ shown=left; char tb[120]; cx_buf b={tb,tb+119}; cx_s(&b,"Restarting into Recovery in "); cx_u(&b,(u64)left); cx_s(&b," s.  Press R to restart now, any other key to stay on this screen."); *b.p=0;
+            cx_box(0,ys+18,(int)W,30,rgb(80,10,18)); cx_text(mx,ys+24,tb,rgb(255,190,196),1,mw); } } }
+int crash_rec_pending(void){
+    g_cx_rec_checked=1;
+    int fl=disk_ok?cx_flag_files("rec-next.flag"):-1, ul=cx_flag_usb("RECNEXT.TXT");
+    if(fl!='1'&&ul!='1')return 0;
+    if(fl=='1'){ fs_save_bin("rec-next.flag",(const u8*)"0\n",2,0); nvx3_sync_all(); }
+    if(ul=='1')ufat_poke("RECNEXT.TXT","0\n",2);
+    klog("boot: the last start stopped with a crash - opening Recovery");
+    return 1; }
+const char* crash_report_text(int* n){
+    static char rb[CX_REP_CAP]; int k=0;
+    { int f=disk_ok?fs_find_name("crash-report.txt"):-1; if(f>=0){ char* d=fsd(f); if(d){ while(d[k]&&k<CX_REP_CAP-1){ rb[k]=d[k]; k++; } } } }
+    if(!k){ int i=cx_usb_find("CRASH.TXT"); if(i>=0){ k=ufat_read(i,rb,CX_REP_CAP-1); if(k<0)k=0; } }
+    rb[k]=0; *n=k; return rb; }
 
 static void cx_panic_main(void){
     regs_t* r=g_cx_pr.vector==0xFFFFu?0:&g_cx_pr; u64 cr2=cpu_cr2(); regs_t* rb=&g_cx_pr;
     int kind=g_cx_pkind;
     if(r&&(r->vector==8||r->vector==14)&&(cx_in_guard(r->rsp)||(r->vector==14&&cx_in_guard(cr2)))){ kind=CRASH_STACK; g_cx_pmsg="boot stack, guard page hit"; }
-    { extern int g_gfx; g_gfx=0; }
+    { extern int g_gfx; g_gfx=0; extern int g_cloud_fs; g_cloud_fs=0; }
     g_cx_rep_n=cx_build(g_cx_rep,CX_REP_CAP,kind,r?r:(rb->rip?rb:0),g_cx_pmsg,cr2,0,20);
     static char scr[CX_REP_CAP]; cx_build(scr,CX_REP_CAP,kind,r?r:(rb->rip?rb:0),g_cx_pmsg,cr2,0,H>=1000?10:5);
     klog("panic: NoovexOS stopped - see the crash report");
-    if(!FBB||!W||!H){ int u,f; cx_save(g_cx_rep,g_cx_rep_n,&u,&f); for(;;)cpu_halt(); }
+    if(!FBB||!W||!H){ int u,f; cx_save(g_cx_rep,g_cx_rep_n,&u,&f); if(cx_rec_note()){ u64 t0=hr_ns(), lt=t0; u32 pp=cx_pit(), ms=0; while(ms<15000){ for(volatile int i=0;i<20000;i++)cpu_pause(); ms=cx_ms(t0,&lt,&pp,ms); } power_reboot(); } for(;;)cpu_halt(); }
     int sc=W>=1600?2:1, mx=48*sc/2+16, mw=(int)W-2*mx;
     for(u32 y=0;y<H;y++){ u32 c=mix(rgb(150,24,34),rgb(96,12,22),(int)((y*256)/H)); for(u32 x=0;x<W;x++)cx_px((int)x,(int)y,c); }
     int y=40*sc;
@@ -187,9 +225,10 @@ static void cx_panic_main(void){
     int u=0,f=0; { extern volatile int g_heap_busy; g_cx_nofs=g_heap_busy; g_cx_nousb=cx_in_usb(g_cx_pr.rip); } cx_save(g_cx_rep,g_cx_rep_n,&u,&f); if(!disk_ok)f=0;
     cx_box(0,ys-6,(int)W,76,rgb(80,10,18));
     cx_text(mx,ys,u&&f?"Report saved: CRASH.TXT on the USB stick and crash-report.txt in Files.":u?"Report saved: CRASH.TXT on the USB stick.":f?"Report saved: crash-report.txt in Files.":"No USB stick or installed disk to save to - please take a photo of this screen.",rgb(255,255,255),1,mw);
-    cx_text(mx,ys+24,"Press R to restart.   " CX_VERS,rgb(255,190,196),1,mw);
+    int rn=cx_rec_note();
+    if(!rn)cx_text(mx,ys+24,"Press R to restart.   " CX_VERS,rgb(255,190,196),1,mw);
     (void)cx_fb_base;
-    cx_panic_wait(); }
+    cx_panic_wait(rn?15:0,mx,ys,mw); }
 
 void crash_panic(regs_t* r,const char* msg,u64 rip,u64 rbp){
     static volatile int in_panic=0;

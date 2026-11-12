@@ -226,7 +226,7 @@ static void sh_user_cmds(const char* cmd,const char* arg){
         for(int i=0;i<n;i++){ if(seq(w[i],"-m"))continue; else if(seq(w[i],"-a")||seq(w[i],"--admin"))adm=1; else if((seq(w[i],"-c")||seq(w[i],"--comment"))&&i+1<n)full=w[++i]; else if(seq(w[i],"-G")&&i+1<n){ if(seq(w[i+1],"admin")||seq(w[i+1],"sudo"))adm=1; i++; } else nm=w[i]; }
         if(!nm){ term_puts(inter?"usage: adduser [--admin] [-c \"Full Name\"] NAME   (asks for a password)\n":"usage: useradd [-a] [-c \"Full Name\"] NAME   (then: passwd NAME)\n"); return; }
         char np[72]; np[0]=0;
-        if(inter){ char fb[72]; if(!full[0]){ term_puts("Full name: "); int L=0; sh_redraw(); for(;;){ int c=kpop(); if(c<0){ cpu_idle(); continue; } if(c=='\n'){ term_putc('\n'); break; } if(c==3){ term_puts("^C\n"); return; } if((c=='\b'||c==127)&&L>0){ L--; term_putc('\b'); } else if(c>=32&&c<127&&L<60){ fb[L++]=(char)c; term_putc((char)c); } sh_redraw(); } fb[L]=0; full=fb; }
+        if(inter){ char fb[72]; if(!full[0]){ term_puts("Full name: "); int L=0; sh_redraw(); for(;;){ int c=kpop(); if(c<0){ kidle(); continue; } if(c=='\n'){ term_putc('\n'); break; } if(c==3){ term_puts("^C\n"); return; } if((c=='\b'||c==127)&&L>0){ L--; term_putc('\b'); } else if(c>=32&&c<127&&L<60){ fb[L++]=(char)c; term_putc((char)c); } sh_redraw(); } fb[L]=0; full=fb; }
             if(sh_ask_newpw(nm,np,72)<0){ sh_err("adduser: no account created",0); return; } }
         int uid=acct_create(nm,full,np,adm); sh_wipe(np,72);
         if(uid<0){ sh_err(cmd,": "); sh_err(g_acct_err,0); return; }

@@ -43,4 +43,16 @@ int main(void){
     aud_parse(D,dn); k=aud_pick(1); ck("USB Audio 2.0 microphone understood (clock 0x10, 2 channels)",aud.v2==1&&aud.clk==0x10&&k>=0&&aud.alt[k].ch==2&&aud.alt[k].v2&&aud_pick_rate(&aud.alt[k])==48000);
     dn=0; iface(0,0,14,1,0); iface(1,0,14,2,0); iface(2,0,1,1,0); iface(3,0,1,2,0);
     ck("webcam with a microphone: both parts are seen",uvc_has_video(D,dn)&&aud_has_audio(D,dn));
+    memset(&aud,0,sizeof aud); aud.nalt=2;
+    aud.alt[0].ep=0x01; aud.alt[0].sub=3; aud.alt[0].bits=24; aud.alt[0].ch=2; aud.alt[0].v2=1; aud.alt[0].mps=600;
+    aud.alt[1].ep=0x01; aud.alt[1].sub=4; aud.alt[1].bits=32; aud.alt[1].ch=2; aud.alt[1].v2=1; aud.alt[1].mps=600;
+    ck("headset that only plays 24-bit or 32-bit is accepted for playback",aud_pick(0)>=0);
+    aud.alt[2]=aud.alt[0]; aud.alt[2].sub=2; aud.alt[2].bits=16; aud.nalt=3; ck("16-bit playback still preferred when offered",aud_pick(0)==2);
+    { static u32 q[256]; aud_pbq=q; for(int i=0;i<200;i++)q[i]=((u32)(u16)(short)(i*100))|((u32)(u16)(short)(-i*100)<<16); aud_pbw=200;
+      int bad=0; for(int bs=2;bs<=4;bs++) for(int ch=1;ch<=2;ch++){ aud_pbr=10; aud_pacc=0; apb.rate=48000; apb.ivus=1000; apb.acc=0; apb.mps=600; apb.ch=(u32)ch; apb.bs=(u32)bs;
+        u8 d[700]; u32 n=aud_fill_pb(d), fr=n/(u32)(ch*bs); if(fr!=48)bad++;
+        for(u32 k=0;k<fr;k++){ int l=(short)(q[10+k]&0xFFFF), r=(short)(q[10+k]>>16); const u8* f=d+k*(u32)(ch*bs); int g0=bs==2?(short)(f[0]|f[1]<<8):bs==3?(short)(f[1]|f[2]<<8):(short)(f[2]|f[3]<<8);
+          if(g0!=(ch==2?l:(l+r)/2))bad++; if(bs>=3&&f[0]!=0)bad++; if(bs==4&&f[1]!=0)bad++; if(ch==2){ const u8* g=f+bs; int g1=bs==2?(short)(g[0]|g[1]<<8):bs==3?(short)(g[1]|g[2]<<8):(short)(g[2]|g[3]<<8); if(g1!=r)bad++; } } }
+      ck("playback samples packed as 16, 24 and 32 bit, mono and stereo",bad==0);
+      aud_pbr=10; apb.acc=0; apb.mps=200; apb.ch=2; apb.bs=3; { u8 d[700]; u32 n=aud_fill_pb(d); ck("packet never larger than the endpoint allows (200 bytes, 24-bit stereo)",n<=200&&n%6==0&&n>0); } }
     printf(fails?"FAILED %d\n":"all camera and microphone checks passed\n",fails); return fails?1:0; }

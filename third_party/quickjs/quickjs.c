@@ -5265,7 +5265,7 @@ static JSValue js_new_string_rope(JSContext *ctx, JSValue op1, JSValue op2)
         depth = max_int(depth, r2->depth);
     }
     if (len > JS_STRING_LEN_MAX) {
-        JS_ThrowInternalError(ctx, "string too long");
+        JS_ThrowRangeError(ctx, "Invalid string length");
         goto fail;
     }
     r = js_malloc(ctx, sizeof(*r));
@@ -8507,8 +8507,6 @@ JS_ThrowError(JSContext *ctx, JSErrorEnum error_num,
         val = JS_MakeError(ctx, JS_##uc##_ERROR,                        \
                            /*add_backtrace*/true, fmt, ap);             \
         va_end(ap);                                                     \
-        if (JS_##uc##_ERROR == JS_INTERNAL_ERROR)                       \
-            js_set_uncatchable_error(val, true);                        \
         return val;                                                     \
     }                                                                   \
     JSValue JS_PRINTF_FORMAT_ATTR(2, 3)                                 \
@@ -8521,8 +8519,6 @@ JS_ThrowError(JSContext *ctx, JSErrorEnum error_num,
         va_start(ap, fmt);                                              \
         val = JS_ThrowError(ctx, JS_##uc##_ERROR, fmt, ap);             \
         va_end(ap);                                                     \
-        if (JS_##uc##_ERROR == JS_INTERNAL_ERROR)                       \
-            js_set_uncatchable_error(ctx->rt->current_exception, true); \
         return val;                                                     \
     }                                                                   \
 
@@ -39701,7 +39697,7 @@ static JSString *JS_ReadString(BCReaderState *s)
     is_wide_char = len & 1;
     len >>= 1;
     if (len > JS_STRING_LEN_MAX) {
-        JS_ThrowInternalError(s->ctx, "string too long");
+        JS_ThrowRangeError(s->ctx, "Invalid string length");
         return NULL;
     }
     p = js_alloc_string(s->ctx, len, is_wide_char);
@@ -42943,8 +42939,6 @@ static JSValue js_error_constructor(JSContext *ctx, JSValueConst new_target,
         opts = 3;
         break;
     case JS_INTERNAL_ERROR:
-        js_set_uncatchable_error(obj, true);
-        // fallthru
     default:
         message = argv[0];
         opts = 1;

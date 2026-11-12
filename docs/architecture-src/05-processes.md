@@ -732,3 +732,22 @@ All kernel code still runs under the big kernel lock (section 4.11), so two thre
 - `alarm(sec)` returns the seconds left on the previous timer (rounded up) and sets a one-shot timer; `alarm(0)` cancels it.
 - `fork` clears both fields in the child; `execve` keeps them, as Linux does.
 - The default action of SIGALRM ends the process ("Alarm clock" in the shell).
+
+## 5.17 Priorities and fair time sharing (v10.78)
+
+Every job (`struct jproc`) has `nice` (-20..19), `policy` (0 normal, 1 FIFO, 2 round robin, 3 batch, 5 idle), `rtprio` (1-99 for FIFO and round robin), `vrt` (virtual run time) and `runns` (nanoseconds of processor time).
+
+Picking (`jc_pick`, under the big kernel lock, on every processor):
+
+1. Runnable FIFO and round-robin jobs come first, highest `rtprio` wins; every 20th pick on a processor ignores the real-time policies, so normal jobs keep at least about 5% even next to busy real-time jobs.
+2. Otherwise the runnable job with the smallest `vrt` wins. Ties go to the next job after the last one picked, so equal jobs take turns.
+3. A job that slept, or a new job, never counts below `g_min_vrt` minus 6 ms. Short sleepers (programs waiting for input or sound) are picked soon after they wake but cannot bank time while asleep. `g_min_vrt` only grows, and never past the smallest `vrt` of a job running on another processor. `jc_runnable` (which also ticks interval timers) is only called for jobs that could win, to keep the pick short.
+
+Accounting: after a job runs, `jc_enter` adds the time it ran (`hr_ns`) to `runns`, and time x 1024 / weight to `vrt`. The weights are Linux's table (nice 0 = 1024, each step about 25%, nice -20 = 88761, nice 19 = 15); SCHED_IDLE uses weight 3. New jobs start at `g_min_vrt`; `fork` and `clone` copy the parent's values.
+
+Automatic boosts (`jc_boost`): a program that has the ALSA playback device open counts as nice -10, and the X server and its helpers (Xvfb, Xorg, nvxwm, nvx-xinput, only when run by root) as nice -5, so sound and the Linux desktop keep running smoothly next to busy programs. On the boot processor, where the NoovexOS desktop loop shares time with jobs, jobs get 10 ms instead of 20 ms while mouse or keyboard input is waiting (`jc_timer`, `jc_run`).
+
+System calls: `getpriority`/`setpriority` (process, process group, user; non-root users may only raise nice, and only for their own programs), `sched_setscheduler`, `sched_getscheduler`, `sched_setparam`, `sched_getparam`, `sched_get_priority_max/min`, `sched_rr_get_interval` (20 ms), `sched_setattr`/`sched_getattr` (flags KEEP_POLICY 0x08 and KEEP_PARAMS 0x10; nice only for the fair policies). FIFO and round robin need root. Leaving a real-time or idle policy moves `vrt` up to `g_min_vrt`. `setpriority` on a process group or user changes every allowed match and returns the last error. `/proc/<pid>/stat` shows priority, nice, real-time priority and policy, and the state letter is now R, S, T or Z. Task Manager has a Priority button for a selected program (Normal, Below normal, Low, High).
+
+Test: `schedtest` (QEMU group of `check.py`) checks the system calls and runs as many busy programs at nice 0 as at nice 10 (one more of each than there are processors), expecting the nice 0 ones to do clearly more work.
+

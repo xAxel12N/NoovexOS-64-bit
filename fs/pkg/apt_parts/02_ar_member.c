@@ -182,7 +182,7 @@ static u8* local_read(const char* fn,long* n,int* owned){
     for(int i=0;caps[i];i++){ u8* b=(u8*)kmalloc((unsigned long)caps[i]); if(!b)continue; int got=fat_read_file(fn,b,(int)caps[i]); if(got<=0){ kfree(b); return 0; } *n=got; *owned=1; return b; }
     return 0; }
 static int local_ctl(const char* fn,ldeb* L){
-    long n=0; int own=0; u8* deb=local_read(fn,&n,&own); if(!deb){ APE("cannot access archive: ",fn); return 0; }
+    long n=0; int own=0; u8* deb=local_read(fn,&n,&own); if(!deb){ APE("cannot access archive: ",fn); tcol(rgb(230,200,120)); APL("N: there is no such file here. Browsers save downloads in /root/Downloads, and names are case-sensitive."); APL("N: find it with:  find / -iname \"*.deb\""); APL("N: Discord, Visual Studio Code and Spotify can be installed by name:  sudo apt install discord"); tcol(WHT); return 0; }
     const u8* cm; long cl; int ok=0;
     if(ar_member(deb,n,"control.tar",&cm,&cl)){ long cn=0; u8* ctl=unp_auto(cm,cl,&cn);
         if(ctl){ const u8* cf; long cfl; if(tar_scan(ctl,cn,0,"./control",&cf,&cfl)==1){ char pd[512], dd[1024]; ctl_field(cf,cfl,"Package",L->name,64); ctl_field(cf,cfl,"Version",L->ver,64); ctl_field(cf,cfl,"Pre-Depends",pd,512); ctl_field(cf,cfl,"Depends",dd,1024);
@@ -195,11 +195,36 @@ static int local_ctl(const char* fn,ldeb* L){
 static int local_install(ldeb* L){
     long n=0; int own=0; u8* d=local_read(L->path,&n,&own); if(!d){ APE("cannot access archive: ",L->path); return 0; }
     int ok=deb_install(d,n,0,0,0); if(own)kfree(d); return ok; }
+static const char* const g_vend[][4]={
+    {"discord","https://discord.com/api/download?platform=linux&format=deb","discord","Discord"},
+    {"code","https://update.code.visualstudio.com/latest/linux-deb-x64/stable","code","Visual Studio Code"},
+    {"vscode","https://update.code.visualstudio.com/latest/linux-deb-x64/stable","code","Visual Studio Code"},
+    {"visual-studio-code","https://update.code.visualstudio.com/latest/linux-deb-x64/stable","code","Visual Studio Code"},
+    {0,0,0,0}};
+static int vend_find(const char* nm){ for(int i=0;g_vend[i][0];i++) if(seq(nm,g_vend[i][0]))return i; return -1; }
+static int vend_fetch(int v,char* out){
+    tcol(GREY); AP("Note, "); AP(g_vend[v][3]); AP(" is not in Debian; downloading it from "); { char h[80]; int k=0; const char* u=g_vend[v][1]+8; while(u[k]&&u[k]!='/'&&k<79){ h[k]=u[k]; k++; } h[k]=0; AP(h); } APL(" ..."); tcol(WHT); sh_flush();
+    long n=0; u8* d=ap_get(g_vend[v][1],&n,seq(g_vend[v][2],"code")?(192L<<20):(32L<<20));
+    if(!d){ APE("download failed: ",g_fetch_err?g_fetch_err:"unknown error"); return 0; }
+    if(n<8||d[0]!='!'||d[1]!='<'||d[2]!='a'||d[3]!='r'){ kfree(d); APE("the download is not a Debian package: ",g_vend[v][1]); return 0; }
+    char* p=out; p=sj(p,"/var/cache/apt/archives"); mkdirp(out); p=sj(p,"/"); p=sj(p,g_vend[v][2]); p=sj(p,"_latest_amd64.deb");
+    int ok=wfile(out,d,n); kfree(d); if(!ok){ APE("cannot save ",out); return 0; }
+    AP("Downloaded "); Psize(n); AP(" to "); APL(out); sh_flush(); return 1; }
+static int spot_name(const char* nm){ return seq(nm,"spotify")||seq(nm,"spotify-client"); }
+static void spot_source(const char* args){
+    const char* a=args; int want=0; for(;;){ while(*a==' ')a++; if(!*a)break; char nm[64]; int k=0; while(*a&&*a!=' '&&k<63)nm[k++]=*a++; nm[k]=0; if(spot_name(nm))want=1; }
+    if(!want)return; src_load(); for(int i=0;i<g_nsrc;i++){ const char* b=g_srcbase[i]; for(int k=0;b[k];k++){ const char* t="repository.spotify.com"; int z=0; while(t[z]&&b[k+z]==t[z])z++; if(!t[z])return; } }
+    const char* L="deb http://repository.spotify.com stable non-free\n"; mkdirp(AP_SOURCES ".d"); wfile(AP_SOURCES ".d/spotify.list",(const u8*)L,asl(L));
+    tcol(GREY); APL("Note, Spotify is not in Debian; adding Spotify's own package source (" AP_SOURCES ".d/spotify.list) and updating the package lists."); tcol(WHT); sh_flush();
+    apt_update(); }
 static void apt_install(const char* args,int reinstall){
+    spot_source(args);
     if(!idx_load(0))return; st_load(); g_nplan=0; g_nldeb=0; int nreq=0;
     AP("Reading package lists... Done\nBuilding dependency tree... Done\nReading state information... Done\n"); sh_flush();
     const char* a=args;
     for(;;){ while(*a==' ')a++; if(!*a)break; char nm[200]; int k=0; while(*a&&*a!=' '&&k<199)nm[k++]=*a++; nm[k]=0; if(nm[0]=='-')continue;
+        if(spot_name(nm)){ char* p=nm; p=sj(p,"spotify-client"); }
+        { int vi=vend_find(nm); if(vi>=0&&idx_best(svs(nm))<0){ static char vp[200]; if(!vend_fetch(vi,vp))return; int k=0; for(;vp[k]&&k<199;k++)nm[k]=vp[k]; nm[k]=0; } }
         if(is_local_deb(nm)){ if(g_nldeb>=8){ APE("too many package files, the limit is 8",0); return; } ldeb* L=&g_ldeb[g_nldeb]; if(!local_ctl(nm,L))return; g_nldeb++;
             tcol(GREY); AP("Note, selecting '"); AP(L->name); AP("' instead of '"); AP(nm); APL("'"); tcol(WHT);
             if(L->dep[0]&&!resolve_list(svs(L->dep),1)){ APE("Unmet dependencies. Cannot satisfy: ",g_unmet); return; }
@@ -229,7 +254,7 @@ static void apt_install(const char* args,int reinstall){
 static int remove_one(const char* nm,int purge){
     int si=st_find(svs(nm)); if(si<0){ AP("Package '"); AP(nm); APL("' is not installed, so not removed"); return 0; }
     AP("Removing "); AP(g_in[si].name); AP(" ("); AP(g_in[si].ver); APL(") ...");
-    char tag[72]; char* p=tag; p=sj(p,"pkg:"); p=sj(p,g_in[si].name); sysroot_del_layer(tag);
+    char tag[72]; char* p=tag; p=sj(p,"pkg:"); p=sj(p,g_in[si].name); if(sysroot_has_layer(tag)&&!sysroot_del_layer(tag)){ APE("the package's files are in use right now - try again",0); return 0; }
     char lf[128]; p=lf; p=sj(p,AP_PKGDIR "/"); p=sj(p,g_in[si].name); p=sj(p,".list"); long mn=0; const u8* md=rfile(lf,&mn);
     if(md){ u8* mc=(u8*)kmalloc((unsigned long)(mn?mn:1)); if(mc){ for(long i=0;i<mn;i++)mc[i]=md[i]; long i=0; while(i<mn){ long e=i; while(e<mn&&mc[e]!='\n')e++; char pb[256]; long c=e-i<255?e-i:255; for(long k=0;k<c;k++)pb[k]=(char)mc[i+k]; pb[c]=0; if(c>0)k_unlink(pb); i=e+1; } kfree(mc); } k_unlink(lf); }
     char fn[128]; p=fn; p=sj(p,AP_PKGDIR "/"); p=sj(p,g_in[si].name); p=sj(p,".nvs"); k_unlink(fn);

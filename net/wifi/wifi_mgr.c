@@ -68,7 +68,8 @@ void wifi_saved_load(void){
                 if(w->ssid[0])g_wnet_n++; } }
         i=e+1; } for(int z=0;z<(int)sizeof(b);z++)b[z]=0; }
 
-int wifi_saved_find(const char* ssid){ for(int i=0;i<g_wnet_n;i++) if(wm_eq(g_wnets[i].ssid,ssid))return i; return -1; }
+static int wm_eq_old(const char* sv,const char* sc){ while(*sv&&*sc){ u8 a=(u8)*sv, b=(u8)*sc; if(a!=b&&!(a=='.'&&(b>=0x80||b<32)))return 0; sv++; sc++; } return *sv==*sc; }
+int wifi_saved_find(const char* ssid){ for(int i=0;i<g_wnet_n;i++) if(wm_eq(g_wnets[i].ssid,ssid))return i; for(int i=0;i<g_wnet_n;i++) if(wm_eq_old(g_wnets[i].ssid,ssid))return i; return -1; }
 int wifi_saved_add(const char* ssid,const char* pass,const char* user,int eap,int hidden){
     int k=wifi_saved_find(ssid); if(k<0){ if(g_wnet_n>=WIFI_MAXNET){ int lo=0; for(int i=1;i<g_wnet_n;i++) if(g_wnets[i].prio<g_wnets[lo].prio)lo=i; k=lo; } else k=g_wnet_n++; for(int z=0;z<(int)sizeof(wnet);z++)((u8*)&g_wnets[k])[z]=0; g_wnets[k].autoc=1; g_wnets[k].prio=10; }
     wnet* w=&g_wnets[k]; wm_cpy(w->ssid,ssid,33); wm_cpy(w->pass,pass?pass:"",65); wm_cpy(w->user,user?user:"",65); w->eap=eap; if(hidden)w->hidden=1; wifi_saved_save(); return k; }
@@ -101,22 +102,23 @@ int wifi_scan_start(int full){
     u32 m=rtw_find_mmio(); sc_n=0; for(int i=0;i<(full?13:3);i++)sc_list[sc_n++]=CH2[i]; if(g_wm_5g)for(int i=0;i<24;i++)sc_list[sc_n++]=CH5[i];
     if(g_wm_lps)wm_lps(0); sc_on=1; sc_i=0; sc_reps=0; sc_start=g_ticks; g_wifi_scanning=1; g_chquiet=1; if(g_wm_state!=WM_CONNECTED)rtw_rx_ring_up(m); rtw_set_channel_2g(m,sc_list[0]); sc_t=g_ticks; wm_status("Looking for networks...",0); return 0; }
 static void scan_finish(void){
-    u32 m=rtw_find_mmio(); sc_on=0; g_wifi_scanning=0; g_chquiet=0;
+    u32 m=rtw_find_mmio(); sc_on=0; g_wifi_scanning=0; g_chquiet=0; { extern u8 g_scan_ch; g_scan_ch=0; } if(g_wm_state==WM_CONNECTED){ extern u64 g_wnd_beacon_t; g_wnd_beacon_t=g_ticks; }
     for(int i=0;i<g_apn;){ int keep=g_aps[i].last>=sc_start||(g_wm_state==WM_CONNECTED&&g_aps[i].ch==g_wm_ch); if(keep)i++; else g_aps[i]=g_aps[--g_apn]; }
     for(int i=0;i<g_apn;i++)for(int j=i+1;j<g_apn;j++) if(g_aps[j].rssi>g_aps[i].rssi){ scan_ap t=g_aps[i]; g_aps[i]=g_aps[j]; g_aps[j]=t; }
     if(g_wm_state==WM_CONNECTED&&m)rtw_set_channel_2g(m,g_wm_ch);
     char b[48],*p=b; p=scopy(p,"Found "); p=udec(p,(u32)g_apn); p=scopy(p,g_apn==1?" network":" networks"); *p=0; if(g_wm_state!=WM_CONNECTED)wm_status(b,0); }
 static void scan_step(void){
     u32 m=rtw_find_mmio(); if(!m){ sc_on=0; g_wifi_scanning=0; return; }
-    rtw_scan_drain(m,sc_list[sc_i]);
-    if(g_ticks-sc_t<11)return;
+    extern u8 g_scan_ch; u8 cur=g_ticks-sc_t<2?0:sc_list[sc_i]; g_scan_ch=cur;
+    rtw_scan_drain(m,cur);
+    if(g_ticks-sc_t<15)return;
     sc_i++; if(sc_i>=sc_n){ scan_finish(); return; }
     rtw_set_channel_2g(m,sc_list[sc_i]); sc_t=g_ticks; }
 void wifi_scan_blocking(int full){ if(wifi_scan_start(full)<0)return; while(sc_on){ scan_step(); ui_pump(); } }
 
 static int wm_dhcp(void){ g_dhcp_done=0; g_dhcp_ok=0; return dhcp_config(); }
 static const char* wm_err(int r){ switch(r){ case 1:return "the network did not answer"; case 2:return "the network refused the connection"; case 3:return "no answer when joining"; case 4:return "the network rejected this device (security type)";
-    case 5:return "the network did not start the secure handshake"; case 6:return "wrong password"; case 7:return "sign-in failed (user name or password)"; case 8:return "the network needs a certificate we do not support"; case 10:return "the network certificate changed (forget the network to trust it again)"; case 9:return "the network uses old TKIP security (not supported - switch the router to WPA2-AES)"; default:return "the handshake failed"; } }
+    case 5:return "the network did not start the secure handshake"; case 6:return "wrong password"; case 7:return "sign-in failed (user name or password)"; case 8:return "the network needs a certificate we do not support"; case 10:return "the network certificate changed (forget the network to trust it again)"; case 9:return "the network uses old TKIP or WPA security (not supported - switch the router to WPA2-AES)"; case 11:return "the network did not send a usable group key (try again, or restart the router)"; default:return "the handshake failed"; } }
 
 static void wm_deauth(u32 m){ if(!m||g_wm_state!=WM_CONNECTED)return; u8 f[26]; int n=0; f[n++]=0xC0; f[n++]=0; f[n++]=0; f[n++]=0; for(int i=0;i<6;i++)f[n++]=g_wm_bssid[i]; for(int i=0;i<6;i++)f[n++]=rtw_r8(m,0x0610+i); for(int i=0;i<6;i++)f[n++]=g_wm_bssid[i]; f[n++]=0; f[n++]=0; f[n++]=3; f[n++]=0; rtw_tx_mgmt(m,f,n); rtw_delay_us(5000); }
 static int wm_connect(const scan_ap* apin,const char* pass,const char* user,int save);

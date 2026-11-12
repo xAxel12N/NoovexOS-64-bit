@@ -1,6 +1,6 @@
 # NoovexOS 64 Architecture and Developer Reference
 
-Version 10.60. x86-64, BIOS and UEFI, written from scratch.
+Version 10.86. x86-64, BIOS and UEFI, written from scratch.
 
 This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating system with its own boot loaders, kernel, drivers, file system, network stack, desktop and Linux-compatible user space. It was written from the source code, with file paths and symbol names so you can find the implementation. Where the code does something surprising or has a known gap, the text says so.
 
@@ -22,10 +22,380 @@ This is the developer reference for NoovexOS 64: a from-scratch x86-64 operating
 
 ## How to read this document
 
-- New to the code: read "What changed in v10.60", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
+- New to the code: read "What changed in v10.86", then Parts 1 and 2 for the build and boot, then the part for the area you want to change.
 - Porting a program: go to Part 6; the step-by-step guide is in section 6.9.
 - Chasing a bug: start with the troubleshooting table in section 12.9 and the serial log in section 12.5.
 - Paths are relative to the root of the repository (since v9.83 the source tree is flat: `arch/`, `boot/`, `core/`, `drivers/`, `fs/`, ... at the top).
+
+## What changed in v10.86
+
+Settings > Display tells the truth about the monitor (owner: "in settings display it is fake that screen refresh rate and that oled").
+
+| # | Before (v10.85) | Now (v10.86) | Where |
+|---|---|---|---|
+| 1 | The boot loaders did not pass the monitor's EDID to the kernel (BIOS read it only to pick the native size; UEFI did not read it). | BIOS: the EDID read through VBE 4F15 is copied to physical 0x5200 (magic `EID1`, 128 bytes at +4, source byte at +132) just before the jump to the kernel. UEFI: the loader asks the firmware for `EFI_EDID_ACTIVE_PROTOCOL`, then `EFI_EDID_DISCOVERED_PROTOCOL`, and copies a valid EDID to the same place before `ExitBootServices`. | `boot/src/vbe.c` (`vbe_edid_handoff`), `boot/src/stage2.c`, `boot/uefi/uefiboot.c` |
+| 2 | - | `drivers/video/fb/edid.c` reads it early in `kmain`: name, maker code, year, native mode with its refresh rate (from the first detailed timing, to 0.01 Hz), the highest refresh rate (other timings at the native size and the range-limits descriptor), size in cm and inches, connection (VGA, DVI, HDMI, DisplayPort) and bits per colour. Header and checksum are checked. | `drivers/video/fb/edid.c`, `include/nvx/drivers/video/fb/edid.h` |
+| 3 | "Refresh rate 30/60/120 Hz" looked like the monitor's refresh rate but only set how often the desktop redraws; "Current screen" showed that value as the monitor's rate. | A "Monitor" card with the facts above, or "Not reported" when the firmware gives none. "Screen mode" shows the real refresh rate when the screen runs at the monitor's native mode, otherwise "refresh rate not reported (set by the firmware)". The option is now "Desktop redraw rate"; 120 Hz is offered only when the monitor reports 120 Hz or more, and a higher saved value is lowered at boot. | `apps/system/settings_parts/02_settings_wheel.c`, `01_nvx_settings_save.c`, `core/init/main.c` |
+| 4 | "Panel type: LCD / OLED" looked like detection but was a manual switch for a one-pixel picture shift. | "Burn-in protection: Off / On" with what it does. | `02_settings_wheel.c` |
+
+Tested: the parser on the host under AddressSanitizer with a built test EDID (24-inch HP-style monitor, 1920x1080 at 60 Hz plus a 138.77 Hz timing, range 48-144 Hz, HDMI, 8 bits) and with a broken checksum (rejected). QEMU, BIOS boot: Settings shows "QEMU Monitor - maker code RHT, made 2014", "1280x800 at 74.99 Hz - up to 125 Hz", "14.6 inch (32x20 cm), DisplayPort, 8 bits per colour" and "1280x800 - 75 Hz (the monitor's native mode)". QEMU, UEFI boot (OVMF): OVMF publishes no EDID, so the page says "Not reported" and offers 30 and 60 Hz only. Real firmware usually publishes the EDID; not yet seen on real hardware.
+
+Not done: changing the monitor's real refresh rate or mode (needs the GPU drivers' mode setting; the NVIDIA path in section 10.10 already reads EDID through GSP); EDID extension blocks (HDR, more modes) are not read.
+
+## What changed in v10.85
+
+A fix for real computers with a USB keyboard: questions asked by NoovexOS commands now get their answers (owner: the `[Y/n]` of `sudo apt install firefox-esr` did not work on real hardware).
+
+| # | Before (v10.84) | Now (v10.85) | Where |
+|---|---|---|---|
+| 1 | A USB keyboard is read by polling, but the loops that wait for an answer (apt's `Do you want to continue? [Y/n]`, password prompts of `sudo`, `passwd` and `adduser`, `adduser`'s "Full name", the native "wait for a key" system call, the ring-3 demo) only waited for the keyboard queue, so with a USB keyboard no key ever arrived; after 5 s the freeze watchdog showed "NoovexOS is not responding". PS/2 keyboards (QEMU, most laptops) worked, so tests had passed. | `kidle()` polls the USB controllers and tells the watchdog the system is alive while it waits; all those loops use it. | `net/http/http.c` (`kidle`), `shell/commands_parts/01_sh_redraw.c`, `06_term_key.c`, `04_cmd_ring3.c`, `sys/native/syscall.c` |
+
+Tested in QEMU with the PS/2 controller switched off (`-machine pc,i8042=off`) and only a USB keyboard: on v10.84 `adduser bob` froze at "Full name:" and showed the not-responding report after 55 s; on v10.85 the name and both passwords are taken and the user is created, also after waiting 75 s at the prompt (no freeze report). apt's `[Y/n]` uses the same loop (`sh_yesno`) but needs internet to reach here.
+
+## What changed in v10.84
+
+Browser: a new home page, YouTube's home and search as light pages, and three JavaScript engine crashes and failures fixed (sections 13.15 and 13.23). Window titles of Linux programs show their real text. First report from the owner's computer: Firefox on NoovexOS 64 loads YouTube, noovexos.site and claude.ai (the owner chatted with Claude from it).
+
+| # | Before (v10.83) | Now (v10.84) | Where |
+|---|---|---|---|
+| 1 | youtube.com's home page stayed blank in the browser (the full site needs more script and layout than the engine manages; owner's photo: white page while `www-player.css` loads). | youtube.com, `youtube.com/?...` and `/results?search_query=` open a light page that asks YouTube's own API (WEB client 2.20260708) for recommended videos or search results and shows thumbnails, titles, channels, views and lengths; videos open the player page from v10.83. "Full site" links add `nvxfull=1`. `youtube.com` without a trailing slash is recognised. | `apps/internet/browser_parts/02_show_errors.c` (`YT_HOME_JS`, `yt_try`) |
+| 2 | New tab: logo, search box, four tiles (Wikipedia, Example, Engine demo, noovexos); the address bar said `example.com`. | Greeting with the time, eight tiles (YouTube, Wikipedia, GitHub, Google, DuckDuckGo, Hacker News, noovexos.site, random article) in one or two rows by window width; the address bar starts empty. | `03_perm_bar_click.c`, `04_g_bmbar_on.c`, `01_imgpool_ok.c` |
+| 3 | A page with about 2000 nested elements crashed the engine (stack overflow: the style sheet scan kept a 4 KB buffer per level). | The scan is a loop with its own growing stack; 20000 nested elements load and paint. | `web/cssparse.c` (`collect`, `collect_el`) |
+| 4 | QuickJS made every InternalError uncatchable, so `s += s` past the string limit (or `new InternalError()`) ended the whole script even inside `try`. | Only "interrupted" (the 60 s script limit and Esc) stays uncatchable; the string limit throws `RangeError: Invalid string length` like Chrome. | `third_party/quickjs/quickjs.c` |
+| 5 | Titles of Linux windows showed UTF-8 as Latin-1 (`YouTube` followed by a broken dash in the frame, `???` in the task bar). | The window manager converts titles: Latin-1 letters (a with ring, umlauts) stay in the frame, the task bar gets ASCII spellings, dashes, quotes and ellipses become `-`, `"` and `...`. | `usr/x11/nvxwm.c` (`title_fold`) |
+
+Tested: engine stress page in the host harness (`webhost`): runaway recursion, string limit, `new InternalError`, 200000-deep `JSON.stringify`, out of memory, 300 timers that throw, a 70 s busy loop stopped at 60 s with the page still alive; nested elements 2000/5000/20000. The YouTube home and search script under Node with a mocked API (three requests with the new client version, three videos listed, HTML escaped, "Full site" links). QEMU: new home page maximized; `youtube.com` opens the light page in 0.8 s and shows "No videos could be loaded: Failed to fetch" with the full-site link (the build machine cannot reach YouTube). Title conversion under AddressSanitizer.
+
+Not done: video in Firefox on NoovexOS ("Your browser can't play this video" in the owner's photo; Firefox also warns that its sandbox has fewer protections). Next step: photos of `about:support` (Media and Sandbox sections). The full `check.py` suite was not run for this release.
+
+## What changed in v10.83
+
+Containers for Linux programs (section 6.40): namespaces, chroot and pivot_root, overlay, bind and tmpfs mounts, cgroup v2 limits, and a `container` command. The browser plays YouTube watch links again through its player page, with YouTube's current clients and MediaSource for adaptive streams (section 13.23). The release is signed with a new key (see the handoff).
+
+| # | Before (v10.82) | Now (v10.83) | Where |
+|---|---|---|---|
+| 1 | `unshare`, `setns`, `pivot_root` returned ENOSYS; `chroot` returned EPERM; `mount` only knew disks. | Mount, PID, UTS, IPC, network and user namespaces (also as `clone` flags), `setns` through `/proc/<pid>/ns/*`, `chroot`, `pivot_root`, and `mount`/`umount2` for bind, proc, sysfs, devtmpfs, tmpfs, devpts, cgroup2 and overlay (copy-up, whiteouts, opaque directories, merged `readdir`). Paths, symbolic links (absolute and relative), `execve`, the ELF interpreter, `getcwd` and `/proc` follow the container's view. | `sys/linux/linux_parts/10_lx_ns.c`, hooks in `01_lx_ok.c`, `05_lx_mmap.c`, `07_lx_dup3.c`, `fs/vfs/unixfs.c`, `core/proc/jobs_parts/01_jc_resume.c` |
+| 2 | No cgroups. | cgroup v2 at `/sys/fs/cgroup`: `pids.max`, `memory.max` and `cpu.max` are enforced (fork EAGAIN, mmap/brk ENOMEM, the scheduler skips a group that used its CPU quota); `cpu.stat`, `memory.current`, `pids.current`, `/proc/<pid>/cgroup`. | `10_lx_ns.c`, `core/proc/jobs_parts/03_segv_str.c` |
+| 3 | - | `container create/run/exec/ls/stop/rm`: overlay root in `/var/lib/containers/NAME`, the system's programs bound read-only when no root file system is given, limits with `-m`, `-p`, `-c`, no network with `-n`, shared folders with `-v`. | `usr/musl/container.c` |
+| 4 | YouTube watch links loaded the full site, which does not play in the engine; the old player page used the ANDROID_VR client that YouTube has refused since August 2026. | Watch links open the player page again (home and search stay on the real site; a link opens the full page). Clients from yt-dlp 2026.10.26 (VISIONOS first), client headers, and adaptive video plus sound fed into MediaSource in 1 MB ranges when there is no single-file format. | `apps/internet/browser_parts/02_show_errors.c`, `03_perm_bar_click.c` |
+| 5 | `ping` took only numbers; `host` and `nslookup` were unknown. | `ping NAME` resolves the name first; `host` and `nslookup` are the same as `dns`. | `shell/commands_parts/05_cmd_net.c` |
+| 6 | The build machine's packages lacked gawk, so glibc and Python were left out of the Linux files when built from the source zip on a fresh machine. | Noted in the handoff: install gawk, bison and texinfo before the first build. | - |
+
+Tested in QEMU (TCG, 2 cores): `contest` 113 of 113 (added to the `qemu` check group); `container create box`, `container run -m 64M -p 20 -h boxhost box /usr/bin/xxd -v` (ran inside), `container ls`, `container rm`. The YouTube player script was tested under Node with a mocked YouTube API (client fallback, headers, format choice, ranged download into MediaSource); youtube.com itself cannot be reached from the build machine. `host www.youtube.com` in QEMU gives "could not resolve" here for the same reason.
+
+Review by a separate agent: 11 bugs, all fixed before release. High: relative symbolic links were resolved against the host path and could leave a chroot; a failed mapping of an absolute link fell back to the host path; root inside a user namespace counted as root for other containers' namespaces, `setns` and cgroup files (now `setns`, `/proc/<pid>/ns` of other users' processes and cgroup writes need real root, and mounts need the mount namespace to belong to the caller's user namespace); an overlay with any upper directory let a user write root-owned files (overlay and bind mounts now need real root). Medium: `setuid` in a user namespace did not change the real ids; nested PID namespaces gave pids that meant nothing inside (now EINVAL); thread ids written by `CLONE_*SETTID` and `getpgrp`/`getpgid`/`getsid` were host pids inside a PID namespace; `execve("/proc/self/exe")` in a container mapped the path twice; whiteout names could be written past a 256-byte buffer and `lxn_cat` left strings unterminated; renaming a directory that exists only in the lower layer lost its contents (now EXDEV, like Linux). Low: CPU usage of a group could go backwards (throttling a whole period); mount paths longer than 111 characters were cut (now ENAMETOOLONG).
+
+## What changed in v10.82
+
+More wired network adapters, USB Ethernet and phone tethering, switching between adapters (sections 9.3 and 9.4.6 to 9.4.9), and about 45 more Linux system calls (section 6.39).
+
+| # | Before (v10.81) | Now (v10.82) | Where |
+|---|---|---|---|
+| 1 | Wired adapters: PCnet, e1000 (8254x), RTL8139, RTL8111/8168, VirtIO. | Also Intel 82571-82574/82583 and the I217/I218/I219 chips built into most Intel boards (e1000e), Intel 82576/82580/I350/I210/I211 (igb), Intel I225/I226 2.5G (igc), Realtek RTL8125 2.5G and VMware vmxnet3. | `e1000e.c`, `igb.c`, `rtl8169.c`, `vmxnet3.c` |
+| 2 | No USB network adapters. | USB Ethernet adapters and phones that share their connection over USB: CDC-ECM, CDC-NCM and RNDIS, also behind hubs and plugged in while running; `usbnet` shows and changes them. | `drivers/usb/xhci_parts/05_usbnet.c` |
+| 3 | The first adapter found was used for good. | Every adapter found is kept in a list; the one with a cable in is used, and the system switches when the cable is pulled and another adapter has link, or when a USB adapter is added or removed. `net` lists all adapters. | `nic.c` (`nic_watch`, `nic_offer`, `nic_drop`), `ahci.c` |
+| 4 | Drivers could only use registers below 4 GiB. | `kapi_mmio` maps device registers above 4 GiB. | `sys/native/kapi.c` |
+| 5 | Network adapters were tested in QEMU only as e1000 (and with a tap device that is not available everywhere). | New check group `nics`: ten QEMU set-ups, each downloads 300 KB over DHCP and HTTP and compares the checksum; the driver simulator models igb, igc, I219 and RTL8125. | `tools/check.py`, `tools/tests/drivers/drvsim.c`, `tools/tests/usbnet/proto_main.c` |
+| 6 | Linux programs got ENOSYS for System V semaphores and message queues, POSIX message queues, pidfd, splice/tee/vmsplice, copy_file_range, openat2, execveat, FIFOs (`mkfifo`), futex_waitv, process_vm_readv/writev, seccomp, klogctl (`dmesg`), mincore and more. | All of these work (section 6.39); `abi3test` checks them (81 checks). | `sys/linux/linux_parts/09_lx_more.c` |
+
+Not yet seen on real hardware: the I219, I225/I226, RTL8125 and real USB adapters. QEMU emulates the 82574L, 82576, vmxnet3 and a USB CDC-ECM/RNDIS device, so those paths ran in tests.
+
+Two reviews by separate agents, fixed before release. Network drivers: the Intel transmit ring could fill until tail met head and stop for good after a cable pull (one slot is now kept free and frames are refused while there is no link); the `usb` command left a dead USB adapter registered; a USB adapter without cable could keep the system from switching back to a wired one; two waits counted timer ticks that do not advance in polled mode; the hot-plug poll could reset a port that the start-up scan had just set up; the DHCP retry counter was not reset after a switch; a removed USB adapter was "recovered" over and over; vmxnet3 did not send UPDATE_RX_MODE; the igc NVM register offset, TXDCTL bit 22 on e1000e, D0 power state and bus-master stop before reset, SMBus before the PHY power toggle, and the 82575 was dropped. System calls: a thread calling execve, and the native `int 0x80` interface, could get around seccomp; `move_pages` wrote past the checked range; a FIFO open that was waiting when its process died left a phantom reader and could be picked up by another open; FIFOs lost O_NONBLOCK and O_RDWR FIFOs could not be written; `fchmodat2(AT_EMPTY_PATH)` could change the wrong file; timed waits left their deadline behind on some error paths; `klogctl` needed root for reading and clearing and READ did not consume; TSYNC could clear no_new_privs; per-process wait markers survived a kill; smaller ABI details (futex_waitv value range, mempolicy flags, unknown seccomp actions kill the process, IPC permission when both read and write are asked); openat2 now refuses symbolic links under RESOLVE_BENEATH/IN_ROOT; limits on seccomp filter size and message-queue memory.
+
+## What changed in v10.81
+
+NVIDIA: a second monitor and real 3D (sections 10.10.9 and 10.10.10). Written against NVIDIA's headers and the Linux drivers and checked in the simulator; not yet run on a real card.
+
+| # | Before (v10.80) | Now (v10.81) | Where |
+|---|---|---|---|
+| 1 | Only the monitor the firmware lit showed a picture; a second monitor on the NVIDIA card stayed dark. | `nvgsp mode` (or Settings > Display > Screens > Second screen on): a second HDMI or DVI monitor gets its own native mode from its EDID and shows the same picture as the first, scaled to fit. `nvgsp mode all` also sets the first monitor to its native mode; `nvgsp mode off` turns it off. Remembered across boots. | `drivers/video/nvidia/nvgsp_parts/05_nvdisp_mode.c` |
+| 2 | The NVIDIA card only copied and blended pictures (copy engine, 2D engine, compute). | The 3D engine draws triangles with a depth buffer: vertex and pixel shader in Turing machine code, block-linear colour and depth targets, state from NVIDIA's class header. `nvgsp 3d` tests it by reading a test picture back. | `nvgsp_parts/06_nv3d.c`, `tools/nvshader3d.py`, `tools/nv3dgen.c` |
+| 3 | Gears was always drawn by the CPU; the GPU only put the frame on the screen. | Key T in Gears: the scene's triangles go to the NVIDIA 3D engine (lighting per vertex, no shadows); the picture goes from the 3D target to the screen through the 2D engine. | `apps/graphics/gpu3d.cpp`, `apps/graphics/r3d/r3d.cpp` |
+| 4 | The NVIDIA simulator ran without memory checking. | It is built with ASan and UBSan in `check.py --sanitize`, has models of the display engine and the 3D engine, and 78 checks instead of 62. | `tools/tests/nvidia/nvsim.c`, `tools/tests/r3d/sink_main.cpp` |
+| 5 | Turning NVIDIA drawing off with a long reason wrote past a 140-byte buffer on the stack. | Bounded copies. | `nvgsp_parts/03_nvgsp_fb_present.c` (`nvgsp_all_off`) |
+
+Two separate reviews compared the new code with the reference drivers line by line and a third looked for ordinary software bugs; what they found is listed at the end of sections 10.10.9 and 10.10.10 and was fixed before this release.
+
+## What changed in v10.80
+
+Programs can use more memory than the computer has: pages they have not touched for a while are compressed in RAM (like Linux zram), and the cache of system files gives memory back when it is needed (section 3.19).
+
+| # | Before (v10.79) | Now (v10.80) | Where |
+|---|---|---|---|
+| 1 | When the page frames ran out, the program that needed one more page was killed. | Compressed swap: idle private pages of programs are compressed (same-filled pages to 8 bytes, others with an LZ4-style coder into 64-byte size classes) and brought back on the next access. A background pass keeps 1/32 of the frames free; faults reclaim directly. In the test, 800 MB were written with 640 MB available. | `mem/swap.c`, `mem/pmm_vmm.c` (`vm_fault_user`, `vm_frame`) |
+| 2 | - | Swapped pages work with `fork` (shared, reference-counted), `munmap`, `MADV_DONTNEED`, `mprotect`, exit and exec. `madvise(MADV_PAGEOUT)` swaps a range now; `swapon`/`swapoff /dev/zram0`. | `core/proc/jobs_parts/01_jc_resume.c`, `sys/linux/linux_parts/04_lx_wait_deadline.c`, `07_lx_dup3.c` |
+| 3 | `/proc/meminfo` counted the kernel heap's free space as free memory and had 0 for cache and swap. | `MemFree` is the free page frames, `MemAvailable` adds the reclaimable cache; `Cached`, `SwapTotal`, `SwapFree`, `Zswap`, `Zswapped`; `/proc/swaps`, `/proc/sys/vm/swappiness`, `/proc/sys/vm/drop_caches`. | `fs/vfs/unixfs.c`, `fs/vfs/vfs.c`, `08_sysfs.c` |
+| 4 | Decompressed blocks of the system files stayed in memory for good. | Blocks used only by `read()` and `mmap` are dropped oldest first when they pass a quarter of the kernel heap, when an allocation fails, or on `drop_caches`; blocks whose address a program keeps are pinned. | `fs/vfs/sysroot.c` (`blk_get`, `sysroot_bc_evict`) |
+
+A review by a separate agent found and this release fixes before shipping: reclaim inside a system call could swap out a page the kernel had just checked (a signal frame written at the next step would have stopped the system) and could change the physical page under a shared futex (lost wake-up) - kernel-side reclaim now leaves the current address space alone; `MADV_PAGEOUT` and the background pass had no limit while holding the kernel lock; swapping could not start with zero free frames (a 16-frame reserve); one reclaim call could visit a program twice and swap pages it had just used; pinned cache blocks made every cache miss scan all blocks. Not tested on real hardware. Left: 1 GB user pages are not expected by the scanner (there are none), large shared anonymous mappings above 256 MB are treated as private (as before this release).
+
+## What changed in v10.79
+
+Linux programs see a real `/sys` tree, block device nodes in `/dev` and hotplug events over netlink, as udev-style tools expect (section 7.13).
+
+| # | Before (v10.78) | Now (v10.79) | Where |
+|---|---|---|---|
+| 1 | `/sys` had only a few fixed files (`kernel/osrelease`); there was no `class`, `devices`, `bus`, `block` or `dev`. | A generated sysfs: device folders under `/sys/devices` with `uevent`, `dev`, `size` and other attributes, and the Linux links in `class`, `block`, `bus/usb/devices`, `dev/block` and `dev/char`; `readlink`, `lstat`, `stat` and `realpath` follow them. | `sys/linux/linux_parts/08_sysfs.c` |
+| 2 | `/dev` had no disk nodes. | One block node per disk and partition: root can read it (read, pread, lseek, `BLKGETSIZE64` and the other size calls); writing is refused with EROFS. | `08_sysfs.c` (`dx_*`), `03_ino_ev_fd.c`, `07_lx_dup3.c` |
+| 3 | No hotplug events. | Netlink uevent sockets get `add`, `remove` and `change` events in the kernel format (group 1) and the libudev format (group 2); writing to a `uevent` file sends one; `SO_PASSCRED` works. | `08_sysfs.c` (`sx_emit`, `sx_poll`), `net/lxsock.c`, `06_lx_mkdir.c` |
+| 4 | - | `/sys/power/state` (`freeze`) suspends to idle; backlight brightness can be set through `/sys/class/backlight`. | `08_sysfs.c` (`sx_write`) |
+
+A review by a separate agent found and this release fixes: a kernel stack overflow when a very long path went through a sysfs link (`sx_canon` now refuses paths that would grow past 200 bytes), a read before a kernel buffer through a huge `lseek` on a writable sysfs file, fake uevents from non-root users (writing `uevent` files, and opening any sysfs file for writing, now needs root; `access()` agrees), lost hotplug events when a program read `/sys` between two polls (the poll now compares with the last announced state), partition numbers above 15 colliding with the next disk (they get major 259 as in Linux), partition sizes past the end of the disk, and `/dev/bus/usb/NNN` for buses that do not exist. `realpath` on sysfs links works (`.` and `..` after a link).
+
+## What changed in v10.78
+
+Programs now share the processor fairly by priority: `nice`, `setpriority` and the real-time policies work, and sound and the Linux desktop are favoured over busy programs (section 5.17).
+
+| # | Before (v10.77) | Now (v10.78) | Where |
+|---|---|---|---|
+| 1 | The scheduler took runnable programs in a fixed circle; every program got the same turns whatever its priority, and `getpriority`/`setpriority` and the `sched_*` calls were stubs. | Weighted fair scheduling with Linux's nice weights: the job with the least weighted run time goes next; FIFO and round-robin jobs first; SCHED_IDLE jobs only get leftovers; woken jobs get a small head start. | `core/proc/jobs_parts/03_segv_str.c` (`jc_pick`), `include/nvx/core/proc/jobs.h` |
+| 2 | - | Priority system calls work: `getpriority`, `setpriority`, `sched_setscheduler`, `sched_getscheduler`, `sched_setparam`, `sched_getparam`, `sched_rr_get_interval`, `sched_setattr`, `sched_getattr`, with Linux's permission rules. `/proc/<pid>/stat` shows priority, nice and policy. | `sys/linux/linux_parts/07_lx_dup3.c`, `04_lx_wait_deadline.c` |
+| 3 | Sound and the X server competed with busy programs on equal terms. | Programs playing sound count as nice -10, the X server and window manager as nice -5; on the boot processor jobs get shorter turns while input is waiting. | `03_segv_str.c` (`jc_boost`, `jc_timer`), `02_ivl_muldivk.c` |
+| 4 | - | Task Manager: Priority button for a selected program. | `apps/system/taskmgr.c` |
+
+## What changed in v10.77
+
+Bug fixes in the Wi-Fi driver, the Intel graphics driver and the NVIDIA GSP driver, found by a code review (section 6.38).
+
+| # | Before (v10.76) | Now (v10.77) | Where |
+|---|---|---|---|
+| 1 | 5 GHz networks without a DS Parameter field were filed under whatever channel was being scanned when the packet was read, sometimes the next one; joining then tuned to the wrong channel. | The channel comes from the DS Parameter field, else the HT Operation field, else the scan channel; packets read in the first 20 ms after a channel switch are only used if they name their channel. | `drivers/net/wifi/rtw8821ce.c` (`rtw_scan_frame`), `net/wifi/wifi_mgr.c` |
+| 2 | Network names with letters such as the Swedish a-ring, a-umlaut and o-umlaut were stored with dots instead of the letters, so joining and the WPA2 key used the wrong name and always failed. | Names are kept exactly as sent (UTF-8); text drawing shows accented Latin letters as their base letter (a-umlaut as a). | `rtw8821ce.c`, `drivers/video/fb/framebuffer.c` (`u8fold`) |
+| 3 | Each channel was listened to for about 100 ms, shorter than one beacon interval plus the channel switch, so networks were randomly missing. | 150 ms per channel. | `wifi_mgr.c` |
+| 4 | A scan while connected threw away all received packets, including data and group-key updates from the router. | While connected, the scan only takes beacons and probe answers; other packets stay for the network driver, which also passes beacons to the scan. | `rtw8821ce.c`, `net/wifi/wifi_netdev.c` |
+| 5 | A router heard on a neighbouring channel had its weaker signal averaged into its real value, and could get the wrong channel. | Off-channel packets do not change a known router's signal or channel. | `rtw8821ce.c` (`scan_add`) |
+| 6 | Authentication and association requests were sent once; one lost packet failed the connection. | Up to 4 tries (with the Retry bit). | `drivers/net/wifi/rtw_sec.c` |
+| 7 | When the group key in handshake message 3 was missing, could not be unwrapped or was TKIP, the connection still reported success, and broadcast traffic (ARP, some DHCP answers) could not be read. | The join fails with "the network did not send a usable group key" (or the TKIP message). | `rtw_sec.c`, `wifi_mgr.c` |
+| 8 | WPA1-only networks were joined with a WPA2 request and refused by the router. | They are reported as old TKIP/WPA security before trying. | `rtw8821ce.c` |
+| 9 | A group key with index 0 was neither put in the hardware nor given to software decryption. | Software decryption gets it. | `rtw_sec.c` |
+| 10 | Handshake message 3 was not checked for a newer replay counter than message 1; early handshake messages were saved from any sender. | Both checked. | `rtw_sec.c`, `rtw8821ce.c` |
+| 11 | The Intel driver read only pipe A, and the eDP timing block also on Tiger Lake and newer, which do not have it. | It uses the pipe whose plane shows the boot screen, and the eDP block only on generation 7-11 when it feeds that pipe. | `drivers/video/intel/igpu.c` |
+| 12 | The second screen buffer assumed a 256 MB graphics aperture; on running out of memory, already written GTT entries stayed and pages leaked. | The aperture size is measured from the PCI BAR; on failure the old entries come back and the pages are freed. | `igpu.c` |
+| 13 | Three slow screen flips over hours of use turned tear-free drawing off for good. | Only three slow flips in a row do. | `igpu.c` |
+| 14 | NVIDIA: replies that arrived while the driver waited for room in the command queue were thrown away, and the request later timed out; GSP events read there were cut to 4 KB, and the register sequencer read arguments past its data. | Replies are kept for the caller (4 slots), events are read whole (64 KB), every sequencer command's argument count is checked. | `drivers/video/nvidia/nvgsp_parts/01_xzk_decode_into.c` |
+| 15 | NVIDIA: the firmware ELF section check could overflow; message checksums were never looked at. | Overflow-safe checks; checksums and sequence gaps are counted and shown in the boot report. | same |
+
+A second review found that the first version of fix 4 stopped scans while connected (any packet from another network blocked the scan); fixed before release. Also: a long scan no longer looks like lost signal, networks saved before this version with dots in their names still connect automatically, Intel generation 12 also checks pipe D. Checked and not a bug: the write-combining change of the screen memory (`wc_map`) reaches every address space, because all page tables share the kernel's page directories. The Wi-Fi code no longer has comments. Not tested on real hardware (no Wi-Fi card, Intel or NVIDIA graphics in the emulator); the scan parser was tested on the host with built frames and 200000 random ones, the NVIDIA driver with the simulated TU116 test.
+
+## What changed in v10.76
+
+USB headsets that only play 24-bit or 32-bit sound work, media-key interfaces on USB receivers are set up correctly, and the test suite covers the new keyboard, media-key and USB audio code with fuzzing (section 6.37).
+
+| # | Before (v10.75) | Now (v10.76) | Where |
+|---|---|---|---|
+| 1 | USB audio playback accepted only 16-bit stereo or mono streams; many USB Audio 2 headsets and USB-C dongles offer only 24-bit or 32-bit playback and stayed silent. | Playback accepts 16, 24 and 32-bit sample slots, mono or stereo; 16-bit is still preferred when offered. The 16-bit sample goes into the top bytes of the wider slot. | `drivers/usb/xhci_parts/04_uvc_er_init.c` (`aud_pick`, `aud_fill_pb`) |
+| 2 | The HID report descriptor was read into a buffer that still held the previous interface's descriptor; if a device sent fewer bytes than announced, leftover bytes were parsed as part of the new descriptor. Since v10.74 this could set up a vendor-only interface as a media-key interface. | The buffer is cleared before each read. | `drivers/usb/xhci_parts/01_xhc_mem_for.c` |
+| 3 | The USB test group (`check.py --only usb`) was not run for v10.74 and v10.75 and failed: it expected media-key collections to be ignored, and it could not link the new media-key code. | The test includes the media-key code and checks that media-key collections and interfaces are set up and send one hotkey per press; 40000 mutated report descriptors and 160000 random reports run through the parser and decoder; the camera and microphone test also checks 24/32-bit playback packing. | `tools/check.py`, `tools/tests/usb_template.txt`, `tools/tests/uvc/` |
+
+Not done from the plan: faster first start of big apps (no measured cause yet; on a live USB stick Chromium's code cache is lost at every restart, see v10.73), several USB audio devices at once, UAC2 feedback endpoints, webcam changes (UVC already works).
+
+## What changed in v10.75
+
+Laptops sleep when the lid closes (also on computers without the old S1/S3 sleep), and touchpads scroll more like on other systems: a flick keeps scrolling, and Linux apps get sideways scrolling and pinch zoom (section 6.36).
+
+| # | Before (v10.74) | Now (v10.75) | Where |
+|---|---|---|---|
+| 1 | "Sleep" used ACPI S1 when the firmware had it; most laptops from the last ten years do not, and then the screen only went dark until a key was pressed. Closing the lid with "Sleep" selected did nothing more than turn the screen off on those laptops. The lid and power button could not wake that screen-off loop. | Without S1, NoovexOS uses light sleep (S0 idle, what Linux calls s2idle): files are written out, the screen and backlight go off, Linux programs are paused, the firmware's low-power idle device (`PNP0D80`) gets the display-off and sleep-entry notices, the processor asks for its most efficient speed and idles. Opening the lid, the power button or a key (built-in or USB) wakes it; it shuts down safely if the battery runs empty. Lid, power button and sleep key now request sleep from the desktop loop instead of sleeping inside the ACPI event handler. | `core/power.c` (`power_s2idle`), `apps/system/powerui.c`, `core/init/main.c` |
+| 2 | Two-finger scrolling stopped the moment the fingers left the pad. | A quick two-finger flick keeps scrolling and slows down over about a second; touching the pad stops it. `touchpad coast off` turns it off. Works on precision touchpads (I2C HID), ELAN I2C, ELAN PS/2 and Synaptics PS/2. | `drivers/input/touchpad/tp_gesture.c` (`tpe_coast`), `i2c_hid.c`, `drivers/input/ps2/elan_ps2.c`, `syn_ps2.c` |
+| 3 | Linux apps got one wheel click per scroll event, however far the fingers moved; sideways scrolling and pinch did not reach them. | Every scroll step reaches the app (up to 10 per event), sideways scrolling is sent as X buttons 6 and 7, and a pinch is sent as Ctrl + wheel, which zooms in browsers and Electron apps. | `apps/x11/xdisplay.c`, `graphics/ui/input.c`, `usr/x11/nvx-xinput.c` |
+| 4 | A USB keyboard with a broken report descriptor could produce huge field positions (no crash, values were bounds-checked). | Fields larger than 32 bits, over 1024 entries or past 8192 bits are ignored and positions are capped. | `drivers/usb/xhci_parts/01_xhc_mem_for.c` |
+
+Not tested on real hardware yet: light sleep on a laptop (tested in QEMU with the power button and a key), coasting on a real touchpad (tested with the simulated touchpad in `check.py`).
+
+## What changed in v10.74
+
+Linux app windows are now NoovexOS windows: each one has its own frame, taskbar button and Alt+Tab entry and can be moved, resized, minimized and maximized. On laptops the processor slows down and sleeps deeper when idle, the battery shows time left, the headphone jack switches the speakers off, and media keys on USB keyboards work (section 6.35).
+
+| # | Before (v10.73) | Now (v10.74) | Where |
+|---|---|---|---|
+| 1 | Linux apps were drawn in one shared full-screen layer: no taskbar buttons, no Alt+Tab, and windows could not be moved or resized like NoovexOS windows. | A window manager inside the X server (`nvxwm`) gives every Linux window a frame with minimize, maximize and close buttons, edge and corner resizing, title-bar dragging and double-click maximize. It reports its windows to the kernel through `/dev/nvxwin`; each one gets a taskbar or dock button and an Alt+Tab entry, and the kernel can raise, minimize or close it. NoovexOS windows on top of the Linux layer now cover it correctly. | `usr/x11/nvxwm.c`, `apps/x11/xwin.c`, `apps/x11/xdisplay.c`, `graphics/ui/input.c`, `graphics/ui/desktop_parts/` |
+| 2 | The processor ran at the speed the firmware chose and idled with `hlt` (shallow sleep). | NoovexOS turns on Intel Speed Shift (HWP) or AMD CPPC when present, otherwise chooses the speed itself every 50 ms from how busy each processor is (Intel SpeedStep, AMD P-states). On Intel processors with a constant TSC, idle uses `monitor`/`mwait` with the deepest C-state CPUID lists. Battery saver asks for a slower, more efficient speed. Shown as "CPU power" in System info. | `arch/x86_64/cpu/cpupower.c`, `arch/x86_64/cpu/cpu.h`, `core/init/main.c`, `arch/x86_64/smp/smp_sched.c` |
+| 3 | The battery icon showed only the percentage. | Hovering the battery icon shows the percentage plus time left, or time until full while charging. | `graphics/ui/desktop_parts/01_xapps_count.c`, `02_win_title_icon.c` |
+| 4 | Plugging in headphones left the laptop speakers playing. | The sound driver checks the headphone jack every 300 ms and turns the speaker pins off while headphones are plugged in. | `drivers/sound/hda.c` (`hda_jack`) |
+| 5 | Volume, mute, play/pause, next, previous and brightness keys worked on built-in (PS/2) keyboards only. | USB and wireless keyboards that send these keys as HID "Consumer Control" reports work too. | `drivers/usb/xhci_parts/01_xhc_mem_for.c` (`hid_parse`), `02_hid2ascii.c` |
+
+Not tested on real hardware yet: processor speed control and C-states (emulators do not offer them), the battery tooltip, the headphone jack switch and USB media keys.
+
+## What changed in v10.73
+
+Voice and video calls in Electron apps no longer crash, GTK file dialogs open, and copy and paste works between Linux apps and NoovexOS (section 6.34).
+
+| # | Before (v10.72) | Now (v10.73) | Where |
+|---|---|---|---|
+| 1 | NoovexOS never turned on AVX: CPUID said "no OS support", yet some libraries inside Chromium use AVX anyway. A WebRTC call (what Discord voice uses) crashed the renderer with an invalid-instruction fault (`vxorpd`). | Every processor enables XSAVE (`CR4.OSXSAVE`) and the x87, SSE and AVX state (`XCR0`); a job's register state is kept with `xsave`/`xrstor` in a 1 KB area, and `sigreturn` merges the signal frame into it. A WebRTC loopback call with audio and a data channel connects. | `arch/x86_64/cpu/cpu_init.c`, `arch/x86_64/cpu/cpu.h`, `include/nvx/core/proc/jobs.h`, `sys/linux/linux_parts/05_lx_mmap.c` |
+| 2 | `epoll_ctl` accepted regular files, memfds and directories and then reported them as always ready. GTK's file chooser waits for a D-Bus reply from a helper thread whose epoll set contains a memfd; that thread spun (30 million system calls a minute) and the dialog never appeared. | Like Linux, adding a regular file, memfd or directory to an epoll set fails with `EPERM`; the program falls back to normal reads. GTK file dialogs open and browse. | `sys/linux/linux_parts/04_lx_wait_deadline.c` |
+| 3 | Text copied in a Linux app could only be pasted in other Linux apps, and NoovexOS text only in NoovexOS. | `nvx-xinput` bridges the X clipboard and the NoovexOS clipboard through `/dev/nvxclip`: an X copy (seen with XFixes) is written to the NoovexOS clipboard, and a NoovexOS copy makes `nvx-xinput` the X clipboard owner. | `usr/x11/nvx-xinput.c`, `apps/x11/xtray.c`, `fs/vfs/ramfs.c`, `fs/vfs/vfs.c` |
+
+Tested with a new Electron feature test (Vesktop's Electron, 40 checks: processes, files, inotify, workers, HTTP, DNS, network interfaces, clipboard, safeStorage, displays, notifications, global shortcuts, cookies, screen-share sources, windows and views, IPC, fetch, WebSocket, IndexedDB, WebAssembly, SharedArrayBuffer, WebCrypto, compression streams, canvas, audio output, microphone, MediaRecorder, WebRTC, webview, animation frames). Not changed: WebGL stays off (no GPU driver for Linux programs).
+
+## What changed in v10.72
+
+Electron programs (Vesktop/Discord and others) no longer fight the desktop for the processor: a busy loop is gone, waiting programs wake when their event arrives instead of on the next 10 ms tick, time is read without entering the kernel, and frames reach the X server through shared memory (section 6.33).
+
+| # | Before (v10.71) | Now (v10.72) | Where |
+|---|---|---|---|
+| 1 | An epoll file descriptor watched from `poll` or another epoll set was always reported ready. Electron's Node.js thread watches libuv's epoll set this way, so it woke the main thread in an endless loop: one processor was always busy, even with the window idle. | An epoll descriptor is ready only when one of the descriptors in its set is ready (checked up to 4 levels deep). The idle Electron browser process went from 17-30% of a processor to 0%, its main thread from 166,000 to 12,000 system calls in a test run. | `sys/linux/linux_parts/04_lx_wait_deadline.c` (`lx_ep_ready`), `03_ino_ev_fd.c` |
+| 2 | Every `clock_gettime` entered the kernel and took the big kernel lock (1.8 million calls in one Electron start). | A vDSO is mapped into every program (`AT_SYSINFO_EHDR`): `clock_gettime`, `gettimeofday`, `time` and `clock_getres` read the TSC and a read-only data page, the same formula as the kernel clock. glibc and musl use it automatically. | `arch/x86_64/vdso/`, `sys/linux/vdso.c`, `core/proc/elf.c` |
+| 3 | `poll`, `epoll_wait`, `select` and blocking socket reads noticed new data only on the next 100 Hz tick; timeouts were rounded up to whole ticks plus one (a 1 ms timeout took 10-20 ms); sleeps under 10 ms did not sleep at all. | A write, send, close or exit wakes waiting jobs at once and sends an interrupt to idle processors; network frames and X input do the same. Poll, futex and sleep deadlines are kept in nanoseconds and the desktop loop arms a one-shot timer for the nearest one. | `core/proc/jobs_parts/03_segv_str.c` (`jc_kick_waiters`, `jc_next_wdl`), `arch/x86_64/interrupts/interrupts.c`, `sys/linux/linux_parts/05_lx_mmap.c`, `core/init/main.c` |
+| 4 | Inside a virtual machine with an HPET (QEMU, KVM) the kernel clock read the HPET, a slow device access, two or more times per system call. | In a virtual machine the TSC is the clock (VirtualBox already used it). | `arch/x86_64/time/hrtimer.c` |
+| 5 | Chromium sent every frame through the X socket because `shmctl(IPC_INFO)` reported a maximum shared segment size of 0; the X server listened on TCP only. | `IPC_INFO`/`SHM_INFO` return real limits, so Chromium uses MIT-SHM; Xvfb also listens on `/tmp/.X11-unix/X0` and apps get `DISPLAY=:0`. Xvfb's own screen file is no longer compared page by page on every `msync`. | `sys/linux/linux_parts/07_lx_dup3.c`, `shell/commands_parts/02_battery_cmd.c`, `nvx-xrun` |
+| 6 | The desktop loop held the big kernel lock while it polled devices, redrew the whole screen every half second when Linux jobs ran, every second for the clock and twice a second for the caret, and spun without sleeping when the mouse was a USB tablet. Linux programs on the other processor waited 19 s for the lock during a 30 s Electron test. | The loop sleeps between USB mouse polls (1.5 ms timer), yields the lock between stages and every 32 rows of a screen copy, and redraws only the taskbar for the clock while an X app is shown. Idle redraw time fell from 27% to 2% of the desktop processor; lock waiting of the Linux processor while idle from 30% to 7%. | `core/init/main.c`, `drivers/video/fb/framebuffer.c`, `apps/x11/xdisplay.c`, `graphics/ui/input.c` |
+| 7 | One program at a time could play sound (`/dev/snd/pcmC0D0p` returned busy). | Up to 9 programs play at once; their samples are mixed in the kernel. | `sys/linux/linux_parts/02_ivl_muldivk.c` (`apcm_mix`) |
+| 8 | - | `prctl` options for secure bits, TSC, timing and THP; `lxps` (`echo lxps > /dev/kmsg`) also prints lock wait times, a desktop loop profile, per-thread CPU time and missing Linux features. | `sys/linux/linux_parts/07_lx_dup3.c`, `arch/x86_64/cpu/percpu.c` |
+
+Measured in the emulator (TCG, 2 processors) with a test app on Vesktop's Electron that loads 12.7 MB of JavaScript (TypeScript and Mermaid), builds 4000 list rows and scrolls: scrolling 12.6 -> 17-18 frames per second, worst frame 283 -> 133-183 ms, test finished 32 s -> 26-30 s after start. Most of the remaining time is the emulator itself; on real hardware or a virtual machine with hardware virtualisation the kernel share matters more.
+
+## What changed in v10.71
+
+Vesktop is baked into the Linux files, so it starts from any boot medium (CD, ISO file in a virtual machine, USB stick, installed disk) without a download.
+
+| # | Before (v10.70) | Now (v10.71) | Where |
+|---|---|---|---|
+| 1 | Vesktop's 280 MB of program files were a separate pack on the boot partition, which NoovexOS cannot read when started from a CD or ISO file, so it had to download them. | They are part of the Linux files that the boot loader loads into memory (now 332 MB). Nothing is downloaded; the pack and download code stays for future apps. | `ports/vesktop/stage.sh` |
+| 2 | The Linux files could be at most 256 MiB (loaded to 0x20000000-0x30000000). | At most 384 MiB (0x20000000-0x38000000) in the BIOS loader, the UEFI loader, the kernel (`SR_SLOTMAX`) and the fault-recovery memory search. A machine or virtual machine needs about 1 GB of RAM or more. | `boot/src/stage2.c`, `boot/uefi/uefiboot.c`, `include/nvx/fs/vfs/sysroot.h`, `arch/x86_64/interrupts/early_fault.c`, `build.sh` |
+| 3 | An update needs room for the old and the new Linux files; on a 512 MB boot partition the bigger files would not fit. | When room is short the updater first removes old app packs, then the previous version's kernel, then the current Linux files (they are in memory; the repair path downloads them if needed). | `core/update.c` (`up_apply`) |
+
+Tested in the emulator with 2 GB RAM from the image as a USB stick: Vesktop's setup window opens with no pack and no download. Not run for this release (30-minute limit): the full check suite and a CD boot.
+
+## What changed in v10.70
+
+Vesktop starts in a virtual machine, from a CD and after an in-OS update: its program files are downloaded when they are not on the boot disk (section 6.32).
+
+| # | Before (v10.69) | Now (v10.70) | Where |
+|---|---|---|---|
+| 1 | Started from a CD or ISO file (VirtualBox), Vesktop stopped with "could not be loaded" and the crash window blamed an ioctl. | When `/PACKS/VESKTOP.NVS` is not on the boot disk, NoovexOS downloads it (94 MB) from the GitHub release of its version (`.../releases/download/v<version>/VESKTOP.NVS`, then `releases/latest`), with a progress screen, checks its size and CRC32 and keeps it on the boot disk when it can (a USB stick partition is grown first). Without network the window says why. | `core/update.c` (`pack_load2`, `pk_download`, `pk_save`) |
+| 2 | The in-OS updater installed only the kernel and the Linux files. | It also copies `/PACKS/*.NVS` from the downloaded ISO to the boot partition. | `core/update.c` (`up_iso_packs`, `up_put_packs`) |
+| 3 | Running live from a hard disk image (a virtual machine disk) NoovexOS did not look for its boot partition. | For app packs only, NoovexOS running live without a USB stick also looks for a NoovexOS boot partition on the system disk (`up_find_pk`); the updater still works only on the USB stick or the installed disk, so a live session never changes an installed system. | `core/update.c` (`up_find_pk`) |
+| 4 | A pack on the disk was used without a check. | Its size and CRC32 are stored in the Linux files (`/usr/share/noovex/packs/<name>`, line 2) and checked; a damaged or old copy is downloaded again. | `build.sh`, `core/update.c` (`pk_meta`) |
+| 5 | `nvx-pack` waited 2 minutes after a failure; the crash window named an unrelated ioctl; the "no window after 2 minutes" warning came during the load. | `/proc/nvxpack` gives the state (`busy`, `ok`, `fail <reason>`); `nvx-pack` stops at once on a failure and waits as long as a download runs; the crash window shows the reason; the warning waits. A full-screen progress shows while the files are read or downloaded. | `nvx-pack`, `sys/linux/linux_parts/04_lx_wait_deadline.c`, `apps/x11/xapps.c` |
+| 6 | New installs had a 512 MB boot partition. | 1.5 GB, so two versions plus app packs fit during an update. | `core/init/installer_parts/01_dm_crc32.c` |
+| 7 | - | A separate review found, fixed: the first version scanned the system disk for every update action, so a live CD session could change an installed NoovexOS; a retry after a failed load read the old failure; a damaged copy of the same size was never replaced; a short `/etc/pack-url` dropped the versioned address; a download without a stored checksum was accepted; the download progress stopped at 55%; saving showed no progress; the installer used a stale partition offset; packs could fill the boot partition during an update (now 400 MB must stay free). The installer now needs a disk of about 1.6 GB and can no longer reuse an old 512 MB boot partition. | `core/update.c`, `fs/vfs/vfs.c` |
+
+Tested in the emulator: USB stick without the pack and no internet gives "The download failed: could not find github.com" in the window; with a local download address (`/etc/pack-url`) the pack downloaded in 4.6 s, the stick partition grew from 313 to 516 MB, the pack was saved and Vesktop's setup window opened; after a restart it loaded from the stick (1.7 s). Started from the image as an IDE hard disk (no USB), the pack was found on that disk. A CD boot could not be tried here (the emulator's BIOS stops at "myboot: disk error" on the CD), it takes the same download path.
+
+## What changed in v10.69
+
+Vesktop (an open-source Discord app) comes with NoovexOS, Linux programs get a tray area, and big Linux programs no longer stall the whole desktop (section 6.32).
+
+| # | Before (v10.68) | Now (v10.69) | Where |
+|---|---|---|---|
+| 1 | Discord needed `sudo apt install discord` and a download of the real program at its first start, which a live USB stick forgets at every restart. | Vesktop 1.6.9 (Electron 45, GPL-3.0) with the Vencord files is part of NoovexOS: "Discord (Vesktop)" in the start menu or `vesktop` in the Terminal. Its 280 MB of program files are a 94 MB pack (`/PACKS/VESKTOP.NVS`) on the USB stick or boot partition, loaded into the Linux files on the first start (about 1.5 s in the emulator); the installer copies the pack to the new disk. | `ports/vesktop`, `core/update.c` (`pack_load`), `boot/mkhybrid.py`, `build.sh` |
+| 2 | Linux programs had no tray area; closing Discord kept it running with no way back except starting it again. | `nvx-tray` is a StatusNotifierItem host on the session bus: tray icons of Linux programs (Electron, Qt, GTK with libappindicator) appear left of the system tray in the taskbar (classic and dock style). A click activates the program, a right click shows its menu (Vesktop: Open, About, Repair Vencord, Reset Vesktop, Restart, Quit). | `ports/desktop-scripts/files/usr/bin/nvx-tray`, `apps/x11/xtray.c`, `/dev/nvxtray` |
+| 3 | Choosing a file to upload in an Electron program froze it (Chromium's GTK file chooser never returned). | `nvx-tray` is also an xdg-desktop-portal file chooser (`org.freedesktop.portal.FileChooser` version 4): open, save and folder dialogs are a Tk file dialog, the answer goes back as the portal's `Response` signal. Electron and Chromium use it automatically. | `nvx-tray` |
+| 4 | While Electron started, the desktop froze for seconds and keys were lost. | Found with new per-system-call timing (`lxps`): `madvise` took up to 15 s and `munmap` 4 s (they visited every 4 KB page of huge reserved ranges), `mmap` searched the address space from the bottom each time, `stat` unpacked whole files to learn their size, and the kernel heap walked its full block list on every `kmalloc` and `kfree`. All fixed: empty page-table ranges are skipped, `mmap` resumes where the last search ended, `stat` reads the size from the index, and the heap has size-class free lists with constant-time merging. `mmap` went from 26 s to 0.2 s in total during Vesktop's start, `munmap` from 67 s to 0.7 s. | `mem/pmm_vmm.c` (`vm_skip`), `mem/heap.c`, `sys/linux/linux_parts/04_lx_wait_deadline.c`, `fs/vfs/unixfs.c` |
+| 5 | Unpacking a block of the Linux files (up to 180 MB for a big program) held the big kernel lock with interrupts off. | Page faults of user code and a warm-up at the start of `execve` and `read` unpack without the lock and with interrupts on; keyboard bytes are taken without the lock; Linux programs stay off processor 0 when there are 3 or more cores, so the desktop always has a core. | `fs/vfs/sysroot.c`, `lib/compress/unpack.c`, `arch/x86_64/interrupts/interrupts.c`, `core/proc/jobs_parts/03_segv_str.c` |
+| 6 | An interrupt arriving inside `bkl_unlock` between clearing the owner and serving the next ticket made that core wait for itself forever (seen once as a full hang with both cores spinning). | `bkl_unlock` releases with interrupts off. A TLB shootdown no longer waits for cores that are queued for the lock (they flush when they get it). | `arch/x86_64/cpu/percpu.c`, `arch/x86_64/smp/smp_sched.c` |
+| 7 | Adding a layer to the Linux files took 8 s (one heap free per path). | Path names live in a few large blocks that are reused, so a layer is added in milliseconds. | `fs/vfs/sysroot.c` (`sr_dup`) |
+| 8 | - | `tracelog on [errors\|exec\|all]`, `tracelog save` (to `tracelog.txt` and `TRACELOG.TXT` on the USB stick), `tracelog off`: a 4 MB log of the kernel messages and Linux system calls for bug reports without photos. `lxps` also prints page-fault and per-system-call times. | `core/klog.c`, `shell/commands_parts/05_cmd_net.c`, `sys/linux/linux_parts/07_lx_dup3.c` |
+| 9 | Typing `discord` ran the program without `nvx-xrun`, and Discord had no start menu entry (its `.desktop` file is a link). | `.desktop` links are followed; `discord.gg/...` and `discord.com/invite/...` links in the NoovexOS browser open in Discord when it is installed. | `apps/x11/xapps.c`, `apps/internet/browser_parts/03_perm_bar_click.c` |
+| 10 | - | A separate review found, all fixed: the page-fault path also dropped the lock for kernel accesses to user memory in the middle of a system call; `execve`'s program lookup ran unlocked while shared argument buffers were in use; the `mmap` hint could start inside a reservation; Linux jobs could be stranded if parking the other cores failed; removing a package layer during an unpack was silently ignored; a page-cache slot reused during an unpack; the trace ring had no lock; repeated file chooser handles. | see above |
+
+Tested in the emulator (TCG, 2 cores, 4.5 GB, image as a USB stick): the pack loads in 1.3 s, Vesktop's setup window and splash appear, its tray icon and menu work (About opens, links open in the NoovexOS browser, Quit ends it), text typed into the Terminal arrives complete while Vesktop runs. A small Electron test app on the same Electron: notifications, WebAudio output (running at 48 kHz), microphone with an HDA codec that has an input (`getUserMedia` gives "Default"), tray icon and menu, and the file chooser returning the picked path. Discord itself did not load here because the build machine has no DNS ("ERR_NAME_NOT_RESOLVED"). Not working yet: screen sharing shows only Linux (X) windows, not the NoovexOS desktop.
+
+## What changed in v10.68
+
+Discord, Visual Studio Code and Spotify install by name.
+
+| # | Before (v10.67) | Now (v10.68) | Where |
+|---|---|---|---|
+| 1 | Discord and Visual Studio Code are not in Debian, so they had to be downloaded by hand and installed with `apt install ./file.deb`. | `sudo apt install discord` downloads Discord's package from discord.com, and `sudo apt install code` (also `vscode`, `visual-studio-code`) downloads Visual Studio Code from Microsoft; each is saved in `/var/cache/apt/archives` and installed with its dependencies like a local package file. | `fs/pkg/apt_parts/02_ar_member.c` (`g_vend`, `vend_fetch`) |
+| 2 | Spotify needed its package source added by hand. | `sudo apt install spotify` (or `spotify-client`) adds `deb http://repository.spotify.com stable non-free` as `/etc/apt/sources.list.d/spotify.list` if no Spotify source exists, updates the package lists and installs `spotify-client`. | `02_ar_member.c` (`spot_source`) |
+| 3 | `apt install ./discord.deb` with no such file only said "cannot access archive". | It also says where browsers save downloads, that names are case-sensitive, how to find the file and that these programs install by name. | `02_ar_member.c` |
+
+Tested in the emulator: the three commands print the new notes and stop at the network as expected (the build machine cannot reach discord.com, Microsoft or Spotify); the downloaded file goes through the same path as `apt install ./file.deb`, which was tested with Discord's package in v10.67. Spotify itself (a Chromium Embedded program, not Electron) was not tried; `nvx-xrun` still starts it with `--single-process` unless `/etc/noovex/chromium-multiprocess` exists.
+
+## What changed in v10.67
+
+Electron programs open and draw their windows, and Discord's package installs (section 6.31).
+
+| # | Before (v10.66) | Now (v10.67) | Where |
+|---|---|---|---|
+| 1 | Electron programs (VSCodium, Vesktop, Discord) stopped on a deliberate trap right after starting. | They run in Chromium's normal multi-process mode (they cannot work with `--single-process`, which set up the garbage collector twice); `nvx-xrun` recognizes Electron by its `resources/app.asar`, `resources/app` or Discord's installer script. | `ports/desktop-scripts/files/usr/bin/nvx-xrun` |
+| 2 | In multi-process mode Chromium's IPC stopped with "Invalid argument". | `eventfd2`, `epoll_create1`, `timerfd_create` and `pipe2` refuse unknown flags with EINVAL, which Chromium checks for. | `sys/linux/linux_parts/03_ino_ev_fd.c`, `06_lx_mkdir.c` |
+| 3 | Windows stayed empty and the GPU process was killed for being too slow. | `FIONREAD` on inotify returned 0, so Chromium's file watcher read 0 bytes in a loop in every process and used up the processors; it now returns the queued bytes (and the next message size on Unix datagram and seqpacket sockets). A test page in Electron 45 shows text, CSS gradients and SVG and runs its JavaScript. | `06_lx_mkdir.c` |
+| 4 | Electron programs started outside `nvx-xrun` stopped with "Running as root without --no-sandbox". | `execve` adds `--no-sandbox` after the program name for Electron main programs (folder with `v8_context_snapshot.bin`, `resources.pak` and `resources/app.asar`). Flags from `nvx-xrun` go right after the program name, so Discord's `--url --` cannot swallow them. | `sys/linux/linux_parts/05_lx_mmap.c`, `nvx-xrun` |
+| 5 | `apt install ./discord.deb` failed: libnotify4 missing; its setup script lacked `systemctl` and `pgrep`. | New `libnotify.so.4` (notifications through `nvx-notify`, with actions and close signals), `systemctl`, `pgrep`/`pkill`, `zenity` (progress and messages as notifications), `xdg-open` (http/https links in a new browser tab) and the other `xdg-*` stand-ins; GSettings schemas are in the Linux files. | `usr/x11/nvx-libnotify.c`, `ports/desktop-scripts`, `build.sh`, `fs/vfs/vfs.c`, `core/init/main.c` |
+| 6 | `readv`/`writev` larger than 64 KB on a datagram socket was cut silently. | Writes over 64 KB give EMSGSIZE; reads take at most one 64 KB datagram. | `03_ino_ev_fd.c` |
+| 7 | - | Xvfb runs with `-dumbSched` (no timer signal every 20 ms). | `shell/commands_parts/02_battery_cmd.c` |
+| 8 | - | `abi2test` has a new group `fl` (31 checks now): refused flags and `FIONREAD` on inotify. | `usr/musl/abi2test.c` |
+| 9 | - | A separate review found, all fixed: any program could make the desktop browser open `about:` or `data:` pages through `/dev/kmsg` (now only http/https, one link every 2 s, in a new tab); `xdg-open` passed any kind of link and lost links with spaces or non-ASCII letters (now percent-encoded); `--no-sandbox` was also added to Electron's crash handler and after a `--`; `FIONREAD` on seqpacket sockets; libnotify's dependencies were not copied and its actions and close signals did nothing; `procps` was counted as installed; `pgrep -u/-P/-n/-c`, `systemctl start/status` and `zenity --text X` behaved wrongly. | see above |
+
+Not tested here: the real Discord program (its installer downloads it from `updates.discord.com`, which the build machine cannot reach), voice and video, Vesktop's own interface. Known: X programs are drawn above NoovexOS windows, so a link opened from Discord appears behind it; no tray area for Linux programs.
+
+## What changed in v10.66
+
+More of the Linux system interface, so more Linux programs run unchanged.
+
+| # | Before (v10.65) | Now (v10.66) | Where |
+|---|---|---|---|
+| 1 | Real-time signals 32-64 were accepted and ignored; `sigqueue` values were lost; signal masks were 32 bits. | Signals 1-64 in 64-bit masks. Real-time signals are queued per thread (up to 32) with `si_code`, sender pid and uid and the `sigval`, delivered lowest first and in order. `sigqueue`, `pthread_sigqueue`, `sigtimedwait`, signalfd and the signal frame carry these fields. POSIX timers may use signals 32-64 and pass `sigev_value`, so `SIGEV_THREAD` timers of musl and glibc work. | `core/proc/jobs_parts/02_jc_tg_sync_ids.c`, `sys/linux/linux_parts/03_ino_ev_fd.c`, `05_lx_mmap.c`, `07_lx_dup3.c`, section 6.3 |
+| 2 | `socket(AF_UNIX, SOCK_DGRAM)` failed. | Unix datagram sockets: `sendto` a bound name, `connect` for a default destination, sender address on receive, `MSG_TRUNC`, `SCM_RIGHTS` and `SCM_CREDENTIALS` per datagram. | `sys/linux/linux_parts/02_ivl_muldivk.c`, section 9.7.5 |
+| 3 | `SO_PEERCRED` returned the caller's own uid and gid; `SO_PASSCRED` could not be read back. | `SO_PEERCRED` gives the peer's pid, uid and gid; `SO_PASSCRED` and `SO_TYPE` (datagram, seqpacket) are reported. | `07_lx_dup3.c` |
+| 4 | `socket(AF_INET6)` failed with EAFNOSUPPORT. | IPv6 TCP and UDP sockets work for `::`, `::1` and `::ffff:a.b.c.d` on top of IPv4; addresses come back as `sockaddr_in6` (IPv4 clients of an IPv6 listener appear as `::ffff:a.b.c.d`). `IPV6_V6ONLY` is kept. | `06_lx_mkdir.c` (`lx_sa_inx`, `lx_sa_mk`), section 9.7.6 |
+| 5 | `setsockopt` was ignored; `getsockopt` knew `SO_ERROR`, `SO_TYPE` and buffer sizes. | Options are stored and returned (`SO_REUSEADDR`, `SO_REUSEPORT`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `TCP_NODELAY`, `TCP_KEEPIDLE/INTVL/CNT`, `TCP_INFO`, `SO_DOMAIN`, `SO_PROTOCOL`). `SO_REUSEPORT` lets two sockets share a port; receive and send timeouts end blocking calls with EAGAIN. | `06_lx_mkdir.c` (`lx_setsockopt`), `sys/linux/lxsock.c` (`lxs_clash`), section 9.7.7 |
+| 6 | No netlink; `getifaddrs` and `if_nameindex` failed. | `AF_NETLINK` route sockets answer link, address and route dumps; the `SIOCGIF*` ioctls give interface name, index, flags, address, mask, MAC and MTU. `getifaddrs`, `if_nametoindex`, `if_indextoname` and `if_nameindex` work. | `sys/linux/lxsock.c` (`lxs_nl_send`, `lxs_ifinfo`), `06_lx_mkdir.c` (`lx_ifioctl`), section 9.7.8 |
+| 7 | `socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)` failed. | ICMP ping sockets: echo requests to `127.x` are answered locally, others go out through the network card. | `sys/linux/lxsock.c` (`lxs_icmp_send`, `lxs_icmp_in`), section 9.7.9 |
+| 8 | - | New test program `abi2test` (29 checks) runs in the host harness and in the emulator check. The host harness's timer chip now counts, so code that waits on it (closing a TCP connection) no longer hangs there. | `usr/musl/abi2test.c`, `tools/tests/linux/hh.c`, `tools/tests/linux/io_host.h`, `tools/check.py` |
+| 9 | - | A separate review found, all fixed: a long netlink request could write past the reply buffer; `recvmsg`/`sendmsg` read the iovec list from user memory twice (another thread could swap in a kernel address); a netlink attribute length was not checked; `msg_namelen` was read as 64 bits; `readv`/`writev` on UDP split one datagram into several; accepted sockets lost `SO_REUSEADDR`/`SO_REUSEPORT` and a second listener on a shared port was not refused; a full netlink queue lost the reply silently (now ENOBUFS); a fast timer queued one signal per expiry (now one, with the overrun count); the socket timeout shared its deadline with `poll`; TCP `connect(AF_UNSPEC)`; `rt_sigqueueinfo` to pid 0 or -1; `rt_sigpending` missed process-wide signals; `sigprocmask` wrote the old mask before refusing a bad `how`. | `sys/linux/lxsock.c`, `sys/linux/linux_parts/03_ino_ev_fd.c`, `05_lx_mmap.c`, `06_lx_mkdir.c`, `07_lx_dup3.c`, `core/proc/jobs_parts/02_jc_tg_sync_ids.c` |
+
+Not done: real IPv6 (other IPv6 addresses give ENETUNREACH), netlink change requests and event messages, keep-alive probes, ICMP types other than echo.
+
+## What changed in v10.65
+
+The installer is now a separate signed program that you can see on the USB stick as `INSTALL.NVX`.
+
+| # | Before (v10.64) | Now (v10.65) | Where |
+|---|---|---|---|
+| 1 | The installer's screens and logic were part of the kernel. | The screens run as a user-mode program (`INSTALL.NVX`, about 20 KB) with the same blue dialog-box look as the built-in installer; the kernel only does the disk work through a small set of system calls that only this program may use. A bug in the screens now stops the program, not the system. | `usr/src/nvxinstall.c`, `core/init/installer_parts/04_inst_svc.c`, `sys/native/syscall.c`, `core/init/main.c` (section 8.7b) |
+| 2 | - | The program is signed with the same key as the kernel (`nvxsign.py signfile`) and checked before it starts; a changed or foreign file is refused and the copy inside the Linux files is used instead. | `tools/nvxsign.py`, `core/secboot.c`, `build.sh` |
+| 3 | - | A flashed USB stick shows `INSTALL.NVX` in its root folder. | `boot/mkhybrid.py` |
+| 4 | - | `install classic` opens the old built-in installer; it is also used when no valid program is found. | `shell/commands_parts/02_battery_cmd.c` |
+| 5 | - | A separate review found: Settings could start the installer for a non-admin user and nothing happened; a hung program could not be closed; an interrupted install gave no message; no progress during long formatting; a second start could leak a job slot. All fixed (admin check, Ctrl+Alt+Esc, message, progress bar, refuse a second start). | `core/init/installer_parts/04_inst_svc.c`, `core/init/main.c` |
+
+## What changed in v10.64
+
+| # | Before (v10.63) | Now (v10.64) | Where |
+|---|---|---|---|
+| 1 | Installing to a disk after a UEFI start stopped with "The kernel data loaded at boot is not the original build". Cause: `early_remap()` runs before the installer takes its copy of the kernel's data part and, on UEFI machines where the firmware reports part of the kernel's memory as not RAM, writes its bookkeeping (`g_remap_*`, the temporary page directory `g_pdtmp`) into variables in `.data`. The copy then differed from the signed file in those bytes (found in QEMU by dumping the copy and comparing it with `kernel64.bin`: 13 bytes in `g_remap_*` and `g_pdtmp`). | `early_remap_unsnap()` puts those variables back to their file value (zero) in the copy, like the boot page tables and the early IDT already were. | `arch/x86_64/interrupts/early_fault.c`, `core/init/installer_parts/01_dm_crc32.c` |
+
+Work in progress, not active yet: the installer as a separate signed program (`usr/src/nvxinstall.c`, kernel side `core/init/installer_parts/04_inst_svc.c`, system calls 200-210). It is compiled but not started; `install` and `noovexos_install` still open the built-in installer.
+
+## What changed in v10.63
+
+After a crash the computer restarts into Recovery by itself, and Recovery has a plain dark look.
+
+| # | Before (v10.62) | Now (v10.63) | Where |
+|---|---|---|---|
+| 1 | The red crash screen waited for R; after the restart NoovexOS started the desktop or sign-in screen as usual. | The crash screen saves a note for the next start (`RECNEXT.TXT` on the USB stick, `rec-next.flag` on an installed disk) and counts down 15 s, then restarts. Any key stops the countdown (to read or photograph the screen); R restarts at once. If no note could be saved, or the crash happened early in the start or inside Recovery, it waits for R as before, so it can never restart in a loop. | `core/crash.c` |
+| 2 | - | The next start finds the note, clears it and opens Recovery instead of the desktop, with the crash report shown next to the menu. Continue, Safe Mode and Command Prompt go to the screen the start would have shown (desktop, sign-in or setup). A crash inside Recovery does not loop, because the note is cleared first. | `core/crash.c` `crash_rec_pending`, `core/init/main.c`, `core/init/bootmenu.c` |
+| 3 | Recovery was a bright blue Windows-style screen with tiles and drawn icons; Startup Repair always printed "Kernel image: valid". | Plain dark screens: a top bar, a list with one highlighted row, square panels, key hints at the bottom. New entry "Show the crash report". Startup Repair shows real results (boot file system, installed disk, the loader's signature result or the BIOS checksum, whether a crash report exists) and says that it changed nothing. | `core/init/bootmenu.c` |
+
+## What changed in v10.62
+
+Faster program start for Linux programs: faster unpacking, no copying of whole libraries, and library pages shared between programs. Measured in the emulator: `import numpy` 11.1 s -> 5.0 s on the first run and 4.9 s -> 1.8 s after that; LibreOffice's libraries 12.3 s -> 2.6 s and 1.7 s -> 0.06 s.
+
+| # | Before (v10.61) | Now (v10.62) | Where |
+|---|---|---|---|
+| 1 | All Linux files were xz at the strongest setting; the first use of a program unpacked whole 8 MB blocks slowly. | Programs and libraries are in zstd blocks, which unpack about 10-15 times faster; data files stay xz. The Linux files grow from 210 to 233 MB. | `tools/mksysroot.py`, `fs/vfs/sysroot.c`, `lib/compress/unpack.c` (section 6.30) |
+| 2 | `mmap` of a library copied all of it at once, one 4 KB read by path per page. | Pages are mapped on first use from a page cache; files outside the Linux files are read in 256 KB pieces. | `sys/linux/linux_parts/05_lx_mmap.c`, `mem/pmm_vmm.c` |
+| 3 | Every process had its own copy of every library page. | Read-only pages are shared between all processes; a write makes a private copy. `exec` maps programs and `ld.so` the same way. | `fs/vfs/sysroot.c`, `core/proc/elf.c` |
+| 4 | - | `pagecache` in the Terminal shows cache, fault and unpack numbers. | `shell/commands_parts/02_battery_cmd.c` |
+| 5 | - | A separate review found that removing or reinstalling an apt package would have crashed programs still running from it, and that cached pages were never given back; both fixed before release (pages in use are kept, unused cache pages are given back when memory runs low). | `fs/vfs/sysroot.c`, `core/proc/jobs_parts/01_jc_resume.c` |
+
+## What changed in v10.61
+
+Our own signed boot: the UEFI loader now checks a real signature on the kernel and the Linux files before it starts anything.
+
+| # | Before (v10.60) | Now (v10.61) | Where |
+|---|---|---|---|
+| 1 | The kernel only carried SHA-256 hashes. Anyone who changed the kernel could compute new hashes and write them in, and the only check ran inside the kernel itself, so a changed kernel could skip it. | Every build is signed with ECDSA P-256 over the SHA-256 of the whole file (code, data, version, Linux-files hash, public key). The private key stays in `build/keys/` (not in the source zip) or comes from `NVX_SIGN_KEY`. `tools/nvxsign.py` makes keys and signs, re-signs, checks and shows kernels. | `tools/nvxsign.py`, `build.sh`, `core/buildsig.c` (section 2.15) |
+| 2 | The UEFI loader only looked for the entry point. | It checks the whole-file hash and the signature with the public key built into the loader, and the SHA-256 of the Linux files against the signed hash, before starting the kernel. With firmware Secure Boot on, a bad kernel is refused; with it off, a red message explains why and U starts it anyway as untrusted. | `boot/uefi/uefiboot.c`, `lib/crypto/nvxsigv.c` |
+| 3 | An old kernel with a known bug always started. | Each build has a security version. The loader keeps the lowest allowed version in a firmware variable that the running system cannot change, raises it after a verified start, and refuses older kernels. | `boot/uefi/uefiboot.c` |
+| 4 | A modified kernel could be started with C on the WRONG VERSION screen; kernel modules could be loaded; updates only needed a matching checksum. | Lockdown (on after a verified start): no C, no `dlmod`, updates must be signed with the same key and not be older, and their Linux files must match; Linux files from the boot partition are checked. | `core/secboot.c`, `core/update.c`, `core/proc/elf.c`, `core/init/main.c` |
+| 5 | - | `security` in the Terminal shows the boot path, firmware Secure Boot, the signature result, the key, the versions and lockdown. | `shell/commands_parts/02_battery_cmd.c` |
+| 6 | - | New test group `secboot` (SHA-256 against Python, ECDSA good/bad cases, signed blocks with flipped bytes, other key, unsigned; and a check of the built kernel). The build stops if the signature magic appears more than once in the kernel. | `tools/tests/secboot/`, `tools/check.py`, `build.sh` |
+
+Not done in this release: a loader signed for the firmware's own Secure Boot (Authenticode plus your key in the firmware), signature checks on the legacy BIOS path, and TPM measured boot.
 
 ## What changed in v10.60
 
@@ -2013,6 +2383,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [2.13 Size limits along the chain](#213-size-limits-along-the-chain)
   - [2.13b The Linux files outside the kernel (v10.41)](#213b-the-linux-files-outside-the-kernel-v1041)
   - [2.14 Gotchas](#214-gotchas)
+  - [2.15 Signed boot (v10.61)](#215-signed-boot-v1061)
 - [Part 3: Memory](#part-3-memory)
   - [3.1 Boot order](#31-boot-order)
   - [3.2 Physical memory map (firmware map)](#32-physical-memory-map-firmware-map)
@@ -2032,6 +2403,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [3.16 Kernel memory and firmware-reserved memory (v10.51)](#316-kernel-memory-and-firmware-reserved-memory-v1051)
   - [3.17 Memory numbers for programs (v10.51)](#317-memory-numbers-for-programs-v1051)
   - [3.18 Code pages and firmware data (v10.52)](#318-code-pages-and-firmware-data-v1052)
+  - [3.19 Compressed swap and the page cache (`mem/swap.c`, `fs/vfs/sysroot.c`) (v10.80)](#319-compressed-swap-and-the-page-cache-memswapc-fsvfssysrootc-v1080)
 - [Part 4: CPU, interrupts, timers and multi-core](#part-4-cpu-interrupts-timers-and-multi-core)
   - [4.1 `arch/x86_64/cpu/cpu.h`, the CPU interface](#41-archx86_64cpucpuh-the-cpu-interface)
   - [4.2 `arch/x86_64/cpu/cpu_init.c`](#42-archx86_64cpucpu_initc)
@@ -2050,6 +2422,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [4.15 TLB coherence](#415-tlb-coherence)
   - [4.16 The `smp` shell commands (`shell/commands.c`)](#416-the-smp-shell-commands-shellcommandsc)
   - [4.17 The web worker engine on CPU 1 (v10.42)](#417-the-web-worker-engine-on-cpu-1-v1042)
+  - [4.18 Waking jobs and the lock statistics (v10.72)](#418-waking-jobs-and-the-lock-statistics-v1072)
 - [Part 5: Processes, scheduling, signals and the native system-call ABI](#part-5-processes-scheduling-signals-and-the-native-system-call-abi)
   - [5.1 Per-CPU scheduling state](#51-per-cpu-scheduling-state)
   - [5.2 The process table: `struct jproc`](#52-the-process-table-struct-jproc)
@@ -2067,6 +2440,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [5.14 init (PID 1) and `/etc/rc`](#514-init-pid-1-and-etcrc)
   - [5.15 Threads and futexes](#515-threads-and-futexes)
   - [5.16 Interval timers and alarm](#516-interval-timers-and-alarm)
+  - [5.17 Priorities and fair time sharing (v10.78)](#517-priorities-and-fair-time-sharing-v1078)
 - [Part 6: Linux compatibility, libc and porting applications](#part-6-linux-compatibility-libc-and-porting-applications)
   - [6.1 How a Linux system call reaches the kernel](#61-how-a-linux-system-call-reaches-the-kernel)
   - [6.2 File-related details](#62-file-related-details)
@@ -2101,6 +2475,17 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [6.28 LibreOffice inside the Linux files (v10.48)](#628-libreoffice-inside-the-linux-files-v1048)
   - [6.27 Built-in LibreOffice Writer and Calc (v10.47)](#627-built-in-libreoffice-writer-and-calc-v1047)
   - [6.29 Ports and distro profiles (v10.58)](#629-ports-and-distro-profiles-v1058)
+  - [6.30 Faster program start: zstd blocks and a shared page cache (v10.62)](#630-faster-program-start-zstd-blocks-and-a-shared-page-cache-v1062)
+  - [6.31 Electron programs and Discord (v10.67)](#631-electron-programs-and-discord-v1067)
+  - [6.32 Vesktop, app packs, the tray and the file chooser (v10.69)](#632-vesktop-app-packs-the-tray-and-the-file-chooser-v1069)
+  - [6.33 Fast Electron programs: vDSO, event wakeups, MIT-SHM (v10.72)](#633-fast-electron-programs-vdso-event-wakeups-mit-shm-v1072)
+  - [6.34 AVX for Linux programs, epoll on files, clipboard bridge (v10.73)](#634-avx-for-linux-programs-epoll-on-files-clipboard-bridge-v1073)
+  - [6.35 Linux windows as NoovexOS windows, processor power, laptop keys (v10.74)](#635-linux-windows-as-noovexos-windows-processor-power-laptop-keys-v1074)
+  - [6.36 Light sleep and touchpad coasting (v10.75)](#636-light-sleep-and-touchpad-coasting-v1075)
+  - [6.37 USB audio sample sizes and USB test coverage (v10.76)](#637-usb-audio-sample-sizes-and-usb-test-coverage-v1076)
+  - [6.38 Driver review fixes: Wi-Fi scan and join, Intel pipes, NVIDIA GSP queues (v10.77)](#638-driver-review-fixes-wi-fi-scan-and-join-intel-pipes-nvidia-gsp-queues-v1077)
+  - [6.39 More system calls: System V IPC, POSIX message queues, pidfd, splice, openat2, FIFOs, seccomp (v10.82)](#639-more-system-calls-system-v-ipc-posix-message-queues-pidfd-splice-openat2-fifos-seccomp-v1082)
+  - [6.40 Containers: namespaces, chroot, overlay and cgroups (v10.83)](#640-containers-namespaces-chroot-overlay-and-cgroups-v1083)
 - [Part 7: File systems](#part-7-file-systems)
   - [7.1 The in-memory file table (`fs/vfs/ramfs.c`)](#71-the-in-memory-file-table-fsvfsramfsc)
   - [7.2 The directory tree (`fs/vfs/dirtree.c`)](#72-the-directory-tree-fsvfsdirtreec)
@@ -2114,6 +2499,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [7.10 Packages (`fs/pkg/pkg.c`)](#710-packages-fspkgpkgc)
   - [7.11 Stepwise sync for large files (`fs/nvx/nvx4.c`) (v10.32)](#711-stepwise-sync-for-large-files-fsnvxnvx4c-v1032)
   - [7.12 Accounts, passwords and access (`core/auth/accounts.c`) (v10.40)](#712-accounts-passwords-and-access-coreauthaccountsc-v1040)
+  - [7.13 /sys, device nodes in /dev and hotplug events (`sys/linux/linux_parts/08_sysfs.c`) (v10.79)](#713-sys-device-nodes-in-dev-and-hotplug-events-syslinuxlinux_parts08_sysfsc-v1079)
 - [Part 8: Storage drivers, PCI and the installer](#part-8-storage-drivers-pci-and-the-installer)
   - [8.1 PCI (`drivers/bus/pci.c`)](#81-pci-driversbuspcic)
   - [8.2 ATA PIO (`drivers/storage/ata.c`)](#82-ata-pio-driversstorageatac)
@@ -2122,6 +2508,7 @@ Note: The Wi-Fi changes were checked by reading the code and by the wired tests,
   - [8.5 Generic disk layer (`drivers/storage/nvme.c`, after the NVMe driver)](#85-generic-disk-layer-driversstoragenvmec-after-the-nvme-driver)
   - [8.6 VirtIO-blk module (`drivers/virtio/virtio_blk.c`)](#86-virtio-blk-module-driversvirtiovirtio_blkc)
   - [8.7 The installer (`core/init/installer.c`)](#87-the-installer-coreinitinstallerc)
+  - [8.7b The installer program INSTALL.NVX (v10.65)](#87b-the-installer-program-installnvx-v1065)
   - [8.8 Disk Manager (`dm_*`, `core/init/installer.c` lines 1-104)](#88-disk-manager-dm_-coreinitinstallerc-lines-1-104)
   - [8.9 USB mass storage (`drivers/usb/xhci.c`)](#89-usb-mass-storage-driversusbxhcic)
   - [8.10 Shell commands (`shell/commands.c`)](#810-shell-commands-shellcommandsc)
@@ -2352,6 +2739,7 @@ The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `b
 |---|---|
 | `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `build/kernel64.bin` to `boot/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
 | `tools/splitc.py` | Splits a large C file into numbered pieces in `NAME_parts/` (`python3 tools/splitc.py 300 FILE...`), and `python3 tools/splitc.py expand FILE` prints the file with the pieces put back (section 3.5). |
+| `tools/nvxsign.py` | Signing key and kernel signatures for signed boot: `newkey`, `pub`, `sign`, `verify`, `info` (section 2.15). |
 | `tools/nvxport.py` | Ports and distro profiles: `list`, `info`, `check`, `new`, `stage` (section 6.29). `build.sh` runs `stage` in step `[distro]`. |
 | `tools/emulate.py` | Boot emulation of an ISO: the BIOS path (builds the real `fat.c`/`config.c`/`string.c` as a 32-bit host program), the UEFI path (El Torito EFI entry, PE check, runs `BOOTX64.EFI` against simulated services) and `uefi_entry`. |
 | `tools/tests/` | Host harnesses and templates: `aml/` (ASL/AML samples), `drivers/drvsim.c`, `fs/`, `libc/` (`ltest.c`, `pfuzz.c`, `sfile.c`), `linux/` (`hh.c`, `lxfuzz.c`, host `cpu.h`/`io.h` stand-ins), `*_template.txt` for USB/ACPI/NVMe/HR/TP/MM tests, `fatck.py`, `isocheck.py`, `pecheck.py`, `bios_emu.c`, `entry_t.c`, `mark_t.c`, `gpu_t.c`. |
@@ -2937,7 +3325,7 @@ Because they enter with `EAX=0`, `boot64.S` skips its Multiboot branch and does 
 
 `efi_main()` in order:
 
-1. Disables the watchdog (`SetWatchdogTimer(0,...)`), clears the screen and prints `NoovexOS UEFI loader 2.0`.
+1. Disables the watchdog (`SetWatchdogTimer(0,...)`), clears the screen and prints `NoovexOS UEFI loader 3.0 (signed boot)`.
 2. Finds a file system: the Simple File System of the loaded image's device, or else the first one from `LocateProtocol`.
 3. Reads `\boot\update.txt` (opened read-write) and applies the same update states as stage2 (8.12), writing the next state with `EFI_FILE_PROTOCOL.Write` and reading it back. If `\boot\kernel64.old` exists it shows "press P to start the previous version" for 0.6 s. It then opens the kernel: with no state file `\KERNEL64.BIN`, `\boot\kernel64.bin`, `\boot\kernel64.old`; with a state that starts the new version `\boot\kernel64.bin` first; for the previous version `\boot\kernel64.old` first. Paths are returned as literals, not through a table of pointers, because the loader is not relocated and a static pointer table would hold link-time addresses.
 4. Gets the file size from `EFI_FILE_INFO` (offset 8). It must not exceed `KERNEL_MAX = 0x1000000-0x100000` = 0xF00000 (15,728,640 bytes; 8 MiB in v9.08 to v9.10, 0x5C0000 before). The file is read in 1 MiB chunks into `AllocatePages(AnyPages, LoaderData)`.
@@ -3141,7 +3529,8 @@ State transitions found in the code:
 
 ### 2.11 Boot menu, recovery, setup and splash
 
-- `core/init/bootmenu.c` holds the recovery environment. It has a menu stack (`g_recstack`, depth 5) over four menus: `RM_MAIN` (Continue, Restart, Troubleshoot, Startup Settings, Command Prompt, Turn off), `RM_TROUBLE`, `RM_ADVANCED` and `RM_STARTUP`, with actions `RA_*` handled in `recovery_act()`. Continue to `ST_SETUP`. Safe Mode sets `g_safemode=1`. Command Prompt sets safe mode and `g_rec_openterm=1`. Startup Diagnostics (`g_recmode=1`) lists CPU, RAM, display, IDE, NIC and USB. Reset Display Mode re-reads the `0x5000` block. Restart and shutdown call `power_reboot()`/`power_off()`. Startup Repair, System Restore, Reset PC and UEFI Settings only show info panels (`g_recmode=2`). Startup Repair prints "Kernel image: valid" unconditionally; it does not consult `g_sig_ok`.
+- `core/init/bootmenu.c` holds the recovery environment (plain dark screens since v10.63). Main list `rm_main`: Continue to NoovexOS, Start in Safe Mode, Startup Repair, Show the crash report, Command Prompt, Startup Diagnostics, More options (`rm_more`: Reset Display Mode, System Restore, Reset this PC, UEFI Firmware Settings, Back), Restart, Turn off. Actions `RA_*` are handled in `recovery_act()`. Continue, Safe Mode (`g_safemode=1`) and Command Prompt (Safe Mode plus `g_rec_openterm=1`) set `g_state=g_rec_ret`, the state the start had chosen (default `ST_SETUP` when Recovery is opened from the boot menu). `g_recmode` 1 is Startup Diagnostics, 2 an info panel (`g_recinfo` 0 Startup Repair, 1 System Restore, 2 Reset this PC, 3 UEFI), 3 the crash report. Startup Repair reports the boot file system (`fat_mount`), the installed disk, the signature result (`g_sb_flags` from the UEFI loader, otherwise `g_sig_ok`) and whether a crash report exists; it changes nothing. System Restore and Reset this PC only show text.
+- Crash to Recovery (v10.63): `cx_panic_main()` in `core/crash.c` saves the report, then `cx_rec_note()` (only after this start has passed `crash_rec_pending()` and not inside Recovery itself, so a crash early in the start or in Recovery stays on the red screen instead of restarting forever) writes `RECNEXT.TXT` ("1") on the USB stick (`ufat_poke`, skipped when the crash was inside the USB code) and `rec-next.flag` on an installed disk (skipped when the heap was busy). If either was written, `cx_panic_wait(15,...)` counts down (time from `hr_ns()`; when that does not move with interrupts off, from wraps of the PIT channel 0 counter, 5 ms each in mode 3); old keys are thrown away first and calls `power_reboot()`; any key stops the countdown, R restarts. At the next start `crash_rec_pending()` (called in `kmain` after the first frame) reads both notes, sets them to "0" and returns 1; `recovery_after_crash()` stores `g_state` in `g_rec_ret`, sets `g_rec_crash=1` and switches to `ST_RECOVERY` and draws it at once. Command Prompt on a USB start opens the terminal directly. The crash report is read once per start and kept. The panic path turns off cloud file upload (`g_cloud_fs=0`) before it saves. `crash_report_text()` reads `crash-report.txt` from the installed disk or `CRASH.TXT` from the stick.
 - The synthwave boot menu (`bootmenu_present/input/activate`, in `core/init/installer.c`) has five items: Desktop to `ST_SETUP`, Safe Mode to `ST_SETUP` with `g_safemode`, Recovery to `ST_RECOVERY`, Install to `ip_open(ST_BOOTMENU)`, and Boot Configuration (shows resolution, CPU and NIC, and toggles safe mode).
 - `core/init/setup.c` is the first-run wizard with `NSU`=7 pages (language, keyboard, timezone, personalisation, Noovex account, storage, done). `su_apply()` commits the user name, accent, theme and locale choices, enables cloud files if signed in, and calls `nvx_settings_save()`. It also contains the login screen (`login_present/input`).
 - `core/init/splash.c`: `splash_boot()` is the black wordmark hold called from `kmain`. `synthwave_scene()` (gradient, grid, sun, wordmark) is the background for the boot menu.
@@ -3265,11 +3654,15 @@ def signature_ok(k):
 
 | Checker | When | Immutable hash | Full hash | On failure |
 |---|---|---|---|---|
-| `sig_self_check()` | every boot, `sig` command | yes (live memory) | no | skull screen; R restarts, C continues with `g_sig_ok=0` |
+| `sig_self_check()` | every boot, `sig` command | yes (live memory) | no | skull screen; R restarts, C continues with `g_sig_ok=0` (C is refused in lockdown) |
 | `kimg_check()` | installer, `kcheck` | yes (snapshot) | yes (snapshot) | installer aborts with a message |
-| `uefiboot.c` | UEFI load | no | no | only requires a valid `uefi_entry` |
+| `uefiboot.c` | UEFI load | no | yes, plus the P-256 signature over it (v10.61) | refused; with firmware Secure Boot off the user can press U to start it as untrusted (section 2.15) |
 | myboot stage2 | BIOS load | no | no | - |
 | `emulate.py` / `check.py` | host test | if matching ELF | yes | test FAIL |
+
+#### Since v10.61: a real signature
+
+The hashes above only show that the file was not changed by accident: anyone who changes the kernel can compute new hashes and write them into the block. Since v10.61 the block also carries an ECDSA P-256 signature made with a private key that is not in the source tree, and the UEFI loader checks it before it starts the kernel. Section 2.15 describes the whole chain.
 
 ### 2.13 Size limits along the chain
 
@@ -3309,13 +3702,102 @@ The installer writes the file to the new boot partition after the boot partition
 - The header comment of `boot64.S` still documents the old `0x5000` layout (pitch at `0x5004`, bpp at `0x500A`). The code and `kmain` use the layout in 2.7.
 - `stage2_main` prints `myboot 0.3` while the menu title says `myboot 0.5`.
 
+### 2.15 Signed boot (v10.61)
+
+#### What is checked, by whom
+
+| Step | Who | What | On failure |
+|---|---|---|---|
+| 1 | firmware | `BOOTX64.EFI` (only if the owner enrolled a key and turned firmware Secure Boot on; NoovexOS does not ship a firmware-signed loader yet) | the firmware refuses the loader |
+| 2 | `BOOTX64.EFI` (`boot/uefi/uefiboot.c`) | the kernel file: whole-file SHA-256 and the P-256 signature over it, with the public key built into the loader | firmware Secure Boot on: refused. Off: a red message; U within 15 s starts it as untrusted, anything else goes back to the firmware |
+| 3 | `BOOTX64.EFI` | the Linux files (`/sysroot/CRC.BIN`): SHA-256 against the hash inside the signed kernel | same as step 2 |
+| 4 | `BOOTX64.EFI` | the security version (`svn`) against the lowest allowed version stored in the firmware variable `NoovexMinSvn` | same as step 2 |
+| 5 | kernel (`core/secboot.c`) | reads the loader's result at `0x5100`; turns lockdown on when the kernel and Linux files were verified and the user did not override | - |
+| 6 | kernel, update (`core/update.c` `up_apply`) | a downloaded kernel must be signed with the same key, have `svn` at least the running one and the stored minimum, and its Linux files must match its signed hash | the update is not installed |
+| 7 | kernel, lockdown | Linux files read from the boot partition (`up_sr_load_disk`) are checked against the signed hash | not loaded |
+| 8 | kernel, any signed build | Linux files downloaded by the repair step (`upd_repair`) must match the signed hash, not only the CRC-32 | not used or saved |
+| 9 | kernel, UEFI start | when the loader passed no Linux files, the kernel no longer searches memory for a left-over copy (it would only have been checked by CRC-32) | started without Linux files |
+
+The legacy BIOS path (myboot) does not check signatures: nothing in a BIOS start can be trusted before the kernel, so lockdown stays off there and `security` says so.
+
+#### The signature block (320 bytes, `core/buildsig.c`)
+
+The first 128 bytes are unchanged from 2.12. New fields:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 128 | 4 | `sb_version` | 1 = signed |
+| 132 | 4 | `svn` | security version (`NVX_SVN` in `core/buildsig.c`, or `nvxsign.py sign --svn N`) |
+| 136 | 8 | `keyid` | first 8 bytes of SHA-256 of the public key |
+| 144 | 32 | `sr_sha256` | SHA-256 of the Linux files (`build/sysroot.bin`) |
+| 176 | 4 | `sr_len` | their length |
+| 180 | 4 | `imm_size` | length of the code part (`__immutable_end - 0x100000`) |
+| 184 | 64 | `sig` | ECDSA P-256 signature (r, s) over `sha256_full` |
+| 248 | 65 | `pub` | the public key (uncompressed point); the kernel uses it to check updates |
+| 313 | 7 | `pad` | |
+
+Signing order (`tools/nvxsign.py` `sign_image`, called by `build.sh` step 6): fill `sb_version`, `svn`, `keyid`, `pub`, `sr_sha256`, `sr_len`, `imm_size`; zero `sha256`, `sha256_full` and `sig`; `sha256_full` = SHA-256 of the whole file; `sig` = ECDSA over `sha256_full` (the digest is signed as is); last, `sha256` = SHA-256 of the code part with `sha256` zero (so the runtime self-check still works). Because every other byte of the file, including `.data`, `svn`, the Linux-files hash and the public key, is inside `sha256_full`, the signature covers the whole file.
+
+The loader does not trust `pub` from the file: it compares it with the key built into the loader (`build/nvxkey.h`, written by `nvxsign.py pub --header`). A kernel signed with another key is refused as "signed with another key".
+
+The magic text must appear exactly once in the kernel file (2.14). The verifier in `lib/crypto/nvxsigv.c` stores it XOR 0xA5, and `build.sh` stops if it finds the magic more than once.
+
+#### Verifier (`lib/crypto/nvxsigv.c`)
+
+One file shared by the loader and the kernel: streaming SHA-256, P-256 field and scalar arithmetic in Montgomery form (8 x 32-bit words), Jacobian point addition and doubling, and ECDSA verification with the usual checks (r and s in 1..n-1, the public key on the curve). All constants are byte arrays, because the loader is linked without relocation processing and must not contain pointers in its data. `sv_kernel_verify()` returns 0 or a negative code: -2 no block, -3 not signed, -4 other key, -5 damaged block, -6 file changed after signing, -7 wrong signature; the callers add -8 (Linux files) and -9 (rollback). The kernel includes the file from `core/secboot.c`.
+
+#### Rollback protection
+
+The loader reads `NoovexMinSvn` (vendor GUID `eb01d052-b83d-4ba2-af32-098cb20247c5`) with `GetVariable`. A kernel with a lower `svn` is refused. After a verified start with no update being tried (`update.txt` not in TRY/FAIL/OLD state), a higher `svn` is written back with attributes non-volatile + boot-services only, so the running system cannot lower it after `ExitBootServices`. A variable that is also runtime-writable is ignored with a warning. Raise `svn` only for a security fix: older releases with a lower number stop starting on that computer.
+
+#### Information for the kernel (`0x5100`, 32 bytes)
+
+| Offset | Size | Meaning |
+|---|---|---|
+| 0 | 4 | magic `0x4253564E` |
+| 4 | 4 | flags: 1 kernel verified, 2 Linux files verified, 4 firmware Secure Boot on, 8 started as untrusted by the user, 16 rollback minimum stored |
+| 8 | 4 | lowest allowed version |
+| 12 | 4 | the kernel's version |
+| 16 | 4 | error code (positive) |
+| 20 | 4 | loader version (3) |
+| 24 | 8 | key id built into the loader |
+
+#### Lockdown (`g_lockdown`)
+
+On when the loader verified the kernel and the user did not override. Then:
+
+- the WRONG VERSION screen has no C (continue) key;
+- `dlmod` / `nvx_dlload` refuses to load kernel modules;
+- updates must be signed with the same key and not be older (`up_apply`);
+- Linux files from the boot partition are checked before use.
+
+`security` (or `secureboot`) in the Terminal shows the boot path, firmware Secure Boot, the signature result, the key id (and whether the loader has the same key), the Linux-files result, the versions and the lockdown state.
+
+#### Keys (`tools/nvxsign.py`)
+
+| Command | What it does |
+|---|---|
+| `nvxsign.py newkey [--key P]` | make a P-256 key (default `build/keys/kernel-sign.pem`, mode 0600) if there is none |
+| `nvxsign.py pub [--header F]` | print the public key, or write the C header for the loader; makes a key if there is none |
+| `nvxsign.py sign K [--svn N] [--sysroot S]` | sign a kernel file (also re-signs an already signed one, for example with your own key) |
+| `nvxsign.py verify K [--key P / --pub HEX] [--sysroot S]` | check a kernel file |
+| `nvxsign.py info K` | show the block |
+
+`NVX_SIGN_KEY=/path/key.pem` makes the build use that key. The key decides which loaders accept the kernel and which installed systems accept an update, so it must stay the same across releases. `build/` is not in the source zip, so the key never travels with the sources. If the key is lost, installed systems must be reinstalled from a new image (the new loader carries the new key).
+
+#### Limits
+
+- Firmware Secure Boot (step 1) needs a loader signed for the firmware (Authenticode) and the owner's key in the firmware `db`; not done yet. Until then someone who can write the EFI partition can replace the loader, key and all.
+- BIOS starts are not checked.
+- The check takes time: SHA-256 of the kernel (about 78 MB) and the Linux files (about 210 MB) costs about a second on a laptop and much longer in an emulator without hardware acceleration.
+
 ## Part 3: Memory
 
 NoovexOS 64 has no general-purpose physical page allocator covering all of RAM. Memory is a set of fixed physical regions with one allocator each. The low 4 GiB is identity-mapped with 2 MiB pages, so the kernel uses physical addresses as pointers. User processes get their own PML4 with a private window at PML4 slot 8.
 
 | Allocator | Region | Granularity | Freed? | Source |
 |---|---|---|---|---|
-| `kmalloc` / `kfree` (heap) | largest clean run at least 128 MiB from `0x10000000` | 16 B (+24 B header) | yes (coalescing) | `mem/heap.c` |
+| `kmalloc` / `kfree` (heap) | largest clean run at least 128 MiB from `0x10000000` | 16 B (+48 B header) | yes (coalescing) | `mem/heap.c` |
 | `kslab_alloc` (slab) | 8 KiB slabs carved from the heap | 16 B ... 4 KiB classes | to its free list | `mem/slab.c` |
 | `dma_alloc` / `dma_alloc_pages` | DMA arena `0x0B000000-0x0C000000` | 64 B / 4 KiB | never | `mem/pmm_vmm.c` |
 | `pframe_alloc` / `pframe_free` | frame pool `0x0C000000-0x0E000000` | 4 KiB | yes (refcounted) | `mem/pmm_vmm.c` |
@@ -3511,8 +3993,10 @@ heap_base                                   heap_cur                 heap_top
  +- next ------>+- next ---------->+- next=0
 ```
 
-- `kmalloc(n)`: rounds `n` up to 16. It first searches the list first-fit for a free block with `size >= n`. If the leftover is at least `n + 24 + 32`, the block is split and the tail becomes a new free block. If no block fits, it bumps `heap_cur` by `24 + n` and walks the list to append the new block, so this path is O(blocks). It returns 0 when `heap_cur + need > heap_top`. Payloads start 24 bytes after a 16-aligned header, so they are only 8-byte aligned.
-- `kfree(p)`: checks the header with `hblk_ok`: a valid arena address (the low arena or any high-memory arena), 8-aligned, magic matches. A bad pointer is ignored without any message. It marks the block free, then walks the whole list and merges each free block with physically adjacent free successors. `heap_cur` never moves back, so freed memory is reused only through the list.
+- Block header (`hblk`, 48 bytes): size, next and prev in list order, used flag, magic, caller, requested size. Payloads are 16-byte aligned.
+- Free blocks are also on one of 48 size-class lists (class = floor(log2(size))); the two links live in the first 16 payload bytes of the free block (v10.69).
+- `kmalloc(n)`: rounds `n + 8` up to 16. It scans at most 64 blocks of the class of `n` (blocks there may be smaller), then takes the first block of any larger class, which always fits. If the leftover is at least `48 + 32`, the block is split and the tail goes on its free list. If no block fits, it bumps `heap_cur` (or an extra arena) and appends with the tail pointer, so allocation no longer walks the whole heap. It returns 0 when every arena is full.
+- `kfree(p)`: checks the header with `hblk_ok` (a valid arena address, 8-aligned, magic matches) and reports a bad pointer or a double free in the log. It merges the block with its next and previous neighbours when they are free and physically adjacent (constant time; before v10.69 it walked the whole list on every free, which made Electron's system calls slow) and puts the result on its free list. `heap_cur` never moves back.
 - `krealloc(p,n)`: returns `p` if the old size is already at least `n` (it never shrinks). Otherwise it does `kmalloc`, copies, and `kfree`s the old block.
 - `kcalloc(a,b)`: `kmalloc(a*b)` plus zeroing. It does not check `a*b` for overflow.
 - Every list walk is bounded at 1,000,000 iterations so that a damaged list cannot hang the kernel.
@@ -3890,7 +4374,7 @@ Test hooks: building `uefiboot.c` or `stage2.c` with `-DNVX_TEST_RSV` makes the 
 
 ### 3.17 Memory numbers for programs (v10.51)
 
-`/proc/meminfo` used to report three quarters of RAM as free, always. It now uses `mem_summary` (`mem/heap_api.c`): used memory is the kernel heap in use (cached every 2 s by `crash_tick`), everything below the heap base, and the Linux files when they lie above the heap. `MemFree` and `MemAvailable` are RAM minus that; `KernelHeap` gives the heap in use. Swap and cache lines are 0.
+`/proc/meminfo` used to report three quarters of RAM as free, always. It now uses `mem_summary` (`mem/heap_api.c`): used memory is the kernel heap in use (cached every 2 s by `crash_tick`), everything below the heap base, and the Linux files when they lie above the heap. `MemFree` and `MemAvailable` are RAM minus that; `KernelHeap` gives the heap in use. Since v10.80 `MemFree`, `Cached` and the swap lines are real (section 3.19).
 
 `/usr/bin/nvx-mem` (`rust/nvxmem`) is a Rust program on top of this: `nvx-mem` shows memory in use with a bar, `nvx-mem test [MB]` fills memory from several threads with seven patterns and checks it (exit code 1 on errors or when the memory cannot be had), `nvx-mem bench` measures copy and read speed and the time for 100,000 small allocations.
 
@@ -3903,6 +4387,22 @@ In QEMU's UEFI firmware (OVMF), 32 KB of ACPI NVS memory sits at `0x800000`, ins
 The UEFI loader saves the firmware's bytes before it overwrites them. Before ExitBootServices it allocates a buffer below 4 GiB (at most 8 MB) for every ACPI NVS, ACPI table and runtime code or data range that overlaps the kernel image, boot stack, module area or BSS. After ExitBootServices, and before copying the kernel, it fills the buffer. The buffer's address is at `0x5038` (offset 56 of the boot information), with the magic `NVXS`. After moving the pages, `early_remap` writes these bytes back to the original physical pages, which the kernel no longer uses. The boot log says "firmware data put back (N KB)", and `memmap` shows the same.
 
 Moved pages no longer count as conflicts: `mm_area_conflicts`, the start-up warning and `memmap` skip them (`early_remap_moved`), so the installer runs. The ACPI interpreter refuses memory reads and writes to moved pages, because those addresses now lead to the kernel's copy.
+
+### 3.19 Compressed swap and the page cache (`mem/swap.c`, `fs/vfs/sysroot.c`) (v10.80)
+
+Which pages can be swapped. Only private anonymous pages of programs: pages made by a lazy fault (`vm_fault_user`, zero page or swap-in) or by breaking copy-on-write get the software bit `PTE_ANON` (bit 54). A page is a candidate when it is present, user, writable, has `PTE_ANON`, is not shared (`PTE_SHR`), not copy-on-write, its frame has one reference, no thread waits on a shared futex in it, and it is not part of a shared file mapping (`lx_fm_covers`). Pages the kernel maps eagerly (file mappings, memfd, shared memory, the vDSO, native programs) never get the bit, so the kernel can keep using their frames directly.
+
+Swap entries. A swapped page's PTE is not present and holds `PTE_LAZY | PTE_SWP` (bit 7) with the slot number in bits 12-51 and the protection bits kept (`pte_is_swap`). A fault on it (`vm_fault_user`) takes a frame, decompresses the slot into it (`swap_in`) and maps it writable with `PTE_ANON`. `fork` (`vm_clone_user`) shares the slot (reference count, `swap_dup`); `munmap`, `MADV_DONTNEED`, `exec` and exit give the slot back (`swap_put`); `mprotect` keeps the entry and changes only the protection bits.
+
+Store. Like Linux zram: a page whose 512 words are equal is kept as that word only; other pages are compressed with an LZ77 coder of the LZ4 kind (`lz_comp4k`, 4-byte minimum match, 16-bit offsets; `lz_dec4k` checks every length and offset). Results above 2048 bytes are not swapped. Compressed pages go into 4 KB frames split into 32 size classes of 64-byte steps (`zs_store`); a frame is freed when its last object goes. Slots and frame descriptors are in tables of 1024 entries allocated on demand (up to 1 M slots). The swap size is half the page frames, shown as `/dev/zram0` in `/proc/swaps`.
+
+Reclaim. `swap_poll` (main loop, each tick) keeps at least 1/32 of the frames (at least 2048) free: it first frees page-cache frames nobody maps (`sysroot_pc_reclaim`), then swaps with a clock over all address spaces (`swap_reclaim`): a page whose accessed bit is set gets the bit cleared and a second chance. Candidates are taken in batches of 64: the PTEs are cleared, one TLB shoot-down (`smp_tlb_sync`) waits for every core running that address space, then the frames are compressed, so a write through an old TLB entry cannot be lost. When a frame is needed in a fault and none is free, `vm_frame` calls the same reclaim directly, up to six times. A page that does not compress gets the software bit `PTE_NOZ` (bit 55) and its dirty bit cleared, so the scanner skips it until the program writes to it again. All of this runs under the big kernel lock, so faults on other cores wait until the PTEs are final. `swappiness` 0 keeps the background pass to the page cache. Limits that keep it safe: reclaim started from kernel code (a system call that needs a frame) never takes pages of the address space it is working in, so memory the kernel has just checked stays mapped and a shared futex keeps its physical key; only a fault taken in user mode and the background pass may swap the current program's pages. The background pass takes at most 256 pages a tick and waits 200 ms after a pass that freed nothing; `MADV_PAGEOUT` handles at most 64 MB of pages a call; one reclaim call goes around the programs once. Sixteen frames are kept aside for the store, so swapping still works when no frame is free.
+
+Interfaces. `madvise(MADV_PAGEOUT)` swaps a range now; `swapoff /dev/zram0` brings every page back (`swap_onoff`), `swapon` turns it on again (root only; other paths give EINVAL, there is no disk swap); `/proc/meminfo` has `MemFree` from the free page frames (the memory programs can get), `MemAvailable`, `Cached`, `SwapTotal`, `SwapFree`, `Zswap` and `Zswapped`; `/proc/sys/vm/swappiness` and `/proc/sys/vm/drop_caches` (1 or 3: free unused page-cache frames and decompressed blocks).
+
+Page cache. Files of the system image live compressed in blocks; a decompressed block stays in `bcache`. Each block now has a last-use tick and a pinned flag: blocks whose address was handed out by `sysroot_get` (programs that keep the pointer) are pinned, blocks used only by `read()` and by the page cache for `mmap` (`sr_read`, `sysroot_pc_page`) can be dropped. When the blocks pass a quarter of the kernel heap, or a heap allocation fails, `sysroot_bc_evict` frees unpinned blocks, oldest first (unused for 60 s, then 10 s, then 1 s, never in the tick they were used). Pinned blocks do not count against the budget.
+
+Tests. `swaptest` (QEMU group of `tools/check.py`): 32 MB of mixed pages through `MADV_PAGEOUT`, read back, fork, `PROT_READ`, `MADV_DONTNEED`, `munmap`, the `/proc` files, and a pressure step that writes more than the free memory. The memory group builds the store and the codec from `mem/swap.c` on the host with ASan/UBSan (100000 round trips with corrupted input, 20000 pages stored, shared and freed).
 
 ## Part 4: CPU, interrupts, timers and multi-core
 
@@ -4247,7 +4747,11 @@ static struct bkl g_bkl={1,0,0,1};       /* CPU 0 owns it from boot, depth 1 */
 - Recursion. If `owner == cpu_id()`, it only increments `depth`. Nested entry is common, for example a syscall that ends up in code that locks again.
 - Interrupts while spinning. `cpu_irq_save` disables interrupts during the spin and `cpu_irq_restore` restores the previous IF afterwards.
 - Deferred TLB flush. After acquiring, if `PCPU->tlb_pending` is set, it clears it and reloads CR3.
-- Unlock. `bkl_unlock` ignores callers that are not the owner, decrements `depth`, and at zero sets `owner=-1` and does `serving+1` (release).
+- Unlock. `bkl_unlock` ignores callers that are not the owner, decrements `depth`, and at zero sets `owner=-1` and does `serving+1` (release), all with interrupts off. Before v10.69 an interrupt between those two stores entered `isr_dispatch`, took the next ticket and waited for itself forever.
+- `bkl_try()` takes the lock only if it is free (or already ours) and never spins. The keyboard and PS/2 mouse interrupt reads its bytes into a lock-free 256-entry ring first (`ps2_byte_fast`) and drains it only when `bkl_try` succeeds; every other interrupt drains it under the lock, so keys are not lost while another core holds the lock.
+- `PCPU->bkl_wait` is set while a core spins for the lock. `smp_tlb_sync` does not wait for such cores (they flush on acquire because `tlb_pending` is set), which removed 150-250 ms waits from `mprotect` and `madvise`.
+- Unpacking blocks of the Linux files (up to 180 MB for a big program) happens without the lock and with interrupts on in the page-fault path for faults from user mode (not for kernel accesses to user memory) and in a warm-up at the very start of `execve` and of `read` on Linux files, before the system call touches any state (`g_sr_nolock`, `sysroot_get_unlocked`, `xzk_decode_unlocked`, `zstk_decode_unlocked`); callers re-check their state after taking the lock again.
+- With 3 or more cores online, Linux jobs run only on the other cores (`jc_bsp_off`), so core 0 always has time for the desktop and input.
 - Helpers. `bkl_held()` tells whether this CPU owns it. `bkl_drop()` releases fully and returns the old depth, and `bkl_take(d)` re-acquires and restores that depth. Together they hand the lock over around blocking waits. `bkl_yield()` (only when SMP is on, the lock is held at depth 1, and someone is queued, i.e. `next != serving+1`) unlocks, pauses 64 times, and relocks.
 
 Where it is taken or dropped.
@@ -4480,6 +4984,12 @@ Other places that report the core count: `/proc/cpuinfo` (`fs/vfs/vfs.c`, one en
 ### 4.17 The web worker engine on CPU 1 (v10.42)
 
 `ap_loop` calls `wk_ap_turn()` (`apps/internet/webwork.c`) after each scheduling round. On CPU 1 only, and only while the browser has workers there, it runs one turn of the worker engine in kernel mode without the big kernel lock, on its own 4 MiB stack, with its own memory arena; it shares nothing with CPU 0 except two lock-free message rings. A turn handles messages for up to 25 ms and then returns, so Linux programs on CPU 1 still get their time slices; a page message wakes CPU 1 with `smp_kick(1)`, and a worker timer is checked at the next tick. An exception inside the worker engine on CPU 1 goes to `wk_fault_redirect`, which is checked before `web_fault_redirect` and only matches while CPU 1 is inside a worker turn. Section 13.64 has the details.
+
+### 4.18 Waking jobs and the lock statistics (v10.72)
+
+Blocked Linux jobs no longer depend on the 100 Hz tick alone. `jc_kick_waiters` (`core/proc/jobs_parts/03_segv_str.c`) marks waiting jobs runnable after events and sends `IPI_RESCHED` to idle processors, including processor 0 while it sleeps in the desktop loop (`g_bsp_idle`). Each job has a nanosecond deadline `wdl` for poll, futex and sleep waits; the desktop loop arms the local APIC one-shot timer (`hr_wake_at`) for the nearest one (`jc_next_wdl`). Details in section 6.33.
+
+`bkl_lock` counts contended acquisitions and the TSC cycles spent spinning per processor (`g_bklc`, `g_bklw`) and `bkl_unlock` the longest hold (`g_bklh`); `lxps` prints them as `lat: bkl cpu N ...` and resets the longest hold. The desktop loop calls `bkl_yield()` at several points and inside long pixel copies so a Linux system call on another processor waits for one stage, not for a whole loop pass.
 
 ## Part 5: Processes, scheduling, signals and the native system-call ABI
 
@@ -5216,6 +5726,24 @@ All kernel code still runs under the big kernel lock (section 4.11), so two thre
 - `fork` clears both fields in the child; `execve` keeps them, as Linux does.
 - The default action of SIGALRM ends the process ("Alarm clock" in the shell).
 
+### 5.17 Priorities and fair time sharing (v10.78)
+
+Every job (`struct jproc`) has `nice` (-20..19), `policy` (0 normal, 1 FIFO, 2 round robin, 3 batch, 5 idle), `rtprio` (1-99 for FIFO and round robin), `vrt` (virtual run time) and `runns` (nanoseconds of processor time).
+
+Picking (`jc_pick`, under the big kernel lock, on every processor):
+
+1. Runnable FIFO and round-robin jobs come first, highest `rtprio` wins; every 20th pick on a processor ignores the real-time policies, so normal jobs keep at least about 5% even next to busy real-time jobs.
+2. Otherwise the runnable job with the smallest `vrt` wins. Ties go to the next job after the last one picked, so equal jobs take turns.
+3. A job that slept, or a new job, never counts below `g_min_vrt` minus 6 ms. Short sleepers (programs waiting for input or sound) are picked soon after they wake but cannot bank time while asleep. `g_min_vrt` only grows, and never past the smallest `vrt` of a job running on another processor. `jc_runnable` (which also ticks interval timers) is only called for jobs that could win, to keep the pick short.
+
+Accounting: after a job runs, `jc_enter` adds the time it ran (`hr_ns`) to `runns`, and time x 1024 / weight to `vrt`. The weights are Linux's table (nice 0 = 1024, each step about 25%, nice -20 = 88761, nice 19 = 15); SCHED_IDLE uses weight 3. New jobs start at `g_min_vrt`; `fork` and `clone` copy the parent's values.
+
+Automatic boosts (`jc_boost`): a program that has the ALSA playback device open counts as nice -10, and the X server and its helpers (Xvfb, Xorg, nvxwm, nvx-xinput, only when run by root) as nice -5, so sound and the Linux desktop keep running smoothly next to busy programs. On the boot processor, where the NoovexOS desktop loop shares time with jobs, jobs get 10 ms instead of 20 ms while mouse or keyboard input is waiting (`jc_timer`, `jc_run`).
+
+System calls: `getpriority`/`setpriority` (process, process group, user; non-root users may only raise nice, and only for their own programs), `sched_setscheduler`, `sched_getscheduler`, `sched_setparam`, `sched_getparam`, `sched_get_priority_max/min`, `sched_rr_get_interval` (20 ms), `sched_setattr`/`sched_getattr` (flags KEEP_POLICY 0x08 and KEEP_PARAMS 0x10; nice only for the fair policies). FIFO and round robin need root. Leaving a real-time or idle policy moves `vrt` up to `g_min_vrt`. `setpriority` on a process group or user changes every allowed match and returns the last error. `/proc/<pid>/stat` shows priority, nice, real-time priority and policy, and the state letter is now R, S, T or Z. Task Manager has a Priority button for a selected program (Normal, Below normal, Low, High).
+
+Test: `schedtest` (QEMU group of `check.py`) checks the system calls and runs as many busy programs at nice 0 as at nice 10 (one more of each than there are processors), expecting the nice 0 ones to do clearly more work.
+
 ## Part 6: Linux compatibility, libc and porting applications
 
 NoovexOS 64 runs two kinds of user programs side by side:
@@ -5367,6 +5895,7 @@ Only `LX_DIRDEV` fds (`-ENOTDIR` otherwise). Each record is a `linux_dirent64`: 
 | `0xC0045006` / `0xC0045003` | SNDCTL_DSP_CHANNELS / STEREO | dsp | 2 / 1 |
 | `0x8010500C` | SNDCTL_DSP_GETOSPACE | dsp | `{free/4096, 32, 4096, free}` from `g_snd.free_bytes()` |
 | `0xC004500A` | SNDCTL_DSP_SETFRAGMENT | dsp | no-op |
+| `0x8910`-`0x8942` | SIOCGIFNAME, SIOCGIFINDEX, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR, SIOCGIFNETMASK, SIOCGIFBRDADDR, SIOCGIFHWADDR, SIOCGIFMTU, SIOCGIFTXQLEN | any socket (dev 14 or 18) | interface data from `lxs_ifinfo` (section 9.7.8); the matching set requests are EPERM (v10.66) |
 | `0x80084E50` | NoovexOS: pointer position | `/dev/input/mice` (dev 10) | two `int`s: the desktop pointer `mx`, `my` (v10.07, used by the NetSurf surface) |
 
 Any other request on the tty or dsp is `-EINVAL`; on any other device it is `-ENOTTY` (this is what makes `isatty()` false for files). The request is cut to 32 bits first (`req=(u32)req`), like Linux, because musl passes it as a sign-extended `int`; before v10.07 requests with bit 31 set never matched from musl programs.
@@ -5415,7 +5944,7 @@ static long lx_clone(struct sysregs* r,u64 flags,u64 stack,u64 ptid,u64 ctid,u64
 
 With `CLONE_THREAD`, `clone` creates a thread that shares the address space, descriptors and signal handlers (section 5.15). Without it, `clone` forks: `CLONE_VM` and `CLONE_VFORK` are accepted but the child gets a copy-on-write copy from `vm_clone_user`; a child stack, `CLONE_SETTLS`, `CLONE_CHILD_CLEARTID` and `CLONE_PARENT_SETTID` are honoured. `fork` (57) and `vfork` (58) are `clone(0)`. `execve` (`lx_execve`) copies up to `XA_MAX` = 32 argv and 32 envp strings into 2048-byte buffers (`XA_CAP`), rejects names over 63 characters or containing spaces, resolves the program with `jc_find_prog` (6.6) and calls `jc_exec`, which frees the old address space, closes close-on-exec fds, resets caught signal handlers, `fsbase`, `brk` and the mmap cursor. `wait4` supports `WNOHANG|WUNTRACED|WCONTINUED` (`opts&0xB`) and zero-fills `rusage`; with no matching child it is `-ECHILD`. `exit`/`exit_group` store `(code&0xFF)<<8`.
 
-Signals. The kernel keeps signals 1-31 in 32-bit masks where bit *s* is signal *s*; Linux uses bit *s-1*. `lx_k2l` (`k>>1`) and `lx_l2k` (`l<<1`) convert. `rt_sigaction` reads/writes the 32-byte kernel `sigaction` (`handler, flags, restorer, mask`), keeps `SA_RESTORER` (`0x04000000`) restorer addresses, refuses SIGKILL/SIGSTOP, and silently accepts real-time signals 32-64 without effect (`kill` with signal at least 32 also returns 0). `jc_push_handler` builds the frame: a copy of `regs_pt` plus the saved mask, then the restorer address as return address; with `SA_SIGINFO` (flag 4) a 128-byte `siginfo` containing only `si_signo` is passed in `rsi`. `rt_sigreturn` (`lx_sigreturn`) reads that frame from the user `rsp`, forces user segments and sanitises `rflags`, and kills the process with SIGSEGV if the frame or the return `rip` is outside the user window. `rt_sigsuspend` (130) swaps the mask and sleeps; `sigaltstack` installs a per-thread alternate stack (see Signal frames above). `alarm`, `setitimer` and `getitimer` work for `ITIMER_REAL` (section 5.16). `tgkill` and `tkill` send a signal to one thread; `kill` sends it to the process, and the kernel picks a thread that does not block it (section 5.15). `futex` is described in section 5.15.
+Signals. Since v10.66 the kernel keeps signals 1-64 in 64-bit masks (`sigpend`, `sigmask`, `sigamask[65]` in `struct jproc`) where bit *s* is signal *s* and signal 64 uses bit 0 (`SB(s)` in `jobs.h`); Linux uses bit *s-1*. `sig_k2l` and `sig_l2k` convert, `lx_k2l`/`lx_l2k` wrap them. `rt_sigaction` reads/writes the 32-byte kernel `sigaction` (`handler, flags, restorer, mask`), keeps `SA_RESTORER` (`0x04000000`) restorer addresses and refuses SIGKILL/SIGSTOP; it works for every signal up to 64. Signals 1-31 are only pending or not; real-time signals 32-64 are queued: each thread has `rtq[32]` entries of signal, `si_code`, sender pid and uid and the `sigval`, delivered lowest signal first and in send order within one signal (`jc_sig_first`, `jc_sig_take`). `sigqueue`/`rt_sigqueueinfo` (129) and `pthread_sigqueue`/`rt_tgsigqueueinfo` (297) carry the value; sending a positive `si_code` to another process is EPERM as on Linux. Setting a signal to SIG_IGN drops its queue. `jc_push_lx` fills `si_code`, `si_pid`, `si_uid` and `si_value` in the frame's `siginfo`; `sigtimedwait` (128) and signalfd return the same fields. `rt_sigreturn` (`lx_sigreturn`) reads the frame from the user `rsp`, forces user segments and sanitises `rflags`, and kills the process with SIGSEGV if the frame or the return `rip` is outside the user window. `rt_sigsuspend` (130) swaps the mask and sleeps; `sigaltstack` installs a per-thread alternate stack (see Signal frames above). `alarm`, `setitimer` and `getitimer` work for `ITIMER_REAL` (section 5.16). `tgkill` and `tkill` send a signal to one thread; `kill` sends it to the process, and the kernel picks a thread that does not block it (section 5.15). `futex` is described in section 5.15.
 
 Identity and system info. `uname` (`lx_uname`) returns `NoovexOS`, the hostname, release `8.97`, version `NoovexOS 64 v8.97`, machine `x86_64`, domain `(none)`. `sched_getaffinity` (204) returns an 8-byte mask with one bit per online core (`g_cores_online` when `g_smp_on`), which is what musl's `sysconf(_SC_NPROCESSORS_ONLN)` counts; `sched_setaffinity` is a no-op. `getcpu` (309) returns `cpu_id()` and node 0. `getrlimit`/`prlimit64` report `RLIMIT_STACK` = 1 MiB and `RLIMIT_NOFILE` = 256, everything else unlimited. `arch_prctl` supports `ARCH_SET_FS` (0x1002, also loads the MSR through `cpu_set_fsbase` and `lsys_fsbase`) and `ARCH_GET_FS` (0x1003), this is musl's TLS. `getrandom`, `/dev/random` and `/dev/urandom` return output of the kernel's ChaCha20 generator `csprng_bytes` (`lib/crypto/nvxcrypto2.c`), seeded from RDSEED or RDRAND when the CPU has them and from TSC timing jitter. Before v8.97 they were an xorshift or LCG sequence, which is not good enough for TLS keys; the seeding code also used RDSEED without checking CPUID, which faulted on CPUs without it.
 
@@ -5450,7 +5979,7 @@ Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else re
 | 24 | sched_yield | `jc_yield_sys` |
 | 25 | mremap | `-ENOMEM` |
 | 26 | msync | 0 |
-| 27 | mincore | ENOSYS |
+| 27 | mincore | page present bit from the page tables; ENOMEM for unmapped pages (v10.82) |
 | 28 | madvise | 0 |
 | 32 | dup | lowest free fd |
 | 33 | dup2 | `lx_dup3(...,-1)` |
@@ -5460,17 +5989,17 @@ Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else re
 | 37 | alarm | one-shot `ITIMER_REAL`, returns the seconds left on the old timer |
 | 39 | getpid | |
 | 40 | sendfile | `lx_sendfile` |
-| 41 | socket | `lx_socket`: `AF_INET` TCP/UDP to fd on device 14; other families `-97` EAFNOSUPPORT |
+| 41 | socket | `lx_socket`: `AF_INET` and `AF_INET6` TCP/UDP and `AF_INET` ping sockets (`IPPROTO_ICMP`) on device 14; `AF_NETLINK` (`NETLINK_ROUTE`, `NETLINK_KOBJECT_UEVENT`) also on device 14; `AF_UNIX` stream, seqpacket and datagram on device 18; other families `-97` EAFNOSUPPORT |
 | 42 | connect | `lx_connect` to `lxs_connect` (blocking, or EINPROGRESS) |
 | 43 | accept | `lx_accept` (section 9.7.4) |
 | 44 / 45 | sendto / recvfrom | `lx_sendto` / `lx_recvfrom`; `MSG_PEEK`, `MSG_DONTWAIT`, `MSG_NOSIGNAL` |
-| 46 / 47 | sendmsg / recvmsg | `lx_msg`, at most 1024 iovecs, 64 KiB per call, no control data |
+| 46 / 47 | sendmsg / recvmsg | at most 1024 iovecs, 64 KiB per call; `AF_UNIX` carries `SCM_RIGHTS` and `SCM_CREDENTIALS`; `MSG_TRUNC` for datagrams |
 | 48 | shutdown | `lxs_shutdown` |
-| 49 | bind | `lxs_bind` (port only) |
+| 49 | bind | `lxs_bind`: the port; the address must be local, `INADDR_ANY`, broadcast or multicast (else EADDRNOTAVAIL); `SO_REUSEADDR` and `SO_REUSEPORT` rules as on Linux |
 | 50 | listen | `lxs_listen`, backlog capped at 32 |
 | 51 / 52 | getsockname / getpeername | `lx_sockname` |
-| 53 | socketpair | EOPNOTSUPP |
-| 54 / 55 | setsockopt / getsockopt | set ignored; get `SO_ERROR`, `SO_TYPE`, buffer sizes |
+| 53 | socketpair | `AF_UNIX` only |
+| 54 / 55 | setsockopt / getsockopt | kept per socket: `SO_REUSEADDR`, `SO_REUSEPORT`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, `TCP_NODELAY`, `TCP_KEEPIDLE/INTVL/CNT`, `IPV6_V6ONLY`; read only: `SO_ERROR`, `SO_TYPE`, `SO_DOMAIN`, `SO_PROTOCOL`, `SO_ACCEPTCONN`, buffer sizes, `TCP_MAXSEG`, `TCP_INFO` (state); `AF_UNIX`: `SO_PEERCRED`, `SO_PASSCRED` (section 9.7.5) |
 | 56 | clone | `lx_clone`: threads with `CLONE_THREAD`, otherwise fork |
 | 57 / 58 | fork / vfork | `lx_clone(r,0,...)` |
 | 59 | execve | `lx_execve` |
@@ -5514,19 +6043,19 @@ Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else re
 | 121 / 124 | getpgid / getsid | |
 | 125 / 126 | capget / capset | all capabilities for root, none otherwise; capset accepted for root |
 | 127 | rt_sigpending | pending & blocked |
-| 128 | rt_sigtimedwait | waits for a signal of the set, with time limit (v10.43) |
-| 129 | rt_sigqueueinfo | like kill (v10.43) |
+| 128 | rt_sigtimedwait | waits for a signal of the set, with time limit; full `siginfo` with code, pid, uid and value (v10.66) |
+| 129 | rt_sigqueueinfo | `sigqueue`: like kill, with `si_code` and `sigval` (v10.66) |
 | 130 | rt_sigsuspend | |
 | 131 | sigaltstack | per-thread alternate signal stack (`lx_sigaltstack`) |
 | 132 | utime | times argument ignored |
-| 133 | mknod | EPERM |
+| 133 | mknod | regular files and FIFOs; device nodes and sockets EPERM (v10.82, section 6.39) |
 | 135 | personality | 0 |
 | 137 / 138 | statfs / fstatfs | `ux_statfs("/")` |
 | 140 / 141 | getpriority / setpriority | 20 / 0 |
 | 142-147 | sched_setparam ... sched_get_priority_min | 0 (143 writes priority 0) |
 | 148 | sched_rr_get_interval | ENOSYS |
 | 149-152 | mlock, munlock, mlockall, munlockall | 0 |
-| 157 | prctl | PR_SET_NAME (15) / PR_GET_NAME (16) on `p->cmd`, else EINVAL |
+| 157 | prctl | PR_SET_NAME (15) / PR_GET_NAME (16) on `p->cmd`; PR_GET/SET_SECCOMP (21/22) and PR_GET/SET_NO_NEW_PRIVS (38/39) since v10.82; else EINVAL |
 | 158 | arch_prctl | ARCH_SET_FS / ARCH_GET_FS |
 | 160 | setrlimit | 0, ignored |
 | 161 | chroot | EPERM |
@@ -5535,13 +6064,13 @@ Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else re
 | 169 | reboot | EPERM |
 | 170 | sethostname | root, at most 31 chars |
 | 186 | gettid | the thread ID |
-| 191-199 | getxattr ... fremovexattr | ENOTSUP (188-190 setxattr family: ENOSYS) |
+| 188-199 | setxattr ... fremovexattr | ENOTSUP (the setxattr family since v10.82; ENOSYS before) |
 | 200 / 234 | tkill / tgkill | signal one thread (`jc_signal_thread`) |
 | 201 | time | |
-| 222-226 | timer_create, timer_settime, timer_gettime, timer_getoverrun, timer_delete | POSIX timers with SIGEV_SIGNAL, SIGEV_NONE and SIGEV_THREAD_ID (signals 1-31), absolute and interval times, overrun count (section 6.22) |
+| 222-226 | timer_create, timer_settime, timer_gettime, timer_getoverrun, timer_delete | POSIX timers with SIGEV_SIGNAL, SIGEV_NONE and SIGEV_THREAD_ID (signals 1-64, so also glibc and musl `SIGEV_THREAD`), absolute and interval times, overrun count (section 6.22) |
 | 227 | clock_settime | EPERM |
 | 235 / 261 | utimes / futimesat | seconds of both times |
-| 247 | waitid | P_ALL, P_PID, P_PGID with WEXITED, WSTOPPED, WCONTINUED, WNOHANG; fills `siginfo_t` (WNOWAIT not supported) |
+| 247 | waitid | P_ALL, P_PID, P_PGID and P_PIDFD (v10.82) with WEXITED, WSTOPPED, WCONTINUED, WNOHANG; fills `siginfo_t` (WNOWAIT not supported) |
 | 251 / 252 | ioprio_set / ioprio_get | 0 |
 | 253 / 294 | inotify_init / inotify_init1 | section 6.22 |
 | 254 / 255 | inotify_add_watch / inotify_rm_watch | section 6.22 |
@@ -5568,7 +6097,7 @@ Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else re
 | 288 | accept4 | `lx_accept` with `SOCK_NONBLOCK` and `SOCK_CLOEXEC` |
 | 292 / 293 | dup3 / pipe2 | O_CLOEXEC, O_NONBLOCK |
 | 295 / 296 / 327 / 328 | preadv / pwritev / preadv2 / pwritev2 | `lx_prw` per iovec; offset -1 in the v2 forms uses the file position |
-| 297 | rt_tgsigqueueinfo | like tgkill (v10.43) |
+| 297 | rt_tgsigqueueinfo | `pthread_sigqueue`: like tgkill, with `si_code` and `sigval` (v10.66) |
 | 299 / 307 | recvmmsg / sendmmsg | one `lx_msg` per message; after the first message the rest do not wait |
 | 302 | prlimit64 | own pid only, get only |
 | 277 / 306 | sync_file_range / syncfs | 0 for a valid fd |
@@ -5579,7 +6108,7 @@ Every `case` in `lx_dispatch()`; about 230 numbers are handled, anything else re
 | 334 | rseq | ENOSYS (musl falls back) |
 | 436 | close_range | `CLOSE_RANGE_CLOEXEC` (4) supported |
 
-Not present (ENOSYS): real-time signals (32-64), `SIGEV_THREAD` timers (glibc uses signal 32 for them), `copy_file_range`, `io_uring`, `clone3` (glibc falls back to `clone`), process-shared futexes across different processes, `ITIMER_VIRTUAL`/`ITIMER_PROF` expiry.
+Not present (ENOSYS): `copy_file_range`, `io_uring`, `clone3` (glibc falls back to `clone`), process-shared futexes across different processes, `ITIMER_VIRTUAL`/`ITIMER_PROF` expiry.
 
 ### 6.5 The C libraries
 
@@ -5803,6 +6332,8 @@ While a program has `/dev/fb0` open the desktop or console is not drawn (`g_fb0_
 
 `usr/musl/dyntest.c` (v8.97) is linked dynamically. It checks that it was started through the dynamic linker (`AT_BASE`), `dl_iterate_phdr`, `malloc` and threads in the shared libc, then writes a small library (`libnvxdemo.so`, embedded in the program) to `/tmp`, loads it with `dlopen`, looks up functions and a variable with `dlsym`, calls into it, checks that its constructor ran and that it can call back into libc, and closes it.
 
+`usr/musl/abi2test.c` (v10.66), `abi2test [rt|un|v6|opt|nl|icmp]` checks the additions of v10.66: queued real-time signals with values, `sigtimedwait`, signalfd, timers with `SIGEV_THREAD`, `pthread_sigqueue`, Unix datagram sockets, `SO_PEERCRED`/`SCM_CREDENTIALS`/`SCM_RIGHTS`, IPv6 sockets over loopback, socket options and `SO_RCVTIMEO`, `getifaddrs`/`if_nameindex`/netlink and ICMP ping sockets. It prints `abi2: PASS ...`/`abi2: FAIL ...` and `abi2: done N passed, M failed, K skipped`. On a real Linux host the IPv6 group needs an IPv6 loopback and the ping group is skipped when `ping_group_range` does not include the user.
+
 `usr/musl/nettest.c`, `nettest [host]` (default `noovex.test`) exercises the Linux socket layer against the test peer in `tools/tests/net/netpeer.py`: `getaddrinfo`, a 300 KB HTTP download checked byte by byte, a 100 KB TCP echo with `shutdown(SHUT_WR)`, UDP `sendto`/`poll`/`recvfrom`, a non-blocking `connect` + `poll` + `SO_ERROR`, `ECONNREFUSED` on a closed port and `EAFNOSUPPORT` for IPv6. It prints `nettest: PASS` or `nettest: FAIL` to stdout and `/dev/kmsg`. `tools/check.py --only net` runs it in QEMU.
 
 Host harness. `tools/tests/linux/hh.c` compiles the whole kernel as a Linux program (`hk_glue.c` does `#include "kernel64.c"`), traps user `syscall`/`int 0x80` with seccomp and feeds them to `linux_syscall`/`syscall_dispatch`. It runs mhello, legacy programs, every compressor round trip, the SQLite sequence, `smptest 3 3 200000`, `musltest` (requires at least 80 `ok`), optionally `lxfuzz.c` (random system calls with hostile arguments), and then checks that no frames, vfile slots or pipes leaked. Arguments with spaces are passed with `\037` exactly as the shell does.
@@ -5993,8 +6524,7 @@ Things to know:
 | Names rejected | 63 characters per component, 256 per path, `execve` path at most 63 and no spaces | shorten paths |
 | Writes to a mapped file are lost | file `mmap` is a private copy, `prot` ignored | use `write`/`pwrite` |
 | Box-drawing or other non-ASCII characters show as `-`, `\|`, `+` or `?` | the console font is ASCII; `vt_out` maps common UTF-8 symbols to ASCII | use ASCII where it matters |
-| IPv6-only code fails | `socket(AF_INET6)` to EAFNOSUPPORT | use `AF_INET` or `getaddrinfo` with `AF_UNSPEC` (musl falls back) |
-| Real-time signals have no effect | signals at least 32 are accepted and ignored | use signals 1-31 |
+| IPv6 to a real IPv6 address fails | `AF_INET6` sockets work only for `::`, `::1` and `::ffff:a.b.c.d` (section 9.7.6); other addresses give ENETUNREACH | use `getaddrinfo` with `AF_UNSPEC` |
 | ncurses programs cannot find a terminal description | there is no terminfo database in the image | build ncurses with `--with-fallbacks=xterm-256color`, or write escape sequences directly as kilo does |
 | A native program dies with SIGSYS | it executed `syscall`; `jc_syscall` rejects `int 0x80` once `p->lx` is set | do not mix ABIs in one process |
 | Kernel build fails at `[6/6]` | the flat image exceeds 8 MiB | run the program from disk instead of embedding it |
@@ -6236,6 +6766,7 @@ glibc 2.44 asks `isatty` with `TCGETS2` (`0x802C542A`, a 44-byte `termios2`), no
 | `apt install [-y] PKG...` | resolves `Pre-Depends` and `Depends`, prints the plan, asks when extra packages are needed, downloads each `.deb`, checks size and SHA256 against the index, unpacks it and marks it installed |
 | `apt reinstall`, `remove`, `purge`, `autoremove`, `upgrade` | as on Debian; `purge` is `remove` |
 | `apt search WORD`, `show PKG`, `list [--installed|--upgradable] [PATTERN]` | read the saved lists |
+| `apt install discord`, `code`, `spotify` | programs that are not in Debian (v10.68): Discord and Visual Studio Code are downloaded from their makers' download links into `/var/cache/apt/archives` and installed like a local file; Spotify gets its package source in `/etc/apt/sources.list.d/spotify.list`, then `spotify-client` is installed |
 | `dpkg -i FILE.deb` | installs a local package (from the file system or the FAT boot disk); dependencies are not fetched |
 | `dpkg -l`, `-L PKG`, `-s PKG`, `-r PKG`, `--print-architecture` | list, files, status, remove, `amd64` |
 
@@ -6411,11 +6942,11 @@ All four live in `sys/linux/linux.c` next to `eventfd` and `timerfd`. The test p
 
 **inotify.** `inotify_init1` makes a descriptor of device 22 (`LX_INOFD`) with up to 64 watches and an 8 KiB event queue; 16 such descriptors can exist. Events come from the Linux system calls themselves: while any inotify descriptor is open, `lx_dispatch_ino` wraps `lx_dispatch` and, after a successful call, reports IN_CREATE (open with O_CREAT of a new file, mkdir, link, symlink), IN_DELETE (unlink, rmdir), IN_MOVED_FROM and IN_MOVED_TO with the same cookie (rename), IN_ATTRIB (chmod, chown, utime), IN_MODIFY (write, truncate, open with O_TRUNC) and IN_CLOSE_WRITE or IN_CLOSE_NOWRITE (close). A watch on the file itself also gets IN_DELETE_SELF or IN_MOVE_SELF, followed by IN_IGNORED. Repeated IN_MODIFY events for the same name are merged, a full queue ends with one IN_Q_OVERFLOW, and `read` returns whole events only (EINVAL if the buffer is too small for the first one). Changes made by the native NoovexOS apps (Files, the Editor) do not produce events yet.
 
-**signalfd.** Device 23 (`LX_SIGFD`); the mask is stored per descriptor and can be changed with `signalfd(fd, ...)`. `read` takes the pending signals of the calling thread and of its process that are in the mask (lowest number first) and returns one 128-byte `signalfd_siginfo` per signal with `ssi_signo`, `ssi_code` and `ssi_uid`; `poll` and `epoll` report the descriptor readable while such a signal is pending. As on Linux, the program blocks the signals with `sigprocmask`, otherwise they are delivered normally first.
+**signalfd.** Device 23 (`LX_SIGFD`); the mask is stored per descriptor and can be changed with `signalfd(fd, ...)`. `read` takes the pending signals of the calling thread and of its process that are in the mask (lowest number first) and returns one 128-byte `signalfd_siginfo` per signal with `ssi_signo`, `ssi_code`, `ssi_pid`, `ssi_uid` and the `sigval` (`ssi_int`, `ssi_ptr`), and for timers `ssi_tid` and `ssi_overrun`; real-time signals come one queue entry per read record; `poll` and `epoll` report the descriptor readable while such a signal is pending. As on Linux, the program blocks the signals with `sigprocmask`, otherwise they are delivered normally first.
 
 **Locks.** `flock` and `fcntl` record locks are real advisory locks in a table of 256 ranges (`g_lxlk`), keyed by the file (its file slot, or a hash of the path for the read-only Linux files). `flock` locks belong to the open file and end when its last descriptor closes (`lx_lock_vfclose`, called from `vf_unref`); POSIX locks belong to the process and end when it closes any descriptor of the file or exits; open-file-description locks (F_OFD_*) belong to the open file. Ranges are split on unlock as on Linux, F_GETLK reports the first conflicting lock and its process, and the waiting forms (LOCK_EX without LOCK_NB, F_SETLKW) sleep until the lock is free or a signal arrives (EINTR). There is no deadlock detection.
 
-**POSIX timers.** `timer_create` keeps up to 64 timers (`g_pt`) for CLOCK_REALTIME, CLOCK_MONOTONIC, the boot-time clocks and the CPU-time clocks (which count as monotonic). The scheduler checks them in `jc_itimer` (`lx_ptimer_tick`), so they have the 10 ms resolution of the scheduler tick. On expiry the signal goes to the process (SIGEV_SIGNAL) or to one thread (SIGEV_THREAD_ID) with `si_code` SI_TIMER; SIGEV_NONE timers only count. Signals 32-64 are refused with EINVAL, so glibc's SIGEV_THREAD form fails cleanly (it uses signal 32).
+**POSIX timers.** `timer_create` keeps up to 64 timers (`g_pt`) for CLOCK_REALTIME, CLOCK_MONOTONIC, the boot-time clocks and the CPU-time clocks (which count as monotonic). The scheduler checks them in `jc_itimer` (`lx_ptimer_tick`), so they have the 10 ms resolution of the scheduler tick. On expiry the signal goes to the process (SIGEV_SIGNAL) or to one thread (SIGEV_THREAD_ID) with `si_code` SI_TIMER; SIGEV_NONE timers only count. Since v10.66 signals 32-64 work too and carry `sigev_value`; while a timer's real-time signal is still queued, further expiries only raise its `si_overrun` instead of queueing more signals. So the SIGEV_THREAD form of glibc and musl (a helper thread waiting for a real-time signal) works.
 
 ### 6.23 GTK 3 programs (v10.42)
 
@@ -6514,6 +7045,367 @@ Software that goes into the Linux files used to be added by more lines in `build
 | `python-pip`, `python-web`, `python-data` | python | section 6.17a |
 
 Profiles: `noovexos.profile` (the release: all four ports installed) and `noovexos-lite.profile` (pip installed; web and data libraries as apt packages, 2.8 MB and 17.6 MB). Build another variant with `NVX_PROFILE=distro/noovexos-lite.profile sh build.sh`.
+
+### 6.30 Faster program start: zstd blocks and a shared page cache (v10.62)
+
+Programs from the Linux files started slowly for three reasons, found by reading the code and confirmed by timing in the emulator:
+
+1. Every block of the Linux files was xz at the strongest setting. The first touch of a file unpacked its whole 8 MB block (or the whole file, when the file is larger) at roughly 30-100 MB/s on one laptop core.
+2. `lx_mmap` copied every page of a mapped file at map time, one 4 KB `read` by path per page.
+3. Every process got its own copy of every library page; nothing was shared.
+
+What changed:
+
+| Part | Now | Where |
+|---|---|---|
+| Blocks | ELF files (programs and libraries) are packed in zstd blocks (block type 3, level 19, `NVX_SR_ZSTD=0` keeps xz; without `libzstd.so.1` on the build machine it falls back to xz with a warning); data files stay xz. zstd unpacks about 10-15 times faster (measured on the build machine: 8 MB of `libmergedlo.so` in 0.01 s against 0.11 s for xz). The Linux files grow from 210 to 233 MB, inside the 256 MiB slot. Blocks are compressed in parallel. | `tools/mksysroot.py`, `fs/vfs/sysroot.c` `blk_get`, `lib/compress/unpack.c` `zstk_decode_into` |
+| Page cache | Each file of the Linux files gets a handle (`sr_pcf`: entry, page count, one frame per page). A page is copied out of the unpacked data the first time any process needs it and kept with one reference; every process that maps it gets the same frame. Removing an apt layer drops its pages. | `fs/vfs/sysroot.c` `sysroot_pc_handle`, `sysroot_pc_handle_ptr`, `sysroot_pc_page`, `sr_pc_drop` |
+| On-demand pages | `mmap` of a Linux-files file writes a marker into each page table entry instead of copying: not present, `PTE_LAZY` + `PTE_FILE` (bit 8), the page number in bits 12-31, the handle in bits 32-51, the protection bits in 52, 53 and 63 (`vm_file_marker`). The first access maps the cache frame read-only with `PTE_COW`; a write copies it (the existing copy-on-write path), so the cache frame is never written. Fork copies markers, `mprotect` keeps them, `munmap` clears them. | `include/nvx/mem/pmm_vmm.h`, `mem/pmm_vmm.c` `vm_fault_user`, `sys/linux/linux_parts/05_lx_mmap.c`, `core/proc/jobs_parts/01_jc_resume.c`, `sys/linux/linux_parts/04_lx_wait_deadline.c` |
+| Program start | `exec` maps whole pages of a program and of `ld.so` the same way when the file comes from the Linux files and the segment's file offset and address agree in the low 12 bits; partial pages are still copied. | `core/proc/elf.c` `elf_map_segs` |
+| Other files | Files outside the Linux files (the writable disk) are read in 256 KB pieces instead of one 4 KB read per page. | `sys/linux/linux_parts/05_lx_mmap.c` |
+| Memory | When fewer than 8192 frames (32 MB) are free, or a frame cannot be allocated, cache pages that no process maps any more are given back (`sysroot_pc_reclaim`); a later access reads them again. A cache page that cannot be allocated ends the program as out of memory, not as a crash. | `fs/vfs/sysroot.c`, `mem/pmm_vmm.c` |
+| Removing a package | Before an apt layer is removed or replaced, every page that a running program has mapped but not yet touched is read into the cache (`jc_file_markers` walks the page tables), so running programs keep working; the handle then stops reading new pages. | `fs/vfs/sysroot.c` `sr_pc_drop`, `core/proc/jobs_parts/01_jc_resume.c` |
+| Shared writable maps | `MAP_SHARED` with `PROT_WRITE` on a Linux-files file returns `EACCES` (the files are read-only), as on Linux. | `sys/linux/linux_parts/05_lx_mmap.c` |
+| Numbers | `pagecache` in the Terminal: files with cached pages, pages read and reused, page faults from files, mapped files, program pages mapped on demand or copied, and how much was unpacked in how long. | `shell/commands_parts/02_battery_cmd.c` |
+
+Measured in QEMU without hardware acceleration (UEFI, 4 GB, 2 processors), v10.61 against v10.62, first run after start ("cold") and second run ("warm"):
+
+| Command | v10.61 cold | v10.62 cold | v10.61 warm | v10.62 warm |
+|---|---|---|---|---|
+| `python3 -c 1` | 5.71 s | 3.24 s | 1.21 s | 0.56 s |
+| `python3 -c "import numpy"` | 11.12 s | 4.99 s | 4.86 s | 1.81 s |
+| LibreOffice `soffice.bin --version` until its library check | 12.25 s | 2.63 s | 1.70 s | 0.06 s |
+
+Also run on the release build: 20 Python starts in a row, three numpy+pandas programs at the same time, `python3 -m venv` with pip inside it, LibreOffice `--version` (24.2.7.2), and six numpy+pandas starts with 1.5 GB of memory on a legacy BIOS start.
+
+Limits: unpacked blocks stay in memory next to the cached pages (only cache pages are given back under memory pressure, not unpacked blocks); a page a system call reads from a writable-by-default program segment is copied (the user-memory check breaks copy-on-write for such pages); a file larger than a block is still unpacked as a whole on its first use; Firefox and Chromium could not be measured on the build machine (no download access to Debian or Mozilla), but Firefox is installed through apt into an uncompressed layer, so it gains from the page cache and on-demand pages, not from zstd.
+
+### 6.31 Electron programs and Discord (v10.67)
+
+Electron programs (Discord, Vesktop, VSCodium) now open their windows and draw their pages. Three things stopped them:
+
+| Problem | Cause | Fix |
+|---|---|---|
+| The main process stopped on a deliberate trap (`int3; ud2`) 93 MB into the program | `nvx-xrun` started every Chromium-based program with `--single-process`; Electron then sets up its garbage collector (`cppgc::InitializeProcess`) a second time for the page, which is a fatal check | Electron programs run in Chromium's normal multi-process mode; plain Chromium keeps `--single-process` |
+| In multi-process mode Mojo stopped with `Check failed: . : Invalid argument (22)` (`channel_linux.cc`) | Chromium checks that `eventfd2(0, ~0)` fails with EINVAL; NoovexOS accepted any flags and returned a descriptor | `eventfd2`, `epoll_create1`, `timerfd_create` and `pipe2` refuse unknown flags |
+| The window stayed empty and the GPU process was killed after its start-up time limit ("GPU process isn't usable. Goodbye.") | `FIONREAD` on an inotify descriptor returned 0 while `poll` reported it readable, so Chromium's file watcher thread (`inotify_reader`) read 0 bytes in an endless loop in every Chromium process, using up the processors | `FIONREAD` returns the queued bytes for inotify, and the size of the next message for Unix datagram sockets |
+
+How an Electron program is recognized and started:
+
+- `nvx-xrun` treats a Chromium-based program as Electron when its folder has `resources/app.asar`, `resources/app` or `resources/default_app.asar`, or when its start script mentions `updater_bootstrap` (Discord's installer). Flags: `--no-sandbox --disable-gpu --disable-gpu-compositing --password-store=gnome-libsecret --ipc-connection-timeout=120`. They are now put directly after the program name, so a `--` in the program's own arguments (Discord's `--url -- %u`) cannot turn them into plain arguments.
+- `execve` also adds `--no-sandbox` (directly after the program name) when the started program's folder holds `v8_context_snapshot.bin`, `resources.pak` and `resources/app.asar` or `resources/app`, its name does not contain `crashpad` or `sandbox`, and no `--no-sandbox` or `--type=` is given, so an Electron program started by another program or from the Terminal does not stop with "Running as root without --no-sandbox is not supported".
+- Xvfb runs with `-dumbSched`, so it no longer takes a timer signal every 20 ms.
+
+Discord. The package from discord.com (`discord_1.0.168` and later) is a 2 MB installer: `/usr/bin/discord` runs `/usr/share/discord/updater_bootstrap`, which downloads the real program from `updates.discord.com` into `~/.config/discord` and then starts it. For it, NoovexOS now has:
+
+| Piece | What it does |
+|---|---|
+| `libnotify.so.4` (`usr/x11/nvx-libnotify.c`) | the libnotify interface (GObject `NotifyNotification` with its properties and `closed` signal, hints, action callbacks) sending notifications to `nvx-notify` over D-Bus and following the server's `NotificationClosed` and `ActionInvoked` signals; `libnotify4` is listed in `provided.txt`, so `sudo apt install ./discord.deb` finds all dependencies |
+| `xdg-open` | `http` and `https` links open in a new tab of the NoovexOS browser: the script percent-encodes other bytes and writes `nvx-open:<url>` to `/dev/kmsg`; the kernel accepts only `http://` and `https://`, at most one link every 2 s, and the desktop main loop opens it. Other kinds of links (`about:`, `data:`, `file:`) are refused; `xdg-mime`, `xdg-settings`, `xdg-desktop-menu`, `xdg-icon-resource`, `xdg-email`, `xdg-screensaver` and `xdg-desktop-icon` exist as stand-ins that change nothing |
+| `zenity` | progress (the installer's "Downloading Discord" window) and message dialogs become NoovexOS notifications; `--question` answers no |
+| `systemctl` | no service manager: `reload`, `enable`, `daemon-reload` and similar return 0; `start`, `stop` and `restart` fail with a message; `status` returns 4 and `is-active` 3, as for a missing unit |
+| `pgrep`, `pkill` | match `/proc/<pid>/comm` (or the command line with `-f`), with `-x`, `-u`, `-P`, `-n`, `-o`, `-c`, `-l` and signals; used by Discord's setup script. `procps` itself is not counted as installed, so apt can still install the real one |
+| `gschemas.compiled` | GSettings schemas (GTK file chooser and others) so GTK does not fail looking them up |
+
+Tested in the emulator (TCG, 2 cores, 4.5 GB): `sudo apt install ./discord.deb` installs without missing dependencies and its setup script runs; the installer starts, opens its database and makes its TLS connection through the NoovexOS network stack (checked against a local test server, where it stopped at the self-signed certificate as expected); Vesktop 1.6.9 (Electron 45) with a small test page in place of its own code shows text, CSS gradients and SVG, runs the page's JavaScript and reports the page as loaded after about 2.5 minutes in the emulator. Not tested here: the real Discord program (`updates.discord.com` cannot be reached from the build machine), voice and video, and Vesktop's own interface (it downloads its code from GitHub at the first start).
+
+Limits: X programs are drawn above the NoovexOS windows, so a link opened with `xdg-open` appears behind them; there was no tray area for Linux programs until v10.69 (section 6.32); sound goes through ALSA, one program at a time.
+
+### 6.32 Vesktop, app packs, the tray and the file chooser (v10.69)
+
+Vesktop 1.6.9 (Electron 45, GPL-3.0, github.com/Vencord/Vesktop) is the Discord app that comes with NoovexOS. It opens discord.com/app inside Electron and adds Vencord; logging in, servers, messages, notifications, links, sound and the tray work through the pieces below.
+
+How it is built in (`ports/vesktop`, kind `script`):
+
+- `stage.sh` downloads `vesktop_1.6.9_amd64.deb` and the four Vencord release files (`vencordDesktopMain.js`, `vencordDesktopPreload.js`, `vencordDesktopRenderer.js`, `vencordDesktopRenderer.css`) into `build/vesktop` once. The program files go to `build/packs-root/vesktop/opt/Vesktop` (without `chrome-sandbox`); the start menu entry ("Discord (Vesktop)"), icons, the Vencord files (`/usr/share/noovex/seed/vesktop`), `/usr/share/noovex/packs/vesktop` and the start script `/usr/bin/vesktop` go into the Linux files.
+- `/usr/bin/vesktop` runs `nvx-pack vesktop`, copies the Vencord files to `~/.config/vesktop/sessionData/vencordFiles` when they are missing (Vesktop would otherwise fetch them from GitHub's API) and starts `/opt/Vesktop/vesktop`.
+- The Linux files are limited to 256 MiB (the boot loaders load them to 0x20000000-0x30000000) and already use 233 MB, so the 280 MB of program files are an app pack: `build.sh` packs `build/packs-root/<name>` with `tools/mksysroot.py` (all blocks zstd, `NVX_SR_ALLZSTD=1`, so pages unpack fast) into `build/packs/<NAME>.NVS`, and `boot/mkhybrid.py` puts it on the FAT partition as `/PACKS/<NAME>.NVS` (94 MB for Vesktop).
+
+Loading a pack (`core/update.c`):
+
+| Step | What happens |
+|---|---|
+| `nvx-pack <name>` | if the file named in `/usr/share/noovex/packs/<name>` is missing, writes `nvx-pack:<name>` to `/dev/kmsg` and waits up to 120 s for it; `nvx-xrun` runs it before it looks at the program, so the Electron detection sees the real files |
+| `/dev/kmsg` handler (`fs/vfs/vfs.c`) | accepts `[a-z0-9-]` names and sets `g_pack_req` |
+| `pack_poll` (desktop or live main loop) | first frame: toast "Loading the app from the boot disk..."; next frame: `pack_load` |
+| `pack_load` | finds the boot partition like the updater (`up_find`: the USB stick when running live, the system disk when installed; for packs also a NoovexOS partition on the system disk when running live, `up_find_pk`), reads `/PACKS/<NAME>.NVS` into the heap (`upd_boot_read`) and adds it as sysroot layer `pack:<name>`; the freeze watchdog is held meanwhile. 1.3 s in the emulator |
+| no pack on the boot disk (CD, ISO file, old install) | `pack_load2(name,1)` downloads `https://github.com/xAxel12N/NoovexOS-64-bit/releases/download/v<version>/<NAME>.NVS`, then `.../releases/latest/download/<NAME>.NVS` (or `<base>/<NAME>.NVS` from `/etc/pack-url`), checks size and CRC32 from line 2 of `/usr/share/noovex/packs/<name>` and saves it with `pk_save` (grows a USB stick partition with `up_grow` first, skips when there is no room). Release step: upload `build/packs/VESKTOP.NVS` to the GitHub release |
+| state | `/proc/nvxpack`: `busy loading`, `busy downloading`, `ok`, `fail <reason>`; `nvx-pack` polls it |
+| updater | `upd_install` copies `/PACKS/*.NVS` from the downloaded ISO after the new version is written |
+| installer | `upd_put_sysroot_part` loads every pack listed in `/usr/share/noovex/packs` and writes it next to the Linux files on the new boot partition (`up_packs_put`, verified like the Linux files) |
+
+The tray (`apps/x11/xtray.c`, `ports/desktop-scripts/files/usr/bin/nvx-tray`):
+
+- `nvx-tray` (Python, the D-Bus code of `nvx-keyring`) owns `org.kde.StatusNotifierWatcher` on the session bus. `nvx-xrun` starts it before the program and waits for `/tmp/.nvx-tray.ready`, because Electron only creates a tray icon when the watcher already exists.
+- When a program registers an item, `nvx-tray` reads its properties (`Title`, `ToolTip`, `IconPixmap` or a PNG from `IconThemePath`/`IconName`, scaled to 16x16) and its menu (`com.canonical.dbusmenu` `GetLayout`), follows `NewIcon`, `NewTitle`, `LayoutUpdated` and the owner leaving the bus, and writes lines to `/dev/nvxtray` (vfile device 40): `add <slot> <title>\x1f<2048 hex digits ARGB>`, `mnu <slot>\x1f<id>\x1e<label>...` (negative id = disabled, label `-` = separator), `del <slot>`.
+- The kernel keeps up to 6 items. The taskbar draws them left of the system tray (classic bar: left of the CPU and memory graphs; dock: left of the volume button). Left click queues `act <slot>` (StatusNotifierItem `Activate`), right click opens the menu (`open <slot>` makes `nvx-tray` call `AboutToShow` and refresh it) and choosing an entry queues `sel <slot> <id>` (dbusmenu `Event ... "clicked"`). `nvx-tray` reads these lines with `select` (the device reports readable when events are queued); D-Bus calls it makes time out after 5 s.
+
+The file chooser: Chromium's own GTK file chooser never returned in Electron 45 (the main thread waited on a futex; not investigated further). Chromium uses the xdg-desktop-portal instead when `org.freedesktop.portal.Desktop` has an owner at start-up, so `nvx-tray` also owns that name and implements `org.freedesktop.portal.FileChooser` version 4: `OpenFile` and `SaveFile` return the request path `/org/freedesktop/portal/desktop/request/<sender without ':' and with '.' as '_'>/<handle_token>`, run a Tk file dialog (open, open several, save, folder) as a separate process and send `org.freedesktop.portal.Request.Response` with `uris` (0) or cancel (1). Other portal interfaces answer UnknownMethod, which Chromium accepts.
+
+Why the desktop stalled while Electron started, and the fixes (measured with the new per-system-call times in `lxps`, emulator):
+
+| System call | Before | Cause | After |
+|---|---|---|---|
+| `madvise` | 82 s total, 15 s longest | `MADV_DONTNEED` over big reserved ranges looked at every 4 KB page and unmapped each page separately (with a full reservation cut each time) | empty page-table ranges are skipped (`vm_skip`: 2 MB, 1 GB or 512 GB steps); private pages are freed in place and the entry keeps its protection as a lazy page; one TLB shootdown per 64 pages |
+| `munmap` | 67 s, 3.8 s | the same page-by-page walk over unpopulated space | `vm_skip` in `lx_unmap_range`: 0.7 s total |
+| `mmap` | 26 s total | the free-range search started at the bottom of the address space every time and looked up the reservation table for every used page | the search resumes after the last result for this address space (32-entry hint table, wraps once) and checks reservations only at their boundaries: 0.2 s |
+| `mprotect` | 14-19 s total | a reservation table lookup per page | the containing and next reservation are cached: 44 ms |
+| `newfstatat` | 6.6 s longest | `stat` unpacked the whole file (180 MB for Electron) to learn its size | `sysroot_meta` reads size and mode from the index |
+| `msync` | 23 s total | byte compare of the mapped file | 8-byte compare |
+
+The kernel heap and the BKL changes behind this are in sections 3 and 4.10. Limits: screen sharing in Vesktop shows only X windows (the NoovexOS desktop itself is not an X screen); a microphone needs a sound card with an input (`/dev/snd/pcmC0D0c` exists only then); Discord's voice uses that microphone through ALSA.
+
+### 6.33 Fast Electron programs: vDSO, event wakeups, MIT-SHM (v10.72)
+
+Owner report after v10.71: in VirtualBox the Vesktop window stayed white for a long time and everything was slow. Discord itself cannot be reached from the build machine, so the work used a stand-in: a test app run by Vesktop's Electron that loads `typescript.js` (9.1 MB) and `mermaid.min.js` (3.6 MB) over HTTP, transpiles code, builds 4000 list rows, scrolls for 8 s and draws a diagram, logging each step to `/dev/kmsg`. `lxps` (write `lxps` to `/dev/kmsg`) prints per-thread CPU ticks and system call counts, system call times, page fault times, big kernel lock waits per processor, a profile of the desktop loop and the Linux features programs asked for that are missing.
+
+What the measurements showed, and the fixes:
+
+| Finding | Fix |
+|---|---|
+| The Electron main thread made 166,000 system calls while idle. Its Node.js helper thread waits in `epoll_wait` on a set that contains libuv's own epoll descriptor; `lx_poll_one` reported every epoll descriptor as ready, so the helper woke the main thread in a loop. | `lx_ep_ready` checks the members of the inner set (up to 4 levels). |
+| 1.8 million `clock_gettime` system calls during one start, each through the big kernel lock. | vDSO (below). |
+| A job blocked in `poll`/`epoll_wait`/`select` or a blocking socket read was looked at again only on the next 100 Hz tick, so every message between Chromium's processes (browser, GPU, renderer, X server) waited up to 10 ms per hop; timeouts were rounded up to ticks plus one. | `jc_kick_waiters` and nanosecond deadlines (below). |
+| The Linux processor waited 19 s of a 30 s run for the big kernel lock, held by the desktop loop. The loop redrew the whole screen every 0.5 s while jobs ran, every second for the clock and every 0.5 s for the caret, and with a USB tablet it never slept. | Fewer full redraws, `bkl_yield` between stages and inside pixel copies, sleep between USB polls (below). |
+| Chromium sent frames through the X socket: `shmctl(0, IPC_INFO)` returned a zeroed `shminfo`, so `shmmax` was 0 and Chromium's `XShmImagePool` stayed off. | Real limits; Xvfb also listens on a Unix socket. |
+| Xvfb called `msync` on its 4 MB screen file after every update and the kernel compared it page by page. | The screen mapping is not registered for write-back (the desktop reads its frames directly). |
+
+#### vDSO
+
+`arch/x86_64/vdso/vdso.c` is built by `build.sh` as a small shared object (`-shared -nostdlib`, linker script `vdso.lds`, version script `vdso.ver` with version `LINUX_2.6`, soname `linux-vdso.so.1`) and embedded as `build/vdso_so.h`; `VDSO_VVAR_OFF` is the offset of the symbol `nvx_vvar`, one page after the code. `sys/linux/vdso.c` copies it into shared page frames once and `vdso_map` maps them read+execute as copy-on-write pages at `0x40000180000` (below the native thread stacks), followed by the vvar page read-only and not executable; `fork` and unmapping only change reference counts, and a program that makes them writable and writes gets its own copy instead of changing everyone's. `elf_load` passes the address as `AT_SYSINFO_EHDR`; `/proc/self/maps` shows `[vdso]` and `[vvar]`.
+
+The vvar page holds a sequence number, an "ok" flag (TSC clock in use), `tsc0`, `mult` and the realtime offset; the user code computes `((tsc - tsc0) * mult) >> 32`, the same as `hr_ns`, so user and kernel times agree, and adds the offset for `CLOCK_REALTIME`, `_COARSE` and `CLOCK_TAI`. Other clocks (process and thread CPU time) and the "not ok" case make the real system call. Exported: `__vdso_clock_gettime`, `__vdso_gettimeofday`, `__vdso_time`, `__vdso_clock_getres`, `__vdso_getcpu` (system call) and the unprefixed weak names.
+
+In a virtual machine (CPUID hypervisor bit) the kernel clock now uses the TSC even without the invariant-TSC flag; before, an HPET in QEMU/KVM was preferred, which made every `hr_ns` a slow device access and left the vDSO on its system call path.
+
+#### Waking jobs on events and at exact deadlines
+
+`jc_kick_waiters` sets `wake=0` for every job in `S_WAIT` that is not a futex waiter and sends `IPI_RESCHED` to idle processors (and to processor 0 while it sleeps in the desktop loop, `g_bsp_idle`). A woken job re-runs its system call, which blocks again if nothing changed. Callers: `lsys_c` after a successful `write`, `pwrite64`, `writev`, `close`, `dup2`, `connect`, `sendto`, `sendmsg`, `shutdown`, `kill`, `tkill`, `tgkill`, `dup3`, `pwritev` or `sendmmsg`; `jc_finish` (process exit); `lxs_pump` when network frames arrived; the X input queue.
+
+`jproc.wdl` is a deadline in `hr_ns` time. `lx_wait_deadline` (poll, epoll, select), timed futex waits and `lx_sleep_ns` set it; `jc_runnable` treats a due deadline like a due tick (`jc_wdl_due`). A wait that uses the deadline sets `wdl_arm` right before `jc_block`; any other block (pause, `sigsuspend`, tty reads, socket waits) clears `wdl`, so an old deadline cannot wake it. When a job on another processor blocks with a deadline while processor 0 sleeps, processor 0 is kicked to re-arm its timer. The tick deadline stays as a backstop, one tick later. `jc_next_wdl` returns the nearest deadline: the desktop loop arms `hr_wake_at` for the earliest of the next frame, the next USB poll and that deadline before it halts, and on every pass kicks idle processors for deadlines that are due. Sleeps of 20 us or more now block instead of returning at once.
+
+#### The desktop loop and the big kernel lock
+
+The loop holds the lock except while it sleeps. Changes: with an xHCI mouse it sleeps with a 1.5 ms timer instead of polling in a tight loop; `bkl_yield()` after input, after running jobs, before the timers, before the fast X paths and between `compose_build` and the screen copy, and every 32 rows in `cpu_rect` (64 in `sh_rect`) and in `xover_tick2` (which re-checks that the X screen pages did not change); running jobs force a full redraw every 3 s instead of 0.5 s unless the terminal changed; while an X app is shown the per-second clock only redraws the taskbar (`present_topbar`, `g_tb_due`) and the caret does not blink when the keyboard goes to the X app; the RTC is read at most every 100 ms.
+
+`lxps` lines: `lat: bkl cpu N waits W total T ms, longest hold H us` (counted in `bkl_lock` with the TSC), `lat: main loop ms by stage` (stages: 1-6 device polls, 7 input, 10 jobs, 11 timers, 12 fast X/video paths, 13 drawing, 14 sleeping, 15 after waking) and `lat: redraw reasons by stage`.
+
+#### X drawing and sound
+
+Xvfb starts with `-listen tcp -listen unix -nolisten local`; `nvx-xrun` and `nvx-firefox` export `DISPLAY=:0` when `/tmp/.X11-unix/X0` exists (`NVX_X_TCP=1` keeps TCP). Chromium's software output then puts frames into SysV shared memory segments that Xvfb attaches (`XShmPutImage`). `nvx-xinput` sleeps in `poll` on its input device and the X connection (250 ms) instead of waking every 8 ms.
+
+ALSA playback opens take any of 9 stream slots (slot 1 is capture, 2 the control device). `apcm_mix` sums the queued S16 stereo frames of all running playback streams with clipping, writes as much as the device has room for (at most 80 ms ahead) and advances each stream by what it contributed; a draining stream finishes when its own last samples have played (time from the device fill at its last write), even while other streams keep playing. Capture is still one open at a time.
+
+Results in the emulator: see the v10.72 table at the top. Not done: an X server showing the NoovexOS desktop, app windows as NoovexOS windows, several capture streams.
+
+### 6.34 AVX for Linux programs, epoll on files, clipboard bridge (v10.73)
+
+An Electron test app (`eall`, 40 checks; see the v10.73 table at the top) found two real failures and one missing feature.
+
+#### AVX and the XSAVE state
+
+`fpu_xsave_setup` (`arch/x86_64/cpu/cpu_init.c`, called from `arch_fpu_init` on every processor) sets `CR4.OSXSAVE` when CPUID reports XSAVE, and writes `XCR0` = x87 + SSE, plus AVX when CPUID leaf 0xD lists it. If the resulting save area (CPUID 0xD, EBX) is larger than 1024 bytes, AVX is left off. `g_xsave_on`, `g_xcr0` and `g_xsave_size` record the result; the application processors use the boot processor's `XCR0`. `cpu_fpu_save`/`cpu_fpu_restore` (`arch/x86_64/cpu/cpu.h`) use `xsave`/`xrstor` with all enabled components when XSAVE is on and `fxsave`/`fxrstor` otherwise. `jproc.fx` is now 1024 bytes, 64-byte aligned; `jc_fx_init` clears all of it (a zero XSAVE header means "initial state"). Signal frames use the Linux format: the whole XSAVE image is copied to the 64-byte aligned `fpstate`, with the software bytes at offset 464 (`FP_XSTATE_MAGIC1`, extended size, `XCR0`, XSAVE size) and `FP_XSTATE_MAGIC2` after the image. `lx_sigreturn` copies the full image back when both magic numbers and the size match (otherwise only the 512-byte legacy area over the current state), keeps only enabled components in `XSTATE_BV`, clears `XCOMP_BV` and the reserved header bytes, and restores, so AVX registers of the interrupted code survive a signal handler (glibc's AVX2 `memcpy` relies on that). `jc_leave` runs `vzeroupper` after saving (`cpu_avx_clean`) so kernel SSE code does not run with dirty upper halves.
+
+Without this, programs that check only the CPUID AVX bit (and not OSXSAVE/`XGETBV`) executed VEX instructions and got `#UD`; the renderer of the test app crashed this way during a WebRTC call.
+
+#### epoll on regular files
+
+Linux refuses `EPOLL_CTL_ADD` for files that cannot block (regular files, directories) with `EPERM`. NoovexOS accepted them and `lx_poll_one` reported unknown descriptors as always readable, so a loop that waits with epoll and expects an edge never slept. Now `lx_epoll_ctl` returns `-EPERM` for ramfs files (dev 0), memfds (`LX_MFD`), file-system files (dev 100) and directories (`LX_DIRDEV`). This was the cause of the GTK file chooser hang first seen in v10.69.
+
+#### Clipboard bridge
+
+`/dev/nvxclip` (vfile device 41, `apps/x11/xtray.c`): reading returns the NoovexOS clipboard and then end-of-file (`g_clip`, the editor, browser and link-copy clipboard); writing replaces it; it polls readable when the clipboard changed since the last read or write (FNV hash). `nvx-xinput` opens it next to its input device:
+
+- NoovexOS -> X: when the device turns readable, it reads the text and takes ownership of the X `CLIPBOARD` selection with a 1x1 window, answering `TARGETS`, `UTF8_STRING`, `STRING` and `TEXT` requests.
+- X -> NoovexOS: it watches `CLIPBOARD` ownership with XFixes (`XFixesSelectSelectionInput`); when another client takes it, it converts the selection to `UTF8_STRING` into a property on its window and writes the text to the device.
+
+Up to 64 KB, no INCR transfers; the `PRIMARY` selection is not bridged; an empty NoovexOS clipboard is not offered. Known limit: `/proc` text files are memfds inside NoovexOS, so `epoll_ctl` on `/proc/self/mountinfo` also fails with `EPERM` (Linux accepts it); GIO then falls back to other mount checks.
+
+### 6.35 Linux windows as NoovexOS windows, processor power, laptop keys (v10.74)
+
+#### Window manager and `/dev/nvxwin`
+
+Linux programs still draw into one Xvfb screen that the kernel copies to the display (sections 6.19 and 6.21), but `nvxwm` now runs in that X server as its window manager. It reparents every top-level window into a frame (4 px border, 22 px title bar), draws the title and the minimize, maximize and close buttons, and handles dragging, edge and corner resizing, double-click on the title, `WM_CHANGE_STATE`, `_NET_ACTIVE_WINDOW` and `_NET_WM_STATE` (hidden, maximized, fullscreen). Minimizing unmaps the frame.
+
+`nvxwm` and the kernel talk through `/dev/nvxwin` (vfile device 42, `apps/x11/xwin.c`) with text lines:
+
+- `nvxwm` to kernel: `B` (snapshot begins), one `W id x y w h minimized focused title` line per window, `E` (snapshot ends). A snapshot is sent after every change.
+- kernel to `nvxwm`: `R id` (raise and focus), `M id` (minimize), `C id` (close politely with `WM_DELETE_WINDOW`), `A x y w h` (work area, the screen above the taskbar; used for maximize).
+
+The kernel keeps up to 32 windows. The taskbar shows them after the native buttons (button ids from 1000), the dock after its 12 icons, and Alt+Tab after the native windows (`g_altlist` has room for `NWIN+32` entries). Each Linux window gets a colored letter icon from its title.
+
+Stacking: the whole X layer has one stacking value `g_xz`, compared with the `z` of native windows. Clicking inside the X layer or activating a Linux window raises the layer; native windows above it are cut out of the X image (`xwin_mask_build`, a 6 px margin for shadows), so they stay visible and clickable. `g_xkbd` sends keys to X only while the X layer is focused; focusing or opening a native window clears it, and so does minimizing a Linux window or closing the last visible one. Known limit: taskbar, dock and Alt+Tab entries refer to a Linux window by its place in the list, so if the list changes between pressing and releasing, a different window can be activated.
+
+#### Processor speed and idle (`arch/x86_64/cpu/cpupower.c`)
+
+`cpupower_init` runs on every processor (the boot processor decides the mode):
+
+| Mode | When | What NoovexOS does |
+|---|---|---|
+| Intel HWP | CPUID 6 EAX bit 7 | Enables HWP (`IA32_PM_ENABLE` 0x770) and writes `IA32_HWP_REQUEST` (0x774) with the lowest and highest performance from `HWP_CAPABILITIES` (0x771) and, when CPUID 6 EAX bit 10 says the field exists, an energy preference (0x80 normal, 0xC0 battery saver); otherwise the energy bias MSR 0x1B0 (6 or 12) if CPUID 6 ECX bit 3 is set. The processor picks the speed. |
+| AMD CPPC | CPUID 0x80000008 EBX bit 27 | The same with `CPPC_ENABLE` (0xC00102B1), `CPPC_CAP1` (0xC00102B0) and `CPPC_REQ` (0xC00102B3). |
+| Intel SpeedStep | EIST, no hypervisor | Ratios from `PLATFORM_INFO` (0xCE); every 50 ms each processor measures its busy share and writes `PERF_CTL` (0x199): above 70% the top ratio, under 25% the lowest, steps in between. Battery saver caps the top ratio halfway. |
+| AMD P-states | AMD, no hypervisor | `PStateCtl` (0xC0010062) between P0 and the lowest allowed state from `PStateCurLim` (0xC0010061). |
+| Firmware | otherwise, and in virtual machines | Nothing is changed. |
+
+Idle: `cpu_idle` uses `monitor`/`mwait` with the deepest C-state CPUID leaf 5 lists, capped at the third MWAIT state (hint 0x20) and sub-state 0 so waking stays quick for USB polling and sound, on Intel processors without a hypervisor that have an always-running APIC timer (ARAT) and an invariant TSC; otherwise `sti; hlt`. Busy time comes from idle time measured with the TSC around `cpu_idle` on every processor. All MSR accesses go through `cpu_rdmsr_safe`/`cpu_wrmsr_safe`, so a missing MSR turns the mode off instead of crashing. These now work on several processors at once: `g_msr_probe` counts accesses in progress, and the #GP handler reports a fault by setting the caller's `rsi` register instead of a shared flag. Application processors run `cpupower_init` after loading the IDT. If SpeedStep cannot be enabled in `IA32_MISC_ENABLE`, NoovexOS leaves the speed to the firmware. Known limit: only the idle loops of the desktop and the scheduler count as idle, so time spent waiting elsewhere counts as busy. The boot log line "cpu power: ..." and System info ("CPU power") show the mode.
+
+#### Battery tooltip, headphone jack, USB media keys
+
+- The battery tooltip uses the minutes computed by the ACPI battery code (`g_acb_mins`, `g_acb_charging`).
+- `hda_jack` (`drivers/sound/hda.c`) reads presence detect (verb `F09`, bit 31) of the headphone pin every 300 ms (after Execute Pin Sense, verb `709`, on pins that need it) and clears or sets the output-enable bit 0x40 in the speaker pins' widget control, keeping the other bits. It runs only from the sound poll in the desktop loop.
+- `hid_parse` treats a top-level collection with usage 0x0C:0x01 (Consumer Control) as a third layout kind. It records an array field (8-16 bit values, up to 4; usage = Usage Minimum + value - Logical Minimum) or single-bit variable fields (up to 12 usages). New presses are matched against the previous report and sent to the hotkey queue like PS/2 media keys: volume up/down (0xE9/0xEA), mute (0xE2), play/pause (0xCD), next/previous/stop (0xB5/0xB6/0xB7), brightness up/down (0x6F/0x70).
+
+### 6.36 Light sleep and touchpad coasting (v10.75)
+
+#### Light sleep (`power_s2idle`, `core/power.c`)
+
+`power_sleep` still uses ACPI S1 when the firmware lists `_S1` and the PM1 registers are usable. Otherwise it calls `power_s2idle`:
+
+1. Pending file-system writes are flushed (`nvx3_sync_all`, `gdisk_flush`), and the scheduler is frozen (`g_jc_frozen`: no job counts as runnable), so Linux programs stop at the next timer tick or system call. The big kernel lock is dropped around each idle so other processors can park. The freeze watchdog is held (`g_frz_hold`) so a long sleep is not reported as a hang. On the desktop the screen is locked first.
+2. The screen is cleared and the backlight turned off (`bl_screen(0)`).
+3. If the namespace has a `PNP0D80` device with `_DSM`, NoovexOS asks for the supported functions (function 0; revision 1 for Intel, falling back to 0, and revision 0 for Microsoft) of the Intel UUID `c4eb40a0-6cd2-11e2-bcfd-0800200c9a66` and the Microsoft UUID `11e00d56-ce64-47ce-837b-1f898f9aa461`, then calls display off (3), modern-standby entry (Microsoft 7) and sleep entry (5). On wake: sleep exit (6), modern-standby exit (Microsoft 8) and display on (4). Only functions the firmware lists are called. On many laptops this lets the embedded controller slow the fan and turn off keyboard lights.
+4. Battery saver is turned on for the processor (`cpupower_saver(1)`), and the loop only polls ACPI events (every 50 ms), USB keyboards and the key queues, idling in between.
+5. It ends when `g_sleep_wake` is set (lid opened, power button, sleep button) or a key arrives. At 3% battery or less while discharging it shuts down. When timer interrupts do not arrive (polled timer), the loop spins with `pause` instead of halting so ACPI events are still seen. Sleep requests in the first 2 s after waking are ignored, because some firmware reports one power-button press twice.
+
+Lid close (with "Sleep" chosen), the power button (with "Sleep" chosen) and the sleep button set `g_sleep_req`; the desktop loop calls `power_sleep` after taking the big kernel lock. During sleep `pm_lid_changed` and `pm_power_button` only request wake-up, so the ACPI event code is never entered twice. The `suspend` shell command reports which kind of sleep was used.
+
+Not done: S3 (suspend to RAM). After S3 the firmware does not set up the screen again on UEFI machines, and NoovexOS draws through the firmware frame buffer on most graphics chips, so the screen would stay dark. That needs native display drivers.
+
+#### Touchpad coasting and scrolling in Linux apps
+
+While two fingers scroll, the gesture engine keeps a smoothed scroll speed (`kvv`, `kvh`, in 1/16 micrometre per millisecond) and the time of the last movement. If both fingers lift within 50 ms of moving and the speed is at least 90 mm/s, `kon` is set and `tpe_coast` (called from every touchpad driver's poll function) keeps adding speed x time to the scroll accumulators, slowing down by dt/280 per call, until the speed falls under 12 mm/s. At most 8 wheel steps are produced per call. Any new touch stops coasting, and a touch that zoomed (pinch) never starts it. `g_tp_kinetic` (`touchpad coast on|off`) switches it.
+
+`xq_wheel` (used by both the overlay and the full-screen X mode) sends one X wheel click per scroll step (up to 10 per event, buttons 4/5, and only while more than 64 of the 512 queue slots are free, so button releases are never dropped), sideways steps as buttons 6/7 (taken atomically from `mouse_hscroll` when the browser has not used them), and `xover_zoom` sends a pinch as event type 4 to `nvx-xinput`, which holds Control while clicking button 4 (zoom in) or 5 (zoom out).
+
+### 6.37 USB audio sample sizes and USB test coverage (v10.76)
+
+`aud_pick(0)` (playback) accepts alternate settings with a subslot size of 2, 3 or 4 bytes, a bit resolution of at least 16 and at most 8 x subslot, and 1 or 2 channels; the score still prefers stereo, 48 kHz and 16-bit. `aud_fill_pb` writes `apb.ch` x `apb.bs` bytes per frame: for 3-byte slots the 16-bit sample goes into bytes 1-2 (byte 0 is 0), for 4-byte slots into bytes 2-3. The number of frames per packet is still limited by the endpoint's maximum packet size.
+
+Before reading a HID report descriptor, `xhci_hid_enum` clears the first `rdlen` bytes of the control transfer buffer. A device that returns a short descriptor therefore ends in zero bytes, which the parser skips as empty items.
+
+Tests: `check.py --only usb` (83 checks) now covers consumer-control layouts, media-key reports reaching `hk_push` once per press, a separate media-key interface, and a fuzz pass (mutated descriptors from four real layouts and random reports through `hid_parse` and `hid_report_decode`). The camera/microphone generator also extracts `aud_fill_pb` and checks playback selection and packing for 16/24/32-bit, mono and stereo.
+
+### 6.38 Driver review fixes: Wi-Fi scan and join, Intel pipes, NVIDIA GSP queues (v10.77)
+
+#### Wi-Fi scan
+
+`rtw_scan_frame(base, ch)` parses one received beacon or probe response. The channel is taken from the DS Parameter Set (element 3), else from the HT Operation element (61, primary channel), else from `ch`. `scan_step` passes `ch`=0 during the first 2 ticks after a channel switch (`g_scan_ch`), so packets still in the ring from the previous channel are only used when they carry their channel. Dwell time is 15 ticks per channel. The SSID is stored as the raw bytes up to the first NUL (all-zero SSIDs count as hidden). A WPA vendor element without an RSN element sets the group cipher to TKIP (2), so `rtw_wpa2_join` refuses with code 9.
+
+`scan_add` gets an `offch` flag (the packet's channel differs from the listening channel, or the listening channel is not known yet): it then neither changes a known router's channel nor averages its signal; a new router gets the signal minus 12 dB.
+
+While connected (`g_wnd_up`), `rtw_scan_drain` stops at the first packet from the joined router (address 2 or 3 equal to its BSSID) that is not a beacon or probe response (`rtw_frame_kind`), leaving it for `wnd_rx_eth`; other packets are consumed. `wnd_rx_eth` passes beacons and probe responses to `rtw_scan_frame` while a scan runs. `scan_finish` restarts the beacon-loss timer when connected, so a long scan does not count as lost signal. Saved networks whose names were stored before this version (with '.' for non-ASCII bytes) still match: `wifi_saved_find` lets '.' stand for such a byte when no exact match exists.
+
+#### Wi-Fi join
+
+Authentication and association requests are sent up to 4 times (400 ms each, the last 900 ms), with the Retry bit set on repeats. Message 3 must have a replay counter above message 1 (older ones are skipped; after 6 old ones the join fails with code 5, which does not turn off autoconnect). If message 3 has no group key or it cannot be unwrapped, the join returns 11 ("the network did not send a usable group key"); a TKIP group key returns 9. A group key with index 0 is not written to the hardware key table (slot 0 is the pairwise key) but is given to software decryption. The early-EAPOL stash in `rtw_rx_wait_mgmt` only accepts packets from the router being joined.
+
+#### Text drawing
+
+`u8fold` (`drivers/video/fb/framebuffer.c`) turns a UTF-8 sequence into one drawable character: U+00C0-U+00FF become their base Latin letter, other multi-byte sequences become "?". `dstr`, `pdstr` and `pw_str` use it; single bytes are unchanged.
+
+#### Intel graphics
+
+`igpu_init` looks at the primary planes of pipes A, B and C (and D on generation 12) and uses the enabled one whose surface is the boot frame buffer (else the first enabled one). Plane, pipe-source and surface registers use the `PL()` macro (+0x1000 per pipe); the scaler and panel fitter use +0x800 per pipe. The eDP transcoder (0x6F000/0x6F400) is used only on generation 7-11, and only if its input select (bits 14:12) names that pipe: 0 or 4 for A, 5 for B, 6 for C. The aperture size is measured by writing all ones to BAR 2 (and 3 for 64-bit) with memory decoding and interrupts off and restoring it, then used for the second-buffer room check. The second buffer saves the GTT entries it replaces and restores them, freeing its pages, if memory runs out. The flip timeout counter resets after an on-time flip.
+
+#### NVIDIA GSP queues
+
+`msgq_drain_events` (called by `cmdq_push` while the command queue is full) reads whole messages (64 KB) and keeps up to 4 non-event replies in `g_hold`; `rpc_wait` returns a kept reply before reading the queue, and clears the kept replies once it gets its answer from the queue. `seq_run` checks that each opcode's arguments (op 0: 3 words, 1: 4, 2: 6, 3: 2, 4: 3, others 1) fit in the message. `elf_sect` bounds checks cannot overflow. Each received element's 64-bit XOR checksum is computed over its whole pages; mismatches and sequence gaps are counted and reported, the message is still used.
+
+### 6.39 More system calls: System V IPC, POSIX message queues, pidfd, splice, openat2, FIFOs, seccomp (v10.82)
+
+New file `sys/linux/linux_parts/09_lx_more.c`, included before `07_lx_dup3.c`. System calls that `lx_dispatch` does not handle go to `lx_more`; a result of `LXM_NO` falls through to the old ENOSYS path. Blocking calls use the usual restart model: `jc_block` re-runs the call, so waiting state lives in per-process side tables (`g_semw_*`, `g_msqw`, `g_fifo_vi`, `g_fxv_*`) or in `p->pollwake`/`p->wdl` (`lx_wait_deadline`).
+
+| Calls | What works |
+|---|---|
+| semget, semop, semtimedop, semctl (64-66, 220) | 64 sets of up to 64 semaphores; several operations applied all at once or not at all; IPC_NOWAIT, timeouts (EAGAIN), EINTR, EIDRM when the set is removed while waiting; SEM_UNDO, applied when the process exits (`lxm_proc_exit` from `jc_finish`) and cleared by SETVAL/SETALL; IPC_STAT/SET/RMID/INFO, SEM_INFO, SEM_STAT(_ANY), GETVAL/GETALL/GETPID/GETNCNT/GETZCNT, SETVAL/SETALL; `semid64_ds` in the x86-64 layout (perm 48 bytes, times at 48/64, nsems at 80) |
+| msgget, msgsnd, msgrcv, msgctl (68-71) | 32 queues, messages up to 8 KB, 16 KB per queue (raising it needs root); type 0, positive, negative and MSG_EXCEPT; MSG_NOERROR, E2BIG, ENOMSG, MSG_COPY with IPC_NOWAIT; blocking send and receive; IPC_STAT/SET/RMID/INFO, MSG_INFO, MSG_STAT(_ANY) |
+| mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr (240-245) | 32 named queues (names without `/`, up to 63 bytes), up to 256 messages of up to 64 KB, at most 819200 bytes of queue space per non-root user (EMFILE beyond, like RLIMIT_MSGQUEUE); ordered by priority, FIFO within a priority; absolute CLOCK_REALTIME timeouts (ETIMEDOUT), O_NONBLOCK, EMSGSIZE; `poll`/`epoll` see readable and writable; the descriptor (dev 25) is freed by `lxm_vf_close`, the queue when it is unlinked and closed; `mq_notify` with SIGEV_SIGNAL (si_code SI_MESGQ) and SIGEV_NONE. SIGEV_THREAD is refused (musl builds it on a netlink socket the kernel does not offer) |
+| pidfd_open, pidfd_send_signal, pidfd_getfd (434, 424, 438), waitid P_PIDFD | A pidfd is a descriptor of kind 26 whose `fs_idx` is the pid; it becomes readable when the process has exited. `pidfd_getfd` copies an open file from a process of the same user (root: any); `kcmp` (312) compares open files, address spaces and thread groups |
+| splice, tee, vmsplice (275, 276, 278), copy_file_range (326) | One side must be a pipe (`tee`: both). Data is moved through a 64 KB kernel buffer: from a pipe it is copied out without being taken, written to the other side, and only the written part is then taken, so a short write loses nothing; into a pipe only as much as fits is read. `copy_file_range` between regular files (or from a system-image file), with or without offsets; overlapping ranges in one file are refused. The kernel buffer reaches the normal read/write code through a one-buffer exception in `lx_ok` (`g_kb_lo/g_kb_n`), cleared at the start of every system call; the target descriptor is made non-blocking for that one call so the call cannot sleep with the exception active |
+| openat2 (437) | `open_how` of 24 bytes or more (larger structs must be zero beyond 24, else E2BIG); RESOLVE_BENEATH (absolute paths and `..` above the start: EXDEV), RESOLVE_IN_ROOT (`/` and `..` stay inside the directory), RESOLVE_NO_SYMLINKS (ELOOP if any part is a link), RESOLVE_CACHED gives EAGAIN, RESOLVE_NO_XDEV and NO_MAGICLINKS are accepted; unknown bits EINVAL. With BENEATH or IN_ROOT any symbolic link below the start directory gives EXDEV (stricter than Linux, which follows links that stay inside) |
+| execveat (322) | Relative to a directory descriptor, or AT_EMPTY_PATH on the descriptor of the file itself (the path is rebuilt from the open file); AT_SYMLINK_NOFOLLOW gives ELOOP on a link |
+| mknod, mknodat (133, 259) | Regular files and FIFOs (mode type stored in `FS[k].mode`, so `stat` shows `p`). Opening a FIFO (`lxm_fifo_open`) connects to one 64 KB pipe per FIFO; a reader waits until a writer opens and the other way round, O_NONBLOCK read opens at once, O_NONBLOCK write without a reader gives ENXIO, O_RDWR opens without waiting, counts as reader and writer and can be read and written; O_NONBLOCK is kept on the descriptor. A waiting open is remembered per process together with the FIFO and the access mode, and released if the process ends while waiting; when the pipe of a FIFO is freed its entry goes too (`lxm_pipe_freed`) |
+| futex_waitv (449) | Up to 128 32-bit futexes, private or shared; returns the index of the one woken; EAGAIN if a value differs, ETIMEDOUT for an absolute CLOCK_MONOTONIC/REALTIME timeout. `jc_futex_wake` also checks the waiting list (`lxm_fxv_match`) |
+| process_vm_readv, process_vm_writev (310, 311) | Same user (root: any); the other process's pages are found through its page tables (`vm_walk`); a page that is not present (not yet touched, swapped out, or copy-on-write for writing) ends the copy (partial count); the pages are not faulted in |
+| seccomp (317), prctl 21/22/38/39 | Strict mode (read, write, exit, rt_sigreturn; anything else: SIGKILL). Filter mode: classic BPF checked when installed (length 1-4096, only the allowed instructions, loads aligned inside the 64-byte `seccomp_data`, scratch index below 16, jumps inside the program, division by a zero constant refused, last instruction RET) and run on every system call before dispatch; all filters of the chain run and the strictest result wins (KILL_PROCESS, KILL_THREAD, TRAP with SIGSYS and si_code 1, ERRNO, TRACE and USER_NOTIF as ENOSYS because there is no tracer or listener, LOG, ALLOW). Installing needs no_new_privs or root; filters are kept across fork, clone and exec; TSYNC applies the filter to all threads (or returns the thread that has an unrelated filter); SECCOMP_GET_ACTION_AVAIL and GET_NOTIF_SIZES. At most 32768 instructions per chain (plus 4 per filter). A trapped SIGSYS is unblocked and an ignored one reset to the default first, as Linux forces it; si_errno is not filled. A filtered process cannot use the native `int 0x80` interface, and a thread that calls execve passes its filter to the new image. NEW_LISTENER is not offered |
+| syslog (103) | `klogctl`: reading with READ (consumes), READ_CLEAR and CLEAR needs root; a 16 KB ring of kernel log lines in `core/klog.c` (`klog_ring`) with `<6>[seconds.centiseconds]` prefixes; READ, READ_ALL, READ_CLEAR, CLEAR, SIZE_BUFFER, SIZE_UNREAD; console level calls succeed |
+| adjtimex, clock_adjtime (159, 305) | Query only: time, tick 10000, status STA_UNSYNC, return TIME_ERROR; changes need root and are not applied |
+| mincore (27), fchmodat2 (452), setfsuid/setfsgid (122/123), vhangup (153), acct (163) | as described in the table above; fchmodat2 with AT_SYMLINK_NOFOLLOW on a link gives EOPNOTSUPP |
+| get/set_mempolicy, mbind, migrate_pages, move_pages, set_mempolicy_home_node (237-239, 256, 279, 450) | One NUMA node: policies are accepted, `move_pages` reports node 0 |
+| name_to_handle_at, open_by_handle_at (303, 304) | EOPNOTSUPP |
+
+Still not offered: io_uring (programs fall back), ptrace, landlock, the new mount API, `memfd_secret`, `userfaultfd`, `bpf`.
+
+Test: `abi3test` (`usr/musl/abi3test.c`, QEMU group of `tools/check.py`), 81 checks covering every row above, including blocking across processes (semaphores, message queues, FIFOs), timeouts, removal while waiting, signals from `mq_notify`, a pidfd for a child that is killed and reaped through `waitid(P_PIDFD)`, and a seccomp filter that returns EPERM, traps with SIGSYS, is inherited by fork and finally kills the process with SIGSYS.
+
+### 6.40 Containers: namespaces, chroot, overlay and cgroups (v10.83)
+
+Linux programs can now run in containers: their own view of the files, their own process numbers, host name, IPC keys and network, and limits on processes, memory and CPU. The code is `sys/linux/linux_parts/10_lx_ns.c` (included by `linux.c` after `09_lx_more.c`). The `container` command (`usr/musl/container.c`) uses only these system calls, as a Linux container tool would.
+
+#### Per-task state
+
+`g_lxt[JMAX]` holds one `struct lxn_task` per task slot: the slot's pid (a stale entry is reset when the slot is reused), the mount, UTS, IPC, network, PID and user namespace numbers, the PID namespace for new children (`kpns`), the pid inside the PID namespace (`vpid`), the cgroup and the root directory. Namespace 0 is the host's. Ordinary processes never touch this code: the hooks return at once while `g_lxn_any` is 0, and path lookups only go through the new code when the task has a root or its mount namespace has mounts (`lxn_on`).
+
+`lxn_hook_pre` and `lxn_hook_post` run around every Linux system call (`linux_syscall` in `07_lx_dup3.c`). Child tasks copy their parent's state in `lx_clone` (`lxn_child`), which also handles the `CLONE_NEW*` flags. A namespace is reused once no task and no open namespace file refers to it.
+
+#### Paths
+
+`lx_path0` hands every path to `lxn_path0` when `lxn_on()`: the path is made absolute in the container's view (the working directory is mapped back with `lxn_unmap`), `.` and `..` are resolved without leaving the root, then `lxn_map` turns it into a host path: the root is put in front, then the longest mount that covers the path is applied.
+
+| Mount type | Host path |
+|---|---|
+| bind | the source path, looked up again (so a bind of a directory inside an overlay or `/proc` works) |
+| proc, sysfs, devtmpfs, cgroup2, devpts | `/proc`, `/sys`, `/dev`, `/sys/fs/cgroup`, `/dev/pts`; in a PID namespace `/proc/<n>` is translated to the real pid |
+| tmpfs | a new directory under `/tmp/.nvx-tmpfs` |
+| overlay | the upper file if it exists, else the lower file (up to two `lowerdir`s), else the upper path |
+
+Mount points are kept as "root plus path" strings (`at`), so mounts made before and after `chroot` line up. Absolute symbolic links are re-rooted: `ux_lookup_ex` (`fs/vfs/unixfs.c`) calls `lxn_absmap` for an absolute link target. `execve` maps the program and script interpreter paths; the ELF interpreter is mapped in `jc_find_lib`; a task with a root does not get the built-in programs that are found by name only (`jc_find_prog`), so a container runs only what is in its root. `getcwd`, `/proc/self/cwd`, `/proc/self/exe` and `/proc/mounts` show the container's view. Read-only mounts (`MS_REMOUNT|MS_RDONLY`) refuse writes with EROFS.
+
+Overlay. Writes, `chmod`, `chown`, `truncate`, `utimensat` and renames of a lower file copy it up first (`lxn_copyup`; parent directories are made in the upper directory with the lower directory's mode). `unlink` and `rmdir` of a lower name leave a whiteout `.wh.NAME` in the upper directory; making the name again removes the whiteout, and a directory made over a whiteout gets an opaque marker `.wh..wh..opq` so the lower contents stay hidden. `getdents` on a merged directory lists the upper names, then the lower names that are neither in the upper directory nor whited out (`lxn_ovl_ent`). `workdir` is accepted but not used.
+
+#### System calls
+
+| Call | What it does |
+|---|---|
+| `unshare` (272), `clone`/`clone3` flags | `CLONE_NEWNS`, `NEWUTS`, `NEWIPC`, `NEWNET`, `NEWPID` (children only), `NEWUSER`; `NEWCGROUP` is accepted without effect |
+| `setns` (308) | joins the namespace of a file opened from `/proc/<pid>/ns/{mnt,uts,ipc,net,pid,user,pid_for_children}` (vfile device 27); joining a mount namespace also takes that task's root |
+| `chroot` (161), `pivot_root` (155) | set the root of the whole process; `pivot_root` makes the old root reachable under `put_old` until it is unmounted |
+| `mount` (165), `umount2` (166) | the types above, `MS_BIND`, `MS_MOVE`, `MS_REMOUNT` (read-only flag) and propagation flags (accepted); other types keep the old disk behaviour on the host and give ENODEV in a container |
+| `getpid`, `gettid`, `getppid`, `kill`, `tkill`, `tgkill`, `wait4`, `setpgid`, `getpgid`, `getsid`, `pidfd_open`, `set_tid_address`, fork return values | pids as seen from the caller's PID namespace; processes outside are not visible; `kill(-1)` only reaches the namespace |
+| `uname`, `sethostname`, `setdomainname` | per UTS namespace |
+| `getuid` and friends, `setuid`/`setgid` family, `setgroups` | in a user namespace: ids through `uid_map`/`gid_map` (65534 when unmapped); set calls succeed only for mapped ids |
+| `semget`, `msgget`, `shmget`, `mq_open`, `mq_unlink` | keys and names are separate per IPC namespace |
+| `connect`, `sendto`, `sendmsg`, `bind` | in a network namespace only loopback addresses work (ENETUNREACH, EADDRNOTAVAIL); interface lists show only `lo` |
+
+PID namespaces: the first child gets pid 1; when it exits every other process in the namespace is killed and later `fork`s into it fail with ENOMEM, as on Linux. User namespaces: anyone may create one; the owner may write a one-line `uid_map` for its own uid and, after `setgroups` is set to `deny`, a `gid_map` for its own gid; root may write any map. A process that is root in its user namespace may create the other namespaces, mount the types above in its own mount namespace, `chroot` and set the host name.
+
+#### cgroup v2
+
+`/sys/fs/cgroup` is served by `lxn_sx_*` hooks at the top of the sysfs functions in `08_sysfs.c`. `mkdir` and `rmdir` make and remove groups (64 at most, names up to 31 characters, `rmdir` gives EBUSY while a group has tasks or children). Files: `cgroup.procs`, `cgroup.threads`, `cgroup.controllers` (`cpu memory pids`), `cgroup.subtree_control`, `cgroup.events`, `cgroup.type`, `cgroup.stat`, `cpu.max`, `cpu.stat`, `cpu.weight`, `memory.max`, `memory.current`, `memory.peak`, `memory.events`, `memory.high/min/low/swap.max` (accepted), `pids.max`, `pids.current`, `pids.events`. `/proc/<pid>/cgroup` shows the group. Writing a pid to `cgroup.procs` moves the whole process; children start in their parent's group.
+
+| Limit | How it is enforced |
+|---|---|
+| `pids.max` | `fork`/`clone` (threads too) fail with EAGAIN when the group or a parent group is full |
+| `memory.max` | the present pages of the group's processes are counted from their page tables (at most once per tick); anonymous `mmap`, `brk` growth and `mremap` fail with ENOMEM once the group is at its limit. Memory is charged when it is touched, so a process can go a little past the limit before its next request |
+| `cpu.max` | run time of the group's tasks is summed per period; a group that used its quota is not picked by the scheduler (`jc_runnable` calls `lxn_cpu_hold`) until the period ends; `cpu.stat` counts throttled periods |
+
+#### The container command
+
+```
+container create NAME [ROOTFS-DIR]
+container run [-m SIZE] [-p N] [-c PCT] [-h HOST] [-n] [-v HOST:DIR] NAME [COMMAND [ARGS]]
+container exec NAME COMMAND [ARGS]
+container ls | stop NAME | rm NAME
+```
+
+A container lives in `/var/lib/containers/NAME` (`root`, `upper`, `work`, and `base` or a `lower` file naming the root file system directory). `run` makes the cgroup `/sys/fs/cgroup/NAME` with the limits, unshares the mount, UTS, IPC and PID namespaces (and the network with `-n`), and its child mounts the overlay on `root`, binds the system's `/bin /sbin /usr /lib /lib64 /opt` read-only when no root file system was given, mounts `proc`, `sysfs`, `devtmpfs` and two `tmpfs`, sets the host name, `chroot`s and runs a small init that starts the command (default `/bin/sh`) and reaps orphans. Changes stay in `upper` until `container rm`. `exec` joins a running container with `setns`.
+
+#### Tests and limits
+
+`contest` (`usr/musl/contest.c`, also copied to `/usr/libexec/noovex/contest`) runs 113 checks in eleven child processes; `check.py` runs it in the QEMU group. Result in QEMU (TCG, 2 cores): 113 of 113; CPU work in 1.5 s was 21285 loops without a limit and 8010 with `cpu.max 20000 100000`.
+
+Not done: cgroup namespaces (a container sees the whole cgroup tree), file owners shown through `uid_map` in `stat`, separate port numbers per network namespace (a container can still bind loopback ports the host uses), virtual network devices (veth/bridges), `/proc` showing only the container's mounts in `mountinfo` details, `/dev` limited to safe devices (a container with `devtmpfs` sees the host's `/dev`), `memory.max` checked on page faults, nested PID namespaces deeper than one level showing intermediate pids, the overlay `workdir`, `open_tree`/`fsmount` (new mount API), `userfaultfd`, `io_uring`. Alpine packages (`apk`) are planned for v10.84.
 
 ## Part 7: File systems
 
@@ -7332,6 +8224,18 @@ Access. `ux_perm_ok` checks owner, group and other bits; `perm_dir` (create or d
 
 Tests. `tools/tests/accounts/ac_glue.c` builds the whole kernel as one host object (like the file-system tests) and runs 29 checks; `tools/check.py --only accounts`.
 
+### 7.13 /sys, device nodes in /dev and hotplug events (`sys/linux/linux_parts/08_sysfs.c`) (v10.79)
+
+Snapshot. `sx_scan` builds a table of devices (`g_sx`, kind `SXK_*`): the memory nodes (`null`, `zero`, `full`, `random`, `urandom`, `kmsg`), terminals, the framebuffer, the mouse, disks and partitions (from `volumes.c`, sector size `psz`), USB devices (from `xhci.c`), network interfaces, the AC adapter and battery, the backlight, thermal zones and the sound card. Each entry has a device path under `/sys/devices` (`/devices/virtual/mem/null`, `/devices/pci0000:00/...`), a subsystem, a name and a major:minor number. `sx_fresh` rescans when the table is older than 500 ms.
+
+Tree. `/sys` is generated, nothing is stored. `sx_node` decides what a path is: a folder (4), an attribute file (8) or a link (10). Links are relative as in Linux: `class/<sub>/<name>` and `block/<name>` point into `devices`, `bus/usb/devices/<name>`, `dev/block/M:m` and `dev/char/M:m` too, and every device folder has a `subsystem` link back to its class. `sx_canon` resolves a path one part at a time, following links (up to 8) and handling `.` and `..` after each link, so `stat`, `open`, `realpath` and `ls -L` see the real folder. Attribute files (`sx_attrs`, `sx_attr_read`): `uevent`, `dev`, `size`, `removable`, `ro`, `queue/logical_block_size`, `address`, `mtu`, `operstate`, `idVendor`, `idProduct`, `manufacturer`, `product`, `capacity`, `status`, `brightness`, `max_brightness`, `temp` and others; also `kernel/ostype`, `kernel/osrelease`, `power/state`, `power/mem_sleep` and `devices/system/cpu/online`. Writable, root only: `power/state` (`freeze` or `mem` starts suspend to idle through `g_sleep_req`), `class/backlight/*/brightness` (`bl_set`) and every `uevent` file (`add`, `remove`, `change` send that event). Other users get EACCES when they open a sysfs file for writing.
+
+Device nodes. `/dev` lists the fixed nodes and then one block node per disk and partition (`dx_list`); `stat` gives `S_IFBLK` with the major:minor from the snapshot. `dx_open` (root only, read-only; writing gives `EROFS`) opens a block node as fd type `LX_BLKD`: `read`, `pread` and `lseek` go to the disk in whole sectors through a 512-byte bounce buffer, `ioctl` answers `BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKPBSZGET`, `BLKROGET` and `BLKRRPART`. USB device nodes give the device descriptors.
+
+Hotplug. Netlink protocol 15 (`NETLINK_KOBJECT_UEVENT`) sockets bound to group 1 get kernel-format messages (`add@/devices/...`, then `ACTION=`, `DEVPATH=`, `SUBSYSTEM=`, `SEQNUM=`, `MAJOR=`, `MINOR=`, `DEVNAME=` as NUL-separated strings); group 2 gets the libudev format (`libudev` header with magic `0xfeedcafe`), so programs that use libudev's monitor see devices without a udev daemon. `sx_poll` (main loop, only while a listener exists) rescans every 500 ms, compares the snapshot with the last state it announced (so reads of `/sys` in between cannot hide a change) and sends `remove` for devices that are gone, `add` for new ones (a USB stick, a disk, a network interface) and `change` when a device's state changed. `recvfrom` reports the sender as pid 0 with the group; `SO_PASSCRED` adds `SCM_CREDENTIALS` (uid 0), which libudev checks.
+
+Tests. `sysfstest` (`usr/musl/sysfstest.c`, 34 checks, QEMU group of `tools/check.py`): the tree, links with `readlink`, `lstat`, `stat` and `realpath`, attribute files, ENOENT for missing paths, a disk node (size, first sector, seek to the end, EROFS) and a `change` event over netlink.
+
 ## Part 8: Storage drivers, PCI and the installer
 
 This part covers everything between the PCI bus and a finished installation on disk: PCI configuration access, the four block-device back ends (ATA PIO, AHCI, NVMe, VirtIO-blk), the generic `gdisk_*` layer and its buffer cache, the graphical installer and disk manager in `core/init/installer.c`, USB mass storage, and the shell commands that work with disks.
@@ -7796,6 +8700,39 @@ Partition entries are written in native blocks (`/R`). Everything else in the in
 
 ---
 
+### 8.7b The installer program INSTALL.NVX (v10.65)
+
+Since v10.65 the screens of the installer run as a separate, signed user-mode program; the disk work stays in the kernel, which has the drivers and the file system code. `install` and `noovexos_install` in the Terminal and the Install button in Settings start it with `inst_launch()`; `install classic` still opens the built-in installer (8.7), and `inst_launch()` falls back to it when no valid program is found.
+
+Files
+- `usr/src/nvxinstall.c`: the program (native NoovexOS ELF linked with nvxlibc, about 20 KB). Pages: Welcome, Disk, Where (whole disk or a usable MBR partition), File system (NoovexOS, FAT32, NTFS, FAT16), Confirm, Installing (one line per stage), Done or Error. Same look as the built-in installer: blue background, white dialog box with a dashed title line and black shadow, "(*)" lists, red "< Button >" buttons; Up/Down choose in a list, Left/Right or Tab move between buttons, Enter, Esc, mouse.
+- `core/init/installer_parts/04_inst_svc.c`: the kernel side: system calls, the step-by-step install and the launcher.
+- `build.sh` step `[inst]` builds it, signs it (`tools/nvxsign.py signfile`) and checks the signature (`verifyfile`); the result `build/install.nvx` is copied into the Linux files as `/usr/lib/noovex/install.nvx`. `boot/mkhybrid.py` puts it in the root of the image's FAT partition as `INSTALL.NVX` (8.3 name, the FAT code has no long names), so it is visible on a flashed USB stick.
+
+Signed file format: the ELF followed by an 88-byte trailer: ECDSA P-256 signature r||s (64 bytes) over the SHA-256 of the ELF, the 8-byte key id, the ELF length (u32), version 1 (u32) and the magic `NVXFILE1`. `secboot_check_file()` in `core/secboot.c` checks it with the public key of the running kernel; a file signed with another key, changed after signing, or without a trailer is refused.
+
+Start (`inst_launch()`): reads `INSTALL.NVX` from the USB stick the system started from (`ufs`/`ufat_read`); if it is missing or refused (the log says why), the copy in the Linux files (covered by the kernel signature) is checked the same way. The verified image is handed to `jc_create("nvx-install")` through a one-time hook in `jc_find_prog`, the job's pid is kept in `g_inst_pid`, and the state becomes `ST_APP`: the main loop then runs jobs but does no input handling and no drawing of its own. `inst_app_tick()` returns to the previous state when the job ends, also after a crash of the program; if that happens in the middle of an install the log and a message say that the disk will not start. Ctrl+Alt+Esc ends the program at any time except during an install step (`inst_app_keys()`), so a hung program cannot trap the screen. Only root (uid 0) can start it; a second start while it runs is refused.
+
+System calls (only for the job with `g_inst_pid` and uid 0; every user pointer is checked):
+
+| No. | Arguments | What it does |
+|---|---|---|
+| 200 | - | take the screen (`ST_APP`) |
+| 201 | int[4] | screen width, height, lockdown, source (1 USB stick, 2 Linux files) |
+| 202 | disk array, count | list disks (name, sectors, kind, current, big enough) |
+| 203 | index, info | choose a disk, read its MBR: partitions, which ones can be used, GPT flag |
+| 204 | params | mode (0 whole disk, 1 partition), partition, file system, copy, label; checked, then the install starts |
+| 205 | progress | runs the next step and returns stage (0-8), progress (0-1000), done, failed and the error texts |
+| 206 | x/y, colour/scale, text | text in the system font |
+| 207 | - | draw the pointer and show the frame |
+| 208 | int[4] | next key (or -1), pointer x, y, flags (moved, clicked) |
+| 209 | 0 or 1 | close (refused while an install is running) or restart (only after success) |
+| 210 | text | write a line to the system log |
+
+Steps (`is_run_step()`, the same work as `ip_run2()`): 0 checks (kernel copy, memory map) and builds the boot partition image; 1 partition table, zeroing of GPT areas on a whole disk, stage2; 2 the boot partition, 4096 sectors per call; 3 marker files and formatting of the data partition (`n4_format` or `nk_install`); 4 read-back of the partition table and stage2; 5 read-back of the boot partition, 4096 sectors per call; 6 kernel copy check, flush, Linux files to the boot partition, marker file. The freeze watchdog is held during each step. During formatting with file copy (`nk_install`) a thin progress bar at the bottom of the screen is drawn directly by the kernel, because that step runs inside one call.
+
+The installer writes no UEFI boot entry (neither did the built-in one); firmware finds `\EFI\BOOT\BOOTX64.EFI` on the boot partition. In QEMU a variable store that already has boot entries from an earlier run may go straight to the UEFI shell; a fresh store starts the installed disk.
+
 ### 8.8 Disk Manager (`dm_*`, `core/init/installer.c` lines 1-104)
 
 The Disk Manager is a graphical MBR editor. It works on `g_dm_p[4]` (`dmpart {used,type,start,size}`), loaded by `dm_load()` from LBA 0 with `*dk_ratio()` scaling.
@@ -8021,7 +8958,8 @@ All paths below are relative to the repository root.
 | `drivers/net/ethernet/nic_names.c` | `nic_name()`, `nic_index()` (PCI ID to name) | unit |
 | `drivers/net/ethernet/nic.c` | PCnet DMA memory, globals (`my_ip`, `gw_ip`, ...), byte helpers, `netlog` | unit |
 | `drivers/storage/ahci.c` | also holds PCnet CSR access, `nic_detect`, `nic_up_raw`, `nic_send`, `nic_recv`, `arp_request`, `net_poll` | unit |
-| `drivers/net/ethernet/e1000.c`, `rtl8139.c`, `rtl8169.c` | Wired NIC modules | separate `.o` |
+| `drivers/net/ethernet/e1000.c`, `e1000e.c`, `igb.c`, `vmxnet3.c`, `rtl8139.c`, `rtl8169.c` | Wired NIC modules | separate `.o` |
+| `drivers/usb/xhci_parts/05_usbnet.c`, `drivers/usb/usbnet_proto.h` | USB Ethernet (CDC-ECM, CDC-NCM, RNDIS), part of the xHCI driver | unit (with `xhci.c`) |
 | `drivers/virtio/virtio.c`, `virtio.h`, `virtio_net.c` | Legacy virtio-PCI transport + virtio-net | separate `.o` |
 | `net/stack/tcpip.c` | netdev indirection, ARP resolve, ping, UDP, DHCP, DNS, TCP | unit |
 | `net/stack/sockets.c` | 8-slot TCP socket table (native `int 0x80` sockets) | unit |
@@ -8046,7 +8984,7 @@ Each of these files is a unit with a header under `include/nvx/` (for example `i
 `CFLAGS` as the kernel (`-m64 -Os -ffreestanding -mno-red-zone -mno-sse ... -I.`):
 
 ```sh
-MODS="drivers/net/e1000.c drivers/net/rtl8139.c drivers/net/rtl8169.c drivers/virtio/virtio.c drivers/virtio/virtio_net.c drivers/virtio/virtio_blk.c drivers/sound/ac97.c drivers/sound/hda.c"
+MODS="drivers/net/ethernet/e1000.c drivers/net/ethernet/e1000e.c drivers/net/ethernet/igb.c drivers/net/ethernet/vmxnet3.c drivers/net/ethernet/rtl8139.c drivers/net/ethernet/rtl8169.c drivers/virtio/virtio.c drivers/virtio/virtio_net.c drivers/virtio/virtio_blk.c drivers/sound/ac97.c drivers/sound/hda.c"
 for m in $MODS; do o=$B/mod_$(basename $m .c).o; gcc $CFLAGS -c $m -o $o || { echo "MODULE BUILD FAILED: $m"; exit 1; }; MODOBJS="$MODOBJS $o"; done
 ```
 
@@ -8071,6 +9009,7 @@ They are compiled into `kernel64.o`.
 | `kapi_delay_us`, `kapi_ns` | `hr_delay_us`, `hr_ns` (high-resolution timer) |
 | `kapi_log` | `klog` |
 | `kapi_mb` | `cpu_wmb()` |
+| `kapi_mmio(pa,len)` (v10.82) | Returns a pointer to device registers. Below 4 GiB the identity map is used; above it `acpi_hi_map` maps the 1 GiB regions that hold the first and the last byte. Returns 0 if that is not possible. Used by e1000e, igb and vmxnet3, so a 64-bit BAR above 4 GiB works |
 
 #### 9.2.3 `struct nvx_nic`
 
@@ -8082,12 +9021,14 @@ struct nvx_nic {
     int (*recv)(u8* out,int max);   /* 0 = nothing pending */
     int (*link)(void);
 };
-int e1000_probe(struct nvx_nic*); int rtl8139_probe(struct nvx_nic*);
+int e1000_probe(struct nvx_nic*); int e1000e_probe(struct nvx_nic*); int igb_probe(struct nvx_nic*);
+int vmxnet3_probe(struct nvx_nic*); int rtl8139_probe(struct nvx_nic*);
 int rtl8169_probe(struct nvx_nic*); int virtio_net_probe(struct nvx_nic*);
 ```
 
-A probe returns 1 after it has filled `out`. The kernel keeps a single instance,
-`g_mnic` (`drivers/net/ethernet/nic.c`).
+A probe returns 1 after it has filled `out`. Since v10.82 the kernel keeps a list of
+up to 8 adapters (`g_nics` in `drivers/net/ethernet/nic.c`); the one in use is
+copied to `g_mnic`. Each driver handles one device of its kind.
 
 ### 9.3 NIC bring-up and probe order
 
@@ -8096,10 +9037,26 @@ A probe returns 1 after it has filled `out`. The kernel keeps a single instance,
 ```
 nic_detect()                       PCnet 1022:2000 on buses 0..3, slot fn0 only
   + found -> nic_kind=0, program PCnet directly
-  + not found -> e1000_probe || rtl8169_probe || rtl8139_probe || virtio_net_probe
-                 -> nic_kind=2, my_mac = g_mnic.mac, net_ok=1
-  + none -> netlog("no supported NIC (PCnet, e1000, RTL8139, RTL8111/8168, VirtIO)")
+  + not found -> nic_probe_all(): e1000, e1000e, igb, rtl8169, rtl8139, vmxnet3,
+                 virtio_net, then usbnet_scan(); every adapter found goes into the list
+                 -> nic_pick(): the first with link; with several adapters it waits
+                    up to 1.5 s for one to report link
+                 -> nic_use(k): g_mnic = list[k], nic_kind=2, my_mac, net_ok=1
+  + none -> netlog("no supported network adapter found")
 ```
+
+Adapter changes while running (v10.82):
+- `nic_watch()` runs from the main loop every 2 s. If the adapter in use has no
+  link and another one has, it switches (`nic_use`), which clears the DHCP state so
+  the next network use asks for a new address. A link that comes back logs
+  `cable connected` and allows DHCP again.
+- `nic_offer(i)` is called when a USB adapter appears: it is used at once if there
+  is no adapter, none is up, or the current one has no link.
+- `nic_drop(i)` is called when a USB adapter goes away: the next adapter in the list
+  takes over; if there is none, `net_ok` becomes 0.
+- `nic_active_name()` gives the name of the adapter in use; the `net` command,
+  Settings and the Task Manager show it, and `net` lists all adapters with their
+  link state when there are several.
 
 PCnet is tried first because the driver's comment calls it "prefer PCnet - proven".
 `nic_send`/`nic_recv` dispatch on `nic_kind`: kind 2 forwards to `g_mnic.send/recv`,
@@ -8116,10 +9073,11 @@ Helper routines in `ahci.c`:
   PIT counts, about 1 ms. ARP requests for our address are answered inside the
   loop (`arp_auto_reply`) and never returned to the caller.
 
-`nic_names.c` provides `nic_name(ven,dev)`, which returns the display names
-"Intel e1000", "Realtek RTL8168", "Realtek RTL8139", "VirtIO-net", "AMD PCnet" or
-"unknown NIC". It also provides `nic_index()`, the first PCI entry with class 2.
-The `net` command uses both.
+`nic_names.c` provides `nic_name(ven,dev)`, which returns display names for the
+known IDs, falls back to the vendor ("Intel Ethernet", "Realtek Ethernet",
+"Broadcom Ethernet", "Qualcomm Atheros Ethernet") and otherwise returns
+"unknown NIC". `nic_index()` returns the first wired PCI network device (class 2,
+not subclass 0x80), or the first class-2 device if there is none.
 
 ### 9.4 Wired NIC drivers
 
@@ -8148,7 +9106,7 @@ TDMD (`CSR0=0x000A`) and spins until OWN clears.
 
 #### 9.4.2 Intel e1000 (`drivers/net/ethernet/e1000.c`)
 
-- IDs: 8086: 100E 100F 1004 1010 1015 1017 1019 101A 1026-1028 1013 1014 1076-107B 10D3.
+- IDs: 8086: 100E 100F 1004 1010 1015 1017 1019 101A 1026-1028 1013 1014 1076-107B (82574L 10D3 moved to `e1000e.c` in v10.82).
 - BAR: BAR0 must be MMIO and below 4 GiB, because it is used through the identity map.
 - Reset: writes `CTRL.RST` (bit 26), masks interrupts (`IMC 0xD8`), then sets SLU|ASDE (`|0x60`) and clears the bits in mask `0x88080000`.
 - MAC: comes from `RAL/RAH` (0x5400/0x5404). If RAH.AV is clear or the value is zero, it is read through EERD (`0x14`, 3 words). The result is written back with AV set. MTA (0x5200) is cleared.
@@ -8171,6 +9129,7 @@ TDMD (`CSR0=0x000A`) and spins until OWN clears.
 - Init: unlocks config (`9346CR=0xC0`), RCR=`0xE70F`, TCR=`0x03000700`, `RMS=2047`, `MTPS=0x3B`, TNPDS at `0x20`, RDSAR at `0xE4`, then `CMD=RE|TE`.
 - TX: sets OWN|FS|LS (plus EOR on the last slot) and kicks with `TPOLL=0x40`. RX: drops frames that are not FS+LS or have the RES bit (21) set, then strips the 4-byte CRC.
 - Link: `PHYS & 0x02`.
+- RTL8125/8126 2.5G (v10.82, IDs 10EC: 8125 8126 3000): the interrupt mask and status are 32-bit at `0x38`/`0x3C` (on the 8168 `0x38` is TPOLL), so the driver clears them as 32-bit values, writes `0x34=0`, uses RCR = `(8<<27)|(7<<8)|0x0F`, TCR = `0x03000780` (auto FIFO) and kicks transmission with `0x90=1` (16-bit). MTPS is not written. Registers above `0xFF` are not reachable through the 256-byte I/O window, so nothing there is touched. The PHY firmware patches Linux loads are not loaded; whether the link comes up without them needs a test on a real card.
 
 #### 9.4.5 VirtIO (legacy PCI transport)
 
@@ -8199,6 +9158,59 @@ tracked by `rxid[]`) and queue 1 for TX (up to 32 in flight). Every frame carrie
 a 10-byte zeroed `virtio_net_hdr` (`HDR 10`). Without F_MAC the driver makes up a
 MAC that starts `52:54:`. `vn_link` reads status bit 0, or returns 1 when the
 device has no status field.
+
+#### 9.4.6 Intel e1000e family (`e1000e.c`, v10.82)
+
+Common to `e1000e.c` and `igb.c`: before the reset the device is put into power state D0 through the PCI power-management capability (a device left in D3 would read as all ones) and bus mastering is stopped (`CTRL` bit 2, wait for `STATUS` bit 19). Sending keeps one ring slot free and counts the slots in flight (`txn`, oldest `txc`), so the tail never catches up with the head; while `STATUS.LU` is 0 frames are refused instead of queued, because these chips do not transmit without link.
+
+- IDs: 82571/82572/82573/82574/82583 (`105E 105F 10A4 10BC 10D9 10DA 10A5 10D5 107D-107F 10B9 108B 108C 109A 10D3 10F6 150C`), PCH 82579/I217/I218 (`1502 1503 153A 153B 155A 1559 15A0-15A3`) and I219 (`156F 1570 15B7-15B9 15D6-15D8 15E3 15BB-15BE 15DF-15E2 0D4C-0D4F 0D53 0D55 15F4 15F5 15F9-15FC 1A1C-1A1F 550A-5511`). Every probe also checks that the PCI class is 0x0200, so an unrelated device with a matching ID is left alone.
+- Registers through BAR0 (`kapi_mmio`, 128 KB). Legacy descriptors as in `e1000.c`, 256 RX and 64 TX.
+- PHY access (`MDIC 0x20`; PHY address 2 on PCH parts, 1 otherwise) takes the software flag (`EXTCNF_CTRL 0x0F00` bit 5) on PCH parts.
+- PCH low-power PHY: if the PHY does not answer (ID registers 2/3 read as 0 or 0xFFFF), the driver sets `CTRL_EXT.FORCE_SMBUS` and tries again; if it still does not answer it toggles `LANPHYPC` (CTRL bit 16 override with bit 17 value 0, 1 ms, release), waits for `CTRL_EXT.LPCD` (bit 2), then clears `FORCE_SMBUS`. This is skipped when `FWSM` bit 6 (`RSPCIPHY`) is clear, because the management engine then blocks PHY resets.
+- Reset: `CTRL.RST`, plus `CTRL.PHY_RST` (bit 31) on PCH parts when `FWSM` bit 6 allows it; then waits for `STATUS.LAN_INIT_DONE` (bit 9) and clears it. Then `CTRL_EXT.DRV_LOAD`, `CTRL.SLU`, and the PHY control register gets power-up, auto-negotiation enable and restart.
+- MAC: RAR0 after the reset, or RAR0 from before the reset, or the NVM through `EERD` (82571+ format: address at bit 2, done bit 1) on non-PCH parts, or a random locally administered address.
+- I219 only: `IOSFPC 0x0F28 |= 0x10000` and `TARC0 0x3840` bits 28-29, the two settings Linux uses against transmit hangs on these chips.
+- TXDCTL = GRAN | bit 22 | WTHRESH 1 | HTHRESH 1 | PTHRESH 0x1F; TIPG = `0x00602008`. The 82573/82574/82583 also take the software flag for PHY access.
+
+#### 9.4.7 Intel igb and igc (`igb.c`, v10.82)
+
+- igb IDs: 82576 (`10C9 10E6-10E8 1526 150A 1518 150D`), 82580 (`150E 150F 1510 1511 1516 1527`), I350 (`1521-1524`), I354 (`1F40 1F41 1F45`), I210 (`1533 1536-1538 157B 157C`), I211 (`1539`). igc IDs: I225 (`15F2 15F3 15F7 15F8 15FD 0D9F`), I226 (`125B-125D`).
+- Queue 0 registers at `0xC000` (RX) and `0xE000` (TX). Interrupts masked through `IMC` and `EIMC 0x1528`.
+- Reset: `CTRL.RST`, wait until it clears, wait for `EECD.AUTO_RD` (bit 9); `CTRL_EXT.DRV_LOAD`; `CTRL.SLU`; PHY register 0 gets power-up, auto-negotiation enable and restart (QEMU's igb model only brings the link up after this restart).
+- Receive: advanced one-buffer descriptors (`SRRCTL` = 2 KB buffers, descriptor type 1, drop when full), 256 descriptors. The write-back has status in bytes 8-11 (DD bit 0, EOP bit 1, RXE bit 31) and the length in bytes 12-13; the driver rewrites the buffer address before handing a descriptor back. A frame that does not fit in one buffer (no EOP) is dropped with its continuation.
+- Transmit: advanced data descriptors (DTYP 3, DEXT, EOP, IFCS, RS, `PAYLEN = len<<14`), 64 descriptors. The write-back overwrites the command word, so a separate `busy[]` array records which slots are in flight.
+- `RXDCTL`/`TXDCTL` enable (bit 25) is set and read back before the rings are used.
+- MAC: RAR0, then `EERD` (address at bit 2, done bit 1; at `0x12014` on igc), then a random local address.
+- The 82575 is not included: it may not mirror queue 0 at `0xC000/0xE000`.
+
+#### 9.4.8 VMware vmxnet3 (`vmxnet3.c`, v10.82)
+
+- ID 15AD:07B0. BAR0 holds the producer registers (TXPROD `0x600`, RXPROD `0x800`, interrupt masks), BAR1 the command registers (version `0x00`, UPT version `0x08`, shared-area address `0x10/0x18`, command `0x20`, MAC `0x28/0x30`).
+- The driver selects revision 1 and UPT version 1, quiesces and resets the device, fills the driver-shared area (magic `0xBABEFEE1`, one TX and one RX queue, MTU 1500, interrupts disabled, receive mode unicast+multicast+broadcast+all-multicast+promiscuous) and the two 256-byte queue descriptors, then sends `ACTIVATE` (`0xCAFE0000`); the command register must read 0 afterwards.
+- Rings with generation bits: 64 TX descriptors with their completion ring and data ring, 64 RX descriptors (ring 1 has 32 empty entries that are never handed to the device), and a 96-entry RX completion ring. A TX descriptor gets its generation bit last, after a barrier. RX completions with `rqID != 0` (ring 1) are skipped; a frame must have both SOP and EOP and no error bit.
+- After activation the driver also sends `UPDATE_RX_MODE` (`0xCAFE0003`) and `UPDATE_MAC_FILTERS` (`0xCAFE0004`), as Linux does.
+- Link: command `GET_LINK` (`0xF00D0002`), bit 0.
+
+#### 9.4.9 USB Ethernet (`drivers/usb/xhci_parts/05_usbnet.c`, v10.82)
+
+Works over the xHCI driver (section 10.6) and handles one USB network adapter at a time:
+
+| Kind | Interfaces | Data framing |
+|---|---|---|
+| CDC-ECM | control class 2/6, data class 0x0A | one Ethernet frame per bulk transfer |
+| CDC-NCM | control class 2/0x0D, data class 0x0A | NTB16 blocks: `NCMH` header, `NCM0` datagram table; the datagram offset follows the device's divisor and remainder (`GET_NTB_PARAMETERS`) |
+| RNDIS | class 2/2/0xFF, 0xE0/1/3 or 0xEF/4/1 | `RNDIS_PACKET_MSG` (44-byte header) per frame; several messages may arrive in one transfer |
+
+- Enumeration (`un_enum_loc`): own slot, contexts and rings in a 96-page DMA block. All configurations (up to 4) are read; `un_parse` finds a control interface, its data interface (from the Union descriptor or the next data interface), the alternate setting with a bulk IN and OUT endpoint, and the `iMACAddress` string index. CDC-ECM is preferred, then CDC-NCM, then RNDIS; `usbnet ecm|ncm|rndis|auto` changes the preference and sets the adapter up again. Many RTL8153 dongles and phones offer a CDC configuration besides their vendor or RNDIS one, so they work through this.
+- Set-up: `SET_CONFIGURATION`; NCM asks for the block parameters and limits incoming blocks to 16 KB (`SET_NTB_INPUT_SIZE`); the data interface goes to alternate setting 0 and then to the one with the endpoints; the two bulk endpoints are configured in the xHCI. ECM/NCM: MAC from the string descriptor (12 hex digits; multicast or all-zero is refused), packet filter directed+broadcast+all-multicast (`0x43`, value `0x0E`). RNDIS: `INITIALIZE`, query `OID_802_3_PERMANENT_ADDRESS`, set `OID_GEN_CURRENT_PACKET_FILTER` to `0x0F`; each reply is polled with `GET_ENCAPSULATED_RESPONSE` (50 tries, 20 ms apart) and must carry the request ID. Without a MAC the adapter gets a random local one.
+- Receive: up to 8 bulk IN transfers stay queued in a 128 KB area (2 KB each for ECM, 16 KB for NCM and RNDIS; buffers are aligned so that none crosses a 64 KB boundary). Transfer events reach `un_xfer` from the normal event handler and from `xh_event_t` (so receptions that arrive while another device waits for a control transfer are not lost); the data is unpacked into a 64-frame queue and the transfer is queued again. `un_events` rings the IN doorbell before it polls, because QEMU's USB network device only retries a waiting IN transfer on a doorbell.
+- Send: 16 buffers of 2 KB; a transfer whose length is a multiple of the endpoint's packet size gets one padding byte (for NCM the block length includes it), so the device sees the end of the transfer without a zero-length packet.
+- Errors: a failed transfer marks the endpoint halted; the next poll resets the endpoint, moves the ring's dequeue pointer, sends `CLEAR_FEATURE(ENDPOINT_HALT)` and queues the receive buffers again.
+- Hot-plug: a new device is tried as a USB stick first, then as a network adapter, then as a keyboard or mouse; the same order applies behind hubs. At start-up `usbnet_scan` tries ports whose recorded device class could be a network adapter (0, 2, 0x0A, 0xE0, 0xEF, 0xFF) and skips ports that hold a keyboard, mouse, camera, printer, hub, USB stick or audio device. Unplugging (`un_remove_below`) frees the slot and calls `nic_drop`.
+- `usbnet` shows the kind, vendor:product, frames in and out, errors and dropped frames.
+- A USB adapter reports link while it is plugged in (the cable state from the device is not read). To keep this from trapping the system on a USB adapter without a cable, `nic_watch` switches back to the adapter that was chosen first (`g_nic_pref`) as soon as that one has link again.
+- Recovery after an error first checks that the device is still on its root port (else `un_gone`) and runs at most every 50 ms. The `usb` command resets the controllers; `xhid_reset` then releases the adapter (`un_reset_all`). A port claimed by `usbnet_scan` is marked as seen, so the hot-plug poll does not reset it again. NCM devices that do not accept a 16 KB block size get 32 or 64 KB receive buffers (the receive area is 64 KB aligned).
+- Not supported: vendor-only adapters without a CDC or RNDIS configuration (for example ASIX AX88179 and RTL8152/8153 dongles that only offer their vendor mode).
 
 ### 9.5 The netdev indirection (Ethernet vs Wi-Fi)
 
@@ -8511,6 +9523,101 @@ to the real DNS server when one is known.
 `featest server` checks this over loopback, and the network check
 (section 12.2) has the host connect to `featest listen` on port 9200 through
 the tap device, which tests the same path over the network card.
+
+#### 9.7.5 Unix datagram sockets and credentials (v10.66)
+
+`socket(AF_UNIX, SOCK_DGRAM)` gives a `struct unsock` with `dg` set
+(`sys/linux/linux_parts/02_ivl_muldivk.c`). Each datagram is stored as one
+record together with the sender's address key, its pid and any `SCM_RIGHTS`
+descriptors (`un_dsend`); `sendto` to a bound name finds the receiver with
+`un_dfind` (ENOENT for a missing path name, ECONNREFUSED for an abstract one).
+`connect` only stores a default destination (`dkey`; `AF_UNSPEC` clears it).
+`recvfrom`/`recvmsg` return the sender's address, set `MSG_TRUNC` when the
+buffer was too small, and add `SCM_CREDENTIALS` (pid, uid, gid) when
+`SO_PASSCRED` is on. `poll` reports POLLIN while records are queued.
+
+`SO_PEERCRED` returns the pid, uid and gid of the process that created the
+peer socket (`cpid`, `cuid`, `cgid`, set in `un_new`; the server end made by
+`accept` takes them from the listener); before v10.66 the uid and gid were the
+caller's own. `SO_TYPE` reports 1, 2 or 5
+for stream, datagram and seqpacket.
+
+#### 9.7.6 IPv6 sockets over IPv4 (v10.66)
+
+The network stack has no IPv6. `socket(AF_INET6, SOCK_STREAM or SOCK_DGRAM)`
+still works: it is an ordinary `g_lxs` socket with `v6` set, and
+`lx_sa_inx` turns the address into an IPv4 one:
+
+| IPv6 address | Used as |
+|---|---|
+| `::` | `INADDR_ANY` (so a listener on `::` also takes IPv4 clients) |
+| `::1` | `127.0.0.1`; the socket gets `lo6` |
+| `::ffff:a.b.c.d` | `a.b.c.d` (refused with ENETUNREACH when `IPV6_V6ONLY` is on) |
+| anything else | ENETUNREACH (connect, sendto), EADDRNOTAVAIL (bind) |
+
+Addresses going back to the program (`accept`, `recvfrom`, `recvmsg`,
+`getsockname`, `getpeername`) are 28-byte `sockaddr_in6` (`lx_sa_mk`): `::1`
+when the other end is a local socket that used `::1` (`lx_port_lo6`),
+otherwise the IPv4-mapped form `::ffff:a.b.c.d`, as Linux shows IPv4 clients
+of an IPv6 listener. `IPV6_V6ONLY` can be set before `bind`. Accepted sockets
+inherit `v6` and the socket options of the listener.
+
+#### 9.7.7 Socket options (v10.66)
+
+`lx_setsockopt` stores the options in `struct lxsock` and `lx_getsockopt`
+returns them: `SO_REUSEADDR`, `SO_REUSEPORT`, `SO_KEEPALIVE`, `SO_LINGER`,
+`SO_RCVTIMEO`, `SO_SNDTIMEO` (microseconds in `rcvus`/`sndus`),
+`TCP_NODELAY`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT` and
+`IPV6_V6ONLY`. `bind` uses them (`lxs_clash`): two sockets that both set
+`SO_REUSEPORT` may share a port; with `SO_REUSEADDR` a TCP socket may bind a
+port that only has connected or closing sockets on it, but never one with a
+listener or a plain bound socket. `SO_RCVTIMEO`/`SO_SNDTIMEO` make a blocking
+`read`, `recv*`, `accept`, `write` or `send*` return EAGAIN after the time
+(`lx_sock_wt`, 10 ms steps; the deadline is kept in `sockwake`, separate from the `poll` deadline). `readv`/`writev` on a UDP or netlink socket send or receive one datagram, as on Linux. `TCP_INFO` returns the state byte and the MSS;
+the other fields are zero. The options are kept but do not change the TCP
+code: Nagle is not used anyway, and keep-alive probes are not sent.
+
+#### 9.7.8 Netlink and interface information (v10.66)
+
+`socket(AF_NETLINK, SOCK_RAW or SOCK_DGRAM, NETLINK_ROUTE)` is a `g_lxs`
+socket of type 16. A request written to it is answered at once by
+`lxs_nl_send` (`sys/linux/lxsock.c`), which puts the reply messages as one
+record into the socket's receive buffer:
+
+| Request | Reply |
+|---|---|
+| `RTM_GETLINK` dump | one `RTM_NEWLINK` per interface (`IFLA_IFNAME`, `IFLA_ADDRESS`, `IFLA_BROADCAST`, `IFLA_MTU`, `IFLA_TXQLEN`, `IFLA_OPERSTATE`), then `NLMSG_DONE` |
+| `RTM_GETLINK` by index or `IFLA_IFNAME` | that interface, or `NLMSG_ERROR` ENODEV |
+| `RTM_GETADDR` dump | `RTM_NEWADDR` for `127.0.0.1/8` and `::1/128` on `lo` and the DHCP address on the network card |
+| `RTM_GETROUTE` dump | the default route through the gateway and the local subnet |
+| `RTM_GETNEIGH`, `RTM_GETRULE` and other dumps | only `NLMSG_DONE` |
+| `RTM_NEW*` (changes) | `NLMSG_ERROR` EPERM |
+| anything else | `NLMSG_ERROR` EOPNOTSUPP |
+
+`NLM_F_ACK` adds an `NLMSG_ERROR` 0. If the receive buffer (256 KiB) cannot take the reply, the send fails with ENOBUFS. `bind` sets `nl_pid` (the process id, or
+a unique number if that is taken; 0 picks one), `getsockname` returns it, and
+`MSG_PEEK|MSG_TRUNC` reports the size of the next reply, which libnl uses.
+`NETLINK_KOBJECT_UEVENT` sockets can be created and bound but never receive
+anything. This is enough for musl's and glibc's `getifaddrs` and
+`if_nameindex`.
+
+The interfaces come from `lxs_ifinfo`: index 1 is `lo` (`127.0.0.1/8`, flags
+UP, LOOPBACK, RUNNING), index 2 is `eth0` or `wlan0` with the address, mask
+and MAC address of the active network device (RUNNING once DHCP gave an
+address). The same data answers the `SIOCGIF*` ioctls on any socket
+(`lx_ifioctl`): `if_nametoindex` and `if_indextoname` use them.
+
+#### 9.7.9 ICMP ping sockets (v10.66)
+
+`socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)` works as on Linux with ping
+sockets allowed for every user. `sendto` takes an ICMP echo request (type 8);
+`lxs_icmp_send` replaces the identifier with the socket's own one (its
+`lport`), fixes the checksum and sends it in an IPv4 packet, over the
+loopback queue for `127.x` (where `lxs_icmp_in` answers it) or through the
+network card. Echo replies whose identifier matches the socket are queued like
+UDP datagrams; `recvfrom` returns the ICMP header and data without the IP
+header and the sender's address. Only echo is supported; other ICMP types are
+EINVAL.
 
 ### 9.8 HTTP, entropy and HTTPS (`net/http/http.c`)
 
@@ -9235,6 +10342,9 @@ Shell: `usb`/`xhci` (rescan everything, then `usbinfo`); `usbinfo` (per controll
 
 Limits: no interrupts or MSI; no isochronous or other device classes; no USB storage beyond one stick and one FAT root; registers above 4 GB are unsupported; MSD transfers are limited to the 64 KiB buffer.
 
+#### 10.6.8 USB network adapters (v10.82)
+CDC-ECM, CDC-NCM and RNDIS adapters use their own slot and rings next to the HID, mass storage, camera and audio code; see section 9.4.9. Two hooks connect them to the rest of the driver: `hid_xfer` and `xh_event_t` hand transfer events of the adapter's slot to `un_xfer`, and `xhub_remove_below` calls `un_remove_below`. `usbdev_t` records the class of the first interface (`cls`) so the start-up scan leaves ports with other devices alone.
+
 ### 10.7 ACPI and power
 
 #### 10.7.1 Static tables and power states (`core/power.c`)
@@ -9617,7 +10727,7 @@ The Intel path (section 10.10.4) draws the whole desktop on the GPU. For NVIDIA 
 | 3 | Only changed areas are sent: `blit_all` keeps a shadow of the screen, finds changed 64x16 tiles (`dmg_rects`) and sends just those rectangles, all in one copy-engine push buffer (`nvgsp_fb_present_rects`, up to about 80 copies per kick, one semaphore at the end) or by the CPU when the card is not running | v9.85, simulator and QEMU (CPU path) |
 | 4 | The 2D engine (FERMI_TWOD_A, step 17): `nv2d_fill`, `nv2d_blit` (any size, scaled, from RAM or VRAM), constant-alpha and premultiplied per-pixel blending (`NV2D_OVER`), `nv2d_to_screen`. Used for Gears: while its window is fully visible, each frame goes from the renderer to the screen by itself, without redrawing the desktop, through the 2D engine (scaled 2x in half mode) or the CPU | v9.86, simulator and QEMU (CPU path) |
 | 5 | The whole desktop drawn on the GPU by compute shaders on TURING_COMPUTE_A (step 18, `nvdraw.c`): the GPU draw queue `gq.c` of the Intel path sends each operation to `nvc_op`, which writes one launch of the `gqk` shader | v9.87, simulator and QEMU (CPU path) |
-| 6 | Display engine through GSP-RM: mode setting, page flips without tearing, native resolution, the second monitor | separate, can come before 3-5 |
+| 6 | Display engine through GSP-RM: mode setting, page flips without tearing, native resolution, the second monitor | second monitor (mirror) in v10.81, section 10.10.9; page flips not yet |
 
 Stage 2 does not make one frame much faster than a write-combined CPU copy; what it shows is that copy-engine writes reach the screen and that the read-back check works. Stage 3 cuts what crosses the bus to the changed part of the screen (for Gears in a window about a third of the screen, for a clock tick a few tiles), on the CPU path as well. Keeping windows in VRAM was planned for stage 3, but the desktop draws rounded corners, shadows and transparent title bars that the copy engine cannot blend, so composing in VRAM only pays off together with the 2D engine; that part moved to stage 4. In v9.86 it was measured: the existing layered compositor (`gpu draw emu`, every drawing operation on the CPU) runs Gears at 2 frames a second in QEMU where direct drawing reaches 5, and the operations that make up most of it (masks for text, shadows and corners) cannot run on the 2D engine. So whole-desktop composition moved again, to stage 5 with compute shaders, and the 2D engine is used where it helps today: frames of a window that changes alone.
 
@@ -9660,6 +10770,56 @@ The plan, ordered by what is most likely to work first on the GTX 1650. Every st
 | 8 | Display engine through GSP-RM: native mode set, page flips without tearing | a new `nvgsp mode` command, photo of the monitor | firmware framebuffer | 10-20 |
 
 Photos needed for stage 1: the `nvgsp all` RESULT screen and of `cat /System/Hardware/gpu.nvh`, plus `gpuinfo`.
+
+#### 10.10.9 NVIDIA second screen through GSP-RM (`nvgsp_parts/05_nvdisp_mode.c`) (v10.81)
+
+Step 20, command `nvgsp mode` (also Settings > Display > Screens > Second screen on). It follows the Linux nouveau r535 code (`r535/disp.c`, `dispnv50/`) and NVIDIA's class headers `clc57d.h` (core channel) and `clc57e.h` (window channel) for driver version 535.113.01.
+
+| Part | What is done | Where |
+|---|---|---|
+| Objects | Display instance memory (64 KB VRAM, WRITE_INST_MEM), a display client that stays alive, NV04_DISPLAY_COMMON (0x0073), INIT_BRIGHTC_STATE_LOAD with "not supported", DP_SET_MANUAL_DISPLAYPORT, the display object (class C570) | `kd_init` |
+| Instance memory | Hash table (RAMHT) of 0x2000 bytes at offset 0, nouveau's hash; DMA objects from offset 0x2000, one set per channel: notifier page (flags 0x45), all of VRAM for the colour tables (0x45), all of VRAM for the picture (0x05). Hash entries hold the handle and `channel << 25 | client | offset << 9` | `kd_ht_add`, `kd_obj`, `kd_objs` |
+| Channels | Push buffer in system memory registered with DISPLAY_CHANNEL_PUSHBUFFER, then the core channel (C57D, registers at 0x680000) and one window channel per head (C57E, window 2 x head, registers at 0x690000 + window x 0x1000). Methods are `(count << 18) | method`; PUT at +0, GET at +4; the buffer wraps with a jump | `kc_new`, `km`, `kc_kick`, `kc_room` |
+| Which monitor | Monitors and EDID as in step 19; the head the firmware lit is found with GET_ACTIVE and its output with OR_GET_INFO. `nvgsp mode` only sets up connected HDMI/DVI monitors that are dark; `nvgsp mode all` also sets the first one to its native mode | `nvgsp_mode` |
+| Mode | First detailed timing of the EDID (`nvk_edid_mode`): pixel clock, sync and blanking, sync polarity; interlaced modes and clocks above 165 MHz (DVI) or 340 MHz (HDMI) are refused. Raster registers as nouveau computes them (`nvk_mode_regs`) | |
+| Output | DFP_ASSIGN_SOR picks the output (the outputs in use are excluded); for a monitor whose EDID has the HDMI vendor block: SET_HDMI_ENABLE, SET_HDMI_SINK_CAPS, and an AVI InfoFrame (RGB, full range) written to 0x6F0000 + head x 0x400 | `kd_head_on`, `kd_avi` |
+| Window ownership | The window's usage bounds and its owner (the head) go in a core update of their own, without window interlock, as the hardware requires | `kd_own` |
+| Head | Viewport in = desktop size, out = desktop scaled to fit the monitor with the same shape (`nvk_fit`), raster, pixel clock, usage bounds, identity output colour table (1025 entries in VRAM), 24-bit RGB, display id, output control (head, TMDS A or B) | `kd_head_on` |
+| Window | The desktop picture itself is scanned out: the firmware framebuffer in VRAM (pitch layout, A8R8G8B8 with the alpha ignored), identity input colour table (FP16), identity colour matrix, opaque blending. Both screens therefore always show the same picture and nothing is copied | `kd_head_on` |
+| Update | Window update interlocked with the core update; the core notifier in VRAM must reach "finished" within 3 s | `kd_commit` |
+| Off | `nvgsp mode off`: window image off, output control 0, display id 0, InfoFrame off. Only screens that were dark before are turned off; the first screen stays on even after `nvgsp mode all`. A monitor that was unplugged gets its head turned off at the next `nvgsp mode` | `kd_head_off`, `nvgsp_mode_off` |
+
+State is remembered in `nvgsp-mode.cfg`; with NVIDIA autostart on, the second screen comes back after boot. The flag is cleared before that attempt and set again only when it worked, so a mode set that hangs is not tried again at the next boot.
+
+Limits. Not tested on a real card. DisplayPort monitors (link training) and dual-link DVI are not driven. The second screen mirrors the first; an extended desktop needs window-manager work. The desktop must be in NVIDIA video memory with a line length that is a multiple of 64 bytes. A monitor smaller than the desktop relies on the head's 2-tap scaler for shrinking. An update that times out leaves the head marked unfinished; the next `nvgsp mode` first turns it off.
+
+A review by a separate agent against nouveau and NVIDIA's headers confirmed every method number, bit field and RM structure offset, and found, fixed before release: the window owner changed inside a window-interlocked update (nouveau warns that the hardware rejects this), no input colour table on the window (nouveau always programs one on this class), usage bounds written for the firmware's windows, one DMA object shared by several channels, half-set state after a timeout, missing SET_HDMI_SINK_CAPS, and the page-size flag of the DMA objects (found while writing the review brief).
+
+#### 10.10.10 NVIDIA 3D engine (`nvgsp_parts/06_nv3d.c`) (v10.81)
+
+Step 21, command `nvgsp 3d`, key T in Gears. Real triangles on the 3D engine (class TURING_A, 0xC597) with a depth buffer. References: Mesa NVK and its compiler NAK, the gallium nouveau driver, NVIDIA's class header `clc597.h` (kept in `third_party/nvidia-classes/`).
+
+Shaders (`tools/nvshader3d.py`, output `nv3d_shaders.h`). Two programs in Turing machine code (128-bit instructions), assembled by a small script from the encodings in NAK (`sm70_encode.rs`), which agree with the gallium emitter. Vertex shader: `ALD` loads position and colour from the vertex attributes, `AST` stores them to the position output and the first generic output, `EXIT`. Pixel shader: four `IPA` instructions interpolate the colour (perspective correct) into r0-r3, `EXIT`. Scheduling uses NAK's serial scheme (every instruction waits on the barriers of the ones before it). Each program has a version 4 program header (32 words) with the input and output maps; the pixel shader's has the position-W input bit that the hardware requires. The `EXIT` encoding was compared with the one NVIDIA's own assembler produced for the compute shader.
+
+State (`tools/nv3dgen.c`, output `nv3d_state.h`). A host program compiles against `clc597.h` and writes the initial state as a table of method and value, using NVIDIA's names, so method numbers and bit positions cannot be mistyped. The values follow NVK's `nvk_push_draw_state_init`; the parts NVK does with macros are left out because the shaders use no constant buffers. Compression is off (the targets are plain memory).
+
+Frame (`nv3d_begin`, `nv3d_tri`, `nv3d_end`). Colour target A8R8G8B8 and depth target ZF32, both block-linear (one GOB high) in VRAM mapped with page kind 6 (generic memory; `nvm_map_kind`); a linear colour target cannot be used together with depth. Per frame: SET_OBJECT, the state table, targets, viewport (y flipped, z from 0 to w), clear, vertex attributes (two float4 at offsets 0 and 16), one vertex stream of 49152 vertices in system memory, the two programs, triangle list. `nv3d_tri` copies three vertices (clip-space position and colour); a full buffer is sent and the frame continues. The draw is SET_DRAW_CONTROL_A and DRAW_VERTEX_ARRAY_BEGIN_END, then a host semaphore release that the CPU waits for (500 ms).
+
+To the screen (`nv3d_to_screen`). The 2D engine reads the block-linear target (`s_src` with `bl` set: layout, block size, depth, texture cache invalidate) and writes the screen, also scaled.
+
+Self-test (`nv3d_selftest`). A 64x64 picture with a clear colour, a near green triangle drawn before a farther red one that overlaps it, and a grey ramp; the 2D engine copies it to memory and seven pixels are checked. Only after this passes does `nv3d_ready` say yes. It is not run by `nvgsp all`, because a failed 3D batch can stop the graphics channel that 2D drawing also uses.
+
+Gears (`apps/graphics/gpu3d.cpp`, `apps/graphics/r3d/r3d.cpp`). The renderer has a second output: `r3d_frame_tris` sends each visible triangle, clipped at the near plane and lit per vertex, to a callback instead of filling pixels. The chequered floor, which the CPU path computes per pixel, becomes one quad per cell. With T on and the window fully visible, each frame is `nv3d_begin`, `r3d_frame_tris` with `nv3d_tri`, `nv3d_end`, `nv3d_to_screen`, and a small FPS label through the 2D engine. No shadows and no wire mode on this path; a failure turns it off and the CPU draws again. Twice a second, and while the mouse is over the window, the normal window redraw still shows a CPU frame (without shadows, so it looks almost the same).
+
+Limits. Not tested on a real card; the first try there may fail in ways the simulator cannot show (the simulator treats block-linear memory as rows and takes the instruction encoding from the same source). No textures, no blending, no anti-aliasing, no indexed draws.
+
+A review by a separate agent against NVK, NAK, gallium and the class headers confirmed the instruction encodings, both program headers apart from one bit, the register counts, the state table and the per-frame methods, and found, fixed before release: the missing position-W bit in the pixel shader's header (both references say the hardware traps without it), compression left enabled on plain memory, no texture cache invalidate before the 2D engine reads the target, no check that the card was not restarted in the middle of a frame, VRAM leaks on failed set-up, and state that differed from NVK without need (depth clip, zcull region, anti-alias enable, EXIT scheduling).
+
+Tests (`tools/check.py --only nvidia`, now built with ASan and UBSan). The simulator has a display engine model (channels, a hardware-style hash table lookup, armed state, notifier, the rule about window owners) and a 3D engine model that runs the two shaders from their binary form and rasterises with depth. 78 checks, among them: second screen on, off, HDMI, both screens, 70 off/on rounds, a missing notifier, 1500 rounds with random bytes and refusals in GSP-RM's replies, 300000 random EDID blocks, the 3D self-test, a card without a working depth test, 20000 triangles in one frame. A host test rasterises the triangles of all four Gears scenes and compares them with the CPU picture.
+
+A third review looked for ordinary software bugs in the whole change and found, fixed before release: `nvgsp mode off` after `nvgsp mode all` would have turned the first screen off too; a second-screen start that hangs at boot was tried again every other boot; status texts in Gears kept the tail of a longer earlier text; every new 3D target size used up GPU address space and page tables (the address range is now reserved once); commands left in the core channel's buffer after a failed set-up; a misleading error when the firmware already lights both monitors; an unplugged monitor still counted as on; the Gears triangle test could pass with no triangles in the Gears scene; the second-screen note was shown on computers without an NVIDIA card.
+
+Bugs found by this work in older code: `nvgsp_all_off` copied its reason into fixed buffers without a limit (the longest reason overflowed a 140-byte stack buffer; now bounded); the simulator executed a "hung" compute batch later with a changed buffer.
 
 ### 10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)
 
@@ -10802,7 +11962,7 @@ Run from `source/`: `python3 tools/check.py [options]`. It needs Linux with gcc,
 | `--iso IMAGE` | image for `boot` and `qemu`; default `tools/out/check.iso` (the one `--build` writes) |
 | `--quick` | smaller random sizes: `pfuzz` loop `i<100000` to `i<20000`, strtod inputs 30 000 to 8 000 |
 | `--sanitize` | sets `SAN = -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g` for the generated driver tests and `drivers`, and `LIBC_SAN = -fsanitize=undefined -fsanitize-trap=all` for the host libc |
-| `--only a,b,c` | comma list from `build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,linux,fs,tls,fetch,qemu,net,drivers,analyze,libc,coreutils` |
+| `--only a,b,c` | comma list from `build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,linux,fs,tls,fetch,qemu,net,drivers,analyze,libc,coreutils,wifi,secboot` |
 
 Environment variables:
 
@@ -10815,7 +11975,7 @@ Environment variables:
 | `NVX_TAP_NAME` | tap interface name for `net` (default `nvxtap0`) |
 | `NVX_TAP_CREATE` | `0` makes `netpeer.py` use an existing, already configured tap instead of creating one |
 
-Groups run in a fixed order (build, static, boot, usb, acpi, gpu, nvme, touchpad, memory, aml, timers, linux, fs, tls, fetch, qemu, net, drivers, analyze, libc, coreutils). Each check is a `record(group, name, ok, detail)`; at the end the script prints `==== N of M checks passed in Ts ====`, lists every `FAIL [group] name: detail` and exits with 1 if anything failed. Note that `tools/README.md` still lists only the older subset of groups for `--only`; the authoritative list is the `argparse` help string.
+Groups run in a fixed order (build, static, boot, usb, acpi, gpu, nvme, touchpad, memory, aml, timers, linux, fs, tls, fetch, qemu, net, nics, drivers, analyze, libc, coreutils). Each check is a `record(group, name, ok, detail)`; at the end the script prints `==== N of M checks passed in Ts ====`, lists every `FAIL [group] name: detail` and exits with 1 if anything failed. Note that `tools/README.md` still lists only the older subset of groups for `--only`; the authoritative list is the `argparse` help string.
 
 Most generated tests print lines ending in ` ok` / ` FAIL` and a final `ALL PASS` or `FAILURES`; `check.py` counts those lines for the "(N checks)" in the summary and shows the first failing lines.
 
@@ -10900,6 +12060,13 @@ qemu-system-x86_64 [-L $NVX_QEMU_BIOS] -m 1024 -smp 4 -accel tcg,thread=multi \
 6. `dyntest >/dev/kmsg` to expects `dyntest: done N passed, 0 failed` (dynamic linker, shared libc, `dlopen`);
 7. `smp off` to expects `smp: secondary cores parked`.
 
+After each typed line the group waits 2 s; if a new `command not found` appeared in the serial log, a keystroke was lost and the line is typed again (with a `note:` line in the output). In v10.82 testing one run in five lost the first letter of `swaptest` under emulation load (it ran as `waptest`), which showed up as "no result" for swaptest.
+
+#### Group `secboot` (`g_secboot`, v10.61)
+`tests/secboot/run.py` builds `tests/secboot/sv_t.c`, which includes `lib/crypto/nvxsigv.c` (the code shared by the UEFI loader and the kernel), and compares it with Python's `hashlib` and `cryptography`: SHA-256 for lengths around the block edges, ECDSA P-256 with good signatures, a changed hash, a changed signature, s = 0, r = n and a public key off the curve, and a 300 KB fake kernel signed with `tools/nvxsign.py` with bytes changed in the code, the data, the version, the Linux-files hash, the signature and the public key, signed with another key and unsigned. With `--sanitize` it runs under ASan and UBSan. A second check verifies `build/kernel64.bin` with `nvxsign.py verify --sysroot build/sysroot.bin` and that the signature magic appears exactly once.
+
+Testing the loader in QEMU: the `edk2.fd` used for the emulator runs is the code part of a 4 MB OVMF build. Without a second flash unit OVMF keeps variables in memory only, so `NoovexMinSvn` is lost at every start. Pass a variable store as a second unit: `-drive if=pflash,format=raw,readonly=on,file=edk2.fd -drive if=pflash,format=raw,file=nv.fd`, where `nv.fd` is 540,672 bytes with a firmware-volume header (`fff12b8d-...`), an authenticated variable store header (`aaf32c78-...`, size 0x40000) and a fault-tolerant-write header at 0x40000.
+
 #### Group `tls` (`g_tls`)
 Builds `tests/tls/x509h.c` (the kernel's `nvxcrypto.c`, `nvxtls.c`, `nvxcrypto2.c`, `nvxx509.c` and `nvxroots.c` compiled for the host, with `--sanitize` under ASan+UBSan) and checks:
 1. every embedded root's public key parses (120);
@@ -10919,8 +12086,11 @@ Runs only when `NVX_NET_TAP=1` and QEMU is available. `tests/net/netpeer.py` cre
 6. `fetch` with the test CA installed: ECDSA on 9443 and RSA on 9444 (`/chunked`) must say `certificate verified` and print the expected SHA-256, plain HTTP `/redir` must follow the redirect, `https://10.0.2.2:9443/` must verify through the IP SAN, `wrong.test` must be refused;
 7. `featest listen >/dev/kmsg` to the peer's log must show `inbound pong from noovex`, i.e. a musl server accepted a connection that came in through the network card.
 
+#### Group `nics` (`g_nics`, v10.82)
+Boots the image once per adapter model with QEMU user networking (`-net none -netdev user,id=n0` and one device), two at a time (`NVX_NIC_PAR`, `NVX_NIC_ONLY` picks models by name). A small HTTP server on 127.0.0.1 serves 300 KB; the guest reaches it as 10.0.2.2. For each model: `net` (DHCP), then `fetch -s -o /dev/null http://10.0.2.2:PORT/big`, which must print the expected SHA-256, and the boot log must name the expected driver. Models: e1000, e1000e (82574L), igb (82576), vmxnet3, RTL8139, VirtIO-net, USB CDC-ECM and USB RNDIS (`usbnet rndis`) on `qemu-xhci`, a USB adapter added with `device_add` after boot, and an e1000 without link (`set_link n1 off`) next to an igb that has link, where the igb must be chosen.
+
 #### Group `drivers` (`g_drivers`)
-Compiles each file in `MODS` (`build.sh` line 21: `drivers/net/ethernet/e1000.c rtl8139.c rtl8169.c drivers/virtio/virtio.c virtio_net.c virtio_blk.c drivers/sound/ac97.c hda.c`) for the host, links them with `tests/drivers/drvsim.c`, see 12.4.3.
+Compiles each file in `MODS` (`build.sh`: `drivers/net/ethernet/e1000.c e1000e.c igb.c vmxnet3.c rtl8139.c rtl8169.c drivers/virtio/virtio.c virtio_net.c virtio_blk.c drivers/sound/ac97.c hda.c`) for the host, links them with `tests/drivers/drvsim.c`, see 12.4.3. Since v10.82 the simulator also models igb (I210) and igc (I225-V) with advanced descriptors, e1000e on an I219 with a sleeping PHY and with the management engine blocking resets, and the RTL8125. `tests/usbnet/proto_main.c` checks the USB network framing (NCM blocks with several datagrams and divisor/remainder, RNDIS messages, MAC strings, RNDIS replies) and feeds 200000 corrupted or random blocks to the parsers under ASan/UBSan.
 
 #### Groups `libc` and `coreutils`
 - `host_libc()` builds `usr/libc/src/{libc.c, printf.c, stdlib2.c, stdio2.c, sys_host.c, crt0_host.S}` with `-ffreestanding -nostdinc` against nvxlibc's own headers into `libc.a`; `sys_host.c` maps NoovexOS syscall numbers to Linux ones, so real nvxlibc programs run on Linux.
@@ -11295,6 +12465,10 @@ Firmware with many devices: `tools/tests/aml` style tables can be passed to QEMU
 ### 12.13 Tracing Linux programs (v10.43)
 
 When a Linux program gets a fault or exception, the kernel log (serial port) shows a line like `lx fault: pid 38 sig 11 vec 14 rip ... addr ... err ... rsp ... (libfoo.so+0x1234) handled 48 c7 07 ...`, followed by the last 16 system calls of that thread (`sc nr(a1, a2) = result`), for the first 24 faults after boot. `tgkill`/`kill` with SIGABRT, SIGSEGV and similar signals and `exit_group` with a non-zero code are logged too. `echo lxtrace on > /dev/kmsg` (from bash) logs every Linux system call with its name and the path argument (`T pid openat("/etc/passwd", ...) = 0x3`) until `echo lxtrace off > /dev/kmsg`; this slows programs down a lot. The ring of recent calls (`lx_sc_dump`) has 512 entries. More modes (v10.44): `lxtrace exec` logs only program starts, exits and missing files, `lxtrace errors` logs failed calls except the common harmless ones (EAGAIN, EINTR, ETIMEDOUT, ENOENT), `lxtrace ps` writes the list of Linux processes every minute (pid, parent, state, thread count, last system call of each thread) and `lxps` writes it once. Since v10.45 the list has one line per thread with the system call it is in now (`in`), its first argument and, for calls on a descriptor, the kind of file; for a Unix socket also its state, bytes and messages waiting on both ends. `nvx-abitest` (24 checks, also run on a normal Linux system for comparison) covers `/proc/cpuinfo`, pseudo-terminals and epoll with reused descriptor numbers; `nvx-sndtest [device] [rate] [seconds]` plays a tone through libasound, reports how long it took and records from the microphone.
+
+Since v10.69: `tracelog on` (all system calls), `tracelog on errors` or `tracelog on exec` keeps the kernel messages and Linux system-call trace in a 4 MB ring in memory, `tracelog save` writes it to `tracelog.txt` (and `TRACELOG.TXT` on the USB stick), `tracelog off` stops. `lxps` (or `echo lxps > /dev/kmsg`) also prints `lat:` lines: page faults (count, total and longest time) and the ten system calls with the longest single call, and every system call over 150 ms is logged once as `slow: <ms>` with its arguments (first 40). These times include unpacking that runs without the big kernel lock.
+
+Since v10.72: `echo lxps > /dev/kmsg` also prints `cpu` (ticks) and `sc` (system calls) per thread, `lat: bkl cpu ...` lock waits, `lat: main loop ms by stage` and `lat: redraw reasons by stage` for the desktop loop, and `gap:` lines for Linux options and system calls programs used that NoovexOS does not have. A detached helper that writes `lxps` after a delay lets you measure while an X app has the keyboard.
 
 ## Part 13: The web engine, JavaScript and cookies
 
@@ -11684,6 +12858,14 @@ YouTube's desktop site needs far more JavaScript and layout than the engine hand
 The page's script posts to `https://www.youtube.com/youtubei/v1/player` with the clients `ANDROID_VR`, `IOS`, `TVHTML5_SIMPLY_EMBEDDED_PLAYER` and `WEB_EMBEDDED_PLAYER` in turn, and takes the first answer with `streamingData`. From `formats` (progressive streams that carry video and audio together) it picks the highest one up to 720p in MP4 or WebM, never AV1, sets it as the `src` of a `<video>`, and shows the title, channel, view count and the chosen quality. Playback goes through the media service and `play` with HTTP Range requests (section 13.17).
 
 Limits: this could not be tested against youtube.com from the development machine; YouTube changes these clients often and may ask for sign-in or proof-of-origin tokens, and then the page shows the reason it was given. Adaptive-only videos (most above 720p), live streams and age-restricted videos do not play.
+
+#### Player page again (v10.83)
+
+The real youtube.com watch page still does not play in the engine (its player uses streaming protocols and checks the engine does not have). From v10.83 `yt_try` is called again from `browser_go`, but only for watch addresses (`/watch?v=`, `youtu.be/`, `/shorts/`, `/embed/`, `/live/`); the home page and search load the real site. The page is shown under the real watch address, so its requests to `youtubei/v1/player` are same-origin. A link "Open this video on the full YouTube page" adds `nvxfull=1`, which skips the player page.
+
+Clients, in order, taken from yt-dlp 2026.10.26 (`yt_dlp/extractor/youtube/_base.py`): `VISIONOS` 1.02 (needs no player JavaScript and no proof-of-origin token), `IOS` 21.26.4, `TVHTML5` 5.20260707 (Samsung Tizen), `WEB_EMBEDDED_PLAYER` 1.20260707.01.00 and `ANDROID_VR` 1.65.10 last (yt-dlp notes that YouTube has refused all its formats since 2026-08-17; v9.14 to v10.82 used 1.60.19). Each request sends `X-Youtube-Client-Name` and `X-Youtube-Client-Version` like the real apps. A progressive format (video and sound in one file) up to 720p is played directly. When there is none, which is now usual, the page picks the best H.264 or VP9 video up to 720p and the best AAC or Opus sound in the same container and feeds both into MediaSource source buffers, downloading 1 MB ranges with YouTube's `&range=` parameter (three tries each). AV1 is skipped.
+
+Tested: the page script under Node with a mocked `fetch`, DOM and MediaSource (first client refused, second answers with adaptive formats only): it falls back, sends the headers, picks 360p H.264 + AAC, downloads 2.6 MB and 0.7 MB in 1 MB ranges, appends all of it and ends the stream. Not tested against youtube.com (no network on the build machine). YouTube may still ask for sign-in or a proof-of-origin token for some videos; the page then shows the client and the reason.
 
 ### 13.24 Limits raised for large web apps
 

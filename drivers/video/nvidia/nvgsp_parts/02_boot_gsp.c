@@ -195,7 +195,7 @@ static int objects(void){
     nvl_s("  copy engine copied 4096 bytes correctly - the GPU executes commands"); nvl_nl();
     G.state=7; return 1; }
 
-static int unload(void){ { extern void nvd_halt(const char*); nvd_halt("the NVIDIA driver was unloaded"); }
+static int unload(void){ { extern void nvd_halt(const char*); nvd_halt("the NVIDIA driver was unloaded"); } nvgsp_mode_lost();
     g_cepb=0; g_cesem=0; g_sc.ok=0; g_sc.on=0; g_sc.sptr=0; g_ce_gen++; g_2d_obj=0; g_2d_ok=0; nv2d_reset();
     if(G.state<1){ nvl_s("  GSP was not started by this session"); nvl_nl(); return 1; }
     if(G.state>=4&&!g_rpc_dead){ struct { u32 type, pad; u64 val, shift; } up={1,0,0,47}; if(cmdq_push(70,&up,24,0)){ u8 rr[64]; u32 n=0; rpc_wait(70,rr,sizeof(rr),&n,2000); } }

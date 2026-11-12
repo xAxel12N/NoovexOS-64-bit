@@ -15,7 +15,6 @@
 #include "include/nvx/net/wifi/wpa3.h"
 #include "include/nvx/net/wifi/eap.h"
 #include "include/nvx/lib/crypto/nvxcrypto.h"
-/* ===== hardware security CAM (WPA2 key install), ported from rtw88 sec.c ===== */
 
 #define SEC_CMD_REG    0x670u
 #define SEC_WRITE_REG  0x674u
@@ -23,7 +22,6 @@
 #define SEC_CMD_WRITE_ENABLE (1u<<16)
 #define SEC_CMD_POLLING      (1u<<31)
 #define SEC_CAM_ENTRY_SHIFT  3
-/* hw_key_type: 0=none 1=WEP40 2=TKIP 4=AES(CCMP) */
 static u8 g_gtk[32]; int g_gtk_state=0, g_gtk_keyid=0, g_gtk_len=0;
 const char* wpa_gtk_status(void){ switch(g_gtk_state){ case 1: return "group key (GTK) installed"; case 2: return "no GTK in msg3"; case 3: return "GTK unwrap failed";
     case 4: return "msg3 MIC mismatch - GTK skipped"; case 5: return "group cipher is not CCMP - GTK skipped"; case 6: return "GTK key index 0 clashes with the pairwise slot - skipped"; default: return "GTK not processed"; } }
@@ -67,10 +65,10 @@ static void rtw_sec_write_cam(u32 m,int hw_key_idx,int keyidx,int hw_key_type,
     }
 }
 static void rtw_sec_enable_engine(u32 m){
-    u16 cr=rtw_r16(m,0x0100); cr|=(1u<<9); rtw_w16(m,0x0100,cr);   /* SEC_ENGINE_EN */
+    u16 cr=rtw_r16(m,0x0100); cr|=(1u<<9); rtw_w16(m,0x0100,cr);
     u16 cfg=rtw_r16(m,SEC_CONFIG);
-    cfg|=(1u<<2)|(1u<<3);                    /* TX_DEC_EN | RX_DEC_EN */
-    cfg|=(1u<<0)|(1u<<1)|(1u<<6)|(1u<<7);    /* default-key search: TX/RX uni+bc use DK */
+    cfg|=(1u<<2)|(1u<<3);
+    cfg|=(1u<<0)|(1u<<1)|(1u<<6)|(1u<<7);
     rtw_w16(m,SEC_CONFIG,cfg);
 }
 void ui_pump(void);
@@ -163,59 +161,51 @@ int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i]; for(int i=0;i<6;i++)f[fl++]=mac[i]; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     f[fl++]=(u8)(g_seq<<4);f[fl++]=(u8)(g_seq>>4);g_seq++;
     f[fl++]=0;f[fl++]=0; f[fl++]=1;f[fl++]=0; f[fl++]=0;f[fl++]=0;
-    rtw_tx_mgmt(m,f,fl);
-    if(!rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,900)) return 1;
+    { int got=0; for(int t=0;t<4&&!got;t++){ if(t){ f[1]|=0x08; } rtw_tx_mgmt(m,f,fl); got=rtw_rx_wait_mgmt(m,0xB0,ap->bssid,body,&blen,t<3?400:900); } if(!got) return 1; }
     if(blen>=6 && (body[4]|(body[5]<<8))!=0) return 2; }
-    /* ASSOC with RSN IE */
     fl=0; f[fl++]=0x00;f[fl++]=0x00;f[fl++]=0;f[fl++]=0;
     for(int i=0;i<6;i++)f[fl++]=ap->bssid[i]; for(int i=0;i<6;i++)f[fl++]=mac[i]; for(int i=0;i<6;i++)f[fl++]=ap->bssid[i];
     f[fl++]=(u8)(g_seq<<4);f[fl++]=(u8)(g_seq>>4);g_seq++;
-    f[fl++]=0x31;f[fl++]=0x00;   /* capability: ESS + Privacy + short preamble */
+    f[fl++]=0x31;f[fl++]=0x00;
     f[fl++]=0x0A;f[fl++]=0x00;
     f[fl++]=0; f[fl++]=(u8)slen; for(int i=0;i<slen;i++)f[fl++]=(u8)ssid[i];
     { u8 rsn[32]; int rl=wpa_rsn_ie(rsn); fl+=rtw_assoc_ies(f+fl,ap); for(int i=0;i<rl;i++)f[fl++]=rsn[i]; }
-    rtw_tx_mgmt(m,f,fl);
-    if(!rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,900)) return 3;
+    { int got=0; for(int t=0;t<4&&!got;t++){ if(t){ f[1]|=0x08; } rtw_tx_mgmt(m,f,fl); got=rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,t<3?400:900); } if(!got) return 3; f[1]&=(u8)~0x08; }
     if(blen>=4 && (body[2]|(body[3]<<8))==30){ for(int w=0;w<3;w++){ rtw_delay_us(200000); ui_pump(); } rtw_tx_mgmt(m,f,fl); if(!rtw_rx_wait_mgmt(m,0x10,ap->bssid,body,&blen,900)) return 3; }
     if(blen>=4 && (body[2]|(body[3]<<8))!=0) return 4;
     if(g_eap_on){ eap_m=m; eap_bssid=ap->bssid; eap_mac=mac; u8 msk[64]; g_eap_stashlen=0; int er=eap_peap_run(eap_tx,eap_rx,0,g_eap_user,g_eap_pass,msk); if(er<0)return er==-1?1:er==-3?4:er==-4?8:er==-12?10:7; for(int i=0;i<32;i++)g_pmk[i]=msk[i]; for(int i=0;i<64;i++)msk[i]=0; }
-    /* ---- 4-way handshake ---- */
     u8 eap[512];
-    int el=rtw_rx_wait_eapol(m,ap->bssid,eap,512,1500);   /* msg 1: ANonce */
+    int el=rtw_rx_wait_eapol(m,ap->bssid,eap,512,1500);
     if(el<95) return 5;
-    /* EAPOL-Key: [0]=type(2) [1..2]=desc [5..6]=keyinfo [13..44]=nonce(actually offset 17) */
-    /* 802.1X hdr: ver(1) type(1) len(2) = 4 bytes; then EAPOL-Key: desc_type(1) key_info(2) key_len(2) replay(8) key_nonce(32)... */
-    const u8* kf=eap;                 /* eap points at 802.1X header */
-    u8 anonce[32]; for(int i=0;i<32;i++)anonce[i]=kf[4+1+2+2+8+i];   /* nonce at 802.1X+ (1+2+2+8) */
-    /* our SNonce (derive from tsc/rand) */
+    const u8* kf=eap;
+    u8 anonce[32]; for(int i=0;i<32;i++)anonce[i]=kf[4+1+2+2+8+i]; u64 rc1=wpa_rc(eap);
     u8 snonce[32]; csprng_bytes(snonce,32);
     wpa_derive_ptk_akm(g_pmk,ap->bssid,mac,anonce,snonce,g_ptk);
-    /* build msg 2: copy key_info (clear install/ack, set MIC+pairwise), our SNonce, RSN IE, MIC=HMAC-SHA1(KCK,frame) */
     u8 m2[128]; int i,ml=0;
-    m2[ml++]=0x01; m2[ml++]=0x03;                     /* 802.1X ver=1 type=3(key) */
-    int lenpos=ml; m2[ml++]=0; m2[ml++]=0;            /* length filled later */
-    m2[ml++]=0x02;                                    /* desc type: RSN */
+    m2[ml++]=0x01; m2[ml++]=0x03;
+    int lenpos=ml; m2[ml++]=0; m2[ml++]=0;
+    m2[ml++]=0x02;
     u16 ki;
     ki = (u16)((1u<<3)|(1u<<8)|(u32)wpa_key_ver());
     m2[ml++]=(u8)(ki>>8); m2[ml++]=(u8)ki;
-    m2[ml++]=0x00; m2[ml++]=0x00;                     /* key length 0 in msg2 (spec) */
-    for(i=0;i<8;i++)m2[ml++]=kf[4+1+2+2+i];           /* replay counter = echo msg1 */
-    for(i=0;i<32;i++)m2[ml++]=snonce[i];              /* key nonce = SNonce */
-    for(i=0;i<16;i++)m2[ml++]=0;                      /* key IV */
-    for(i=0;i<8;i++)m2[ml++]=0;                       /* key RSC */
-    for(i=0;i<8;i++)m2[ml++]=0;                       /* key ID */
-    int micpos=ml; for(i=0;i<16;i++)m2[ml++]=0;       /* MIC (zeroed for calc) */
+    m2[ml++]=0x00; m2[ml++]=0x00;
+    for(i=0;i<8;i++)m2[ml++]=kf[4+1+2+2+i];
+    for(i=0;i<32;i++)m2[ml++]=snonce[i];
+    for(i=0;i<16;i++)m2[ml++]=0;
+    for(i=0;i<8;i++)m2[ml++]=0;
+    for(i=0;i<8;i++)m2[ml++]=0;
+    int micpos=ml; for(i=0;i<16;i++)m2[ml++]=0;
     u8 rsn[32]; int rl=wpa_rsn_ie(rsn);
-    m2[ml++]=(u8)(rl>>8); m2[ml++]=(u8)rl;            /* key data length */
-    for(i=0;i<rl;i++)m2[ml++]=rsn[i];                 /* key data = our RSN IE */
+    m2[ml++]=(u8)(rl>>8); m2[ml++]=(u8)rl;
+    for(i=0;i<rl;i++)m2[ml++]=rsn[i];
     int body2=ml-4; m2[lenpos]=(u8)(body2>>8); m2[lenpos+1]=(u8)body2;
     u8 mic[32]; wpa_mic(m2,ml,mic);
     for(i=0;i<16;i++)m2[micpos+i]=mic[i];
     rtw_tx_data_eapol(m,ap->bssid,mac,m2,ml);
-    /* msg 3 from AP (GTK) */
     for(int tries=0;;tries++){
         el=rtw_rx_wait_eapol(m,ap->bssid,eap,512,1500);
         if(el<99) return 6;
+        if(wpa_rc(eap)<=rc1){ if(tries<6)continue; return 5; }
         u16 k3=(u16)((eap[5]<<8)|eap[6]);
         if(!(k3&(1u<<8))&&(k3&(1u<<7))&&(k3&(1u<<3))&&tries<3){ { int nw=0; for(i=0;i<32;i++) if(eap[17+i]!=anonce[i])nw=1; if(nw){ for(i=0;i<32;i++)anonce[i]=eap[17+i]; wpa_derive_ptk_akm(g_pmk,ap->bssid,mac,anonce,snonce,g_ptk); } } for(i=0;i<8;i++)m2[9+i]=eap[9+i]; for(i=0;i<16;i++)m2[micpos+i]=0; wpa_mic(m2,ml,mic); for(i=0;i<16;i++)m2[micpos+i]=mic[i]; rtw_tx_data_eapol(m,ap->bssid,mac,m2,ml); continue; }
         if((k3&((1u<<8)|(1u<<7)|(1u<<6)|(1u<<9)))!=((1u<<8)|(1u<<7)|(1u<<6)|(1u<<9))) return 6;
@@ -223,32 +213,32 @@ int rtw_wpa2_join(u32 m,const scan_ap* ap,const char* ssid,const char* pass){
         break; }
     wpa_gtk_extract(eap,el);
     if(g_gtk_state==4) return 6;
-    if(g_gtk_state==2){ int flen=4+((eap[2]<<8)|eap[3]); if(flen>el||flen<99) return 6; }
+    if(g_gtk_state==2||g_gtk_state==3) return 11;
+    if(g_gtk_state==5) return 9;
     g_wpa_replay=wpa_rc(eap); g_wpa_mmio=m; for(int q=0;q<6;q++){ g_wpa_bssid[q]=ap->bssid[q]; g_wpa_mac[q]=mac[q]; }
-    /* msg 4 ack: key_info pairwise|MIC|secure, no key data */
     u8 m4[128]; ml=0;
     m4[ml++]=0x01;m4[ml++]=0x03; int lp=ml; m4[ml++]=0;m4[ml++]=0;
     m4[ml++]=0x02;
     u16 ki4=(u16)((1u<<3)|(1u<<8)|(1u<<9)|(u32)wpa_key_ver());
     m4[ml++]=(u8)(ki4>>8);m4[ml++]=(u8)ki4;
     m4[ml++]=0x00;m4[ml++]=0x00;
-    for(i=0;i<8;i++)m4[ml++]=eap[4+1+2+2+i];          /* replay = echo msg3 */
-    for(i=0;i<32;i++)m4[ml++]=0;                      /* nonce 0 */
+    for(i=0;i<8;i++)m4[ml++]=eap[4+1+2+2+i];
+    for(i=0;i<32;i++)m4[ml++]=0;
     for(i=0;i<16;i++)m4[ml++]=0; for(i=0;i<8;i++)m4[ml++]=0; for(i=0;i<8;i++)m4[ml++]=0;
     int mp=ml; for(i=0;i<16;i++)m4[ml++]=0;
-    m4[ml++]=0;m4[ml++]=0;                            /* key data len 0 */
+    m4[ml++]=0;m4[ml++]=0;
     int b4=ml-4; m4[lp]=(u8)(b4>>8); m4[lp+1]=(u8)b4;
     wpa_mic(m4,ml,mic); for(i=0;i<16;i++)m4[mp+i]=mic[i];
     rtw_tx_data_eapol(m,ap->bssid,mac,m4,ml);
     for(i=0;i<ml;i++)g_m4[i]=m4[i]; g_m4len=ml; g_m4mp=mp;
-    /* install the pairwise temporal key (TK = ptk[32..47]) into the hw security CAM (CCMP=4) */
     rtw_sec_enable_engine(m);
-    rtw_sec_write_cam(m, 0 /*cam idx*/, 0 /*keyidx*/, 4 /*AES/CCMP*/, 0 /*pairwise*/, ap->bssid, &g_ptk[32]);
-    if(g_gtk_state==1){ if(g_gtk_keyid>0&&g_gtk_keyid<4) rtw_sec_write_cam(m, g_gtk_keyid, g_gtk_keyid, 4, 1, ap->bssid, g_gtk); else g_gtk_state=6; }
+    rtw_sec_write_cam(m, 0  , 0  , 4  , 0  , ap->bssid, &g_ptk[32]);
+    int gtk_ok=g_gtk_state==1;
+    if(gtk_ok){ if(g_gtk_keyid>0&&g_gtk_keyid<4) rtw_sec_write_cam(m, g_gtk_keyid, g_gtk_keyid, 4, 1, ap->bssid, g_gtk); else g_gtk_state=6; }
     wnd_setup(m,ap->bssid,mac,&g_ptk[32],g_wifi_assoc_qos);
-    if(g_gtk_state==1) wnd_set_gtk(g_gtk,g_gtk_keyid);
+    if(gtk_ok) wnd_set_gtk(g_gtk,g_gtk_keyid);
     g_wpa_ok=1;
-    return 0;   /* handshake complete - keys derived AND installed in hw */
+    return 0;
 }
 int rtw_h2c_send(u32 m,int box,u32 w0,u32 w1){
     u32 boxreg,boxex;

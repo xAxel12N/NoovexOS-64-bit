@@ -341,7 +341,11 @@ static struct bkl g_bkl={1,0,0,1};       /* CPU 0 owns it from boot, depth 1 */
 - Recursion. If `owner == cpu_id()`, it only increments `depth`. Nested entry is common, for example a syscall that ends up in code that locks again.
 - Interrupts while spinning. `cpu_irq_save` disables interrupts during the spin and `cpu_irq_restore` restores the previous IF afterwards.
 - Deferred TLB flush. After acquiring, if `PCPU->tlb_pending` is set, it clears it and reloads CR3.
-- Unlock. `bkl_unlock` ignores callers that are not the owner, decrements `depth`, and at zero sets `owner=-1` and does `serving+1` (release).
+- Unlock. `bkl_unlock` ignores callers that are not the owner, decrements `depth`, and at zero sets `owner=-1` and does `serving+1` (release), all with interrupts off. Before v10.69 an interrupt between those two stores entered `isr_dispatch`, took the next ticket and waited for itself forever.
+- `bkl_try()` takes the lock only if it is free (or already ours) and never spins. The keyboard and PS/2 mouse interrupt reads its bytes into a lock-free 256-entry ring first (`ps2_byte_fast`) and drains it only when `bkl_try` succeeds; every other interrupt drains it under the lock, so keys are not lost while another core holds the lock.
+- `PCPU->bkl_wait` is set while a core spins for the lock. `smp_tlb_sync` does not wait for such cores (they flush on acquire because `tlb_pending` is set), which removed 150-250 ms waits from `mprotect` and `madvise`.
+- Unpacking blocks of the Linux files (up to 180 MB for a big program) happens without the lock and with interrupts on in the page-fault path for faults from user mode (not for kernel accesses to user memory) and in a warm-up at the very start of `execve` and of `read` on Linux files, before the system call touches any state (`g_sr_nolock`, `sysroot_get_unlocked`, `xzk_decode_unlocked`, `zstk_decode_unlocked`); callers re-check their state after taking the lock again.
+- With 3 or more cores online, Linux jobs run only on the other cores (`jc_bsp_off`), so core 0 always has time for the desktop and input.
 - Helpers. `bkl_held()` tells whether this CPU owns it. `bkl_drop()` releases fully and returns the old depth, and `bkl_take(d)` re-acquires and restores that depth. Together they hand the lock over around blocking waits. `bkl_yield()` (only when SMP is on, the lock is held at depth 1, and someone is queued, i.e. `next != serving+1`) unlocks, pauses 64 times, and relocks.
 
 Where it is taken or dropped.
@@ -574,3 +578,9 @@ Other places that report the core count: `/proc/cpuinfo` (`fs/vfs/vfs.c`, one en
 ## 4.17 The web worker engine on CPU 1 (v10.42)
 
 `ap_loop` calls `wk_ap_turn()` (`apps/internet/webwork.c`) after each scheduling round. On CPU 1 only, and only while the browser has workers there, it runs one turn of the worker engine in kernel mode without the big kernel lock, on its own 4 MiB stack, with its own memory arena; it shares nothing with CPU 0 except two lock-free message rings. A turn handles messages for up to 25 ms and then returns, so Linux programs on CPU 1 still get their time slices; a page message wakes CPU 1 with `smp_kick(1)`, and a worker timer is checked at the next tick. An exception inside the worker engine on CPU 1 goes to `wk_fault_redirect`, which is checked before `web_fault_redirect` and only matches while CPU 1 is inside a worker turn. Section 13.64 has the details.
+
+## 4.18 Waking jobs and the lock statistics (v10.72)
+
+Blocked Linux jobs no longer depend on the 100 Hz tick alone. `jc_kick_waiters` (`core/proc/jobs_parts/03_segv_str.c`) marks waiting jobs runnable after events and sends `IPI_RESCHED` to idle processors, including processor 0 while it sleeps in the desktop loop (`g_bsp_idle`). Each job has a nanosecond deadline `wdl` for poll, futex and sleep waits; the desktop loop arms the local APIC one-shot timer (`hr_wake_at`) for the nearest one (`jc_next_wdl`). Details in section 6.33.
+
+`bkl_lock` counts contended acquisitions and the TSC cycles spent spinning per processor (`g_bklc`, `g_bklw`) and `bkl_unlock` the longest hold (`g_bklh`); `lxps` prints them as `lat: bkl cpu N ...` and resets the longest hold. The desktop loop calls `bkl_yield()` at several points and inside long pixel copies so a Linux system call on another processor waits for one stage, not for a whole loop pass.

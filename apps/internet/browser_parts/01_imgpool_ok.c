@@ -151,7 +151,7 @@ static int decode_image(const u8*d,int len){   /* direct-URL: decode to pool[0] 
 static int g_ur_on,g_ur_sx,g_ur_wx,g_ur_y; static unsigned long g_ur_wait;
 
 int g_page=0; static int lk_y[16],lk_tgt[16],lk_n=0,lk_bx[16],lk_bw[16],lk_bh[16];
-char g_url[4096]="example.com"; int g_urllen=11, g_urlfocus=0;
+char g_url[4096]=""; int g_urllen=0, g_urlfocus=0;
 static char g_acsug[4096]=""; static int g_urlsel=0;
 static char g_host[256]="";
 static int br_barx,br_bary,br_barw,br_gx,br_gw,br_hx,br_hw,br_bkx,br_bkw,br_rlx,br_rlw;

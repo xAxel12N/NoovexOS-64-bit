@@ -1,6 +1,7 @@
 #include "include/nvx/core/auth/acctui.h"
 #include "include/nvx/drivers/input/touchpad/i2c_hid.h"
 #include "include/nvx/base.h"
+#include "include/nvx/drivers/video/fb/edid.h"
 #include "include/drivers.h"
 #include "include/nvx/core/sound.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"

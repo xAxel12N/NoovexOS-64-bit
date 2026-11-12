@@ -59,6 +59,7 @@ int nvv_count(void);
 typedef struct { u64 pd3; u64 limit; int ok; } nvvmm;
 int nvm_vmm_new(nvvmm* m,u64 limit);
 int nvm_map(nvvmm* m,u64 va,u64 pa,u64 len,int sysmem,int priv,int ro);
+int nvm_map_kind(nvvmm* m,u64 va,u64 pa,u64 len,int sysmem,int priv,int ro,u32 kind);
 int nvm_unmap(nvvmm* m,u64 va,u64 len);
 void nvgsp_ce_unmap(u64 va,u64 len);
 u64 nvm_pd3_entry0(nvvmm* m);
@@ -88,7 +89,7 @@ int nvgsp_fb_present_rects(const u32* scene,u32 sw,u32 w,u32 h,const dmg_rect* r
 const char* nvgsp_gpu_name(void);
 void nvgsp_status(void);
 
-typedef struct { u64 va; u32 pitch, w, h, fmt; int vram; } nv2d_surf;
+typedef struct { u64 va; u32 pitch, w, h, fmt; int vram; u32 bl; } nv2d_surf;
 #define NV2D_COPY 256u
 #define NV2D_OVER 257u
 int nv2d_ready(void);
@@ -122,7 +123,23 @@ int nvgsp_on(char* msg,int max);
 typedef struct { int state, present, present_ok, twod, twod_obj, compute, compute_loaded, drawing, off, autostart; const char* state_name; const char* off_why; const char* cp_why; u64 off_age_s;
     u32 frames, rframes, ce_timeouts, readback_bad, twod_ops, twod_timeouts, cp_ops, cp_subs, cp_timeouts, cp_last_us, gsp_errors, off_count, on_count, vram_surfaces; u64 vram_total, vram_free, vram_surface_bytes; u16 dev; } nvgsp_info_t;
 int nvgsp_info(nvgsp_info_t* o);
-typedef struct { u32 id, or_type, proto, dfp_flags; int connected, edid_ok, edid_len, nmodes; char maker[4]; u16 product; char name[14]; u16 mw[4], mh[4], mhz[4]; } nvgsp_mon_t;
+typedef struct { u32 id, or_type, proto, dfp_flags; int connected, edid_ok, edid_len, nmodes; char maker[4]; u16 product; char name[14]; u16 mw[4], mh[4], mhz[4]; int head, lit; u16 act_w, act_h; } nvgsp_mon_t;
+typedef struct { int up, n; u32 sets, timeouts; const char* why; struct { int head, sor, hdmi; u32 id, w, h, khz, ow, oh; } h[4]; } nvgsp_mode_t;
+int nv3d_begin(u32 w,u32 h,float r,float g,float b);
+void nv3d_tri(void* ctx,const float* v);
+int nv3d_end(void);
+int nv3d_to_screen(int dx,int dy,int scale);
+int nv3d_read(u32* out,u32 pitch_px);
+int nv3d_selftest(void);
+int nv3d_ready(void);
+int nv3d_tested(void);
+void nv3d_stats(u32* frames,u32* tris,u32* subs,u32* tmo,u32* us);
+const char* nv3d_why(void);
+int nvgsp_mode(int all);
+int nvgsp_mode_off(void);
+void nvgsp_mode_lost(void);
+void nvgsp_mode_marks(void);
+int nvgsp_mode_info(nvgsp_mode_t* o);
 int nvgsp_monitors(void);
 int nvgsp_mon_get(const nvgsp_mon_t** list,u32* heads,u32* headmask,const char** why);
 const char* nvgsp_mon_sig(const nvgsp_mon_t* m);

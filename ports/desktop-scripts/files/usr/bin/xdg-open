@@ -1,0 +1,12 @@
+#!/bin/bash
+u="$1"
+[ -z "$u" ] && { echo "usage: xdg-open { file | URL }" >&2; exit 1; }
+enc() { local LC_ALL=C s="$1" o="" c i; for ((i=0;i<${#s};i++)); do c="${s:i:1}"; case "$c" in [!\!-~]|' ') o+=$(printf '%%%02X' "'$c");; *) o+="$c";; esac; done; printf '%s' "$o"; }
+case "$u" in
+  http://*|https://*) printf 'nvx-open:%s\n' "$(enc "$u")" > /dev/kmsg 2>/dev/null && exit 0; echo "xdg-open: the browser could not be asked to open the link" >&2; exit 4;;
+esac
+if [ -e "${u#file://}" ]; then echo "xdg-open: no program is set to open files like ${u#file://}" >&2; exit 3; fi
+case "$u" in
+  *:*) echo "xdg-open: links of the kind ${u%%:*}: are not opened on NoovexOS" >&2; exit 4;;
+esac
+echo "xdg-open: file '$u' does not exist" >&2; exit 2

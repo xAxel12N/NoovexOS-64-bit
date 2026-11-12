@@ -166,7 +166,7 @@ int main(int argc,char** argv){
         printf("== real BOOTX64.EFI, %s layout%s ==\n",iso?"ISO/USB":"installed disk",iso?", ExitBootServices fails once":"");
         ST_ r=0; int jumped=0;
         if(!sigsetjmp(g_jb,1)){ r=run(); } else jumped=1;
-        chk("the loaded PE image runs and talks to the firmware (ms_abi)", strstr(g_out,"NoovexOS UEFI loader 2.0")!=0);
+        chk("the loaded PE image runs and talks to the firmware (ms_abi)", strstr(g_out,"NoovexOS UEFI loader 3.0")!=0);
         chk("kernel found", strstr(g_out,iso?"\\boot\\kernel64.bin":"\\KERNEL64.BIN")!=0);
         chk("ExitBootServices succeeded", g_exited==1&&g_exits==(iso?2:1));
         chk("interrupts disabled after handover (cli executed)", g_cli_skipped==1);

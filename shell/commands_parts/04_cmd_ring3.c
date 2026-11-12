@@ -53,7 +53,7 @@
             tcol(CYAN); term_puts("  app output:\n"); tcol(WHT);
             int st=0; for(int i=0;i<g_r3out_n;i++){ if(st==0){term_puts("    ");st=1;} term_putc(g_r3out[i]); if(g_r3out[i]=='\n')st=0; } if(st)term_putc('\n');
             tcol(GREEN); term_puts("  PASS: a window was created + drawn entirely through the protocol (rung 4). Press a key.\n"); tcol(WHT);
-            { u64 until=g_ticks+600; while(g_ticks<until && kpop()<0)cpu_idle(); } }
+            { u64 until=g_ticks+600; while(g_ticks<until && kpop()<0){ extern void kidle(void); kidle(); } } }
     }
     else if(seq(cmd,"shmstat")){
         extern struct shmreg g_shm[]; 

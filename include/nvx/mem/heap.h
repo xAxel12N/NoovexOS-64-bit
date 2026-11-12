@@ -3,7 +3,7 @@
 
 #include "include/nvx/base.h"
 
-typedef struct hblk { unsigned long size; struct hblk* next; int used; unsigned int magic; unsigned int caller; unsigned int req; } hblk;
+typedef struct hblk { unsigned long size; struct hblk* next; int used; unsigned int magic; unsigned int caller; unsigned int req; struct hblk* prev; unsigned long spare; } hblk;
 #define HBLK_MAGIC 0x4E56484Bu
 
 extern hblk* heap_head;

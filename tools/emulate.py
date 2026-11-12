@@ -40,6 +40,7 @@ def signature_ok(k):
     imm = immutable_size_for(k)
     a = None if imm is None else hashlib.sha256(bytes(t[:imm])).digest() == stored_imm
     t[full_off:full_off + 32] = bytes(32)
+    t[i + 184:i + 248] = bytes(64)
     b = hashlib.sha256(bytes(t)).digest() == stored_full
     return (b and a is not False), f'full={b} immutable={"not checked (no matching ELF)" if a is None else a}'
 
@@ -138,7 +139,7 @@ def emulate_uefi(R, image, work, kernel_ref):
         R.check('BOOTX64.EFI from the ISO boots to the kernel entry (all scenarios)', rc == 0 and 'ALL PASS' in out, out[-300:])
     ub = os.path.join(SRC, 'boot/uefi/uefiboot.c')
     sim = os.path.join(work, 'sim')
-    rc, out = sh(f"gcc -O1 -w -DUEFI_TEST -fshort-wchar -D_GNU_SOURCE -c '{ub}' -o '{work}/lt.o' && gcc -O1 -w -fshort-wchar -D_GNU_SOURCE -c '{TESTS}/firmware_sim.c' -o '{work}/fs.o' && gcc -o '{sim}' '{work}/fs.o' '{work}/lt.o'")
+    rc, out = sh(f"gcc -O1 -w -DUEFI_TEST -fshort-wchar -D_GNU_SOURCE -I '{SRC}/build' -c '{ub}' -o '{work}/lt.o' && gcc -O1 -w -fshort-wchar -D_GNU_SOURCE -c '{TESTS}/firmware_sim.c' -o '{work}/fs.o' && gcc -o '{sim}' '{work}/fs.o' '{work}/lt.o'")
     if R.check('built the loader C code against the firmware simulator', rc == 0, out[:200]):
         rc, out = sh([sim], cwd=work)
         for l in out.splitlines():

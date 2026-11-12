@@ -61,6 +61,8 @@
 #define LX_EBADFD 77
 #define LX_SNDCTL 116
 #define LX_SNDPCM 117
+#define LX_BLKD 118
+#define LX_SYSW 119
 #define LX_ENOTEMPTY 39
 #define LX_ENOTSUP 95
 #define LX_AT_FDCWD (-100)
@@ -75,4 +77,7 @@
 #include "sys/linux/linux_parts/04_lx_wait_deadline.c"
 #include "sys/linux/linux_parts/05_lx_mmap.c"
 #include "sys/linux/linux_parts/06_lx_mkdir.c"
+#include "sys/linux/linux_parts/09_lx_more.c"
+#include "sys/linux/linux_parts/10_lx_ns.c"
 #include "sys/linux/linux_parts/07_lx_dup3.c"
+#include "sys/linux/linux_parts/08_sysfs.c"

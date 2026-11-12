@@ -78,6 +78,7 @@
 #include "include/nvx/core/init/installer.h"
 #include "include/nvx/core/init/main.h"
 #include "include/nvx/core/auth/acctui.h"
+#include "include/nvx/core/secboot.h"
 /* ---- Stage 2: pipes | and redirection > < in the shell ---- */
 static const char* g_pipein=0;
 

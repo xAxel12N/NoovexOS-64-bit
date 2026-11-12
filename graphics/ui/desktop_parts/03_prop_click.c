@@ -216,7 +216,7 @@ int launcher_key(char c){ if(!g_launcher)return 0;
 static void alttab_draw(void){ if(g_altn<=0)return; int cw=96, pw=g_altn*cw+24; if(pw>(int)W-40)pw=(int)W-40; int ph=120; int px=((int)W-pw)/2, py=((int)H-ph)/2;
     shadow_soft(px,py,pw,ph,14); fill_round(px,py,pw,ph,14,15,rgb(30,34,44));
     for(int k=0;k<g_altn;k++){ int cx=px+12+k*cw, cy=py+14; int sel=(k==g_altsel); if(sel) fill_round(cx,cy,cw-8,ph-28,10,15,mix(rgb(30,34,44),rgb(255,255,255),40));
-        launch_icon(g_altlist[k], cx+(cw-8)/2-24, cy+8); const char*nm=APPNAME[g_altlist[k]]; char t[14]; int tn=0; for(int q=0;nm[q]&&tn<12;q++)t[tn++]=nm[q]; t[tn]=0; dstr_ctr(cx+(cw-8)/2, cy+62, t, sel?rgb(255,255,255):rgb(180,186,200),1); } }
+        const char*nm; if(g_altlist[k]>=NWIN){ extern void xwin_icon(int,int,int,int); extern const char* xwin_title(int); xwin_icon(g_altlist[k]-NWIN,cx+(cw-8)/2-24,cy+8,48); nm=xwin_title(g_altlist[k]-NWIN); } else { launch_icon(g_altlist[k], cx+(cw-8)/2-24, cy+8); nm=APPNAME[g_altlist[k]]; } char t[14]; int tn=0; for(int q=0;nm[q]&&tn<12;q++)t[tn++]=nm[q]; t[tn]=0; dstr_ctr(cx+(cw-8)/2, cy+62, t, sel?rgb(255,255,255):rgb(180,186,200),1); } }
 /* ---- toast ---- */
 static void toast_draw(void){ { extern int osd_draw(void); if(osd_draw())return; } if(!toast_t)return; u64 age=(u64)(g_ticks-toast_t); if(age>=300){toast_t=0;return;}
     int a=255; if(age>240) a=255-(int)(age-240)*255/60; int tw=slen(toast_msg)*8+40; int tx=((int)W-tw)/2, ty=(int)H-140;
@@ -274,7 +274,7 @@ static void compose_build(void){
     draw_dock();
     { extern void xover_draw(void); xover_draw(); }
     if(g_launcher) launcher_draw(); if(g_qs) qs_draw(); if(g_clockpop) clockpop_draw();
-    if(g_ctx) ctx_draw(); img_viewer_draw(); if(g_alttab) alttab_draw(); if(g_rename) rename_draw(); if(g_prop) prop_draw();
+    if(g_ctx) ctx_draw(); { extern void xtray_pop_draw(int); xtray_pop_draw(g_dstyle!=1); } img_viewer_draw(); if(g_alttab) alttab_draw(); if(g_rename) rename_draw(); if(g_prop) prop_draw();
     if(g_wifipop) wifi_panel_draw(); if(g_notifpanel) notif_panel_draw(); toast_frame(); notif_toast_draw(); ws_overlay_draw(); toast_draw(); { extern void ss_draw(void); ss_draw(); } { extern void pm_draw(void); pm_draw(); } { extern void acct_dlg_draw(void); acct_dlg_draw(); }
     night_tint(0,(int)H);
     if(g_gfx) g_dmg_ok=gfx_scene_end(&g_dmx,&g_dmy,&g_dmw,&g_dmh); else g_dmg_ok=0;

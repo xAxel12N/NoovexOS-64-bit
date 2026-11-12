@@ -172,6 +172,7 @@ int dhcp_config(void){
 
 int g_netdev_wifi=0;
 extern volatile u64 g_ticks; static u64 g_dhcp_last=0; static int g_dhcp_retry=0;
+void dhcp_retry_reset(void){ g_dhcp_retry=0; }
 int nic_up(void){
     if(g_netdev_wifi)return g_linkok&&g_linkok();
     int r=nic_up_raw();

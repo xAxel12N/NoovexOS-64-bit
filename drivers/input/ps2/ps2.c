@@ -122,3 +122,6 @@ void ps2_byte(void){
     u8 v=inb(0x60);
     if(st&0x20) mouse_feed(v); else kbd_feed(v);
 }
+static volatile u16 g_ps2r[256]; static volatile u32 g_ps2w, g_ps2rd;
+void ps2_byte_fast(void){ for(int n=0;n<16;n++){ u8 st=inb(0x64); if(!(st&1))break; u8 v=inb(0x60); u32 w=g_ps2w; if(w-g_ps2rd<256u){ g_ps2r[w&255]=(u16)(((st&0x20)?0x100:0)|v); __atomic_store_n(&g_ps2w,w+1,__ATOMIC_RELEASE); } } }
+void ps2_drain(void){ while(g_ps2rd!=__atomic_load_n(&g_ps2w,__ATOMIC_ACQUIRE)){ u16 x=g_ps2r[g_ps2rd&255]; g_ps2rd++; if(x&0x100)mouse_feed((u8)x); else kbd_feed((u8)x); } }

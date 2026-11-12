@@ -18,6 +18,7 @@
 #include "include/nvx/fs/vfs/ramfs.h"
 #include "include/nvx/drivers/usb/xhci.h"
 #include "include/nvx/fs/vfs/sysroot.h"
+#include "include/nvx/core/secboot.h"
 
 extern volatile u64 g_ticks;
 extern volatile u32 g_ml_beat;
@@ -58,6 +59,7 @@ static void up_set_why(const char* a,const char* b){ char* p=g_upd.why; char* e=
 
 int upd_vnum(const char* v){ int a=0,b=0,nb=0; while(*v=='v'||*v=='V')v++; while(*v>='0'&&*v<='9'){ a=a*10+(*v-'0'); v++; } if(*v=='.'){ v++; while(*v>='0'&&*v<='9'&&nb<2){ b=b*10+(*v-'0'); v++; nb++; } if(nb==1)b*=10; } return a*100+b; }
 
+static const char* g_us_dlname; static int g_us_app, g_pk_strict;
 static int g_us_on=0, g_us_pct=0, g_us_phase=0; static long g_us_dl_total=0; static u64 g_us_last=0; static char g_us_l1[64], g_us_det[170]; static int g_us_drawn=0;
 static unsigned long long g_us_wdone=0, g_us_wtotal=0; static int g_us_wlo=0, g_us_whi=0;
 extern const u8 wpf_npt; extern const int wpf_ncp; extern const struct { u16 adv16; signed char x0, y0; u8 w, h; u32 off; } wpf_g[]; extern const u8 _binary_wpf_data_bin_start[];
@@ -82,16 +84,16 @@ static void us_frame(void){
     char l[96],*p=l; p=up_cpy(p,g_us_l1); if(g_us_pct>=0&&g_us_pct<100){ p=up_cpy(p," "); p=up_num(p,(unsigned)g_us_pct); p=up_cpy(p,"%"); }
     us_text(cx,cy+8,l,8,fg);
     if(g_us_pct<0){ if(g_us_det[0])us_text(cx,cy+44,g_us_det,4,dim); }
-    else us_text(cx,cy+44,"Don't turn off your computer",4,dim);
+    else us_text(cx,cy+44,g_us_app?(g_us_det[0]?g_us_det:"Getting the app ready"):"Don't turn off your computer",4,dim);
     fill_rect(0,h-56,w,24,bg);
-    us_text(cx,h-38,g_us_pct<0?"Your computer will keep using the current version":"Your computer will restart once when it's done",2,faint);
+    if(!g_us_app)us_text(cx,h-38,g_us_pct<0?"Your computer will keep using the current version":"Your computer will restart once when it's done",2,faint);
     blit_all();
 }
 static void us_pump(void){
     g_ml_beat++;
     if(!g_us_on||g_ticks-g_us_last<4)return; g_us_last=g_ticks;
-    if(g_us_phase==1&&g_us_dl_total>0){ long got=g_net_rx; if(got>g_us_dl_total)got=g_us_dl_total; int pc=(int)(got*55/g_us_dl_total); if(pc>g_us_pct)g_us_pct=pc;
-        char* p=g_us_det; p=up_cpy(p,"Downloading NoovexOS "); p=up_cpy(p,g_upd.latest); p=up_cpy(p," - "); p=up_num(p,(unsigned long long)got/1048576ULL); p=up_cpy(p," of "); p=up_num(p,(unsigned long long)g_us_dl_total/1048576ULL); p=up_cpy(p," MB"); }
+    if(g_us_phase==1&&g_us_dl_total>0){ long got=g_net_rx; if(got>g_us_dl_total)got=g_us_dl_total; int pc=(int)(got*(g_us_app?99:55)/g_us_dl_total); if(pc>g_us_pct)g_us_pct=pc;
+        char* p=g_us_det; p=up_cpy(p,"Downloading "); if(g_us_dlname)p=up_cpy(p,g_us_dlname); else { p=up_cpy(p,"NoovexOS "); p=up_cpy(p,g_upd.latest); } p=up_cpy(p," - "); p=up_num(p,(unsigned long long)got/1048576ULL); p=up_cpy(p," of "); p=up_num(p,(unsigned long long)g_us_dl_total/1048576ULL); p=up_cpy(p," MB"); }
     if(g_us_phase==3&&g_us_wtotal){ unsigned long long d=g_us_wdone; if(d>g_us_wtotal)d=g_us_wtotal; int pc=g_us_wlo+(int)(d*(unsigned long long)(g_us_whi-g_us_wlo)/g_us_wtotal); if(pc>g_us_pct)g_us_pct=pc; }
     us_frame(); }
 void upd_screen_begin(const char* l1){ g_frz_hold=1; g_us_on=1; g_us_drawn=0; g_us_pct=0; g_us_phase=0; g_us_det[0]=0; up_ncpy(g_us_l1,l1,sizeof g_us_l1); g_us_last=0; us_frame(); }
@@ -137,7 +139,8 @@ static int up_find_usb(void){
     g_upd.usb=0; up_set_why("The USB stick does not hold NoovexOS. Updates from a USB stick work on a stick made from the NoovexOS ISO.",0); return 0; }
 static int up_find(void){
     if(g_upd.pbase){ if(!g_upd.usb||msd_ok)return 1; g_upd.pbase=0; g_upd.pn=0; g_upd.usb=0; }
-    if(!up_installed())return up_find_usb();
+    int inst=up_installed();
+    if(!inst)return up_find_usb();
     if(g_upd.probed)return 0; g_upd.probed=1;
     gdisk_ensure(); if(g_dktype==DK_NONE){ up_set_why("No system disk was found.",0); return 0; }
     if(dk_ratio()!=1){ up_set_why("Updates from inside NoovexOS need a disk with 512-byte sectors. Install the new version from the ISO.",0); return 0; }
@@ -199,10 +202,12 @@ int upd_kcheck(const u8* k,u32 n,char* ver){
     if(off==0xFFFFFFFFu)return -2;
     if(ver){ int j=0; for(;j<15&&k[off+8+j]>=' '&&k[off+8+j]<127;j++)ver[j]=(char)k[off+8+j]; ver[j]=0; }
     if(up_rd32(k+off+28)!=n)return -3;
+    if(off+320>n)return -2;
+    int nl=up_rd32(k+off+128)==1;
     int zero=1; for(int j=0;j<32;j++) if(k[off+88+j])zero=0; if(zero)return 1;
-    sha256 c; sha256_init(&c); u8 z[32]; for(int j=0;j<32;j++)z[j]=0;
-    u32 seg[3][2]={{0,off+32},{off+64,off+88},{off+120,n}};
-    for(int s=0;s<3;s++){ u32 a=seg[s][0], e=seg[s][1]; while(a<e){ u32 q=e-a; if(q>1048576u)q=1048576u; sha256_update(&c,k+a,(int)q); a+=q; if(g_us_on)us_pump(); else g_ml_beat++; } if(s<2)sha256_update(&c,z,32); }
+    sha256 c; sha256_init(&c); u8 z[64]; for(int j=0;j<64;j++)z[j]=0;
+    u32 seg[4][2]={{0,off+32},{off+64,off+88},{off+120,nl?off+184:n},{nl?off+248:n,n}};
+    for(int s=0;s<4;s++){ u32 a=seg[s][0], e=seg[s][1]; while(a<e){ u32 q=e-a; if(q>1048576u)q=1048576u; sha256_update(&c,k+a,(int)q); a+=q; if(g_us_on)us_pump(); else g_ml_beat++; } if(s<2||(s==2&&nl))sha256_update(&c,z,s==2?64:32); }
     u8 d[32]; sha256_final(&c,d); for(int j=0;j<32;j++) if(d[j]!=k[off+88+j])return -4;
     return 0;
 }
@@ -275,22 +280,41 @@ static int up_sr_put(const u8* sb,long slen,u8* vb){
     if(!vf_exists("/sysroot")&&vf_mkdir("/sysroot")){ klog("update: could not make the /sysroot folder"); return -1; }
     if(vf_size(nm)>=0)vf_delete(nm);
     int r=up_put_verify(nm,sb,slen,vb); if(r)vf_delete(nm); else klog2("update: wrote Linux files ",nm); return r; }
+int pack_load(const char* n);
+static void up_packs_put(void){
+    char nm[40]; int dir=0;
+    for(int i=0;i<16&&sysroot_list("/usr/share/noovex/packs",i,nm,32,&dir);i++){
+        if(dir)continue; char tg[48],*p=tg; p=up_cpy(p,"pack:"); up_ncpy(p,nm,30); u32 len=0; const u8* b=sysroot_layer_blob(tg,&len); if(!b||!len)continue;
+        char path[48]; p=path; p=up_cpy(p,"/PACKS/"); for(int k=0;nm[k];k++)*p++=(nm[k]>='a'&&nm[k]<='z')?(char)(nm[k]-32):nm[k]; up_cpy(p,".NVS");
+        if(vf_size(path)==(long)len)continue;
+        if(!vf_exists("/PACKS")&&vf_mkdir("/PACKS"))return;
+        if(vf_size(path)>=0)vf_delete(path);
+        u8* vb=(u8*)kmalloc(len); if(!vb)continue; int r=up_put_verify(path,b,(long)len,vb); kfree(vb);
+        if(r){ vf_delete(path); klog2("install: could not copy the app pack ",path); } else klog2("install: copied the app pack ",path); } }
 int upd_put_sysroot_part(unsigned long long base,unsigned long long n){
     u32 sl=0; const u8* sb=sysroot_base_blob(&sl); if(!sb||!sl)return -1;
+    if(!g_upd.usb){ g_upd.pbase=0; g_upd.pn=0; } g_upd.probed=0;
+    { char nm[40]; int dir=0; for(int i=0;i<16&&sysroot_list("/usr/share/noovex/packs",i,nm,32,&dir);i++) if(!dir)pack_load(nm); }
     int su=g_upd.usb; g_upd.usb=0;
     if(up_mount(up_rd,up_wr,base,n,0)){ g_upd.usb=su; return -1; }
     u8* vb=(u8*)kmalloc(sl); int r=vb?up_sr_put(sb,(long)sl,vb):-1; if(vb)kfree(vb);
+    if(!r)up_packs_put();
     up_close(); up_flush(); g_upd.usb=su; return r; }
 static int up_sr_load_disk(void){
     if(sysroot_base_ok()||!sysroot_want_size())return 1;
     char nm[32]; sysroot_file_name(sysroot_want_crc(),nm); long s=vf_size(nm);
     if(s!=(long)sysroot_want_size()){ klog2("update: Linux files missing on the boot partition: ",nm); return 0; }
     u8* b=(u8*)kmalloc((unsigned long)s); if(!b)return 0;
-    if(vf_read(nm,(char*)b,s)!=s||!sysroot_set_base(b,(u32)s,1)){ kfree(b); klog2("update: Linux files damaged on the boot partition: ",nm); return 0; }
+    if(vf_read(nm,(char*)b,s)!=s){ kfree(b); klog2("update: Linux files damaged on the boot partition: ",nm); return 0; }
+    if(g_lockdown&&secboot_check_sysroot(b,(u32)s)){ kfree(b); klog2("update: Linux files refused by the signature check: ",nm); return 0; }
+    if(!sysroot_set_base(b,(u32)s,1)){ kfree(b); klog2("update: Linux files damaged on the boot partition: ",nm); return 0; }
     g_sr_src=2; sysroot_mkdirs(); klog2("update: Linux files loaded from the boot partition: ",nm); return 1; }
 static void up_phase(int lo,int hi,unsigned long long sectors){ g_us_phase=3; g_us_wlo=lo; g_us_whi=hi; g_us_wdone=0; g_us_wtotal=sectors?sectors:1; }
 
 static int up_apply(const u8* nk,long nlen,const u8* sb,long slen,const char* nver){
+    if(secboot_signed()){ u32 sv=0; int r=secboot_check_update(nk,(u32)nlen,sb,(u32)(sb?slen:0),&sv);
+        if(r){ char t[120],*p=t; p=up_cpy(p,"update: refused by the signature check: "); up_cpy(p,secboot_why(r)); klog(t);
+            up_set_why(r==-9?"The new version is older than the lowest allowed version, so it was not installed.":r==-4?"The new version is signed with a different key, so it was not installed.":"The new version is not signed correctly, so it was not installed.",0); return -1; } }
     if(g_upd.usb){ upd_screen(70,"Making room on the USB stick"); int gr=up_grow(); if(gr<0){ up_set_why(gr==-2?"The free space on the USB stick is not empty in its file table, so it was not changed.":"The USB stick could not be prepared for the update. Nothing was changed.",0); return -1; } }
     if(up_open(0)){ up_set_why("The boot partition could not be opened for writing.",0); return -1; }
     int st=up_state_load();
@@ -309,7 +333,9 @@ static int up_apply(const u8* nk,long nlen,const u8* sb,long slen,const char* nv
     if(!ok){ up_close(); if(g_upd.usb){ up_set_why("The USB stick was made from an older NoovexOS ISO and has no room to keep the previous version. Write NoovexOS 10.02 or newer to the stick once - after that it updates itself.",0); return -1; } char t[40],*p=t; p=up_num(p,(unsigned long long)(freeb/1048576)); up_cpy(p," MB free)."); up_set_why("The boot partition is too small to keep the previous version next to the new one (",t); return -1; }
     if(sb&&slen>0){ u32 nc=up_rd32(nk+16); up_sr_prune(sysroot_want_crc(),nc,good_old?up_hdr_crc(UP_KOLD):0);
         char nm[32]; sysroot_file_name(nc,nm); long have=vf_size(nm)==slen?slen:0; long fb=(long)vf_free_bytes_kb()*1024L;
-        if(!good_old&&sold>0&&fb+have<slen+nlen+UP_MARGIN){ vf_delete(UP_KOLD); sold=-1; }
+        if(fb+have<slen+nlen+UP_MARGIN){ up_srl pl; pl.c=0; if(vf_ls("/PACKS",up_srl_cb,&pl)==0) for(int i=0;i<pl.c;i++){ char pp[64],*q=pp; q=up_cpy(q,"/PACKS/"); up_ncpy(q,pl.n[i],40); if(vf_delete(pp)==0)klog2("update: removed old app pack ",pp); } fb=(long)vf_free_bytes_kb()*1024L; }
+        if(!good_old&&sold>0&&fb+have<slen+nlen+UP_MARGIN){ vf_delete(UP_KOLD); sold=-1; fb=(long)vf_free_bytes_kb()*1024L; }
+        if(!good_old&&fb+have<slen+nlen+UP_MARGIN&&sysroot_base_ok()){ char cn[32]; sysroot_file_name(sysroot_want_crc(),cn); if(vf_delete(cn)==0)klog2("update: removed the current Linux files to make room (they are in memory): ",cn); }
         u8* sv=(u8*)kmalloc((unsigned long)slen); if(!sv){ up_close(); up_set_why("Not enough memory to install the update.",0); return -1; }
         upd_screen(71,"Installing the Linux files of the new version");
         up_phase(71,72,(unsigned long long)slen/512ULL*2ULL);
@@ -400,6 +426,20 @@ static int up_iso_files(u8* iso,long n,u8** kb,long* klen,u8** sb,long* slen){
                 up_close(); } } }
     return *kb?0:-1; }
 
+typedef struct { char nm[40]; u8* d; long n; } up_pk;
+static int up_iso_packs(u8* iso,long n,up_pk* pk,int max){
+    int c=0; if(n<2048L*512L+4096L||iso[510]!=0x55||iso[511]!=0xAA)return 0;
+    u32 pst=up_rd32(iso+446+8), pn=up_rd32(iso+446+12); if(!pst||(unsigned long long)pst*512ULL>=(unsigned long long)n)return 0;
+    g_up_mem=iso; g_up_memlen=n; if(!pn||(unsigned long long)(pst+pn)*512ULL>(unsigned long long)n)pn=(u32)(n/512-pst);
+    if(up_mount(up_memrd,0,pst,pn,1))return 0;
+    up_srl l; l.c=0; if(vf_ls("/PACKS",up_srl_cb,&l)==0){
+        for(int i=0;i<l.c&&c<max;i++){ char path[64],*p=path; p=up_cpy(p,"/PACKS/"); up_ncpy(p,l.n[i],40); long ln=0; u8* d=up_mem_file(path,&ln,n); if(!d)continue; up_ncpy(pk[c].nm,path,40); pk[c].d=d; pk[c].n=ln; c++; } }
+    up_close(); return c; }
+static void up_put_packs(up_pk* pk,int c){
+    if(!c||up_open(0))return;
+    if(!vf_exists("/PACKS"))vf_mkdir("/PACKS");
+    for(int i=0;i<c;i++){ if(vf_size(pk[i].nm)>=0)vf_delete(pk[i].nm); if((long)vf_free_bytes_kb()*1024L<pk[i].n+(400L<<20)){ klog2("update: not enough room for app pack ",pk[i].nm); continue; } u8* vb=(u8*)kmalloc((unsigned long)pk[i].n); if(!vb)continue; if(up_put_verify(pk[i].nm,pk[i].d,pk[i].n,vb))vf_delete(pk[i].nm); else klog2("update: wrote app pack ",pk[i].nm); kfree(vb); }
+    up_close(); up_flush(); }
 int upd_install(int force){
     if(g_upd.busy)return -1;
     if(!up_find()){ toast(g_upd.why); return -1; }
@@ -411,14 +451,17 @@ int upd_install(int force){
     upd_screen(65,"Unpacking the new version");
     u8* kb=0; u8* sb=0; long klen=0, slen=0;
     int fr=up_iso_files(iso,n,&kb,&klen,&sb,&slen);
+    up_pk pk[4]; int npk=fr?0:up_iso_packs(iso,n,pk,4);
     kfree(iso);
     if(fr){ up_set_why(fr==-2?"The Linux files of the new version are missing or damaged inside the download.":"The new version could not be found inside the download.",0); return up_fail_screen(); }
     upd_screen(68,"Checking the new version");
     char nver[16]; nver[0]=0; int kr=upd_kcheck(kb,(u32)klen,nver);
-    if(kr!=0){ kfree(kb); if(sb)kfree(sb); up_set_why(kr==1?"The new version has no build checksum, so it was not installed.":"The new version failed its build check, so it was not installed.",0); return up_fail_screen(); }
-    if(!force&&upd_vnum(nver)<=upd_vnum(g_upd.cur)){ kfree(kb); if(sb)kfree(sb); up_set_why("The download is not newer than this version.",0); return up_fail_screen(); }
+    if(kr!=0){ kfree(kb); if(sb)kfree(sb); for(int i=0;i<npk;i++)kfree(pk[i].d); up_set_why(kr==1?"The new version has no build checksum, so it was not installed.":"The new version failed its build check, so it was not installed.",0); return up_fail_screen(); }
+    if(!force&&upd_vnum(nver)<=upd_vnum(g_upd.cur)){ kfree(kb); if(sb)kfree(sb); for(int i=0;i<npk;i++)kfree(pk[i].d); up_set_why("The download is not newer than this version.",0); return up_fail_screen(); }
     g_upd.new_bytes=klen;
     int r=up_apply(kb,klen,sb,slen,nver); kfree(kb); if(sb)kfree(sb);
+    if(!r&&npk){ upd_screen(97,"Saving the app files"); up_put_packs(pk,npk); }
+    for(int i=0;i<npk;i++)kfree(pk[i].d);
     if(r)return up_fail_screen();
     { char t[64],*p=t; p=up_cpy(p,"update: installed "); p=up_cpy(p,nver); p=up_cpy(p,", restarting"); klog(t); }
     us_title("Restarting"); upd_screen(100,"NoovexOS will check the new version when it starts");
@@ -443,6 +486,7 @@ int upd_repair(void){
     int fr=up_iso_files(iso,n,&kb,&klen,&sb,&slen); kfree(iso); if(kb)kfree(kb);
     if(fr||!sb){ if(sb)kfree(sb); up_set_why("The Linux files could not be found inside the download.",0); return up_fail_screen(); }
     if(slen!=(long)sysroot_want_size()||sysroot_crc(sb,(u32)slen)!=sysroot_want_crc()){ kfree(sb); up_set_why("The server has a different build of this version. Install the newest version from the ISO.",0); return up_fail_screen(); }
+    if(secboot_signed()&&secboot_check_sysroot(sb,(u32)slen)){ kfree(sb); klog("update: downloaded Linux files refused by the signature check"); up_set_why("The downloaded Linux files do not match the signed hash of this version, so they were not used.",0); return up_fail_screen(); }
     upd_screen(80,"Saving the Linux files on the boot partition");
     int w=-1; if(up_open(0)==0){ u8* vb=(u8*)kmalloc((unsigned long)slen); if(vb){ up_phase(80,96,(unsigned long long)slen/512ULL*2ULL); w=up_sr_put(sb,slen,vb); g_us_phase=0; kfree(vb); } up_close(); up_flush(); }
     if(!sysroot_set_base(sb,(u32)slen,1)){ kfree(sb); up_set_why("The Linux files could not be loaded.",0); return up_fail_screen(); }
@@ -559,3 +603,77 @@ void upd_cmd(const char* a){
     term_puts("  update [status|check|install|reinstall|repair|back|new|url <url>|url default]\n");
 }
 
+
+static int up_find_pk(int* tmp){
+    *tmp=0; if(up_find())return 1; if(up_installed())return 0;
+    gdisk_ensure(); if(g_dktype==DK_NONE||dk_ratio()!=1)return 0;
+    u8 m[512]; if(nk_blk_rd(0,1,m)||m[510]!=0x55||m[511]!=0xAA)return 0;
+    int su=g_upd.usb; g_upd.usb=0; if(up_part_scan(m)){ *tmp=1; return 1; } g_upd.usb=su; return 0; }
+static void up_find_pk_end(int tmp){ if(tmp){ g_upd.pbase=0; g_upd.pn=0; g_upd.usb=0; } }
+static long upd_boot_read(const char* path,u8** out){
+    *out=0; int tmp=0; if(!up_find_pk(&tmp))return -1; if(up_open(1)){ up_find_pk_end(tmp); return -1; }
+    long n=vf_size(path); if(n<=0){ up_close(); up_find_pk_end(tmp); return -2; }
+    u8* b=(u8*)kmalloc((unsigned long)n); if(!b){ up_close(); up_find_pk_end(tmp); return -3; }
+    long got=vf_read(path,(char*)b,n); up_close(); up_find_pk_end(tmp);
+    if(got!=n){ kfree(b); return -1; } *out=b; return n; }
+
+char g_pack_req[32]; static int g_pack_phase; static char g_pack_cur[32]; static char g_pack_st[128];
+const char* pack_status(void){ return g_pack_st; }
+static void pk_st(const char* a,const char* b){ char* p=g_pack_st; p=up_cpy(p,a); if(b)up_ncpy(p,b,(int)(sizeof g_pack_st-(unsigned long)(p-g_pack_st))); }
+void pack_queued(void){ pk_st("busy queued",0); }
+static int pk_name_ok(const char* s){ int k=0; for(;s[k];k++){ char c=s[k]; if(!((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'))return 0; if(k>=24)return 0; } return k>0; }
+int pack_loaded(const char* n){ extern int sysroot_has_layer(const char*); char tg[40],*p=tg; p=up_cpy(p,"pack:"); up_ncpy(p,n,30); return sysroot_has_layer(tg); }
+static void pk_file(const char* n,char* path){ char* p=path; p=up_cpy(p,"/PACKS/"); for(int k=0;n[k];k++)*p++=(n[k]>='a'&&n[k]<='z')?(char)(n[k]-32):n[k]; up_cpy(p,".NVS"); }
+static int pk_meta(const char* n,u32* size,u32* crc){
+    char mp[64],*p=mp; p=up_cpy(p,"/usr/share/noovex/packs/"); up_ncpy(p,n,30); u32 l=0; int ex=0; const u8* d=sysroot_get(mp,&l,&ex); if(!d)return 0;
+    u32 i=0; while(i<l&&d[i]!='\n')i++; i++; if(i>=l)return 0;
+    u32 sz=0; while(i<l&&d[i]>='0'&&d[i]<='9'){ sz=sz*10+(u32)(d[i]-'0'); i++; } while(i<l&&d[i]==' ')i++;
+    u32 c=0; int nd=0; while(i<l&&nd<8){ int h=up_hexv((char)d[i]); if(h<0)break; c=c*16+(u32)h; i++; nd++; }
+    if(!sz||nd!=8)return 0; *size=sz; *crc=c; return 1; }
+static int pk_good(const u8* b,long len,u32 sz,u32 crc){ if(!sz)return len>0&&!g_pk_strict; return len==(long)sz&&sysroot_crc(b,(u32)len)==crc; }
+static u8* pk_download(const char* n,u32 sz,long* outn){
+    char nm[40],*p; pk_file(n,nm); const char* fn=nm+7;
+    char u1[200],u2[200];
+    p=u1; p=up_cpy(p,"https://github.com/xAxel12N/NoovexOS-64-bit/releases/download/v"); p=up_cpy(p,(const char*)g_buildsig.version); p=up_cpy(p,"/"); up_cpy(p,fn);
+    p=u2; p=up_cpy(p,"https://github.com/xAxel12N/NoovexOS-64-bit/releases/latest/download/"); up_cpy(p,fn);
+    { int k=k_find_file("/etc/pack-url"); if(k>=0){ char* d=fsd(k); int L=FS[k].len, o=0; char tb[200]; p=tb; while(o<L&&o<150&&d[o]>' '){ *p++=d[o]; o++; } *p=0; if(o>8&&(tb[0]=='h')){ up_cpy(p,fn); up_cpy(u1,tb); up_cpy(u2,tb); } } }
+    char t[64]; p=t; p=up_cpy(p,"Getting "); up_ncpy(p,n,30); if(t[8]>='a'&&t[8]<='z')t[8]=(char)(t[8]-32);
+    g_us_app=1; upd_screen_begin(t); g_us_dlname=t+8;
+    void (*sv)(void)=g_wait_pump; g_wait_pump=us_pump; g_us_phase=1; g_us_dl_total=sz?(long)sz:100000000L; g_net_rx=0;
+    long got=0; const char* err=0; u8* d=net_get_url(u1,&got,(long)(sz?sz:200000000u)+65536,&err);
+    if(!d){ klog2("pack: download failed: ",err); g_net_rx=0; got=0; d=net_get_url(u2,&got,(long)(sz?sz:200000000u)+65536,&err); }
+    g_wait_pump=sv; g_us_phase=0; g_us_dlname=0; upd_screen_end(); g_us_app=0;
+    if(!d){ pk_st("fail The download failed: ",err); klog2("pack: download failed: ",err); return 0; }
+    *outn=got; return d; }
+static void pk_save(const char* n,const u8* b,long len){
+    int tmp=0; if(!up_find_pk(&tmp))return;
+    g_us_app=1; upd_screen_begin("Saving the app files"); upd_screen(0,"Keeping them on the boot disk so the next start is fast");
+    if(g_upd.usb){ int gr=up_grow(); if(gr<0)klog("pack: the USB stick partition could not be grown"); }
+    if(up_open(0)){ upd_screen_end(); g_us_app=0; up_find_pk_end(tmp); return; } char path[48]; pk_file(n,path);
+    if(vf_size(path)>=0)vf_delete(path);
+    if((long)vf_free_bytes_kb()*1024L<len+1048576L)klog("pack: not enough room on the boot disk to keep the app files");
+    else { if(!vf_exists("/PACKS"))vf_mkdir("/PACKS"); u8* vb=(u8*)kmalloc((unsigned long)len); if(vb){ up_phase(0,99,(unsigned long long)len/256ULL); if(up_put_verify(path,b,len,vb))vf_delete(path); else klog2("pack: saved on the boot disk: ",path); g_us_phase=0; kfree(vb); } }
+    up_close(); up_flush(); upd_screen_end(); g_us_app=0; up_find_pk_end(tmp); }
+int pack_load2(const char* n,int net){
+    if(!pk_name_ok(n))return -1; if(pack_loaded(n)){ pk_st("ok",0); return 0; }
+    char path[48]; pk_file(n,path); u32 sz=0, crc=0; pk_meta(n,&sz,&crc);
+    u64 t0=g_ticks; u8* b=0; int ofh=g_frz_hold; g_frz_hold=1;
+    char ttl[48]; { char* q=ttl; q=up_cpy(q,"Starting "); up_ncpy(q,n,30); if(ttl[9]>='a'&&ttl[9]<='z')ttl[9]=(char)(ttl[9]-32); }
+    int scr=g_state==ST_DESKTOP; if(scr){ g_us_app=1; upd_screen_begin(ttl); upd_screen(0,"Reading the app files from the boot disk"); up_phase(0,99,sz?(unsigned long long)sz/512ULL:200000ULL); }
+    long len=upd_boot_read(path,&b); if(scr){ g_us_phase=0; upd_screen_end(); g_us_app=0; } g_frz_hold=ofh; int src=1;
+    if(len>0&&!pk_good(b,len,sz,crc)){ klog2("pack: damaged or old copy on the boot disk: ",path); kfree(b); b=0; len=0; }
+    if(len<=0&&!net){ pk_st("fail The app files are not on the boot disk.",0); return -2; }
+    if(len<=0){ klog2("pack: not on the boot disk, downloading ",path); pk_st("busy downloading",0); len=0; b=pk_download(n,sz,&len); src=2; if(!b)return -4;
+        g_pk_strict=1; int gd=pk_good(b,len,sz,crc); g_pk_strict=0; if(!gd){ kfree(b); pk_st("fail The downloaded app files are damaged or belong to another NoovexOS version.",0); return -5; } }
+    char tg[40]; char* p=tg; p=up_cpy(p,"pack:"); up_ncpy(p,n,30);
+    g_frz_hold=1; int ok=sysroot_add_layer(tg,b,(u32)len,1); g_frz_hold=ofh; if(!ok){ kfree(b); pk_st("fail The app files could not be opened.",0); return -3; }
+    if(src==2)pk_save(n,b,len);
+    { char m[120],*q=m; q=up_cpy(q,"pack: loaded "); q=up_cpy(q,n); q=up_cpy(q,src==2?" from the internet (":" ("); q=up_num(q,(unsigned long long)len/1048576ULL); q=up_cpy(q," MB in "); q=up_num(q,(g_ticks-t0)*10); up_cpy(q," ms)"); klog(m); }
+    pk_st("ok",0); return 0; }
+int pack_load(const char* n){ return pack_load2(n,0); }
+int pack_poll(void){
+    if(g_pack_phase==1){ g_pack_phase=0; int r=pack_load2(g_pack_cur,1); toast(r==0?"Ready - starting the app":g_pack_st+5); return 1; }
+    if(!g_pack_req[0])return 0;
+    up_ncpy(g_pack_cur,g_pack_req,sizeof g_pack_cur); g_pack_req[0]=0;
+    if(!pk_name_ok(g_pack_cur))return 0; if(pack_loaded(g_pack_cur)){ pk_st("ok",0); return 0; }
+    pk_st("busy loading",0); toast("Loading the app..."); g_pack_phase=1; return 1; }

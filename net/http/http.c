@@ -246,4 +246,5 @@ extern int kshift; extern volatile unsigned char kdown[128]; static unsigned cha
 void kpush(char c){ int n=(kh+1)%KBUFN; if(n!=kt){kbuf[kh]=c; kmod[kh]=(unsigned char)((kdown[0x1D]?1:0)|(kshift?2:0)|(g_krep_flag?4:0)); kh=n;} }
 volatile unsigned char kdown[128];
 int kpending(void){ return kh!=kt; }
+void kidle(void){ extern int xhid_n; extern void xhci_mouse_poll(void); extern volatile u32 g_ml_beat; g_ml_beat++; if(xhid_n)xhci_mouse_poll(); if(kh==kt)cpu_idle(); }
 int kpop(void){ if(kh==kt)return -1; int c=(unsigned char)kbuf[kt]; g_key_ctrl=kmod[kt]&1; g_key_shift=(kmod[kt]>>1)&1; g_key_rep=(kmod[kt]>>2)&1; kt=(kt+1)%KBUFN; return c; }

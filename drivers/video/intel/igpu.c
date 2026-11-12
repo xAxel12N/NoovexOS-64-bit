@@ -20,9 +20,10 @@ int g_fb_wc=0, g_pat_ok=0, g_igpu_flip=0; u8* g_igpu_front; u8* g_igpu_back;
 static int g_wc_pages=0;
 typedef struct { int found, gen, bus, dev; u16 did; u64 mmio, aper, gtt; u32 stolen_mb; const char* name;
     u32 pipesrc, htot, vtot, edp, scaler, plane_ctl, stride, surf, pf; int nat_w, nat_h, cur_w, cur_h, linear, fmt_ok, scanout_match;
-    u64 back_off, front_off; u32 flips, timeouts, pend; char why[64]; u32 bench_us; int scale_on; } igpu_t;
+    u64 back_off, front_off; u32 flips, timeouts, pend; char why[64]; u32 bench_us; int scale_on; int pipe; u64 aper_size; } igpu_t;
 static igpu_t G;
 static volatile u32* R(u32 o){ return (volatile u32*)(G.mmio+o); }
+#define PL(o) ((u32)(o)+(u32)G.pipe*0x1000u)
 static u32 rr(u32 o){ return *R(o); }
 static void ww(u32 o,u32 v){ *R(o)=v; }
 
@@ -55,27 +56,33 @@ void igpu_init(void){
     u32 b0=pci_cfg(0,2,0,0x10), b1=pci_cfg(0,2,0,0x14), a0=pci_cfg(0,2,0,0x18), a1=pci_cfg(0,2,0,0x1C);
     G.mmio=(u64)(b0&0xFFFFFFF0u)|(((b0&6)==4)?((u64)b1<<32):0); G.aper=(u64)(a0&0xFFFFFFF0u)|(((a0&6)==4)?((u64)a1<<32):0);
     u32 ggc=pci_cfg(0,2,0,0x50); if(G.gen>=8){ u32 gms=(ggc>>8)&0xFF; G.stolen_mb=gms<0xF0?gms*32:(gms-0xF0+1)*4; } else G.stolen_mb=((ggc>>3)&0x1F)*32;
+    { extern void pci_wcfg(int,int,int,int,u32); u64 f=cpu_irq_save(); u32 cmd=pci_cfg(0,2,0,4); pci_wcfg(0,2,0,4,cmd&~2u);
+        pci_wcfg(0,2,0,0x18,0xFFFFFFFFu); u32 l=pci_cfg(0,2,0,0x18); pci_wcfg(0,2,0,0x18,a0); u32 h=0xFFFFFFFFu;
+        if((a0&6)==4){ pci_wcfg(0,2,0,0x1C,0xFFFFFFFFu); h=pci_cfg(0,2,0,0x1C); pci_wcfg(0,2,0,0x1C,a1); }
+        pci_wcfg(0,2,0,4,cmd); cpu_irq_restore(f);
+        u64 mask=((u64)h<<32)|(l&0xFFFFFFF0u); if((a0&6)!=4)mask|=0xFFFFFFFF00000000ULL; G.aper_size=(~mask)+1; if(G.aper_size<(16ULL<<20)||G.aper_size>(64ULL<<30))G.aper_size=256ULL<<20; }
     if(!G.mmio||!acpi_hi_map(G.mmio)){ wcpy(G.why,"registers not reachable",64); G.found=2; return; }
     if(G.aper>=0x100000000ULL)acpi_hi_map(G.aper);
     G.gtt=G.mmio+0x800000ULL;
-    G.pipesrc=rr(0x6001C); G.cur_w=(int)((G.pipesrc>>16)&0x1FFF)+1; G.cur_h=(int)(G.pipesrc&0x1FFF)+1;
-    if(G.gen>=7){ G.edp=rr(0x6F400); }
-    u32 ht=(G.edp>>31)?rr(0x6F000):rr(0x60000), vt=(G.edp>>31)?rr(0x6F00C):rr(0x6000C); G.htot=ht; G.vtot=vt; G.nat_w=(int)(ht&0x1FFF)+1; G.nat_h=(int)(vt&0x1FFF)+1;
-    if(G.gen>=9){ G.scaler=rr(0x68180); G.scale_on=(G.scaler>>31)&1; } else if(G.gen>=7){ G.pf=rr(0x68080); G.scale_on=(G.pf>>31)&1; }
-    G.plane_ctl=rr(0x70180); G.stride=rr(0x70188); G.surf=rr(0x7019C);
+    G.pipe=-1; { int first=-1; for(int p=0;p<(G.gen>=12?4:3);p++){ u32 c=rr(0x70180+(u32)p*0x1000u); if(!((c>>31)&1))continue; if(first<0)first=p; u64 sf=rr(0x7019C+(u32)p*0x1000u)&~0xFFFULL; if(G.aper&&(u64)FBB==G.aper+sf){ G.pipe=p; break; } } if(G.pipe<0)G.pipe=first<0?0:first; }
+    G.pipesrc=rr(PL(0x6001C)); G.cur_w=(int)((G.pipesrc>>16)&0x1FFF)+1; G.cur_h=(int)(G.pipesrc&0x1FFF)+1;
+    if(G.gen>=7&&G.gen<=11){ G.edp=rr(0x6F400); { u32 sel=(G.edp>>12)&7; if(G.pipe==0?(sel!=0&&sel!=4):(sel!=(u32)(G.pipe==1?5:6)))G.edp=0; } }
+    u32 ht=(G.edp>>31)?rr(0x6F000):rr(PL(0x60000)), vt=(G.edp>>31)?rr(0x6F00C):rr(PL(0x6000C)); G.htot=ht; G.vtot=vt; G.nat_w=(int)(ht&0x1FFF)+1; G.nat_h=(int)(vt&0x1FFF)+1;
+    if(G.gen>=9){ G.scaler=rr(0x68180+(u32)G.pipe*0x800u); G.scale_on=(G.scaler>>31)&1; } else if(G.gen>=7){ G.pf=rr(0x68080+(u32)G.pipe*0x800u); G.scale_on=(G.pf>>31)&1; }
+    G.plane_ctl=rr(PL(0x70180)); G.stride=rr(PL(0x70188)); G.surf=rr(PL(0x7019C));
     if(G.gen>=9){ G.linear=((G.plane_ctl>>10)&7)==0; u32 f=(G.plane_ctl>>24)&0xF; G.fmt_ok=(f==4); }
     else { G.linear=!((G.plane_ctl>>10)&1); u32 f=(G.plane_ctl>>26)&0xF; G.fmt_ok=(f==6||f==7); }
     G.front_off=G.surf&~0xFFFULL; G.scanout_match=(G.aper&&(u64)FBB==G.aper+G.front_off);
-    { char b[120],*p=b; p=scopy(p,"gpu: Intel "); p=scopy(p,(char*)G.name); p=scopy(p," 8086:"); p=hx(p,G.did,4); p=scopy(p," panel "); p=udec(p,(u32)G.nat_w); *p++='x'; p=udec(p,(u32)G.nat_h); p=scopy(p," mode "); p=udec(p,(u32)G.cur_w); *p++='x'; p=udec(p,(u32)G.cur_h); p=scopy(p,g_fb_wc?" fb write-combining":" fb uncached"); *p=0; klog(b); }
+    { char b[180],*p=b; p=scopy(p,"gpu: Intel "); p=scopy(p,(char*)G.name); p=scopy(p," 8086:"); p=hx(p,G.did,4); p=scopy(p," panel "); p=udec(p,(u32)G.nat_w); *p++='x'; p=udec(p,(u32)G.nat_h); p=scopy(p," mode "); p=udec(p,(u32)G.cur_w); *p++='x'; p=udec(p,(u32)G.cur_h); p=scopy(p,g_fb_wc?" fb write-combining":" fb uncached"); p=scopy(p," pipe "); *p++=(char)('A'+G.pipe); p=scopy(p," aperture "); p=udec(p,(u32)(G.aper_size>>20)); p=scopy(p," MB"); *p=0; klog(b); }
     if(igpu_flip_on()==0){ klog("gpu: tear-free double buffering on"); igpu_blt_init(); } else { char b[100],*p=b; p=scopy(p,"gpu: tear-free off - "); p=scopy(p,G.why); *p=0; klog(b); } }
-static u32 surflive(void){ return rr(0x701AC)&~0xFFFu; }
-void igpu_wait_flip(void){ if(!g_igpu_flip||!G.pend)return; u64 t0=hr_ns(); while(surflive()!=(u32)G.pend){ if(hr_ns()-t0>40000000ULL){ G.timeouts++; if(G.timeouts>=3){ igpu_flip_off("flips did not complete"); return; } break; } cpu_pause(); } G.pend=0; }
+static u32 surflive(void){ return rr(PL(0x701AC))&~0xFFFu; }
+void igpu_wait_flip(void){ if(!g_igpu_flip||!G.pend)return; u64 t0=hr_ns(); int late=0; while(surflive()!=(u32)G.pend){ if(hr_ns()-t0>40000000ULL){ late=1; G.timeouts++; if(G.timeouts>=3){ igpu_flip_off("flips did not complete"); return; } break; } cpu_pause(); } if(!late)G.timeouts=0; G.pend=0; }
 void igpu_pre_blit(void){ if(!g_igpu_flip)return; igpu_wait_flip(); if(!g_igpu_flip)return; FBB=g_igpu_back; }
-void igpu_post_blit(void){ if(!g_igpu_flip)return; u64 bo=(FBB==g_igpu_back)?G.back_off:G.front_off; ww(0x7019C,(rr(0x7019C)&0xFFFu)|(u32)bo); G.pend=(u32)bo; G.flips++;
+void igpu_post_blit(void){ if(!g_igpu_flip)return; u64 bo=(FBB==g_igpu_back)?G.back_off:G.front_off; ww(PL(0x7019C),(rr(PL(0x7019C))&0xFFFu)|(u32)bo); G.pend=(u32)bo; G.flips++;
     u8* t=g_igpu_front; g_igpu_front=g_igpu_back; g_igpu_back=t; u64 to=G.front_off; G.front_off=G.back_off; G.back_off=to; FBB=g_igpu_front; }
 static u64 g_orig_surf=0; static u8* g_orig_fbb=0; static u64 g_bfront0, g_bback0; extern int g_blt_ok, g_blt_present;
 void igpu_flip_off(const char* why){
-    if(!g_igpu_flip)return; g_igpu_flip=0; g_blt_present=0; ww(0x7019C,(rr(0x7019C)&0xFFFu)|(u32)g_orig_surf); FBB=g_orig_fbb; G.pend=0; wcpy(G.why,why,64); blit_all(); }
+    if(!g_igpu_flip)return; g_igpu_flip=0; g_blt_present=0; ww(PL(0x7019C),(rr(PL(0x7019C))&0xFFFu)|(u32)g_orig_surf); FBB=g_orig_fbb; G.pend=0; wcpy(G.why,why,64); blit_all(); }
 int igpu_flip_on(void){
     if(g_igpu_flip)return 0;
     if(G.found!=1){ wcpy(G.why,"no Intel graphics",64); return -1; }
@@ -83,18 +90,21 @@ int igpu_flip_on(void){
     if(!((G.plane_ctl>>31)&1)){ wcpy(G.why,"primary plane is off",64); return -1; }
     if(!G.linear||!G.fmt_ok||BYPP!=4){ wcpy(G.why,"screen format is not linear 32-bit",64); return -1; }
     if(!G.scanout_match){ wcpy(G.why,"framebuffer is not the scanned-out surface",64); return -1; }
-    u64 sz=((u64)PITCHB*H+0x3FFFFULL)&~0x3FFFFULL; u64 bo=(G.front_off+sz+0x3FFFFULL)&~0x3FFFFULL; if(bo+sz>(256ULL<<20)){ wcpy(G.why,"no room in the graphics aperture",64); return -1; }
+    u64 sz=((u64)PITCHB*H+0x3FFFFULL)&~0x3FFFFULL; u64 bo=(G.front_off+sz+0x3FFFFULL)&~0x3FFFFULL; if(bo+sz>G.aper_size){ wcpy(G.why,"no room in the graphics aperture",64); return -1; }
     volatile u64* gtt=(volatile u64*)G.gtt; u64 fpte=gtt[G.front_off>>12]; if(!(fpte&1)){ wcpy(G.why,"GTT entry of the screen is not valid",64); return -1; }
     u64 fl=fpte&0xFFFULL; u32 np=(u32)(sz>>12); static int built=0;
-    for(u32 i=0;i<np&&!built;i++){ u64 pa=pframe_alloc(); if(!pa){ wcpy(G.why,"out of memory for the second buffer",64); return -1; } gtt[(bo>>12)+i]=(pa&PTE_ADDR)|fl; }
+    if(!built){ u64* old=(u64*)kmalloc((unsigned long)np*8u); if(!old){ wcpy(G.why,"out of memory for the second buffer",64); return -1; }
+        for(u32 i=0;i<np;i++)old[i]=gtt[(bo>>12)+i];
+        for(u32 i=0;i<np;i++){ u64 pa=pframe_alloc(); if(!pa){ for(u32 k=0;k<i;k++){ pframe_free(gtt[(bo>>12)+k]&PTE_ADDR); gtt[(bo>>12)+k]=old[k]; } (void)gtt[(bo>>12)]; ww(0x101008,1); kfree(old); wcpy(G.why,"out of memory for the second buffer",64); return -1; } gtt[(bo>>12)+i]=(pa&PTE_ADDR)|fl; }
+        kfree(old); }
     built=1; (void)gtt[(bo>>12)+np-1]; ww(0x101008,1); (void)rr(0x101008);
     u8* back=(u8*)(G.aper+bo); if(G.aper+bo>=0x100000000ULL&&!acpi_hi_map(G.aper+bo)){ wcpy(G.why,"aperture not mapped",64); return -1; }
     wc_map((u64)back,sz);
     volatile u32* t=(volatile u32*)back; t[0]=0x12345678u; t[np*1024-1]=0x9ABCDEF0u; if(t[0]!=0x12345678u||t[np*1024-1]!=0x9ABCDEF0u){ wcpy(G.why,"second buffer did not keep data",64); return -1; }
     g_orig_surf=G.front_off; g_orig_fbb=FBB; g_igpu_front=FBB; g_igpu_back=back; G.back_off=bo;
     for(u32 y=0;y<H;y++){ u32* s=(u32*)(FBB+(u64)y*PITCHB); u32* d=(u32*)(back+(u64)y*PITCHB); for(u32 x=0;x<W;x++)d[x]=s[x]; }
-    ww(0x7019C,(rr(0x7019C)&0xFFFu)|(u32)bo); u64 t0=hr_ns(); int ok=0; while(hr_ns()-t0<100000000ULL){ if(surflive()==(u32)bo){ ok=1; break; } cpu_pause(); }
-    if(!ok){ ww(0x7019C,(rr(0x7019C)&0xFFFu)|(u32)G.front_off); wcpy(G.why,"display did not switch buffers",64); return -1; }
+    ww(PL(0x7019C),(rr(PL(0x7019C))&0xFFFu)|(u32)bo); u64 t0=hr_ns(); int ok=0; while(hr_ns()-t0<100000000ULL){ if(surflive()==(u32)bo){ ok=1; break; } cpu_pause(); }
+    if(!ok){ ww(PL(0x7019C),(rr(PL(0x7019C))&0xFFFu)|(u32)G.front_off); wcpy(G.why,"display did not switch buffers",64); return -1; }
     g_igpu_front=back; g_igpu_back=g_orig_fbb; u64 to=G.front_off; G.front_off=bo; G.back_off=to; FBB=g_igpu_front; g_igpu_flip=1; G.why[0]=0; g_bfront0=to; g_bback0=bo; return 0; }
 
 void gpuinfo_run(void){ char b[400],*p;

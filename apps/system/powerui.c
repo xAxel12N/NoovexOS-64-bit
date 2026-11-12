@@ -33,14 +33,15 @@ static void pm_do(int i) {
     else if (i == 2) power_sleep();
 }
 void pm_power_button(void) {
+    { extern int g_sleeping; extern void power_wake_req(void); if (g_sleeping) { power_wake_req(); return; } }
     if (g_state != ST_DESKTOP) { power_off(); return; }
     if (g_screen_off) { g_screen_off = 0; bl_screen(1); return; }
-    if (g_pbtn_action == 1) { power_sleep(); return; }
+    if (g_pbtn_action == 1) { extern volatile int g_sleep_req; g_sleep_req = 1; return; }
     if (g_pbtn_action == 2) { power_off(); return; }
     if (g_pm_on && g_ticks - pm_t > 30) { pm_do(0); return; }
     pm_open();
 }
-void pm_sleep_button(void) { if (g_screen_off) { g_screen_off = 0; bl_screen(1); return; } power_sleep(); }
+void pm_sleep_button(void) { { extern int g_sleeping; extern void power_wake_req(void); if (g_sleeping) { power_wake_req(); return; } } if (g_screen_off) { g_screen_off = 0; bl_screen(1); return; } { extern volatile int g_sleep_req; g_sleep_req = 1; } }
 
 void pm_draw(void) {
     if (!g_pm_on) return;
@@ -89,11 +90,12 @@ int pm_screen_off_draw(void) {
     return 1;
 }
 void pm_lid_changed(int open) {
+    { extern int g_sleeping; extern void power_wake_req(void); if (g_sleeping) { if (open) power_wake_req(); return; } }
     if (!open) {
         g_pm_on = 0;
         { extern int g_state, g_logged_in; extern void acct_ui_lock(void); if (g_state == ST_DESKTOP && g_logged_in) acct_ui_lock(); }
         if (g_lid_action == 2) return;
-        if (g_lid_action == 1) { extern int g_acpi_have_s1(void); if (g_acpi_have_s1()) { bl_screen(0); power_sleep(); bl_screen(1); return; } }
+        if (g_lid_action == 1) { extern volatile int g_sleep_req; g_sleep_req = 1; return; }
         g_screen_off = 1; bl_screen(0);
     } else if (g_screen_off) { g_screen_off = 0; bl_screen(1); }
 }

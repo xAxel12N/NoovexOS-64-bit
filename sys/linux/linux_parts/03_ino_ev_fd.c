@@ -41,24 +41,26 @@ static int ino_read(int i,u64 buf,u64 len){
 static void ino_close(int i){ if(i>=0&&i<INO_MAX)g_ino[i].used=0; int a=0; for(int k=0;k<INO_MAX;k++) if(g_ino[k].used)a=1; g_ino_any=a; }
 
 #define SFD_MAX 32
-struct sigfd { int used; u32 mask; };
+struct sigfd { int used; u64 mask; };
 static struct sigfd g_sfd[SFD_MAX];
 static long lx_signalfd(int fd,u64 umask,u64 sz,int flags){
     if(sz!=8)return -LX_EINVAL; if(flags&~(0x800|0x80000))return -LX_EINVAL;
-    u64 m; if(lx_get(&m,umask,8))return -LX_EFAULT; u32 km=lx_l2k(m)&~((1u<<9)|(1u<<19));
+    u64 m; if(lx_get(&m,umask,8))return -LX_EFAULT; u64 km=lx_l2k(m)&~SB_KS;
     if(fd!=-1){ struct vfile* v=lx_vf(fd); if(!v)return -LX_EBADF; if(v->dev!=LX_SIGFD)return -LX_EINVAL; g_sfd[v->fs_idx].mask=km; return fd; }
     int i=-1; for(int k=0;k<SFD_MAX;k++) if(!g_sfd[k].used){ i=k; break; } if(i<0)return -LX_EMFILE;
     g_sfd[i].used=1; g_sfd[i].mask=km;
     int vi=jc_newvf(LX_SIGFD,i,O_RDONLY|(flags&0x800)); if(vi<0){ g_sfd[i].used=0; return -LX_EMFILE; }
     int nfd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(nfd<0)vf_unref(vi); return nfd;
 }
-static u32 sfd_pend(int i){ struct jproc* p=&g_jp[g_jcur]; struct jproc* L=jc_lead(p); return (p->sigpend|L->sigpend)&g_sfd[i].mask; }
+static u64 sfd_pend(int i){ struct jproc* p=&g_jp[g_jcur]; struct jproc* L=jc_lead(p); return (p->sigpend|L->sigpend)&g_sfd[i].mask; }
 static int sfd_read(int i,u64 buf,u64 len){
     if(len<128)return -LX_EINVAL; struct jproc* p=&g_jp[g_jcur]; struct jproc* L=jc_lead(p);
     int n=0;
-    while((u64)n+128<=len){ u32 pd=(p->sigpend|L->sigpend)&g_sfd[i].mask; if(!pd)break; int s=1; while(s<32&&!(pd&(1u<<s)))s++; if(s>=32)break;
-        struct jproc* src=(p->sigpend&(1u<<s))?p:L; src->sigpend&=~(1u<<s);
-        u8 si[128]; lx_zero(si,128); *(u32*)si=(u32)s; *(int*)(si+8)=src->sicode[s]; src->sicode[s]=0; *(u32*)(si+16)=(u32)g_uid;
+    while((u64)n+128<=len){ u64 pd=(p->sigpend|L->sigpend)&g_sfd[i].mask; if(!pd)break; int s=jc_sig_first(pd); if(!s)break;
+        struct jproc* src=(p->sigpend&SB(s))?p:L; struct jsinfo in; jc_sig_take(src,s,&in);
+        u8 si[128]; lx_zero(si,128); *(u32*)si=(u32)s; *(int*)(si+8)=in.code; *(u32*)(si+12)=(u32)in.pid; *(u32*)(si+16)=(u32)in.uid;
+        if(in.code==-2){ *(u32*)(si+24)=(u32)in.pid; *(u32*)(si+32)=(u32)in.uid; *(u32*)(si+12)=0; *(u32*)(si+16)=0; }
+        *(int*)(si+44)=(int)in.val; *(u64*)(si+48)=in.val;
         if(lx_put(buf+(u64)n,si,128))return n?n:-LX_EFAULT; n+=128; }
     return n?n:JS_BLOCK;
 }
@@ -116,7 +118,7 @@ static long lx_fcntl_lock(struct sysregs* r,int fd,int cmd,u64 arg){
 }
 
 #define LXPT_MAX 64
-struct lxptimer { int used, owner, clk, notify, sig, tid, over; u64 next, ival; };
+struct lxptimer { int used, owner, clk, notify, sig, tid, over; u64 next, ival, val; };
 static struct lxptimer g_lxpt[LXPT_MAX];
 void lx_ptimer_tick(int i){
     struct jproc* p=&g_jp[i]; if(p->tg!=i)return;
@@ -124,20 +126,20 @@ void lx_ptimer_tick(int i){
         u64 now=(t->clk==0||t->clk==8)?lx_now_ns():hr_ns(); if(now<t->next)continue;
         if(t->ival){ u64 n=(now-t->next)/t->ival; t->over=n>0x7FFFFFFFULL?0x7FFFFFFF:(int)n; t->next+=(n+1)*t->ival; } else { t->next=0; t->over=0; }
         if(t->notify==1)continue;
-        if(t->notify==4){ int th=jc_idx(t->tid); if(th>=0&&g_jp[th].tg==i){ g_jp[th].sicode[t->sig]=-2; jc_signal_thread(th,t->sig); } }
-        else { p->sicode[t->sig]=-2; jc_signal_proc(i,t->sig); } }
+        if(t->notify==4){ int th=jc_idx(t->tid); if(th>=0&&g_jp[th].tg==i){ jc_sig_set_info(-2,k,t->over,t->val); jc_signal_thread(th,t->sig); } }
+        else { jc_sig_set_info(-2,k,t->over,t->val); jc_signal_proc(i,t->sig); } }
 }
 static long lx_timer_create(int clk,u64 sev,u64 out){
     if(clk!=0&&clk!=1&&clk!=4&&clk!=7&&clk!=8&&clk!=9&&clk!=2&&clk!=3)return -LX_EINVAL;
-    int notify=0, sig=14, tid=0;
-    if(sev){ u8 b[24]; if(lx_get(b,sev,24))return -LX_EFAULT; sig=*(int*)(b+8); notify=*(int*)(b+12); tid=*(int*)(b+16);
+    int notify=0, sig=14, tid=0; u64 val=0; int hasval=0;
+    if(sev){ u8 b[24]; if(lx_get(b,sev,24))return -LX_EFAULT; val=*(u64*)b; hasval=1; sig=*(int*)(b+8); notify=*(int*)(b+12); tid=*(int*)(b+16);
         if(notify!=0&&notify!=1&&notify!=4)return -LX_EINVAL;
-        if(notify!=1&&(sig<1||sig>=32))return -LX_EINVAL; }
+        if(notify!=1&&(sig<1||sig>64))return -LX_EINVAL; }
     int pid=jc_lead(&g_jp[g_jcur])->pid;
     for(int k=0;k<LXPT_MAX;k++) if(g_lxpt[k].used){ int t=jc_idx(g_lxpt[k].owner); if(t<0||g_jp[t].state==S_ZOMB)g_lxpt[k].used=0; }
     int i=-1; for(int k=0;k<LXPT_MAX;k++) if(!g_lxpt[k].used){ i=k; break; } if(i<0)return -LX_EAGAIN;
     int id=i; if(lx_put(out,&id,4))return -LX_EFAULT;
-    struct lxptimer* t=&g_lxpt[i]; t->used=1; t->owner=pid; t->clk=clk; t->notify=notify; t->sig=sig; t->tid=tid; t->over=0; t->next=0; t->ival=0;
+    struct lxptimer* t=&g_lxpt[i]; t->used=1; t->owner=pid; t->clk=clk; t->notify=notify; t->sig=sig; t->tid=tid; t->over=0; t->next=0; t->ival=0; t->val=hasval?val:(u64)i;
     return 0;
 }
 static struct lxptimer* lxpt_of(int id){ if(id<0||id>=LXPT_MAX||!g_lxpt[id].used||g_lxpt[id].owner!=jc_lead(&g_jp[g_jcur])->pid)return 0; return &g_lxpt[id]; }
@@ -174,15 +176,18 @@ static long lx_read(struct sysregs* r,int fd,u64 buf,u64 len){
     struct vfile* v=lx_vf(fd); if(!v)return -LX_EBADF;
     if((v->flags&3)==1)return -LX_EBADF;
     if(v->dev==LX_DIRDEV)return -LX_EISDIR;
+    if(v->dev==25||v->dev==26)return -LX_EINVAL;
     if(len>LX_IOMAX)len=LX_IOMAX; if(!len)return 0;
     if(!lx_okw(buf,len))return -LX_EFAULT;
-    if(v->dev==14)return lx_sock_wait(r,lxs_recv(v->fs_idx,(u8*)buf,(int)len,0,0,0),lx_nonblock(v));
+    if(v->dev==14)return lx_sock_wt(r,lxs_recv(v->fs_idx,(u8*)buf,(int)len,0,0,0),lx_nonblock(v),lx_rtmo(v));
     if(v->dev==LX_AFU)return lx_sock_wait(r,un_recv(v->fs_idx,(u8*)buf,(int)len,0,0,0,0),lx_nonblock(v));
     if(v->dev==LX_EVFD)return lx_sock_wait(r,ev_read(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_TMFD)return lx_sock_wait(r,tm_read(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_INOFD)return lx_sock_wait(r,ino_read(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_SIGFD)return lx_sock_wait(r,sfd_read(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_MFD)return mfd_io(v,buf,len,-1,0);
+    if(v->dev==LX_BLKD)return dx_pread(v->fs_idx,buf,len,-1,1);
+    if(v->dev==LX_SYSW)return sx_wfd_read(v->vpath,buf,len,&v->off);
     if(v->dev==LX_PTM||v->dev==LX_PTS)return lx_sock_wait(r,pty_read(v,(u8*)buf,(int)len),lx_nonblock(v));
     int n=vfs_read(fd,(char*)buf,(int)len);
     if(n==JS_BLOCK){ if(lx_nonblock(v))return -LX_EAGAIN; jc_block(r,S_WAIT,g_ticks+1); }
@@ -196,10 +201,13 @@ static void lx_persist(int fd){
 static long lx_write(struct sysregs* r,int fd,u64 buf,u64 len){
     struct vfile* v=lx_vf(fd); if(!v)return -LX_EBADF;
     if((v->flags&3)==0&&v->dev==0)return -LX_EBADF;
-    if(v->dev==LX_DIRDEV||v->dev==6||v->dev==100)return -LX_EBADF;
+    if(v->dev==6&&(v->flags&3)==2){ if(len>LX_IOMAX)len=LX_IOMAX; if(!len)return 0; if(!lx_ok(buf,len))return -LX_EFAULT; int n=jc_pipe_write(v,(const char*)buf,(int)len); if(n<0)return -LX_EPIPE; return lx_sock_wait(r,n,lx_nonblock(v)); }
+    if(v->dev==LX_DIRDEV||v->dev==6||v->dev==100||v->dev==LX_BLKD||v->dev==LX_SRDIR)return -LX_EBADF;
+    if(v->dev==25||v->dev==26)return -LX_EINVAL;
     if(len>LX_IOMAX)len=LX_IOMAX; if(!len)return 0;
+    if(v->dev==LX_SYSW)return sx_wfd_write(v->vpath,buf,len);
     if(!lx_ok(buf,len))return -LX_EFAULT;
-    if(v->dev==14){ int n=lxs_send(v->fs_idx,(const u8*)buf,(int)len,0,0,0); if(n==-32)jc_signal_proc(g_jcur,13); return lx_sock_wait(r,n,lx_nonblock(v)); }
+    if(v->dev==14){ int n=lxs_send(v->fs_idx,(const u8*)buf,(int)len,0,0,0); if(n==-32)jc_signal_proc(g_jcur,13); return lx_sock_wt(r,n,lx_nonblock(v),lx_stmo(v)); }
     if(v->dev==LX_AFU){ int n=un_send(v->fs_idx,(const u8*)buf,(int)len,0,0); if(n==-32)jc_signal_proc(g_jcur,13); return lx_sock_wait(r,n,lx_nonblock(v)); }
     if(v->dev==LX_EVFD)return lx_sock_wait(r,ev_write(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_PTM||v->dev==LX_PTS)return lx_sock_wait(r,pty_write(v,(const u8*)buf,(int)len),lx_nonblock(v));
@@ -217,6 +225,19 @@ static long lx_write(struct sysregs* r,int fd,u64 buf,u64 len){
 }
 static long lx_rwv(struct sysregs* r,int fd,u64 iov,int cnt,int wr){
     if(cnt<0||cnt>1024)return -LX_EINVAL; if(!lx_ok(iov,(u64)cnt*16))return -LX_EFAULT;
+    { struct vfile* v=lx_vf(fd); if(v&&v->dev==14&&v->fs_idx>=0&&v->fs_idx<NLXS&&g_lxs[v->fs_idx].type!=1){
+        static u64 dv[2048]; if(cnt&&lx_get(dv,iov,(u64)cnt*16))return -LX_EFAULT;
+        u64 t=0; for(int i=0;i<cnt;i++){ u64 l=dv[i*2+1]; if(l&&!(wr?lx_ok(dv[i*2],l):lx_okw(dv[i*2],l)))return -LX_EFAULT; t+=l; } if(t>65536){ if(wr)return -90; t=65536; }
+        u8* k=(u8*)kmalloc(t?t:1); if(!k)return -LX_ENOMEM; int sid=v->fs_idx;
+        if(wr){ u64 o=0; for(int i=0;i<cnt&&o<t;i++){ u64 l=dv[i*2+1]; if(lx_get(k+o,dv[i*2],l>t-o?t-o:l)){ kfree(k); return -LX_EFAULT; } o+=l>t-o?t-o:l; }
+            int n=lxs_send(sid,k,(int)t,0,0,0); kfree(k); if(n==-32)jc_signal_proc(g_jcur,13); return lx_sock_wt(r,n,lx_nonblock(v),lx_stmo(v)); }
+        int n=lxs_recv(sid,k,(int)t,0,0,0); if(n<0){ kfree(k); return lx_sock_wt(r,n,lx_nonblock(v),lx_rtmo(v)); }
+        u64 o=0; for(int i=0;i<cnt&&o<(u64)n;i++){ u64 l=dv[i*2+1]; u64 c=l>(u64)n-o?(u64)n-o:l; if(c&&lx_put(dv[i*2],k+o,c)){ kfree(k); return -LX_EFAULT; } o+=c; }
+        kfree(k); lx_sock_wt(r,n,0,lx_rtmo(v)); return n; } }
+    { struct vfile* v=lx_vf(fd); if(wr&&v&&v->dev==13&&cnt>1){ static u8 kb[1024]; u64 t=0;
+        for(int i=0;i<cnt;i++){ u64 b=((u64*)iov)[i*2], l=((u64*)iov)[i*2+1]; if(!l)continue; if(t+l>sizeof kb)l=sizeof kb-t; if(lx_get(kb+t,b,l))return -LX_EFAULT; t+=l; if(t>=sizeof kb)break; }
+        if(!t)return 0; g_kb_lo=(u64)kb; g_kb_n=t; long n=lx_write(r,fd,(u64)kb,t); g_kb_n=0; if(n<0)return n;
+        u64 all=0; for(int i=0;i<cnt;i++)all+=((u64*)iov)[i*2+1]; return (long)all; } }
     long tot=0;
     for(int i=0;i<cnt;i++){ u64 b=((u64*)iov)[i*2], l=((u64*)iov)[i*2+1]; if(!l)continue;
         struct vfile* v=lx_vf(fd); if(!v)return tot?tot:-LX_EBADF;
@@ -227,6 +248,7 @@ static long lx_rwv(struct sysregs* r,int fd,u64 iov,int cnt,int wr){
 }
 static long lx_prw(int fd,u64 buf,u64 len,long off,int wr){
     struct vfile* v=lx_vf(fd); if(!v)return -LX_EBADF;
+    if(v->dev==LX_BLKD){ if(wr)return -LX_EBADF; if(off<0)return -LX_EINVAL; return dx_pread(v->fs_idx,buf,len,off,0); }
     if(v->dev==LX_MFD){ if(off<0)return -LX_EINVAL; if(wr?((v->flags&3)==0):((v->flags&3)==1))return -LX_EBADF; if(len>LX_IOMAX)len=LX_IOMAX; if(!(wr?lx_ok(buf,len):lx_okw(buf,len)))return -LX_EFAULT; return mfd_io(v,buf,len,off,wr); }
     if(v->dev==100&&!wr&&v->vfs){ if(off<0)return -LX_EINVAL; if(len>LX_IOMAX)len=LX_IOMAX; if(!lx_okw(buf,len))return -LX_EFAULT; int save=v->off; v->off=(int)off; int n=vfs_read(fd,(char*)buf,(int)len); v->off=save; return n<0?-LX_EIO:n; }
     if(v->dev!=0||v->fs_idx<0)return -LX_ESPIPE; if(off<0)return -LX_EINVAL;
@@ -242,6 +264,8 @@ static long lx_lseek(int fd,long off,int wh){
     struct vfile* v=lx_vf(fd); if(!v)return -LX_EBADF;
     if(wh<0||wh>2)return -LX_EINVAL;
     if(v->dev==LX_DIRDEV||v->dev==LX_SRDIR){ if(wh==0&&off>=0){ v->off=(int)off; return off; } return -LX_EINVAL; }
+    if(v->dev==LX_BLKD)return dx_lseek(v->fs_idx,off,wh);
+    if(v->dev==LX_SYSW){ if(wh==0&&off>=0&&off<=4096){ v->off=(int)off; return off; } return -LX_EINVAL; }
     if(v->dev==LX_MFD){ long b=wh==1?v->off:wh==2?(long)g_mfd[v->fs_idx].size:0; if(b+off<0||b+off>0x7FFFFFFFL)return -LX_EINVAL; v->off=(int)(b+off); return v->off; }
     if(v->dev==100){ long b=wh==1?v->off:wh==2?(long)v->vfs->size(v->vpath):0; if(b+off<0||b+off>0x7FFFFFFFL)return -LX_EINVAL; v->off=(int)(b+off); return v->off; }
     if(v->dev!=0&&v->dev!=9)return (v->dev==5||v->dev==6||v->dev==7||v->dev==14||v->dev==LX_AFU)?-LX_ESPIPE:0;
@@ -260,7 +284,11 @@ static long lx_getdents(int fd,u64 buf,u64 cap){
         else if(n==1){ name[0]='.'; name[1]='.'; name[2]=0; type=4; }
         else if(fdd){ if(!lx_procent(dp,n-2,name,&type))break; }
         else if(lx_streq(dp,"/dev/snd")){ if(!asnd_list(n-2,name,&type))break; }
+        else if(dp[0]=='/'&&dp[1]=='s'&&dp[2]=='y'&&dp[3]=='s'&&(dp[4]=='/'||!dp[4])){ if(!sx_list(dp,n-2,name,&type))break; }
+        else if(lx_streq(dp,"/dev")){ static const char* const DV[]={"null","zero","random","urandom","full","tty","console","fb0","dsp","kmsg",0}; int nb=0; while(DV[nb])nb++; if(n-2<nb){ int q=0; for(;DV[n-2][q];q++)name[q]=DV[n-2][q]; name[q]=0; type=2; } else if(!dx_list(dp,n-2-nb,name,&type))break; }
+        else if(dp[0]=='/'&&dp[1]=='d'&&dp[2]=='e'&&dp[3]=='v'&&dp[4]=='/'&&!lx_streq(dp,"/dev/pts")){ if(!dx_list(dp,n-2,name,&type))break; }
         else if(lx_streq(dp,"/dev/pts")){ int c=0, f=0; for(int i=0;i<PTY_MAX;i++) if(g_pty[i].used&&!g_pty[i].locked){ if(c==n-2){ char nb[16]; pty_name(i,nb); int q=0; for(;nb[9+q];q++)name[q]=nb[9+q]; name[q]=0; f=1; break; } c++; } if(!f)break; type=2; }
+        else if(lxn_on()&&lxn_ovl_ent(dp,0,name,&type)!=-9999){ if(lxn_ovl_ent(dp,n-2,name,&type)!=1)break; }
         else { int got=0; int ndt=0;
             if(v->dev==LX_DIRDEV){ got=(k_readdir_at(dp,n-2,name,&type)==1); if(!got){ int lo=0, hi=n-2; while(lo<hi){ int mid=(lo+hi)/2; char t2[72]; int ty2; if(k_readdir_at(dp,mid,t2,&ty2)==1)lo=mid+1; else hi=mid; } ndt=lo; } }
             if(!got){ int si=n-2-ndt; for(;;){ int sd=0; if(!sysroot_list(dp,si,name,64,&sd))break; char ep[LX_PATH]; int o=0; for(int i=0;dp[i]&&o<LX_PATH-2;i++)ep[o++]=dp[i]; if(o>1)ep[o++]='/'; for(int i=0;name[i]&&o<LX_PATH-1;i++)ep[o++]=name[i]; ep[o]=0;
@@ -282,12 +310,15 @@ static long lx_getdents(int fd,u64 buf,u64 cap){
 static int lx_poll_one(int fd,int ev){
     struct vfile* v=lx_vf(fd); if(!v)return 0x20;
     int re=0;
-    if(v->dev==6){ struct jpipe* pp=&g_pipe[v->fs_idx]; if(pp->n>0)re|=1; if(pp->writers<=0)re|=0x10; }
+    if(v->dev==6){ struct jpipe* pp=&g_pipe[v->fs_idx]; if(pp->n>0)re|=1; if(pp->writers<=0)re|=0x10; if((v->flags&3)==2&&pp->n<pp->cap)re|=4; }
     else if(v->dev==7){ struct jpipe* pp=&g_pipe[v->fs_idx]; if(pp->readers<=0)re|=8; else if(pp->n<pp->cap)re|=4; }
     else if(v->dev==5){ re|=4; struct jproc* p=jc_lead(&g_jp[g_jcur]); if((g_tin_n>0||g_tin_eof)&&p->pgid==g_tty_fg)re|=1; }
     else if(v->dev==10){ re|=4; if(g_mq_h!=g_mq_t)re|=1; }
     else if(v->dev==16){ extern int xin_ready(void); re|=4; if(xin_ready())re|=1; }
     else if(v->dev==17){ extern int fid_dev_ready(void); re|=4; if(fid_dev_ready())re|=1; }
+    else if(v->dev==40){ extern int xtray_ready(void); re|=4; if(xtray_ready())re|=1; }
+    else if(v->dev==41){ extern int xclip_ready(void); re|=4; if(xclip_ready())re|=1; }
+    else if(v->dev==42){ extern int xwin_ready(void); re|=4; if(xwin_ready())re|=1; }
     else if(v->dev==LX_AFU)re=un_poll(v->fs_idx);
     else if(v->dev==LX_EVFD){ re|=4; if(g_ev[v->fs_idx].cnt)re|=1; }
     else if(v->dev==LX_TMFD){ tm_update(&g_tm[v->fs_idx]); if(g_tm[v->fs_idx].exp)re|=1; }
@@ -296,6 +327,8 @@ static int lx_poll_one(int fd,int ev){
     else if(v->dev==14)re=lxs_poll(v->fs_idx);
     else if(v->dev==LX_PTM||v->dev==LX_PTS)re=pty_poll(v);
     else if(v->dev==LX_SNDCTL||v->dev==LX_SNDPCM)re=asnd_poll(v);
+    else if(v->dev==113){ extern int lx_ep_ready(int); if(lx_ep_ready(v->fs_idx))re|=1; }
+    else if(v->dev==25||v->dev==26){ extern int lxm_poll_ext(struct vfile*); re=lxm_poll_ext(v); }
     else re|=5;
     return re&(ev|0x38);
 }

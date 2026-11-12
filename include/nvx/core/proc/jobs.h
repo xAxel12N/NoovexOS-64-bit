@@ -17,22 +17,29 @@
 #define S_TDEAD 6
 #define JS_STK_PAGES 256
 #define PIPE_MAX 128
+#define SB(s) ((s)==64?1ULL:(1ULL<<(s)))
+#define SB_KS ((1ULL<<9)|(1ULL<<19))
+struct jsinfo { int sig, code, pid, uid; u64 val; };
+static inline u64 sig_k2l(u64 k){ return ((k>>1)&0x7FFFFFFFFFFFFFFFULL)|((k&1ULL)<<63); }
+static inline u64 sig_l2k(u64 l){ return ((l<<1)&~1ULL)|((l>>63)&1ULL); }
 struct jproc {
     int state, pid, ppid, pgid, sid, uid, gid, cwd, umask;
     u64 cr3, brk, mmnext, wake;
     regs_pt ctx;
     int fd[FDMAX]; u8 cloexec[FDMAX];
-    u32 sigpend, sigmask, sigamask[32], saflags[32]; u64 sighand[32], sigrest[32];
-    u64 fsbase, gsbase, pollwake, lxbrk; u32 suspold; int susp, lx;
+    u64 sigpend, sigmask, sigamask[65]; u32 saflags[65]; u64 sighand[65], sigrest[65];
+    u64 fsbase, gsbase, pollwake, lxbrk, sockwake; u64 suspold; int susp, lx;
     int exitst, stopnote;
     volatile int runcpu; u64 cputicks; int lastcpu;
     u64 it_next, it_int;
     int tg, tgid, gexit, tkill;
-    u64 ctid, robust, fx_addr, fx_dead; int fx_wait, fx_woken, fx_tg; u32 fx_bits;
-    u64 ss_sp, ss_size, flt_addr; int ss_flags, flt_sig, flt_code, flt_trap; u32 flt_err; int sicode[32];
+    u64 ctid, robust, fx_addr, fx_dead, wdl; int fx_wait, fx_woken, fx_tg, wdl_arm; u32 fx_bits;
+    u64 ss_sp, ss_size, flt_addr; int ss_flags, flt_sig, flt_code, flt_trap; u32 flt_err; int sicode[65], sipid[65], siuid[65]; u64 sival[65]; struct { int sig, code, pid, uid; u64 val; } rtq[32]; int rtn;
+    int nice, policy, rtprio; u64 vrt, runns;
+    int sc_mode, sc_head, nnp;
     char cmd[48];
     char exe[128];
-    u8 fx[512] __attribute__((aligned(16)));
+    u8 fx[1024] __attribute__((aligned(64)));
 };
 struct jpipe { int used, r, w, n, cap, readers, writers; char* buf; };
 #define NVXB(n) {n,_binary_user_nvxbox_elf_start,_binary_user_nvxbox_elf_end}
@@ -88,7 +95,10 @@ int sig_default(int s);
 void jc_finish(int i,int status);
 void jc_signal_proc(int i,int sig);
 int jc_kill(int pid,int sig,int self);
-u32 jc_deliverable(struct jproc* p);
+u64 jc_deliverable(struct jproc* p);
+int jc_sig_first(u64 d);
+int jc_sig_take(struct jproc* w,int s,struct jsinfo* o);
+void jc_sig_set_info(int code,int pid,int uid,u64 val);
 extern void jc_leave(void)__attribute__((noreturn));
 void jc_leave(void);
 extern void jc_block(struct sysregs* r, int state, u64 wake)__attribute__((noreturn));
@@ -114,6 +124,10 @@ void jc_fault(regs_t* rr);
 void jc_preempt(regs_t* rr);
 void jc_timer(regs_t* rr);
 int jc_any_runnable(void);
+int jc_weight(const struct jproc* p);
+int jc_boost(const struct jproc* p);
+extern u64 g_min_vrt;
+int jc_bsp_off(void);
 void jc_enter(int i);
 int jc_pick(void);
 int jc_step(void);

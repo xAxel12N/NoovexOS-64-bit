@@ -28,10 +28,21 @@ void lapic_eoi_any(void){ u32 lo,hi; __asm__ volatile("rdmsr":"=a"(lo),"=d"(hi):
 int lapic_isr_top(void){ u32 lo,hi; __asm__ volatile("rdmsr":"=a"(lo),"=d"(hi):"c"(0x1B)); if(!(lo&(1u<<11)))return -1;
     for(int i=7;i>=0;i--){ u32 v; if(lo&(1u<<10)){ u32 a,d; __asm__ volatile("rdmsr":"=a"(a),"=d"(d):"c"(0x810+i)); v=a; } else { u64 b=(((u64)hi<<32)|lo)&0xFFFFFF000ULL; if(!b||b>=0x100000000ULL)return -1; v=*(volatile u32*)(b+0x100+0x10*(u32)i); }
         if(v){ for(int k=31;k>=0;k--) if(v&(1u<<k))return i*32+k; } } return -1; }
+int g_xsave_on; u32 g_xsave_size; u64 g_xcr0;
+static void fpu_xsave_setup(void){
+    u32 a,b,c,d; cpuid(1,&a,&b,&c,&d); if(!((c>>26)&1))return;
+    u64 cr4; __asm__ volatile("mov %%cr4,%0":"=r"(cr4)); cr4|=(1ULL<<18); __asm__ volatile("mov %0,%%cr4"::"r"(cr4));
+    u64 want=3; if((c>>28)&1){ u32 a2,b2,c2,d2; cpuid(0xD,&a2,&b2,&c2,&d2); if(a2&4)want|=4; }
+    if(g_xcr0)want=g_xcr0;
+    __asm__ volatile("xsetbv"::"c"(0),"a"((u32)want),"d"((u32)(want>>32)));
+    { u32 a3,b3,c3,d3; cpuid(0xD,&a3,&b3,&c3,&d3); if(b3>1024&&want!=3){ want=3; __asm__ volatile("xsetbv"::"c"(0),"a"(3u),"d"(0u)); cpuid(0xD,&a3,&b3,&c3,&d3); } if(b3>1024)return; g_xsave_size=b3; }
+    g_xcr0=want; g_xsave_on=1; }
+void cpu_avx_clean(void){ if(g_xcr0&4)__asm__ volatile("vzeroupper"); }
 void arch_fpu_init(void){
     u64 cr0,cr4; __asm__ volatile("mov %%cr0,%0":"=r"(cr0)); cr0&=~(1ULL<<2); cr0|=(1ULL<<1)|(1ULL<<16); __asm__ volatile("mov %0,%%cr0"::"r"(cr0));
     __asm__ volatile("mov %%cr4,%0":"=r"(cr4)); cr4|=(1ULL<<9)|(1ULL<<10); __asm__ volatile("mov %0,%%cr4"::"r"(cr4));
     { u32 a,b,c,d; cpuid(1,&a,&b,&c,&d); g_ssse3=(c>>9)&1; }
+    fpu_xsave_setup();
     __asm__ volatile("fninit"); u32 mx=0x1F80; __asm__ volatile("ldmxcsr %0"::"m"(mx));
 }
 void arch_idt_init(void){

@@ -294,6 +294,9 @@ Shell: `usb`/`xhci` (rescan everything, then `usbinfo`); `usbinfo` (per controll
 
 Limits: no interrupts or MSI; no isochronous or other device classes; no USB storage beyond one stick and one FAT root; registers above 4 GB are unsupported; MSD transfers are limited to the 64 KiB buffer.
 
+### 10.6.8 USB network adapters (v10.82)
+CDC-ECM, CDC-NCM and RNDIS adapters use their own slot and rings next to the HID, mass storage, camera and audio code; see section 9.4.9. Two hooks connect them to the rest of the driver: `hid_xfer` and `xh_event_t` hand transfer events of the adapter's slot to `un_xfer`, and `xhub_remove_below` calls `un_remove_below`. `usbdev_t` records the class of the first interface (`cls`) so the start-up scan leaves ports with other devices alone.
+
 ## 10.7 ACPI and power
 
 ### 10.7.1 Static tables and power states (`core/power.c`)
@@ -676,7 +679,7 @@ The Intel path (section 10.10.4) draws the whole desktop on the GPU. For NVIDIA 
 | 3 | Only changed areas are sent: `blit_all` keeps a shadow of the screen, finds changed 64x16 tiles (`dmg_rects`) and sends just those rectangles, all in one copy-engine push buffer (`nvgsp_fb_present_rects`, up to about 80 copies per kick, one semaphore at the end) or by the CPU when the card is not running | v9.85, simulator and QEMU (CPU path) |
 | 4 | The 2D engine (FERMI_TWOD_A, step 17): `nv2d_fill`, `nv2d_blit` (any size, scaled, from RAM or VRAM), constant-alpha and premultiplied per-pixel blending (`NV2D_OVER`), `nv2d_to_screen`. Used for Gears: while its window is fully visible, each frame goes from the renderer to the screen by itself, without redrawing the desktop, through the 2D engine (scaled 2x in half mode) or the CPU | v9.86, simulator and QEMU (CPU path) |
 | 5 | The whole desktop drawn on the GPU by compute shaders on TURING_COMPUTE_A (step 18, `nvdraw.c`): the GPU draw queue `gq.c` of the Intel path sends each operation to `nvc_op`, which writes one launch of the `gqk` shader | v9.87, simulator and QEMU (CPU path) |
-| 6 | Display engine through GSP-RM: mode setting, page flips without tearing, native resolution, the second monitor | separate, can come before 3-5 |
+| 6 | Display engine through GSP-RM: mode setting, page flips without tearing, native resolution, the second monitor | second monitor (mirror) in v10.81, section 10.10.9; page flips not yet |
 
 Stage 2 does not make one frame much faster than a write-combined CPU copy; what it shows is that copy-engine writes reach the screen and that the read-back check works. Stage 3 cuts what crosses the bus to the changed part of the screen (for Gears in a window about a third of the screen, for a clock tick a few tiles), on the CPU path as well. Keeping windows in VRAM was planned for stage 3, but the desktop draws rounded corners, shadows and transparent title bars that the copy engine cannot blend, so composing in VRAM only pays off together with the 2D engine; that part moved to stage 4. In v9.86 it was measured: the existing layered compositor (`gpu draw emu`, every drawing operation on the CPU) runs Gears at 2 frames a second in QEMU where direct drawing reaches 5, and the operations that make up most of it (masks for text, shadows and corners) cannot run on the 2D engine. So whole-desktop composition moved again, to stage 5 with compute shaders, and the 2D engine is used where it helps today: frames of a window that changes alone.
 
@@ -719,6 +722,56 @@ The plan, ordered by what is most likely to work first on the GTX 1650. Every st
 | 8 | Display engine through GSP-RM: native mode set, page flips without tearing | a new `nvgsp mode` command, photo of the monitor | firmware framebuffer | 10-20 |
 
 Photos needed for stage 1: the `nvgsp all` RESULT screen and of `cat /System/Hardware/gpu.nvh`, plus `gpuinfo`.
+
+### 10.10.9 NVIDIA second screen through GSP-RM (`nvgsp_parts/05_nvdisp_mode.c`) (v10.81)
+
+Step 20, command `nvgsp mode` (also Settings > Display > Screens > Second screen on). It follows the Linux nouveau r535 code (`r535/disp.c`, `dispnv50/`) and NVIDIA's class headers `clc57d.h` (core channel) and `clc57e.h` (window channel) for driver version 535.113.01.
+
+| Part | What is done | Where |
+|---|---|---|
+| Objects | Display instance memory (64 KB VRAM, WRITE_INST_MEM), a display client that stays alive, NV04_DISPLAY_COMMON (0x0073), INIT_BRIGHTC_STATE_LOAD with "not supported", DP_SET_MANUAL_DISPLAYPORT, the display object (class C570) | `kd_init` |
+| Instance memory | Hash table (RAMHT) of 0x2000 bytes at offset 0, nouveau's hash; DMA objects from offset 0x2000, one set per channel: notifier page (flags 0x45), all of VRAM for the colour tables (0x45), all of VRAM for the picture (0x05). Hash entries hold the handle and `channel << 25 | client | offset << 9` | `kd_ht_add`, `kd_obj`, `kd_objs` |
+| Channels | Push buffer in system memory registered with DISPLAY_CHANNEL_PUSHBUFFER, then the core channel (C57D, registers at 0x680000) and one window channel per head (C57E, window 2 x head, registers at 0x690000 + window x 0x1000). Methods are `(count << 18) | method`; PUT at +0, GET at +4; the buffer wraps with a jump | `kc_new`, `km`, `kc_kick`, `kc_room` |
+| Which monitor | Monitors and EDID as in step 19; the head the firmware lit is found with GET_ACTIVE and its output with OR_GET_INFO. `nvgsp mode` only sets up connected HDMI/DVI monitors that are dark; `nvgsp mode all` also sets the first one to its native mode | `nvgsp_mode` |
+| Mode | First detailed timing of the EDID (`nvk_edid_mode`): pixel clock, sync and blanking, sync polarity; interlaced modes and clocks above 165 MHz (DVI) or 340 MHz (HDMI) are refused. Raster registers as nouveau computes them (`nvk_mode_regs`) | |
+| Output | DFP_ASSIGN_SOR picks the output (the outputs in use are excluded); for a monitor whose EDID has the HDMI vendor block: SET_HDMI_ENABLE, SET_HDMI_SINK_CAPS, and an AVI InfoFrame (RGB, full range) written to 0x6F0000 + head x 0x400 | `kd_head_on`, `kd_avi` |
+| Window ownership | The window's usage bounds and its owner (the head) go in a core update of their own, without window interlock, as the hardware requires | `kd_own` |
+| Head | Viewport in = desktop size, out = desktop scaled to fit the monitor with the same shape (`nvk_fit`), raster, pixel clock, usage bounds, identity output colour table (1025 entries in VRAM), 24-bit RGB, display id, output control (head, TMDS A or B) | `kd_head_on` |
+| Window | The desktop picture itself is scanned out: the firmware framebuffer in VRAM (pitch layout, A8R8G8B8 with the alpha ignored), identity input colour table (FP16), identity colour matrix, opaque blending. Both screens therefore always show the same picture and nothing is copied | `kd_head_on` |
+| Update | Window update interlocked with the core update; the core notifier in VRAM must reach "finished" within 3 s | `kd_commit` |
+| Off | `nvgsp mode off`: window image off, output control 0, display id 0, InfoFrame off. Only screens that were dark before are turned off; the first screen stays on even after `nvgsp mode all`. A monitor that was unplugged gets its head turned off at the next `nvgsp mode` | `kd_head_off`, `nvgsp_mode_off` |
+
+State is remembered in `nvgsp-mode.cfg`; with NVIDIA autostart on, the second screen comes back after boot. The flag is cleared before that attempt and set again only when it worked, so a mode set that hangs is not tried again at the next boot.
+
+Limits. Not tested on a real card. DisplayPort monitors (link training) and dual-link DVI are not driven. The second screen mirrors the first; an extended desktop needs window-manager work. The desktop must be in NVIDIA video memory with a line length that is a multiple of 64 bytes. A monitor smaller than the desktop relies on the head's 2-tap scaler for shrinking. An update that times out leaves the head marked unfinished; the next `nvgsp mode` first turns it off.
+
+A review by a separate agent against nouveau and NVIDIA's headers confirmed every method number, bit field and RM structure offset, and found, fixed before release: the window owner changed inside a window-interlocked update (nouveau warns that the hardware rejects this), no input colour table on the window (nouveau always programs one on this class), usage bounds written for the firmware's windows, one DMA object shared by several channels, half-set state after a timeout, missing SET_HDMI_SINK_CAPS, and the page-size flag of the DMA objects (found while writing the review brief).
+
+### 10.10.10 NVIDIA 3D engine (`nvgsp_parts/06_nv3d.c`) (v10.81)
+
+Step 21, command `nvgsp 3d`, key T in Gears. Real triangles on the 3D engine (class TURING_A, 0xC597) with a depth buffer. References: Mesa NVK and its compiler NAK, the gallium nouveau driver, NVIDIA's class header `clc597.h` (kept in `third_party/nvidia-classes/`).
+
+Shaders (`tools/nvshader3d.py`, output `nv3d_shaders.h`). Two programs in Turing machine code (128-bit instructions), assembled by a small script from the encodings in NAK (`sm70_encode.rs`), which agree with the gallium emitter. Vertex shader: `ALD` loads position and colour from the vertex attributes, `AST` stores them to the position output and the first generic output, `EXIT`. Pixel shader: four `IPA` instructions interpolate the colour (perspective correct) into r0-r3, `EXIT`. Scheduling uses NAK's serial scheme (every instruction waits on the barriers of the ones before it). Each program has a version 4 program header (32 words) with the input and output maps; the pixel shader's has the position-W input bit that the hardware requires. The `EXIT` encoding was compared with the one NVIDIA's own assembler produced for the compute shader.
+
+State (`tools/nv3dgen.c`, output `nv3d_state.h`). A host program compiles against `clc597.h` and writes the initial state as a table of method and value, using NVIDIA's names, so method numbers and bit positions cannot be mistyped. The values follow NVK's `nvk_push_draw_state_init`; the parts NVK does with macros are left out because the shaders use no constant buffers. Compression is off (the targets are plain memory).
+
+Frame (`nv3d_begin`, `nv3d_tri`, `nv3d_end`). Colour target A8R8G8B8 and depth target ZF32, both block-linear (one GOB high) in VRAM mapped with page kind 6 (generic memory; `nvm_map_kind`); a linear colour target cannot be used together with depth. Per frame: SET_OBJECT, the state table, targets, viewport (y flipped, z from 0 to w), clear, vertex attributes (two float4 at offsets 0 and 16), one vertex stream of 49152 vertices in system memory, the two programs, triangle list. `nv3d_tri` copies three vertices (clip-space position and colour); a full buffer is sent and the frame continues. The draw is SET_DRAW_CONTROL_A and DRAW_VERTEX_ARRAY_BEGIN_END, then a host semaphore release that the CPU waits for (500 ms).
+
+To the screen (`nv3d_to_screen`). The 2D engine reads the block-linear target (`s_src` with `bl` set: layout, block size, depth, texture cache invalidate) and writes the screen, also scaled.
+
+Self-test (`nv3d_selftest`). A 64x64 picture with a clear colour, a near green triangle drawn before a farther red one that overlaps it, and a grey ramp; the 2D engine copies it to memory and seven pixels are checked. Only after this passes does `nv3d_ready` say yes. It is not run by `nvgsp all`, because a failed 3D batch can stop the graphics channel that 2D drawing also uses.
+
+Gears (`apps/graphics/gpu3d.cpp`, `apps/graphics/r3d/r3d.cpp`). The renderer has a second output: `r3d_frame_tris` sends each visible triangle, clipped at the near plane and lit per vertex, to a callback instead of filling pixels. The chequered floor, which the CPU path computes per pixel, becomes one quad per cell. With T on and the window fully visible, each frame is `nv3d_begin`, `r3d_frame_tris` with `nv3d_tri`, `nv3d_end`, `nv3d_to_screen`, and a small FPS label through the 2D engine. No shadows and no wire mode on this path; a failure turns it off and the CPU draws again. Twice a second, and while the mouse is over the window, the normal window redraw still shows a CPU frame (without shadows, so it looks almost the same).
+
+Limits. Not tested on a real card; the first try there may fail in ways the simulator cannot show (the simulator treats block-linear memory as rows and takes the instruction encoding from the same source). No textures, no blending, no anti-aliasing, no indexed draws.
+
+A review by a separate agent against NVK, NAK, gallium and the class headers confirmed the instruction encodings, both program headers apart from one bit, the register counts, the state table and the per-frame methods, and found, fixed before release: the missing position-W bit in the pixel shader's header (both references say the hardware traps without it), compression left enabled on plain memory, no texture cache invalidate before the 2D engine reads the target, no check that the card was not restarted in the middle of a frame, VRAM leaks on failed set-up, and state that differed from NVK without need (depth clip, zcull region, anti-alias enable, EXIT scheduling).
+
+Tests (`tools/check.py --only nvidia`, now built with ASan and UBSan). The simulator has a display engine model (channels, a hardware-style hash table lookup, armed state, notifier, the rule about window owners) and a 3D engine model that runs the two shaders from their binary form and rasterises with depth. 78 checks, among them: second screen on, off, HDMI, both screens, 70 off/on rounds, a missing notifier, 1500 rounds with random bytes and refusals in GSP-RM's replies, 300000 random EDID blocks, the 3D self-test, a card without a working depth test, 20000 triangles in one frame. A host test rasterises the triangles of all four Gears scenes and compares them with the CPU picture.
+
+A third review looked for ordinary software bugs in the whole change and found, fixed before release: `nvgsp mode off` after `nvgsp mode all` would have turned the first screen off too; a second-screen start that hangs at boot was tried again every other boot; status texts in Gears kept the tail of a longer earlier text; every new 3D target size used up GPU address space and page tables (the address range is now reserved once); commands left in the core channel's buffer after a failed set-up; a misleading error when the firmware already lights both monitors; an unplugged monitor still counted as on; the Gears triangle test could pass with no triangles in the Gears scene; the second-screen note was shown on computers without an NVIDIA card.
+
+Bugs found by this work in older code: `nvgsp_all_off` copied its reason into fixed buffers without a limit (the longest reason overflowed a 140-byte stack buffer; now bounded); the simulator executed a "hung" compute batch later with a changed buffer.
 
 ## 10.11 CPU information (`arch/x86_64/cpu/cpuinfo.c`)
 

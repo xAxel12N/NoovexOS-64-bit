@@ -34,6 +34,13 @@ u32 rd32(const u8*b);
 u16 cksum(const u8*d,int n);
 u32 net_rand(void);
 void pci_wcfg(int bus,int slot,int fn,int off,u32 v);
+int nic_count(void);
+const char* nic_list(int i,int* link,int* cur);
+const char* nic_active_name(void);
+int nic_probe_all(void);
+int nic_pick(void);
+void nic_use(int i);
+void nic_watch(void);
 
 static inline u32 A32(void*p){ return (u32)(u64)p; }
 

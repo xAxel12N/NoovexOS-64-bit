@@ -18,22 +18,35 @@ void percpu_init_bsp(void){ percpu_setup(0,0); cpu_set_percpu(&g_cpu[0]); g_cpu[
 
 struct bkl g_bkl={1,0,0,1};
 volatile int g_smp_on=0;
+u64 g_bklw[16], g_bklh[16], g_bklt0; u32 g_bklc[16];
+static inline u64 bkl_tsc(void){ u32 a,d; __asm__ volatile("rdtsc":"=a"(a),"=d"(d)); return ((u64)d<<32)|a; }
 void bkl_lock(void){
     int me=cpu_id();
     if(g_bkl.owner==me){ g_bkl.depth++; return; }
     u64 f=cpu_irq_save();
     u32 t=__atomic_fetch_add(&g_bkl.next,1,__ATOMIC_RELAXED);
-    while(__atomic_load_n(&g_bkl.serving,__ATOMIC_ACQUIRE)!=t)cpu_pause();
-    g_bkl.owner=me; g_bkl.depth=1;
+    if(__atomic_load_n(&g_bkl.serving,__ATOMIC_ACQUIRE)!=t){ u64 w0=bkl_tsc(); PCPU->bkl_wait=1; while(__atomic_load_n(&g_bkl.serving,__ATOMIC_ACQUIRE)!=t)cpu_pause(); g_bklw[me&15]+=bkl_tsc()-w0; g_bklc[me&15]++; }
+    g_bkl.owner=me; g_bkl.depth=1; PCPU->bkl_wait=0; g_bklt0=bkl_tsc();
     if(PCPU->tlb_pending){ PCPU->tlb_pending=0; cpu_set_pt(cpu_get_pt()); }
     cpu_irq_restore(f);
 }
 void bkl_unlock(void){
     if(g_bkl.owner!=cpu_id())return;
-    if(--g_bkl.depth>0)return;
+    u64 f=cpu_irq_save();
+    if(--g_bkl.depth>0){ cpu_irq_restore(f); return; }
+    { u64 h=bkl_tsc()-g_bklt0; int me=cpu_id()&15; if(h>g_bklh[me])g_bklh[me]=h; }
     g_bkl.owner=-1;
     __atomic_store_n(&g_bkl.serving,g_bkl.serving+1,__ATOMIC_RELEASE);
+    cpu_irq_restore(f);
 }
+int bkl_try(void){
+    int me=cpu_id();
+    if(g_bkl.owner==me){ g_bkl.depth++; return 1; }
+    u32 s=__atomic_load_n(&g_bkl.serving,__ATOMIC_ACQUIRE); u32 t=s;
+    if(!__atomic_compare_exchange_n(&g_bkl.next,&t,s+1,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return 0;
+    g_bkl.owner=me; g_bkl.depth=1;
+    if(PCPU->tlb_pending){ PCPU->tlb_pending=0; cpu_set_pt(cpu_get_pt()); }
+    return 1; }
 int bkl_held(void){ return g_bkl.owner==cpu_id(); }
 int bkl_drop(void){ if(g_bkl.owner!=cpu_id())return 0; int d=g_bkl.depth; g_bkl.depth=1; bkl_unlock(); return d; }
 void bkl_take(int depth){ bkl_lock(); if(depth>0)g_bkl.depth=depth; }

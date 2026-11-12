@@ -71,7 +71,7 @@ void bootmenu_present(void){
 static void bootmenu_activate(void){
     if(g_bootsel==0){ g_state=ST_SETUP; }
     else if(g_bootsel==1){ g_safemode=1; g_state=ST_SETUP; }
-    else if(g_bootsel==2){ g_state=ST_RECOVERY; g_recmode=0; g_recsel=0; }
+    else if(g_bootsel==2){ g_rec_ret=ST_SETUP; g_state=ST_RECOVERY; g_recmode=0; g_recsel=0; }
     else if(g_bootsel==3){ ip_open(ST_BOOTMENU); }
     else { g_bootcfg=1; }
 }

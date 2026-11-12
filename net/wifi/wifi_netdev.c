@@ -56,13 +56,13 @@ static int wnd_tx_eth(const u8* eth,int len){
 
     static u8 fr[2048]; int fl=0;
     int qos=g_wnd_qos;
-    fr[fl++]=qos?0x88:0x08; fr[fl++]=g_wnd_open?0x01:0x41;        /* data/QoS-data, ToDS=1, Protected=1 */
-    fr[fl++]=0; fr[fl++]=0;                         /* duration */
-    for(int i=0;i<6;i++)fr[fl++]=g_wnd_bssid[i];    /* addr1 = RA = BSSID */
-    for(int i=0;i<6;i++)fr[fl++]=g_wnd_mac[i];      /* addr2 = TA = us */
-    for(int i=0;i<6;i++)fr[fl++]=dst[i];            /* addr3 = DA */
-    fr[fl++]=0; fr[fl++]=0;                         /* seq (hw fills) */
-    u8 prio=0; if(qos){ fr[fl++]=0; fr[fl++]=0; }   /* QoS control, TID 0 */
+    fr[fl++]=qos?0x88:0x08; fr[fl++]=g_wnd_open?0x01:0x41;
+    fr[fl++]=0; fr[fl++]=0;
+    for(int i=0;i<6;i++)fr[fl++]=g_wnd_bssid[i];
+    for(int i=0;i<6;i++)fr[fl++]=g_wnd_mac[i];
+    for(int i=0;i<6;i++)fr[fl++]=dst[i];
+    fr[fl++]=0; fr[fl++]=0;
+    u8 prio=0; if(qos){ fr[fl++]=0; fr[fl++]=0; }
     int hdrlen=fl;
 
     u64 pn=0; if(!g_wnd_open){ pn=g_wnd_tx_pn++; u8 cc[8]; ccmp_hdr(cc,pn,0); for(int i=0;i<8;i++)fr[fl++]=cc[i]; }
@@ -136,10 +136,10 @@ static int wnd_rx_eth(u8* out,int max){
         u32 drvsz=((rw0>>16)&0xFu)*8u; u32 shift=(rw0>>24)&3u; u32 crc=(rw0>>14)&1u;
         u32 hoff=24u+drvsz+shift; u32 fe=hoff+plen; if(fe>2048u)fe=2048u;
         int outlen=0;
-        if(plen>=24 && !crc && (base[hoff]&0x0C)==0x00) wnd_rx_mgmt(base,base+hoff,(int)(fe-hoff));
+        if(plen>=24 && !crc && (base[hoff]&0x0C)==0x00){ extern int g_wifi_scanning; extern u8 g_scan_ch; extern int rtw_scan_frame(const u8*,u8); if(g_wifi_scanning&&g_scan_ch)rtw_scan_frame(base,g_scan_ch); wnd_rx_mgmt(base,base+hoff,(int)(fe-hoff)); }
         if(plen>=32 && !crc){
             u8* fr=base+hoff; u8 fc=fr[0]; u8 fc2=fr[1];
-            if((fc&0x0C)==0x08 && (fc2&0x02)){     /* data frame, FromDS=1 */
+            if((fc&0x0C)==0x08 && (fc2&0x02)){
                 u32 hlen=24u; if((fc&0x80))hlen+=2u;
                 if((fc&0x80)&&(fc2&0x80))hlen+=4u;
                 u8 prio=(fc&0x80)?(fr[24]&0x0F):0;
@@ -147,9 +147,9 @@ static int wnd_rx_eth(u8* out,int max){
                 if(!g_wnd_open&&!(fc2&0x40)){ u32 d=sec; int dl2=(int)fe-(int)d; if(dl2>=12&&base[d]==0xAA&&base[d+1]==0xAA&&base[d+2]==0x03&&base[d+6]==0x88&&base[d+7]==0x8E&&wnd_eq6(fr+10,g_wnd_bssid))wpa_rx_eapol_p(base+d+8,dl2-8,0); goto next; }
                 if(g_wnd_open&&!(fc2&0x40)){ u32 d=sec; int dl2=(int)fe-(int)d; if(dl2>=8&&base[d]==0xAA&&base[d+1]==0xAA&&base[d+2]==0x03){ u16 et=((u16)base[d+6]<<8)|base[d+7]; int need=14+dl2-8;
                         if(et!=0x888E&&need<=max){ for(int i=0;i<6;i++){ out[i]=fr[4+i]; out[6+i]=fr[16+i]; } out[12]=(u8)(et>>8); out[13]=(u8)et; for(int i=0;i<dl2-8;i++)out[14+i]=base[d+8+i]; outlen=need; g_wnd_rx_frames++; } } goto next; }
-                if((fc2&0x40) && sec+8u<=fe){       /* Protected */
+                if((fc2&0x40) && sec+8u<=fe){
                     u8* cc=base+sec;
-                    if(cc[3]&0x20){                 /* ExtIV = CCMP */
+                    if(cc[3]&0x20){
                         int keyid=(cc[3]>>6)&3;
                         u64 pn=((u64)cc[0])|((u64)cc[1]<<8)|((u64)cc[4]<<16)|((u64)cc[5]<<24)|((u64)cc[6]<<32)|((u64)cc[7]<<40);
                         u32 doff=sec+8; int dlen=(int)fe-(int)doff-8;
@@ -168,7 +168,7 @@ static int wnd_rx_eth(u8* out,int max){
                             if(fc&0x80){ aad[al++]=prio; aad[al++]=0; }
                             const u8* a2=fr+10;
                             u8 nonce[13]; ccmp_nonce(nonce,a2,pn,prio);
-                            int hwdec=!((rw0>>27)&1u)&&((rw0>>20)&7u)==4u&&!(rw0&(1u<<15)); if(hwdec&&!(base[doff]==0xAA&&base[doff+1]==0xAA&&base[doff+2]==0x03))hwdec=0; 
+                            int hwdec=!((rw0>>27)&1u)&&((rw0>>20)&7u)==4u&&!(rw0&(1u<<15)); if(hwdec&&!(base[doff]==0xAA&&base[doff+1]==0xAA&&base[doff+2]==0x03))hwdec=0;
                             static u8 pt[2048]; for(int i=0;i<dlen;i++)pt[i]=base[doff+i];
                             u8 mic[8]; for(int i=0;i<8;i++)mic[i]=hwdec?0:base[doff+dlen+i];
                             if(hwdec||aes_ccm_decrypt_verify(key,nonce,aad,al,pt,dlen,mic)==0){
@@ -202,7 +202,7 @@ static int wnd_rx_eth(u8* out,int max){
 }
 
 static int g_netdev=NETDEV_ETH;
-    
+
 static int wnd_bcast_flag(void){ return g_wnd_have_gtk?0x8000:0x0000; }
 static void wnd_tx_ptr(const u8* d,int n){ if(wnd_tx_eth(d,n)<0)g_wnd_txfail++; }
 static void eth_tx_ptr(const u8* d,int n){ nic_send(d,n); }

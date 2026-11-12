@@ -32,3 +32,5 @@ void kapi_delay_us(u32 us){ hr_delay_us(us); }
 u64 kapi_ns(void){ return hr_ns(); }
 void kapi_log(const char* s){ klog(s); }
 void kapi_mb(void){ cpu_wmb(); }
+u64 acpi_hi_map(u64 pa);
+void* kapi_mmio(u64 pa,u64 len){ if(!pa||!len||pa+len<pa)return 0; if(pa+len<=0x100000000ULL)return (void*)pa; if(!acpi_hi_map(pa)||!acpi_hi_map(pa+len-1))return 0; return (void*)pa; }

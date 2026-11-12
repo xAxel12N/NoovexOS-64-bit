@@ -37,6 +37,19 @@ static int tpe_gain(int v_um_per_ms){
     int lo=25, hi=250, glo=4000, ghi=16000, g;
     if(v_um_per_ms<=lo)g=glo; else if(v_um_per_ms>=hi)g=ghi; else g=glo+(int)((long long)(v_um_per_ms-lo)*(ghi-glo)/(hi-lo));
     int s=g_tp_speed<1?1:g_tp_speed>10?10:g_tp_speed; return g*(50+s*10)/100; }
+int g_tp_kinetic=1;
+static void tpe_emit_scroll(tpeng* E,tpout* o){
+    while(E->sacc_v>=1800&&o->scroll_v<8){ o->scroll_v++; E->sacc_v-=1800; } while(E->sacc_v<=-1800&&o->scroll_v>-8){ o->scroll_v--; E->sacc_v+=1800; }
+    while(E->sacc_h>=1800&&o->scroll_h<8){ o->scroll_h++; E->sacc_h-=1800; } while(E->sacc_h<=-1800&&o->scroll_h>-8){ o->scroll_h--; E->sacc_h+=1800; } }
+int tpe_coast(tpeng* E,tpout* o){
+    for(u32 i=0;i<sizeof(*o);i++)((u8*)o)[i]=0;
+    if(!E->kon)return 0;
+    u32 ms=tpe_now(); u32 dt=ms-E->kt; if(dt<8)return 0; if(dt>50)dt=50; E->kt=ms;
+    E->sacc_v+=E->kv*(int)dt/16; E->sacc_h+=E->kh*(int)dt/16;
+    E->kv-=E->kv*(int)dt/280; E->kh-=E->kh*(int)dt/280;
+    tpe_emit_scroll(E,o);
+    if(tpe_abs(E->kv)+tpe_abs(E->kh)<16*12){ E->kon=0; E->kv=E->kh=0; E->sacc_v=E->sacc_h=0; }
+    return o->scroll_v||o->scroll_h; }
 void tpe_frame(tpeng* E,const tpcontact* call,int nall,int button,u32 ms_in,tpout* o){
     (void)ms_in; u32 ms=tpe_now();
     for(u32 i=0;i<sizeof(*o);i++)((u8*)o)[i]=0;
@@ -60,16 +73,18 @@ void tpe_frame(tpeng* E,const tpcontact* call,int nall,int button,u32 ms_in,tpou
         E->phys_which=which; L=which==0; R=which==1; o->btn_changed=1; }
     else if(!button&&E->phys_btn){ E->phys_btn=0; L=E->drag; R=0; o->btn_changed=1; }
     if(n==0){
+        if(E->active&&g_tp_kinetic&&E->maxf==2&&!E->phys_btn&&!E->kzoom&&ms-E->kmove<=50&&tpe_abs(E->kvv)+tpe_abs(E->kvh)>=16*90){ E->kon=1; E->kv=E->kvv; E->kh=E->kvh; E->kt=ms; E->coasts++; }
         if(E->active){ u32 dt=ms-E->t0;
             int tap=g_tp_tap&&!E->btn_used&&!E->palm_sess&&!E->dwt_sess&&dt<=TP_TAP_MS&&E->moved_um<=TP_TAP_UM;
             if(E->drag){ E->drag=0; L=0; o->btn_changed=1;
                 if(!E->drag_moved&&tap){ E->pulse=1; L=1; E->tap_l++; } E->tap_armed=0; }
             else if(tap){ if(E->maxf==1){ L=1; E->tap_l++; E->tap_armed=1; E->tap_ms=ms; } else if(E->maxf==2){ R=1; E->tap_r++; E->tap_armed=0; } else if(E->maxf>=3){ M=1; E->tap_m++; E->tap_armed=0; } if(L||R||M){ E->pulse=1; o->btn_changed=1; } }
             else E->tap_armed=0; }
-        E->active=0; E->n_prev=0; E->fx=E->fy=0; E->sacc_v=E->sacc_h=0; E->swfired=0; E->swx=E->swy=0; E->zacc=0; E->palm_sess=0; E->dwt_sess=0; E->v_prev=0;
+        E->active=0; E->n_prev=0; E->fx=E->fy=0; if(!E->kon){ E->sacc_v=E->sacc_h=0; } E->kvv=E->kvh=0; E->swfired=0; E->swx=E->swy=0; E->zacc=0; E->palm_sess=0; E->dwt_sess=0; E->v_prev=0;
         if(!E->phys_btn)E->btn_used=0;
         o->btn_l=L; o->btn_r=R; o->btn_m=M; return; }
-    if(!E->active){ E->active=1; E->t0=ms; E->maxf=n; E->moved_um=0; E->swx=E->swy=0; E->swfired=0; E->sacc_v=E->sacc_h=0; E->zacc=0; E->d0=0; E->last_ms=ms; E->v_prev=0;
+    if(E->kon){ E->kon=0; E->kv=E->kh=0; E->sacc_v=E->sacc_h=0; E->btn_used=1; }
+    if(!E->active){ E->kzoom=0; E->active=1; E->t0=ms; E->maxf=n; E->moved_um=0; E->swx=E->swy=0; E->swfired=0; E->sacc_v=E->sacc_h=0; E->zacc=0; E->d0=0; E->last_ms=ms; E->v_prev=0;
         E->dwt_sess=g_tp_dwt&&g_kbd_last_tick&&(((u32)g_ticks-g_kbd_last_tick)*10u)<TP_DWT_MS;
         if(E->dwt_sess)E->dwt_skips++;
         if(E->tap_armed&&n==1&&ms-E->tap_ms<=TP_DRAG_GAP_MS&&!E->dwt_sess){ E->drag=1; E->drag_moved=0; E->drags++; L=1; o->btn_changed=1; }
@@ -95,10 +110,11 @@ void tpe_frame(tpeng* E,const tpcontact* call,int nall,int button,u32 ms_in,tpou
         int dist=tpe_isqrt((long long)ax*ax+(long long)ay*ay);
         if(!E->d0||E->n_prev!=2)E->d0=dist;
         int dd=dist-E->d0;
-        if((dd>8000||dd<-8000)&&tpe_abs(dd)>(E->moved_um)/2){ o->gesture=dd>0?GES_ZOOM_IN:GES_ZOOM_OUT; E->d0=dist; }
+        if((dd>8000||dd<-8000)&&tpe_abs(dd)>(E->moved_um)/2){ o->gesture=dd>0?GES_ZOOM_IN:GES_ZOOM_OUT; E->d0=dist; E->kzoom=1; }
         else if(m){ int nat=g_tp_natural?E->natural:0; int dv=nat?dyum:-dyum, dh=nat?-dxum:dxum;
             int sp=tpe_abs(dxum)+tpe_abs(dyum); int v=sp/(int)dt; int boost=v>120?2:1;
             E->sacc_v+=dv*boost; E->sacc_h+=dh*boost;
+            { int vv=dv*16/(int)dt, vh=dh*16/(int)dt; E->kvv=(E->kvv+vv)/2; E->kvh=(E->kvh+vh)/2; if(dv||dh)E->kmove=ms; }
             while(E->sacc_v>=1800){ o->scroll_v++; E->sacc_v-=1800; } while(E->sacc_v<=-1800){ o->scroll_v--; E->sacc_v+=1800; }
             while(E->sacc_h>=1800){ o->scroll_h++; E->sacc_h-=1800; } while(E->sacc_h<=-1800){ o->scroll_h--; E->sacc_h+=1800; } } }
     else if(mode>=3&&m&&!E->swfired&&!typing){

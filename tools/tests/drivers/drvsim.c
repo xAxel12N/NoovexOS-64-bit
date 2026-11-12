@@ -21,6 +21,7 @@ static u64 g_now; static void (*g_tick)(void);
 void kapi_delay_us(u32 us){ g_now+=(u64)us*1000; if(g_tick)g_tick(); }
 u64 kapi_ns(void){ g_now+=1000; if(g_tick)g_tick(); return g_now; }
 void kapi_mb(void){ __sync_synchronize(); if(g_tick)g_tick(); }
+void* kapi_mmio(u64 pa,u64 len){ (void)len; return (void*)pa; }
 
 struct pdev { int present; u16 ven, dev; u8 cls, sub; u32 bar[6]; u32 cmd; };
 static struct pdev g_pci;
@@ -94,7 +95,8 @@ static u32 r69_in32(u16 p){ return rd32le(r69+(p-IOB)); }
 static void r69_out8(u16 p,u8 v){ int r=p-IOB; if(r==0x37&&(v&0x10)){ r69[0x37]=0; r69_txi=r69_rxi=0; return; }
     if(r==0x38&&(v&0x40)){ struct d69* t=r69_tx(); for(int g=0;g<64&&(t[r69_txi].o1&0x80000000u);g++){ struct d69* d=&t[r69_txi]; wire_put(P(d->addr),(int)(d->o1&0x3FFF)); int eor=(d->o1&0x40000000u)!=0; d->o1&=~0x80000000u; r69_txi=eor?0:r69_txi+1; } return; }
     r69[r]=v; }
-static void r69_out16(u16 p,u16 v){ int r=p-IOB; r69[r]=(u8)v; r69[r+1]=(u8)(v>>8); }
+static int r69_25;
+static void r69_out16(u16 p,u16 v){ int r=p-IOB; if(r69_25&&r==0x90&&(v&1)){ r69_out8((u16)(IOB+0x38),0x40); r69[0x38]=0; return; } r69[r]=(u8)v; r69[r+1]=(u8)(v>>8); }
 static void r69_out32(u16 p,u32 v){ wr32le(r69+(p-IOB),v); }
 static int r69_inject(const u8* d,int n){ struct d69* x=&r69_rx()[r69_rxi]; if(!(x->o1&0x80000000u))return 0; if((int)(x->o1&0x3FFF)<n+4)return 0;
     u8* b=P(x->addr); memcpy(b,d,(size_t)n); memset(b+n,0xEE,4); int eor=(x->o1&0x40000000u)!=0; x->o1=(x->o1&0x40000000u)|0x30000000u|(u32)(n+4); r69_rxi=eor?0:r69_rxi+1; return 1; }
@@ -114,6 +116,7 @@ static void test_rtl8169(void){
     char det[100]; snprintf(det,sizeof det,"sent=%d got=%d bad=%d",sent,got,bad);
     rec(sent>200&&got==sent&&!bad,"RTL8111/8168: hundreds of frames received, CRC stripped, ring wraps",det);
 }
+
 
 static u8 vio[64]; static u32 vq_pfn[2]; static u16 vq_sel, vq_last[2]; static int vio_kind; static u8* ramdisk; static u64 rd_sectors; static u32 vio_guestf;
 struct vd { u64 addr; u32 len; u16 flags, next; };
@@ -347,11 +350,103 @@ static void test_e1000(void){
     rec(!e1000_probe(&n),"e1000: a 64-bit BAR above 4 GB is refused",0);
     g_tick=0; munmap((void*)E,0x20000);
 }
+static void test_rtl8125(void){
+    memset(&g_pci,0,sizeof g_pci); g_pci.present=1; g_pci.ven=0x10EC; g_pci.dev=0x8125; g_pci.cls=2; g_pci.bar[0]=IOB|1;
+    memset(r69,0,sizeof r69); for(int i=0;i<6;i++)r69[i]=(u8)(0x20+i); r69[0x6C]=0x02; r69[0x38]=0xAA; r69[0x39]=0xBB; r69[0x3A]=0xCC; r69[0x3B]=0xDD; r69_25=1;
+    io_in8=r69_in8; io_in16=r69_in16; io_in32=r69_in32; io_out8=r69_out8; io_out16=r69_out16; io_out32=r69_out32; g_tick=0;
+    struct nvx_nic n; memset(&n,0,sizeof n);
+    int ok=rtl8169_probe(&n);
+    u32 rcr=rd32le(r69+0x44), tcr=rd32le(r69+0x40), imr=rd32le(r69+0x38);
+    rec(ok&&n.mac[0]==0x20&&strstr(n.name,"8125")&&rcr==((8u<<27)|(7u<<8)|0x0Fu)&&tcr==0x03000780u&&imr==0&&r69[0x37]==0x0C,"RTL8125: 32-bit interrupt registers cleared, 8125 receive/transmit setup",0);
+    wire_reset(); u8 pk[1600]; int good=1;
+    for(int i=0;i<40;i++){ int len=(int)(rnd()%1450)+14; mkpkt(pk,len,i); n.send(pk,len); if(wire_n<=i||wire_len[i]!=(len<60?60:len)||memcmp(wire[i],pk,(size_t)len))good=0; }
+    rec(good&&wire_n==40,"RTL8125: 40 frames sent through the 16-bit transmit poll register",0);
+    int sent=0, got=0, bad=0, expect=0; u8 out[2048];
+    for(int round=0;round<300;round++){ int len=(int)(rnd()%1500)+14; mkpkt(pk,len,sent); if(r69_inject(pk,len))sent++; int k=(int)(rnd()%3); for(int j=0;j<k;j++){ int m=n.recv(out,sizeof out); if(m>0){ u8 ex[2048]; mkpkt(ex,m,expect); if(memcmp(ex,out,(size_t)m))bad++; expect++; got++; } } }
+    for(int j=0;j<1000;j++){ int m=n.recv(out,sizeof out); if(m<=0)break; u8 ex[2048]; mkpkt(ex,m,expect); if(memcmp(ex,out,(size_t)m))bad++; expect++; got++; }
+    char det[100]; snprintf(det,sizeof det,"sent=%d got=%d bad=%d",sent,got,bad);
+    rec(sent>200&&got==sent&&!bad,"RTL8125: frames received across ring wrap-around",det);
+    r69_25=0;
+}
+#define GBAR ((u8*)0x32000000)
+static volatile u32* G; static u32 g_txh, g_rxh; static u16 g_phy0, g_eewd[3]; static int g_igc, g_phy_bad, g_pch, g_lpcd_phase, g_e1ke, g_txh2;
+static u32 gr(int o){ return G[o>>2]; } static void gw(int o,u32 v){ G[o>>2]=v; }
+static void ig_tick(void){
+    if(gr(0)&(1u<<26)){ gw(0,gr(0)&~(1u<<26)); g_txh=g_rxh=0; gw(0x10,gr(0x10)|(1u<<9)); if(g_pch)gw(8,gr(8)|(1u<<9)); }
+    if(g_pch&&(gr(0)&(1u<<16))){ g_lpcd_phase=1; } else if(g_pch&&g_lpcd_phase==1){ g_lpcd_phase=2; g_phy_bad=0; gw(0x18,gr(0x18)|(1u<<2)); }
+    u32 rx=gr(0xC028); if(rx&(1u<<25))gw(0xC028,rx); u32 tx=gr(0xE028); if(tx&(1u<<25))gw(0xE028,tx);
+    { int eo=g_igc?0x12014:0x14; u32 ee=gr(eo); if((ee&1)&&!(ee&2)){ u32 a=(ee>>2)&0x3FFF; gw(eo,(a<<2)|2u|((u32)(a<3?g_eewd[a]:0xFFFF)<<16)); } }
+    u32 md=gr(0x20); if(!(md&(1u<<28))&&(md>>26&3)){ int op=(int)(md>>26&3), reg=(int)(md>>16&31);
+        if(g_phy_bad){ gw(0x20,md|(1u<<28)|(1u<<30)); }
+        else if(op==1){ if(reg==0)g_phy0=(u16)md; gw(0x20,md|(1u<<28)); } else { u16 v=reg==0?g_phy0:reg==2?0x0141:reg==3?0x0CC0:0; gw(0x20,(md&0xFFFF0000u)|v|(1u<<28)); } }
+    if(g_e1ke){
+        if(!(gr(0x400)&2))return; u32 n=gr(0x3808)/16; if(!n)return; struct e_txd* t=(struct e_txd*)P((u64)gr(0x3800)|((u64)gr(0x3804)<<32));
+        while(g_txh2!=(u32)gr(0x3818)){ struct e_txd* d=&t[g_txh2]; wire_put(P(d->addr),d->len); if(d->cmd&8)d->status|=1; g_txh2=(g_txh2+1)%n; gw(0x3810,g_txh2); }
+        return; }
+    if(!(gr(0x400)&2)||!(gr(0xE028)&(1u<<25)))return;
+    u32 n=gr(0xE008)/16; if(!n)return; u8* ring=P((u64)gr(0xE000)|((u64)gr(0xE004)<<32));
+    while(g_txh!=gr(0xE018)){ u8* d=ring+g_txh*16; u64 a; memcpy(&a,d,8); u32 c=rd32le(d+8), o=rd32le(d+12);
+        if(((c>>20)&15)==3&&(c&(1u<<29))&&(c&(1u<<24))&&(o>>14)==(c&0xFFFF))wire_put(P(a),(int)(c&0xFFFF)); else wire_put((const u8*)"BAD",3);
+        if(c&(1u<<27)){ memset(d,0,8); wr32le(d+8,0x12345678u); wr32le(d+12,1); }
+        g_txh=(g_txh+1)%n; gw(0xE010,g_txh); }
+}
+static int ig_inject(const u8* d,int len,int eop){
+    if(!(gr(0x100)&2)||!(gr(0xC028)&(1u<<25)))return 0; u32 n=gr(0xC008)/16; if(g_rxh==gr(0xC018))return 0;
+    if((gr(0xC00C)&0x7F)!=2||((gr(0xC00C)>>25)&7)!=1)return 0;
+    u8* x=P((u64)gr(0xC000)|((u64)gr(0xC004)<<32))+g_rxh*16; u64 a; memcpy(&a,x,8);
+    memcpy(P(a),d,(size_t)len); u64 wb=(u64)(eop?3u:1u)|((u64)len<<32); memset(x,0xA5,8); __sync_synchronize(); memcpy(x+8,&wb,8);
+    g_rxh=(g_rxh+1)%n; gw(0xC010,g_rxh); return 1;
+}
+static void ig_regs(int rah_ok){ memset((void*)G,0,0x20000); gw(8,2); g_txh=g_rxh=0; g_phy0=0x1940; g_eewd[0]=0x2211; g_eewd[1]=0x4433; g_eewd[2]=0x6655;
+    if(rah_ok){ gw(0x5400,0xDDCCBBAAu); gw(0x5404,0x8000FFEEu); } }
+static void test_igb_one(u16 dev,const char* tag,int igc){
+    G=mmap(GBAR,0x20000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0); if((u8*)G!=GBAR){ rec(0,"igb: simulator MMIO window",0); return; }
+    memset(&g_pci,0,sizeof g_pci); g_pci.present=1; g_pci.ven=0x8086; g_pci.dev=dev; g_pci.cls=2; g_pci.sub=0; g_pci.bar[0]=(u32)(u64)GBAR;
+    io_in8=0; io_out8=0; io_in16=0; io_out16=0; io_in32=0; io_out32=0; g_tick=ig_tick; g_igc=igc; g_phy_bad=0; g_pch=0; g_e1ke=0;
+    char nm[120]; struct nvx_nic n; memset(&n,0,sizeof n); ig_regs(1);
+    int ok=igb_probe(&n);
+    snprintf(nm,sizeof nm,"%s: probe, reset, MAC from RAR0, PHY powered up and negotiating, queues enabled",tag);
+    rec(ok&&n.mac[0]==0xAA&&n.mac[5]==0xFF&&n.link()&&!(g_phy0&(1u<<11))&&(g_phy0&(1u<<9))&&(gr(0xC028)&(1u<<25))&&(gr(0xE028)&(1u<<25))&&(gr(0x100)&2)&&(gr(0x400)&2)&&gr(0xC018)==255&&(gr(0x18)&(1u<<28)),nm,0);
+    wire_reset(); u8 pk[1600]; int good=1;
+    for(int i=0;i<150;i++){ int len=(int)(rnd()%1450)+14; mkpkt(pk,len,i); if(n.send(pk,len)<0)good=0; if(wire_n<=i%256||wire_len[i%256]!=(len<60?60:len)||memcmp(wire[i%256],pk,(size_t)len))good=0; if(wire_n>=200)wire_reset(); }
+    snprintf(nm,sizeof nm,"%s: 150 frames through the 64-entry advanced transmit ring",tag); rec(good,nm,0);
+    int sent=0, got=0, bad=0, expect=0; u8 out[2048];
+    for(int round=0;round<700;round++){ int len=(int)(rnd()%1500)+14; mkpkt(pk,len,sent); if(round%97==5){ if(ig_inject(pk,len,0)){ mkpkt(pk,len,99999); ig_inject(pk,len,1); } continue; } if(ig_inject(pk,len,1))sent++; int k=(int)(rnd()%3); for(int j=0;j<k;j++){ int m=n.recv(out,sizeof out); if(m>0){ u8 ex[2048]; mkpkt(ex,m,expect); if(memcmp(ex,out,(size_t)m))bad++; expect++; got++; } } }
+    for(int j=0;j<2000;j++){ int m=n.recv(out,sizeof out); if(m<=0)break; u8 ex[2048]; mkpkt(ex,m,expect); if(memcmp(ex,out,(size_t)m))bad++; expect++; got++; }
+    char det[100]; snprintf(det,sizeof det,"sent=%d got=%d bad=%d",sent,got,bad);
+    snprintf(nm,sizeof nm,"%s: frames received, buffers re-armed, frames split over two buffers dropped",tag); rec(sent>300&&got==sent&&!bad,nm,det);
+    ig_regs(0); memset(&n,0,sizeof n); ok=igb_probe(&n);
+    snprintf(nm,sizeof nm,"%s: MAC read from the NVM when RAR0 is empty",tag); rec(ok&&n.mac[0]==0x11&&n.mac[1]==0x22&&n.mac[5]==0x66&&(gr(0x5404)&0x80000000u),nm,0);
+    g_pci.cls=3; memset(&n,0,sizeof n); snprintf(nm,sizeof nm,"%s: a device of another class with the same ID is left alone",tag); rec(!igb_probe(&n),nm,0);
+    g_tick=0; munmap((void*)G,0x20000);
+}
+static void test_igb(void){ test_igb_one(0x1533,"igb (I210)",0); test_igb_one(0x15F3,"igc (I225-V)",1); }
+static void test_e1000e(void){
+    G=mmap(GBAR,0x20000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0); if((u8*)G!=GBAR){ rec(0,"e1000e: simulator MMIO window",0); return; }
+    memset(&g_pci,0,sizeof g_pci); g_pci.present=1; g_pci.ven=0x8086; g_pci.dev=0x15BC; g_pci.cls=2; g_pci.bar[0]=(u32)(u64)GBAR;
+    io_in8=0; io_out8=0; io_in16=0; io_out16=0; io_in32=0; io_out32=0; g_tick=ig_tick; g_e1ke=1; g_txh2=0; g_pch=1; g_phy_bad=1; g_lpcd_phase=0;
+    ig_regs(1); gw(0x5B54,(1u<<15)|(1u<<6));
+    struct nvx_nic n; memset(&n,0,sizeof n);
+    int ok=e1000e_probe(&n);
+    rec(ok&&!g_phy_bad&&(g_phy0&(1u<<9))&&n.mac[0]==0xAA&&n.link()&&(gr(0x0F28)&0x10000u)&&((gr(0x3840)>>28)&3)==3&&(gr(0x100)&2)&&(gr(0x400)&2)&&!(gr(0)&(1u<<16))&&!(gr(0x18)&(1u<<11)),"e1000e (I219): PHY woken from low-power mode, reset, MAC, link, I219 transmit fixes",0);
+    wire_reset(); u8 pk[1600]; int good=1;
+    for(int i=0;i<100;i++){ int len=(int)(rnd()%1450)+14; mkpkt(pk,len,i); if(n.send(pk,len)<0)good=0; if(wire_len[i]!=(len<60?60:len)||memcmp(wire[i],pk,(size_t)len))good=0; }
+    rec(good&&wire_n==100,"e1000e: 100 frames through the 64-entry transmit ring",0);
+    E=G; e_rxh=0; int sent=0, got=0, bad=0, expect=0; u8 out[2048];
+    for(int round=0;round<600;round++){ int len=(int)(rnd()%1500)+14; mkpkt(pk,len,sent); if(e_inject(pk,len))sent++; int k=(int)(rnd()%3); for(int j=0;j<k;j++){ int m=n.recv(out,sizeof out); if(m>0){ u8 ex[2048]; mkpkt(ex,m,expect); if(memcmp(ex,out,(size_t)m))bad++; expect++; got++; } } }
+    for(int j=0;j<2000;j++){ int m=n.recv(out,sizeof out); if(m<=0)break; u8 ex[2048]; mkpkt(ex,m,expect); if(memcmp(ex,out,(size_t)m))bad++; expect++; got++; }
+    char det[100]; snprintf(det,sizeof det,"sent=%d got=%d bad=%d",sent,got,bad);
+    rec(sent>300&&got==sent&&!bad,"e1000e: frames received across ring wrap-around",det);
+    ig_regs(1); gw(0x5B54,(1u<<15)); g_phy_bad=1; g_lpcd_phase=0; g_txh2=0; memset(&n,0,sizeof n);
+    ok=e1000e_probe(&n);
+    rec(ok&&g_phy_bad&&!(gr(0)&(1u<<31)),"e1000e: PHY power toggle and PHY reset skipped while the management engine blocks them",0);
+    g_tick=0; g_pch=0; g_e1ke=0; munmap((void*)G,0x20000);
+}
 int main(void){
     setvbuf(stdout,0,_IOLBF,0);
     if(mmap(ARENA,ARENA_SZ,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)!=ARENA){ printf("arena mmap failed\n"); return 2; }
-    test_e1000(); test_rtl8139(); test_rtl8169(); test_virtio_net(); test_virtio_blk(); test_ac97(); test_hda();
-    memset(&g_pci,0,sizeof g_pci); { struct nvx_nic n; struct nvx_snd s; u64 x; rec(!e1000_probe(&n)&&!rtl8139_probe(&n)&&!rtl8169_probe(&n)&&!virtio_net_probe(&n)&&!virtio_blk_probe(&x)&&!ac97_probe(&s)&&!hda_probe(&s),"no device present: every probe returns 0 without touching hardware",0); }
+    test_e1000(); test_e1000e(); test_igb(); test_rtl8139(); test_rtl8169(); test_rtl8125(); test_virtio_net(); test_virtio_blk(); test_ac97(); test_hda();
+    memset(&g_pci,0,sizeof g_pci); { struct nvx_nic n; struct nvx_snd s; u64 x; rec(!e1000_probe(&n)&&!e1000e_probe(&n)&&!igb_probe(&n)&&!vmxnet3_probe(&n)&&!rtl8139_probe(&n)&&!rtl8169_probe(&n)&&!virtio_net_probe(&n)&&!virtio_blk_probe(&x)&&!ac97_probe(&s)&&!hda_probe(&s),"no device present: every probe returns 0 without touching hardware",0); }
     printf("%s\n",g_fail?"FAILURES":"ALL PASS");
     return g_fail?1:0;
 }

@@ -143,6 +143,15 @@ u64 vm_new_pml4(void){ u64 p=pframe_alloc(); if(!p)return 0; u64* t=(u64*)p;
     for(int i=0;i<512;i++)t[i]=k[i];   /* share the kernel mappings */
     t[8]=0;
     return p; }
+u64 vm_skip(u64 pml4pa,u64 v){
+    if(v<0x8000000000ULL||v>=0x800000000000ULL)return v+0x1000ULL;
+    u64* pml4=(u64*)pml4pa; int i4=(int)((v>>39)&0x1FF),i3=(int)((v>>30)&0x1FF),i2=(int)((v>>21)&0x1FF);
+    if(!(pml4[i4]&1))return (v+0x8000000000ULL)&~0x7FFFFFFFFFULL;
+    u64* pdpt=(u64*)(pml4[i4]&0x000FFFFFFFFFF000ULL);
+    if(!(pdpt[i3]&1)||(pdpt[i3]&0x80ULL))return (v+0x40000000ULL)&~0x3FFFFFFFULL;
+    u64* pd=(u64*)(pdpt[i3]&0x000FFFFFFFFFF000ULL);
+    if(!(pd[i2]&1)||(pd[i2]&0x80ULL))return (v+0x200000ULL)&~0x1FFFFFULL;
+    return v+0x1000ULL; }
 u64* vm_walk(u64 pml4pa,u64 v,int create){
     if(v<0x8000000000ULL||v>=0x800000000000ULL)return 0;
     u64* pml4=(u64*)pml4pa; int i4=(int)((v>>39)&0x1FF),i3=(int)((v>>30)&0x1FF),i2=(int)((v>>21)&0x1FF),i1=(int)((v>>12)&0x1FF);
@@ -167,22 +176,31 @@ u64 vm_pflags(u64 base,u64 bits){ u64 e=base|bits; if(bits&PTE_PRO)e&=~2ULL; if(
 u64 vm_live(u64 pa,u64 old){ return vm_pflags((pa&PTE_ADDR)|0x7ULL|(old&PTE_SHR),old&PTE_PBITS); }
 int vm_map_lazy_p(u64 pml4,u64 v,u64 bits){ u64* e=vm_walk(pml4,v,1); if(!e)return -1; if(*e&1)return 0; *e=PTE_LAZY|(bits&PTE_PBITS); return 0; }
 int vm_pte_used(u64 e){ return (e&1)||(e&PTE_LAZY); }
+u64 g_vm_file_faults;
+static u64 vm_frame(void){ u64 f=pframe_alloc(); if(f)return f; extern u32 sysroot_pc_reclaim(u32) __attribute__((weak));
+    if(mem_reclaim){ for(int t=0;t<6&&!f;t++){ if(mem_reclaim(64))f=pframe_alloc(); } } else if(sysroot_pc_reclaim&&sysroot_pc_reclaim(4096u))f=pframe_alloc(); return f; }
 int vm_fault_user(u64 cr3,u64 va,int write){
     u64* e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e)return -1;
     if(!(*e&1)){
         if(!(*e&PTE_LAZY))return -1;
         if(*e&PTE_PNO)return -1;
         if(write&&(*e&PTE_PRO))return -1;
-        u64 f=pframe_alloc(); if(!f)return -2;
-        *e=vm_live(f,*e); cpu_flush_page(va&~0xFFFULL); return 0; }
+        if(*e&PTE_FILE){ extern u64 sysroot_pc_page(int h,u32 pg) __attribute__((weak)); if(!sysroot_pc_page)return -1;
+            extern u64 g_pc_oom; u64 oo=g_pc_oom; u64 m=*e; u64 f=sysroot_pc_page((int)((m>>PTE_FH_SHIFT)&0xFFFFFu),(u32)((m&PTE_FP_MASK)>>12)); if(!f)return g_pc_oom!=oo?-2:-1;
+            e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
+            *e=vm_pflags((f&PTE_ADDR)|0x5ULL|PTE_COW|(m&PTE_SHR),m&PTE_PBITS); cpu_flush_page(va&~0xFFFULL); g_vm_file_faults++;
+            if(!write)return 0; }
+        else { u64 m=*e; u64 f=vm_frame(); if(!f)return -2; e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
+        if(m&PTE_SWP){ if(!swap_in||swap_in(m,f)){ pframe_free(f); return -2; } }
+        *e=vm_live(f,m)|((m&PTE_SHR)?0:PTE_ANON); cpu_flush_page(va&~0xFFFULL); return 0; } }
     if(!(*e&4))return -1;
     if(write&&!(*e&2)){
         if(!(*e&PTE_COW)||(*e&PTE_PRO))return -1;
         u64 pa=*e&PTE_ADDR;
-        if(pframe_refs(pa)<=1){ *e=vm_live(pa,*e&~PTE_SHR); cpu_flush_page(va&~0xFFFULL); return 0; }
-        u64 f=pframe_alloc(); if(!f)return -2;
+        if(pframe_refs(pa)<=1){ *e=vm_live(pa,*e&~PTE_SHR)|PTE_ANON; cpu_flush_page(va&~0xFFFULL); return 0; }
+        u64 m=*e; u64 f=vm_frame(); if(!f)return -2; e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
         u8* d=(u8*)f; const u8* s=(const u8*)pa; for(int b=0;b<4096;b++)d[b]=s[b];
-        *e=vm_live(f,*e&~PTE_SHR); cpu_flush_page(va&~0xFFFULL); smp_tlb_sync(cr3); pframe_free(pa); return 0; }
+        *e=vm_live(f,*e&~PTE_SHR)|PTE_ANON; cpu_flush_page(va&~0xFFFULL); smp_tlb_sync(cr3); pframe_free(pa); return 0; }
     return 0;
 }
 static void vm_unmap(u64 pml4,u64 v){ u64* e=vm_walk(pml4,v,0); if(e){ *e=0; cpu_flush_page(v); } }

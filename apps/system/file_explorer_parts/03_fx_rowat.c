@@ -233,7 +233,7 @@ void about_draw(int i){
     win_frame(i,"About NoovexOS");
     int x=WN[i].x+28,y=WN[i].y+TITLEH+24;
     draw_logo(WN[i].x+70, y, 60, ACC, 256);
-    dstr(x+90,y+6,"NoovexOS 64",INK,3); dstr(x+90,y+46,"Version 10.60  -  from scratch",rgb(90,100,120),1);
+    dstr(x+90,y+6,"NoovexOS 64",INK,3); dstr(x+90,y+46,"Version 10.86  -  from scratch",rgb(90,100,120),1);
     y+=96; dstr(x,y,"A hobby operating system in C and assembly.",INK,1); y+=22;
     dstr(x,y,"Native x86-64 long mode. No external kernel code.",INK,1); y+=22;
     char b[64],*p=b;p=scopy(p,"CPU: ");p=scopy(p,g_brand);*p=0; dstr(x,y,b,INK,1);

@@ -94,3 +94,15 @@ int vbe_edid_native(uint16_t* w, uint16_t* h){
     if(hw < 640 || vh < 400) return -6;
     *w = hw; *h = vh; return 0;
 }
+void vbe_edid_handoff(void){
+    volatile uint8_t* o = (volatile uint8_t*)0x5200u;
+    uint8_t* e = (uint8_t*)EDID_BUF;
+    int ok = e[0] == 0x00 && e[1] == 0xFF && e[2] == 0xFF && e[7] == 0x00;
+    if(!ok){ uint16_t w, h; vbe_edid_native(&w, &h); ok = e[0] == 0x00 && e[1] == 0xFF && e[2] == 0xFF && e[7] == 0x00; }
+    if(ok){ uint8_t sum = 0; for(int i = 0; i < 128; i++) sum = (uint8_t)(sum + e[i]); if(sum) ok = 0; }
+    *(volatile uint32_t*)o = 0;
+    if(!ok) return;
+    for(int i = 0; i < 128; i++) o[4 + i] = e[i];
+    o[132] = 1;
+    *(volatile uint32_t*)o = 0x31444945u;
+}

@@ -18,6 +18,7 @@ export NO_AT_BRIDGE=1
 echo "=== nvx-firefox $(date) ===" >> /tmp/ff.log
 if ! command -v firefox-esr >/dev/null 2>&1; then echo "firefox-esr is not installed - run: sudo apt install firefox-esr" >> /tmp/ff.log; echo 127 > /tmp/ff.done; exit 127; fi
 for i in $(seq 150); do [ -e /tmp/Xvfb_screen0 ] && break; sleep 0.2; done
+[ -S /tmp/.X11-unix/X0 ] && [ -z "$NVX_X_TCP" ] && export DISPLAY=:0
 [ -e /tmp/Xvfb_screen0 ] || echo "X server did not start (see /tmp/Xvfb.log)" >> /tmp/ff.log
 export XDG_CACHE_HOME=/root/.cache
 mkdir -p /root/.cache/fontconfig
