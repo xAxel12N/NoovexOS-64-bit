@@ -44,12 +44,12 @@ static void ata_model(const u8* id,char* out){ int n=0; for(int i=27;i<47;i++){ 
 int bd_scan(int usb){
     g_bd_n=0; gdisk_ensure();
     int mtype=g_dktype, ide_main=-1, ahci_main=-1;
-    if(mtype!=DK_NONE&&g_dksectors){ const char* nm=mtype==DK_IDE?"ide (main)":mtype==DK_AHCI?"sata (main)":mtype==DK_NVME?"nvme0":"virtio0"; u32 r=dk_ratio(); bd_add(BK_MAIN,0,(int)r,(u64)g_dksectors*r,nm);
+    if(mtype!=DK_NONE&&g_dksectors){ const char* nm=mtype==DK_IDE?"ide (main)":mtype==DK_AHCI?"sata (main)":mtype==DK_NVME?"nvme0":mtype==DK_USB?"usb0":"virtio0"; u32 r=dk_ratio(); bd_add(BK_MAIN,0,(int)r,(u64)g_dksectors,nm);
         if(mtype==DK_IDE)ide_main=g_ata_drv; if(mtype==DK_AHCI)ahci_main=ahci_cur_port(); }
     for(int u=0;u<4;u++){ if(u==ide_main)continue; u8 id[512]; if(pio_cmd(u,0,1,id))continue; const u16* w=(const u16*)id; u64 s48=w[100]|((u64)w[101]<<16)|((u64)w[102]<<32)|((u64)w[103]<<48); u64 sec=(w[83]&(1u<<10))&&s48?s48:(w[60]|((u32)w[61]<<16));
         char nm[24],*p=nm; p=scopy(p,"ide"); p=udec(p,(u32)u); *p=0; bd_add(BK_IDE,u,1,sec,nm); ata_model(id,g_bd[g_bd_n-1].label); }
     { u32 m=0; if(!ahci_ports_list(&m)&&mtype!=DK_AHCI){ ahci_init(); ahci_ports_list(&m); } for(int p=0;p<32;p++){ if(!(m&(1u<<p))||p==ahci_main)continue; u64 sec=0; if(ahci_port_io(p,0,0,&sec)||!sec)continue; char nm[24],*q=nm; q=scopy(q,"sata"); q=udec(q,(u32)p); *q=0; bd_add(BK_AHCI,p,1,sec,nm); } }
-    if(usb&&msd_autoinit()){ u64 s=usb_msd_sectors(); if(s)bd_add(BK_USB,0,1,s,"usb0"); }
+    if(usb&&mtype!=DK_USB&&msd_autoinit()){ u64 s=usb_msd_sectors(); if(s)bd_add(BK_USB,0,1,s,"usb0"); }
     return g_bd_n; }
 
 static void cpyn(char* d,const char* s,int n){ int i=0; for(;s[i]&&i<n-1;i++)d[i]=s[i]; d[i]=0; }
@@ -106,7 +106,7 @@ int part_scan_disk(int d,partent* out,int cap){
             if(!(b[4]==0x05||b[4]==0x0F||b[4]==0x85)||!*(u32*)(b+8))break; u64 nx=ext0+(u64)*(u32*)(b+8)*R; if(nx<=cur)break; cur=nx; } }
     for(int i=0;i<n;i++) if(!(out[i].mbrtype==0x05||out[i].mbrtype==0x0F||out[i].mbrtype==0x85))fs_probe(d,out[i].start,out[i].count,out[i].fs);
     return n; }
-int parts_scan_main(partent* out,int cap){ g_bd_n=0; gdisk_ensure(); if(g_dktype==DK_NONE||!g_dksectors)return 0; u32 r=dk_ratio(); bd_add(BK_MAIN,0,(int)r,(u64)g_dksectors*r,"main"); return part_scan_disk(0,out,cap); }
+int parts_scan_main(partent* out,int cap){ g_bd_n=0; gdisk_ensure(); if(g_dktype==DK_NONE||!g_dksectors)return 0; u32 r=dk_ratio(); bd_add(BK_MAIN,0,(int)r,(u64)g_dksectors,"main"); return part_scan_disk(0,out,cap); }
 int parts_scan_all(int usb){ bd_scan(usb); g_pt_n=0; for(int d=0;d<g_bd_n;d++)g_pt_n+=part_scan_disk(d,g_pt+g_pt_n,PT_MAX-g_pt_n); return g_pt_n; }
 static char* sz_fmt(char* p,u64 sectors){ u64 mb=sectors>>11; if(mb>=1024*1024){ p=udec(p,(u32)(mb>>20)); *p++='.'; *p++=(char)('0'+(int)((mb&0xFFFFF)*10>>20)); return scopy(p," TB"); } if(mb>=1024){ p=udec(p,(u32)(mb>>10)); *p++='.'; *p++=(char)('0'+(int)((mb&1023)*10>>10)); return scopy(p," GB"); } if(mb){ p=udec(p,(u32)mb); return scopy(p," MB"); } p=udec(p,(u32)(sectors/2)); return scopy(p," KB"); }
 static char* u64dec(char* p,u64 v){ char t[24]; int n=0; do{ t[n++]=(char)('0'+v%10); v/=10; }while(v); while(n)*p++=t[--n]; *p=0; return p; }

@@ -31,20 +31,25 @@ static int acpi_gl_hook(int acq){
 static void aec_lock(int on){ if(g_aec.glk){ if(on)aml_gl(1); else aml_gl(0); } }
 struct nvx_g_acs_t g_acs;
 void (*g_acpi_pwrbtn_cb)(void);
+static u32 aec_streak;
+static u8 aec_fresh;
+static void aec_good(void){ g_aec.fails=0; aec_streak=0; aec_fresh=0; }
 static int aec_wait(int want_obf){
-    for(int t=0;t<20000;t++){ u8 s=inb(g_aec.cmd); if(want_obf?(s&1):!(s&2))return 0; io_wait(); }
-    g_aec.timeouts++; if(++g_aec.fails>=8){ g_aec.fails=0; g_aec.trips++; g_aec.dead_until=acpi_now_ns()+5000000000ULL; } return -1; }
-static int aec_dead(void){ if(!g_aec.dead_until)return 0; if(acpi_now_ns()<g_aec.dead_until)return 1; g_aec.dead_until=0; return 0; }
+    int lim=(aec_streak&&!aec_fresh)?2000:20000;
+    for(int t=0;t<lim;t++){ u8 s=inb(g_aec.cmd); if(want_obf?(s&1):!(s&2))return 0; io_wait(); }
+    g_aec.timeouts++; aec_fresh=0; if(++g_aec.fails>=(aec_streak?2:8)){ g_aec.fails=0; g_aec.trips++; if(aec_streak<6)aec_streak++; u64 bo=5000000000ULL<<(aec_streak-1); if(bo>30000000000ULL)bo=30000000000ULL; g_aec.dead_until=acpi_now_ns()+bo;
+        if(aec_streak==3)klog("acpi: embedded controller not answering, backing off"); } return -1; }
+static int aec_dead(void){ if(!g_aec.dead_until)return 0; if(acpi_now_ns()<g_aec.dead_until)return 1; g_aec.dead_until=0; aec_fresh=1; return 0; }
 static void aec_flush(void){ for(int k=0;k<4&&(inb(g_aec.cmd)&1);k++)(void)inb(g_aec.data); }
 static int aec_read_raw(u8 a,u8* v){
-    aec_flush(); if(aec_wait(0))return -1; outb(g_aec.cmd,0x80); if(aec_wait(0))return -1; outb(g_aec.data,a); if(aec_wait(1))return -1; *v=inb(g_aec.data); g_aec.reads++; g_aec.fails=0; return 0; }
+    aec_flush(); if(aec_wait(0))return -1; outb(g_aec.cmd,0x80); if(aec_wait(0))return -1; outb(g_aec.data,a); if(aec_wait(1))return -1; *v=inb(g_aec.data); g_aec.reads++; aec_good(); return 0; }
 static int aec_write_raw(u8 a,u8 v){
-    if(aec_wait(0))return -1; outb(g_aec.cmd,0x81); if(aec_wait(0))return -1; outb(g_aec.data,a); if(aec_wait(0))return -1; outb(g_aec.data,v); if(aec_wait(0))return -1; g_aec.writes++; g_aec.fails=0; return 0; }
+    if(aec_wait(0))return -1; outb(g_aec.cmd,0x81); if(aec_wait(0))return -1; outb(g_aec.data,a); if(aec_wait(0))return -1; outb(g_aec.data,v); if(aec_wait(0))return -1; g_aec.writes++; aec_good(); return 0; }
 int aec_read(u8 a,u8* v){ if(!g_aec.ok||aec_dead())return -1; aec_lock(1); int r=aec_read_raw(a,v); aec_lock(0); return r; }
 static int aec_write(u8 a,u8 v){ if(!g_aec.ok||aec_dead())return -1; aec_lock(1); int r=aec_write_raw(a,v); aec_lock(0); return r; }
 static int aec_query(u8* q){
     if(!g_aec.ok||aec_dead()||!(inb(g_aec.cmd)&0x20))return 0;
-    aec_lock(1); int r=0; if(!aec_wait(0)){ outb(g_aec.cmd,0x84); if(!aec_wait(1)){ *q=inb(g_aec.data); g_aec.queries++; g_aec.fails=0; r=*q?1:0; } } aec_lock(0); return r; }
+    aec_lock(1); int r=0; if(!aec_wait(0)){ outb(g_aec.cmd,0x84); if(!aec_wait(1)){ *q=inb(g_aec.data); g_aec.queries++; aec_good(); r=*q?1:0; } } aec_lock(0); return r; }
 static int acpi_crs_io(anode* dev,u16* ports,int max){
     anode* c=aml_child(dev,"_CRS"); if(!c)return 0; aobj o; if(aml_eval(c,0,0,&o)||o.type!=AT_BUF){ aobj_free(&o); return 0; }
     int n=0; u32 i=0;
@@ -150,13 +155,18 @@ void acpi_battery_update(int full){
     if(g_acb_mins>99*60)g_acb_mins=-1; }
 struct nvx_g_bl_t g_bl;
 
+void acpi_hi_prep(void){
+    u64* pml4=(u64*)(cpu_get_pt()&~0xFFFULL);
+    for(int i4=1;i4<8;i4++) if(!(pml4[i4]&1)){ u64* np=(u64*)dma_alloc_pages(1); if(!np)return; for(int k=0;k<512;k++)np[k]=0; pml4[i4]=(u64)np|3ULL; } }
 u64 acpi_hi_map(u64 pa){
     if(pa<0x100000000ULL)return pa; if(pa>=0x800000000000ULL)return 0;
     int i4=(int)(pa>>39); if(i4==8)return 0;
     u64 cr3; cr3=cpu_get_pt(); u64* pml4=(u64*)(cr3&~0xFFFULL);
     if(!(pml4[i4]&1)){ u64* np=(u64*)dma_alloc_pages(1); if(!np)return 0; for(int k=0;k<512;k++)np[k]=0; pml4[i4]=(u64)np|3ULL; }
     u64* pdpt=(u64*)(pml4[i4]&0x000FFFFFFFFFF000ULL); int i3=(int)((pa>>30)&511);
-    if(!(pdpt[i3]&1)){ u64* pd=(u64*)dma_alloc_pages(1); if(!pd)return 0; u64 gb=pa&~0x3FFFFFFFULL; for(int k=0;k<512;k++)pd[k]=(gb+((u64)k<<21))|0x9BULL; pdpt[i3]=(u64)pd|3ULL; cpu_set_pt(cr3); smp_tlb_shootdown(); }
+    if(pdpt[i3]&1){ u64 e3=pdpt[i3]; if(e3&0x80ULL)return ((e3&0x000FFFFFC0000000ULL)==(pa&~0x3FFFFFFFULL))?pa:0;
+        u64 e2=((u64*)(e3&0x000FFFFFFFFFF000ULL))[(pa>>21)&511]; return ((e2&0x81ULL)==0x81ULL&&(e2&0x000FFFFFFFE00000ULL)==(pa&~0x1FFFFFULL))?pa:0; }
+    { u64* pd=(u64*)dma_alloc_pages(1); if(!pd)return 0; u64 gb=pa&~0x3FFFFFFFULL; for(int k=0;k<512;k++)pd[k]=(gb+((u64)k<<21))|0x9BULL; pdpt[i3]=(u64)pd|3ULL; cpu_set_pt(cr3); smp_tlb_shootdown(); }
     return pa; }
 static u32 bl_rd(u32 o){ return *(volatile u32*)(g_bl.mmio+o); }
 static void bl_wr(u32 o,u32 v){ *(volatile u32*)(g_bl.mmio+o)=v; }

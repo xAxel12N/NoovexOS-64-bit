@@ -11,14 +11,18 @@ int g_wpa_ok=0, g_wpa_mfp=0;
 extern int g_wpa_akm;
 
 void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int elen){
-    static u8* pkt=0; if(!pkt)pkt=(u8*)dma_alloc(2048); if(!pkt)return;
-    static u8 fr[1600]; int fl=0; if(elen<0||elen>1500)return;
-    fr[fl++]=0x08; fr[fl++]=0x01;
+    if(elen<0||elen>1500)return;
+    if(!rtw_tx_room(m,0))return;
+    u8* pkt=rtw_tx_buf(0); if(!pkt)return;
+    extern int g_wifi_assoc_qos; int qos=g_wifi_assoc_qos?1:0;
+    static u8 fr[1600]; int fl=0;
+    fr[fl++]=qos?0x88:0x08; fr[fl++]=0x01;
     fr[fl++]=0; fr[fl++]=0;
     for(int i=0;i<6;i++)fr[fl++]=bssid[i];
     for(int i=0;i<6;i++)fr[fl++]=mac[i];
     for(int i=0;i<6;i++)fr[fl++]=bssid[i];
     fr[fl++]=0; fr[fl++]=0;
+    if(qos){ fr[fl++]=0; fr[fl++]=0; }
     fr[fl++]=0xAA; fr[fl++]=0xAA; fr[fl++]=0x03; fr[fl++]=0x00; fr[fl++]=0x00; fr[fl++]=0x00;
     fr[fl++]=0x88; fr[fl++]=0x8E;
     for(int i=0;i<elen;i++)fr[fl++]=eapol[i];
@@ -30,13 +34,13 @@ void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int e
     *(volatile u32*)(pkt+16)=0x00u;
     rtw_txdesc_rate(pkt,1);
     *(volatile u32*)(pkt+32)=(1u<<15);
+    rtw_desc_csum(pkt);
     for(int i=0;i<fl;i++)pkt[48+i]=fr[i];
     u32 i=g_beidx % g_benum; u8* bd=g_bering+i*16;
     u32 psb=((total-1)/128)+1;
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
     cpu_wmb();
-    rtw_w32(m,0x0328,(u32)(u64)g_bering); rtw_w16(m,0x0388,(u16)(g_benum&0x0FFF));
     g_beidx=(g_beidx+1)%g_benum; rtw_w16(m,0x03A8,(u16)g_beidx);
 }
 
@@ -46,10 +50,10 @@ int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms){
     for(int t=0;t<ms*10;t++){
         int wp=rtw_rx_hw_wp(m);
         while((int)(g_rxidx%g_rxnum)!=(wp%(int)g_rxnum)){
-            u32 ri=g_rxidx % g_rxnum; u8* base=g_rxbuf+ri*2048;
+            u32 ri=g_rxidx % g_rxnum; u8* base=g_rxbuf+ri*RTW_RXBUF; if(!*(volatile u32*)(u64)base)break;
             u32 rw0=*(volatile u32*)(u64)base; u32 plen=rw0&0x3FFFu;
-            u32 drvsz=((rw0>>16)&0xFu)*8u; u32 shift=(rw0>>24)&3u; u32 crc=(rw0>>14)&1u;
-            u32 hoff=24u+drvsz+shift; u32 fe=hoff+plen; if(fe>2048u)fe=2048u;
+            u32 drvsz=((rw0>>16)&0xFu)*8u; u32 shift=(rw0>>24)&3u; u32 crc=((rw0>>14)&1u)|(u32)rtw_rx_bad(base);
+            u32 hoff=24u+drvsz+shift; u32 fe=hoff+plen-(plen>=4u?4u:0u); if(fe>RTW_RXBUF)fe=RTW_RXBUF;
             int got=0,elen=0;
             if(plen>=40 && !crc && hoff+32u<=fe){
                 const u8* fr=base+hoff; u8 fc=fr[0];
@@ -66,7 +70,7 @@ int rtw_rx_wait_eapol(u32 m,const u8* bssid,u8* out,int maxout,int ms){
                 }
             }
             *(volatile u32*)(u64)base=0;
-            *(volatile u16*)(u64)(g_rxring+ri*8)=2048; *(volatile u32*)(u64)(g_rxring+ri*8+4)=(u32)(u64)base;
+            *(volatile u16*)(u64)(g_rxring+ri*8)=(u16)RTW_RXBUF; *(volatile u16*)(u64)(g_rxring+ri*8+2)=0; *(volatile u32*)(u64)(g_rxring+ri*8+4)=(u32)(u64)base;
             g_rxidx++; if((int)g_rxidx>=(int)g_rxnum)g_rxidx=0; rtw_w16(m,0x03B4,(u16)g_rxidx);
             if(got) return elen;
         }

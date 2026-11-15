@@ -137,6 +137,25 @@ int ux_chmod(const char* p,unsigned mode){
     if(isd){ DT[k].mode=(DT[k].mode&0170000u)|(mode&07777u); if(!(DT[k].mode&0170000u))DT[k].mode|=0040000u; dt_save(); return 0; }
     FS[k].mode=(FS[k].mode&0170000u)|(mode&07777u); if(!(FS[k].mode&0170000u))FS[k].mode|=0100000u; ux_touch(k,0); nvx3_flush_meta(); return 0;
 }
+static int ux_k_ok(int k,int isd){ return isd?(k>=0&&k<DN_MAX&&DT[k].used):(k>=0&&k<FS_N&&FS[k].used); }
+int ux_owner_k(int k,int isd){ return !ux_k_ok(k,isd)?-1:isd?DT[k].uid:FS[k].uid; }
+int ux_utimes_k(int k,int isd,int ah,u32 at,int mh,u32 mt){
+    if(!ux_k_ok(k,isd))return -1;
+    u32 t=ux_now(); u32* pa=isd?&DT[k].atime:&FS[k].atime; u32* pm=isd?&DT[k].mtime:&FS[k].mtime; u32* pc=isd?&DT[k].ctime:&FS[k].ctime;
+    if(ah)*pa=ah==1?t:at;
+    if(mh)*pm=mh==1?t:mt;
+    *pc=t;
+    if(isd)dt_save(); else nvx3_flush_meta();
+    return 0; }
+int ux_chown_k(int k,int isd,int uid,int gid){
+    if(!ux_k_ok(k,isd))return -1;
+    int cu=ux_owner_k(k,isd);
+    if(g_uid!=0&&((uid!=-1&&uid!=cu)||g_uid!=cu))return -1;
+    int* pu=isd?&DT[k].uid:&FS[k].uid; int* pg=isd?&DT[k].gid:&FS[k].gid;
+    if(uid!=-1)*pu=uid;
+    if(gid!=-1)*pg=gid;
+    if(isd)dt_save(); else { ux_touch(k,0); nvx3_flush_meta(); }
+    return 0; }
 int ux_utime(const char* p,u32 at,u32 mt){ int isd; int k=ux_lookup(p,&isd,1); if(k<0)return -1; if(isd)return 0; u32 t=ux_now(); FS[k].atime=at?at:t; FS[k].mtime=mt?mt:t; FS[k].ctime=t; nvx3_flush_meta(); return 0; }
 
 static int g_usb_mounted=0;
@@ -294,7 +313,7 @@ int proc_gen(const char* p,char* out,int cap){ (void)cap;
     if(seq((char*)p,"/dev/console")||seq((char*)p,"/dev/tty")){ char* o=out; o=pc_(o,"console\n"); return (int)(o-out); }
     /* ---- SysFS ---- */
     if(seq((char*)p,"/sys/kernel/ostype")){ char* o=out; o=pc_(o,"NoovexOS\n"); return (int)(o-out); }
-    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"10.86\n"); return (int)(o-out); }
+    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"11.10\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/hostname")){ char* o=out; o=pc_(o,g_hostname); o=pc_(o,"\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/arch")){ char* o=out; o=pc_(o,"x86_64\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/devices/system/cpu/online")){ extern volatile int g_cores_online; char* o=out; int n=g_smp_on?g_cores_online:1; if(n<=1)o=pc_(o,"0\n"); else { o=pc_(o,"0-"); o=pn_(o,n-1); o=pc_(o,"\n"); } return (int)(o-out); }

@@ -7,8 +7,10 @@ These files are the NVIDIA firmware from the linux-firmware project, xz-compress
   nvfw_booter_unload.xz nvidia/tu116/gsp/booter_unload-535.113.01.bin
   nvfw_acr_bl.xz        nvidia/tu116/acr/bl.bin
 
-They are redistributable binary firmware under NVIDIA's licence in linux-firmware
-(the file LICENCE.nvidia in that project). They are not covered by the NoovexOS licence.
+They are redistributable binary firmware under NVIDIA's licence in linux-firmware.
+A copy of that licence is in LICENCE.nvidia next to this file, and in the installed
+system at /usr/share/licenses/firmware/LICENCE.nvidia. The files are shipped unmodified
+(xz compression is lossless). They are not covered by the NoovexOS licence.
 
 A file with the original name (for example booter_load-535.113.01.bin) placed in Files
 is used instead of the built-in copy, which is how a TU117-specific booter can be supplied.

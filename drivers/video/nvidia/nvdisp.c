@@ -46,7 +46,7 @@ static int edid_read_ddc(void){
 /* ---- parsed mode from EDID detailed timing descriptor ---- */
 nv_mode g_mode; int g_mode_ok=0;
 char g_edid_name[16];
-static int edid_parse(void){
+static int nvd_edid_parse(void){
     if(!g_edid_ok)return 0;
     int d=54;                                   /* first detailed timing descriptor */
     u32 pclk=(g_edid[d]|(g_edid[d+1]<<8))*10;    /* in 10 kHz -> kHz */
@@ -113,6 +113,6 @@ int nv_display_probe(void){
     if(!g_nv_dcb_off){ if(nv_find_dcb())nv_parse_dcb(); }
     int out=nv_select_output();
     g_edid_ok=0; g_mode_ok=0;
-    if(out>=0){ if(edid_read_ddc())edid_parse(); }
+    if(out>=0){ if(edid_read_ddc())nvd_edid_parse(); }
     return 1;
 }

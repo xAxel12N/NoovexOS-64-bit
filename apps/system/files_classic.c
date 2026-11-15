@@ -43,13 +43,17 @@ const struct nvx_FFILE_t FFILE[]={
   "timeout=2\r\n" "default=0\r\n" "video=1280x720\r\n" "bootlog=4\r\n\r\n"
   "entry=NoovexOS 64\r\n" "kernel=/KERNEL.ELF\r\n" "cmdline=noovexos\r\n"},
  {0,"VERSION.txt",
-  "NoovexOS 64\r\n" "Version 10.86\r\n" "Architecture: x86-64 (long mode)\r\n"
+  "NoovexOS 64\r\n" "Version 11.10\r\n" "Architecture: x86-64 (long mode)\r\n"
   "Bootloader: myboot (BIOS + UEFI)\r\n" "Filesystem: NVXFS (disk) + FAT16/32 (USB)\r\n"
   "Toolchain: gcc -m64 -Os -ffreestanding\r\n" "Built from scratch - no external OS.\r\n"},
  {0,"LICENSE.txt",
   "NoovexOS 64\r\n" "Copyright (c) the NoovexOS author.\r\n\r\n"
   "This is a personal hobby operating system. Reference sources used\r\n"
-  "for protocol documentation are credited in their driver files.\r\n"},
+  "for protocol documentation are credited in their driver files.\r\n\r\n"
+  "Built-in firmware (NVIDIA GSP, Realtek rtw88 Wi-Fi) is redistributable\r\n"
+  "but not covered by this licence. Its licences are in\r\n"
+  "/usr/share/licenses/firmware (LICENCE.nvidia,\r\n"
+  "LICENCE.rtlwifi_firmware.txt).\r\n"},
  {1,"kernel.info",
   "KERNEL SUBSYSTEM\r\n----------------\r\n"
   "The kernel runs in ring 0 (kernel space) with full hardware access.\r\n"
@@ -351,7 +355,7 @@ void blit_img_fit(int ox,int oy,int aw,int ah){    /* scale viewbuf into aw x ah
 static int ivx,ivy,ivw,ivh;
 void img_viewer_draw(void){
     if(g_imgview<0)return; int ok=ensure_img(g_imgview);
-    for(u32 y=0;y<H;y++)for(u32 x=0;x<W;x++){ u32*p=&SCENE[(u64)y*SW+x]; *p=mix(*p,rgb(8,10,18),150); }
+    { u32* S=SCENE; for(u32 y=0;y<H;y++)for(u32 x=0;x<W;x++){ u32*p=&S[(u64)y*SW+x]; *p=mix(*p,rgb(8,10,18),150); } }
     ivw=(int)W*72/100; ivh=(int)H*74/100; ivx=((int)W-ivw)/2; ivy=((int)H-ivh)/2;
     shadow_soft(ivx,ivy,ivw,ivh,14); fill_round(ivx,ivy,ivw,ivh,14,15,rgb(24,26,34));
     dstr(ivx+16,ivy+12,FS[g_imgview].used?FS[g_imgview].name:"image",rgb(236,240,250),1);
@@ -379,7 +383,7 @@ char* fmt_size(char* p,long b){ if(b>=1073741824L){ p=udec(p,(u32)(b/1073741824L
 int g_drv_x[3],g_drv_y[3],g_drv_w,g_drv_tgt[3],g_drv_n;
 void draw_drive_tile(int x,int y,int w,int h,const char* name,long used,long total,int cloud,int hov){
     fill_round(x,y,w,h,9,15,hov?rgb(238,242,249):rgb(250,251,253));
-    for(int t=0;t<w;t++){ if(!cut(t,0,w,h,9,3)){u32*p=&SCENE[(u64)y*SW+x+t];*p=mix(*p,rgb(220,224,232),200);} if(!cut(t,h-1,w,h,9,12)){u32*p=&SCENE[(u64)(y+h-1)*SW+x+t];*p=mix(*p,rgb(220,224,232),200);} }
+    { u32* S=SCENE; for(int t=0;t<w;t++){ int px=x+t; if(px<0||px>=(int)W)continue; if(y>=0&&y<(int)H&&!cut(t,0,w,h,9,3)){u32*p=&S[(u64)y*SW+px];*p=mix(*p,rgb(220,224,232),200);} if(y+h-1>=0&&y+h-1<(int)H&&!cut(t,h-1,w,h,9,12)){u32*p=&S[(u64)(y+h-1)*SW+px];*p=mix(*p,rgb(220,224,232),200);} } }
     int ix=x+16, iy=y+h/2-16;                          /* drive icon */
     fill_round(ix,iy,48,32,4,15,cloud==1?mix(ACC,rgb(255,255,255),110):cloud==2?rgb(90,160,110):rgb(150,158,176));
     fill_round(ix+6,iy+6,36,13,2,15,rgb(78,88,108)); fill_circle(ix+10,iy+26,3,rgb(120,220,140));

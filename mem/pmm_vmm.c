@@ -97,13 +97,14 @@ static u64 hp_alloc(void){ if(!hp_n||hp_used>=hp_n)return 0; u32 nw=(hp_n+63)/64
         u32 b=(u32)__builtin_ctzll(~v); u32 j=w*64+b; if(j>=hp_n)continue; hp_bits[w]=v|(1ULL<<b); hp_ref[j]=1; hp_used++; hp_hint=w;
         u64 pa=hp_pa(j); u64* z=(u64*)pa; for(int q=0;q<512;q++)z[q]=0; return pa; }
     return 0; }
-u64 hp_alloc_run(u32 pages){ if(!pf_ready||!hp_n||pages==0)return 0;
+u64 hp_alloc_run_nz(u32 pages){ if(!pf_ready||!hp_n||pages==0)return 0;
     for(int r=0;r<hp_nr;r++){ u32 lo=hp_r[r].first, hi=(r+1<hp_nr?hp_r[r+1].first:hp_n); if(hi-lo<pages)continue;
         for(u32 s=lo;s+pages<=hi;){ u32 k=0; while(k<pages&&!((hp_bits[(s+k)>>6]>>((s+k)&63))&1))k++;
             if(k==pages){ for(u32 i=0;i<pages;i++){ u32 j=s+i; hp_bits[j>>6]|=(1ULL<<(j&63)); hp_ref[j]=1; } hp_used+=pages;
-                u64 pa=hp_pa(s); u64* z=(u64*)pa; u64 nw=(u64)pages*512ULL; for(u64 w=0;w<nw;w++)z[w]=0; return pa; }
+                return hp_pa(s); }
             s+=k+1; } }
     return 0; }
+u64 hp_alloc_run(u32 pages){ u64 pa=hp_alloc_run_nz(pages); if(pa){ u64* z=(u64*)pa; u64 nw=(u64)pages*512ULL; for(u64 w=0;w<nw;w++)z[w]=0; } return pa; }
 static int hp_isset(u32 j){ return (int)((hp_bits[j>>6]>>(j&63))&1); }
 u32 pframe_hi_count(void){ return hp_n; }
 u64 mm_hi_mapped_top(void){ return g_hi_mapped; }
@@ -137,7 +138,7 @@ u32 pframe_free_count(void){ return pf_ready?(pf_n-pf_used)+(hp_n-hp_used):0; }
 /* ================= STAGE 2: virtual memory manager (paging) =================
    Per-address-space page tables (PML4->PDPT->PD->PT). New spaces copy the
    kernel's PML4 entries so kernel code/data/heap stay mapped after a CR3 switch;
-   new per-space mappings use high PML4 slots that the kernel map doesn't touch. */
+   per-space mappings live in PML4 slot 8 (slots 1-7 are shared, see acpi_hi_prep). */
 u64 vm_new_pml4(void){ u64 p=pframe_alloc(); if(!p)return 0; u64* t=(u64*)p;
     u64 cr3; cr3=cpu_get_pt(); u64* k=(u64*)(cr3&~0xFFFULL);
     for(int i=0;i<512;i++)t[i]=k[i];   /* share the kernel mappings */
@@ -211,7 +212,7 @@ int vm_selftest(u32* r1,u32* r2){
     u64 cr3o; cr3o=cpu_get_pt();
     u64 sp1=vm_new_pml4(), sp2=vm_new_pml4(); if(!sp1||!sp2) return 2;
     u64 fa=pframe_alloc(), fb=pframe_alloc(); if(!fa||!fb) return 2;
-    u64 V=0x8000000000ULL;   /* 512 GB: PML4 slot 1, untouched by the kernel map -> per-space */
+    u64 V=0x47F00000000ULL;
     if(vm_map(sp1,V,fa,0x3ULL)||vm_map(sp2,V,fb,0x3ULL)) return 2;
     cpu_set_pt(sp1); *(volatile u32*)V=0xAAAA1111u;
     cpu_set_pt(sp2); *(volatile u32*)V=0xBBBB2222u;
@@ -219,7 +220,7 @@ int vm_selftest(u32* r1,u32* r2){
     cpu_set_pt(sp2); u32 b=*(volatile u32*)V;
     cpu_set_pt(cr3o);   /* back to the kernel space */
     if(r1)*r1=a; if(r2)*r2=b;
-    /* free the frames + tables we used (leak the intermediate tables for simplicity of the test) */
+    vm_unmap(sp1,V); vm_unmap(sp2,V);
     pframe_free(fa); pframe_free(fb);
     return (a==0xAAAA1111u && b==0xBBBB2222u)?0:3;
 }

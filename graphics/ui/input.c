@@ -28,6 +28,9 @@
 #include "include/nvx/apps/system/logs.h"
 #include "include/nvx/graphics/ui/desktop.h"
 #include "include/nvx/graphics/ui/input.h"
+extern const char* volatile g_in_what; extern volatile int g_in_win; void in_mark(const char*,int,const char*,int); void in_unmark(const char*,int);
+_Static_assert(NWIN==28,"update CX_NWIN in core/crash.c cx_in_fmt");
+#define INM(w,win,a,n,stmt) do{ const char* _pw=g_in_what; int _pn=g_in_win; in_mark(w,win,a,n); stmt; in_unmark(_pw,_pn); }while(0)
 /* =========================================================================
    Input
    ========================================================================= */
@@ -57,7 +60,7 @@ void nvxlc_present(void){ if(!g_lc_on)return; lc_chrome(); blit_all(); }
 int  nvxlc_w(void){ return g_lc_w; }
 int  nvxlc_h(void){ return lc_ch(); }
 int  nvxlc_key(void){ return kpop(); }
-int  nvxlc_waitkey(void){ int k; while((k=kpop())<0)cpu_idle(); return k; }
+int  nvxlc_waitkey(void){ extern void kidle(void); extern void busy_pump(void); extern volatile u32 g_nest_live; int k; while((k=kpop())<0){ g_nest_live++; busy_pump(); kidle(); } return k; }
 void nvxlc_mouse(int* x,int* y,int* b){ if(x)*x=mx-g_lc_x; if(y)*y=my-g_lc_y-TITLEH; if(b)*b=mouse_btn; }
 unsigned long nvxlc_ticks(void){ return (unsigned long)g_ticks; }
 void nvxlc_sleep(int ms){ u64 until=g_ticks+(ms/10); while(g_ticks<until)cpu_idle(); }
@@ -99,12 +102,15 @@ int win_edge_hit(int px,int py,int* win){
         if(f){ if(win)*win=i; return f; }
         if(inside)return 0; }
     return 0; }
-static void on_click(int px,int py){
+void crumb(const char*);
+static void on_click_body(int px,int py);
+static void on_click(int px,int py){ crumb("on_click>"); on_click_body(px,py); crumb("on_click<"); }
+static void on_click_body(int px,int py){
     { extern int xtray_pop_open(void), xtray_pop_click(int,int), xtray_bar_click(int,int,int); if(xtray_pop_open()&&xtray_pop_click(px,py))return; if(py>=g_tby&&xtray_bar_click(px,py,0))return; }
     if(g_prop){ prop_click(px,py); return; }
     if(g_imgview>=0){ g_imgview=-1; return; }
     if(g_rename) return;
-    if(g_launcher){ launcher_click(px,py); return; }
+    if(g_launcher){ INM("Start menu click",-1,0,0,launcher_click(px,py)); return; }
     if(g_qs&&g_fpop){ extern int focus_popup_click(int,int); if(focus_popup_click(px,py))return; }
     if(g_qs&&g_dstyle==1){ if(classic_qs_click(px,py))return; if(!(py>=g_tby&&classic_tray_click(px))){ g_qs=0; g_fpop=0; } else return; }
     if(g_qs){ int pw=250,ph=196,qx=g_qsx-pw+30,qy=g_tby-ph-10; if(qx<6)qx=6;
@@ -116,7 +122,7 @@ static void on_click(int px,int py){
         g_qs=0; g_fpop=0; return; }
     if(g_notifpanel){ int pw=340,pnx=(int)W-pw-10; if(px<pnx||py>=g_tby){ g_notifpanel=0; if(py>=g_tby&&px>=g_bellx-4&&px<g_bellx+26)return; if(g_dstyle==1&&py>=g_tby&&px>=g_tray_x0+4*22&&px<g_tray_x0+5*22)return; } else return; }
     if(g_clockpop){ g_clockpop=0; return; }
-    if(g_ctx){ int r=ctx_click(px,py); g_ctx=0; if(r) return; }
+    if(g_ctx){ int r; INM("context menu click",-1,0,0,r=ctx_click(px,py)); if(r==2) return; g_ctx=0; g_submenu=0; if(r) return; }
     if(g_dstyle==1&&py>=g_tby){ { extern int g_ql_x0; if(px>=g_ql_x0&&px<g_ql_x0+3*24){ int q=(px-g_ql_x0)/24; static const int QW[3]={W_FILES,W_TERM,W_BROWSER}; focus_win(QW[q]); g_launcher=0; return; } } if(classic_tray_click(px))return; if(px<g_lbx_end){ g_launcher^=1; if(g_launcher){g_lq[0]=0;g_lqn=0;launcher_search();} } else if(px>=g_clockx){ g_clockpop^=1; } else classic_taskbtn_click(px); return; }
     if(py>=g_tby&&py<g_tby+g_tbh&&(px<DOCK_x-8||px>=DOCK_x+DOCK_w+8)){ if(px<g_lbx_end){ if(px>=g_lbx_end-44){ ws_switch(g_ws+1); return; } if(px>=g_lbx_end-96){ open_win(W_FILES); return; } g_launcher^=1; if(g_launcher){g_lq[0]=0;g_lqn=0;launcher_search();} }
         else if(px>=g_wsx&&px<g_wsx+NWS*14){ ws_switch((px-g_wsx)/14); }
@@ -137,27 +143,29 @@ static void on_click(int px,int py){
         g_wifipop=0; { extern void wifi_entry_cancel(void); wifi_entry_cancel(); } return; }
     if(g_dstyle!=1){ extern int xwin_count(void); extern void xwin_toggle(int); int nx=xwin_count(); if(nx>8)nx=8; for(int j=0;j<nx;j++){ int ix=DOCK_x+DOCK_PAD+(12+j)*(DOCK_IC+DOCK_GAP)+8; if(px>=ix-5&&px<ix+DOCK_IC+5&&py>=DOCK_y&&py<DOCK_y+DOCK_h){ xwin_toggle(j); return; } } }
     for(int k=0;k<12;k++){ int ix=DOCK_x+DOCK_PAD+k*(DOCK_IC+DOCK_GAP);
-        if(px>=ix-5&&px<ix+DOCK_IC+5&&py>=DOCK_y&&py<DOCK_y+DOCK_h){ focus_win(IC_APP[k]); return; } }   /* dock */
+        if(px>=ix-5&&px<ix+DOCK_IC+5&&py>=DOCK_y&&py<DOCK_y+DOCK_h){ INM("dock click",IC_APP[k],0,0,focus_win(IC_APP[k])); return; } }   /* dock */
     { int ew=-1; int ef=win_edge_hit(px,py,&ew); if(ef&&ew>=0&&win_ctl_hit(ew,px,py)<0){ focus_win(ew); g_resize=ew; g_rflags=ef; r_sw0=WN[ew].w; r_sh0=WN[ew].h; r_sx0=WN[ew].x; r_sy0=WN[ew].y; r_mx0=px; r_my0=py; return; } }
     int order[NWIN],n=0; for(int i=0;i<NWIN;i++) if(WN[i].open&&!WN[i].min&&WN[i].ws==g_ws)order[n++]=i;
     for(int a=0;a<n;a++)for(int b=a+1;b<n;b++) if(WN[order[b]].z>WN[order[a]].z){int t=order[a];order[a]=order[b];order[b]=t;}
     for(int a=0;a<n;a++){ int i=order[a]; if(in_rect(px,py,WN[i].x,WN[i].y,WN[i].w,WN[i].h)){ focus_win(i);
         int ctl=win_ctl_hit(i,px,py);
-        if(ctl==2){ close_win(i); return; }
+        if(ctl==2){ INM("close button",i,0,0,close_win(i)); return; }
         if(ctl==1){ win_max(i); return; }
         if(ctl==0){ win_min(i); return; }
         if(px>=WN[i].x+WN[i].w-18 && px<WN[i].x+WN[i].w && py>=WN[i].y+WN[i].h-18 && py<WN[i].y+WN[i].h){ g_resize=i; g_rflags=10; r_sw0=WN[i].w; r_sh0=WN[i].h; r_sx0=WN[i].x; r_sy0=WN[i].y; r_mx0=px; r_my0=py; return; }
-        if(i==W_SETTINGS&&py<WN[i].y+TITLEH){ extern int settings_title_click(int,int); if(settings_title_click(px,py))return; }
+        if(i==W_SETTINGS&&py<WN[i].y+TITLEH){ extern int settings_title_click(int,int); int r; INM("Settings title bar click",i,0,0,r=settings_title_click(px,py)); if(r)return; }
         if(i==W_SYSMON&&py<WN[i].y+TITLEH){ extern int sysmon_title_click(int,int); if(sysmon_title_click(px,py))return; }
         if(i==W_EDITOR&&py<WN[i].y+TITLEH){ extern int editor_title_click(int,int); if(editor_title_click(px,py))return; }
-        if(py<WN[i].y+TITLEH){ WN[i].sx=WN[i].x;WN[i].sy=WN[i].y;WN[i].sw=WN[i].w;WN[i].sh=WN[i].h; drag=i; dox=px-WN[i].x; doy=py-WN[i].y; return; }
-        app_click(i,px,py); return; } }
+        if(py<WN[i].y+TITLEH){ if(!WN[i].max){ WN[i].sx=WN[i].x;WN[i].sy=WN[i].y;WN[i].sw=WN[i].w;WN[i].sh=WN[i].h; } drag=i; dox=px-WN[i].x; doy=py-WN[i].y; return; }
+        if(i==W_SETTINGS){ extern int g_stpg; char pa[16]; int q=0,v=g_stpg; const char* pf="page "; while(*pf)pa[q++]=*pf++; if(v>=10)pa[q++]=(char)('0'+v/10%10); pa[q++]=(char)('0'+v%10); pa[q]=0; INM("Settings click on",i,pa,-1,app_click(i,px,py)); }
+        else { INM("click in window",i,0,0,app_click(i,px,py)); } return; } }
     { extern int classic_icon_hit(int,int); int k=classic_icon_hit(px,py); if(k>=0){ static u64 lt; static int lk=-1; if(lk==k&&g_ticks-lt<60){ static const int MAPW[6]={W_FILES,W_TERM,W_EDITOR,W_BROWSER,W_CALC,W_SETTINGS}; open_win(MAPW[k]); lk=-1; } else { lt=g_ticks; lk=k; } return; } }
     { int it=desk_hit(px,py); if(it>=0){ int ix,iy; if(it<100){ix=g_apx[it];iy=g_apy[it];}else{ix=g_fpx[it-100];iy=g_fpy[it-100];} g_ddrag=it; g_ddx=px-ix; g_ddy=py-iy; g_ddsx=px; g_ddsy=py; return; } }
-    g_marq=1; marq_x0=px; marq_y0=py;
+    crumb("marquee start"); g_marq=1; marq_x0=px; marq_y0=py;
 }
 u64 g_click_t=0, g_last_input_t=0; u32 g_in_lag_acc=0;
 static int mouse_step(int dx,int dy,int btn,int rbtn,int sc){ int changed=0;
+        if(g_marq&&!btn&&!mouse_btn_prev){ g_marq=0; changed=1; }
         { extern int acct_dlg_active(void); extern void acct_dlg_click(int,int); static int dlg_prev=0;
           if(acct_dlg_active()){ if(dx||dy){ mx+=dx;my-=dy; if(mx<0)mx=0;if(my<0)my=0;if(mx>=(int)W)mx=W-1;if(my>=(int)H)my=H-1; g_cursor_moved=1; }
               if(btn&&!dlg_prev)acct_dlg_click(mx,my); dlg_prev=btn; mouse_btn_prev=btn; mouse_rbtn_prev=rbtn; (void)sc; return 1; }
@@ -173,7 +181,7 @@ static int mouse_step(int dx,int dy,int btn,int rbtn,int sc){ int changed=0;
         { extern int g_ss_on; extern int ss_mouse(int,int,int); if(g_ss_on){ ss_mouse(mx,my,(btn?1:0)|(rbtn?2:0)); mouse_btn_prev=btn; mouse_rbtn_prev=rbtn; return 1; } }
         { extern int g_xfull; extern void xfull_mouse(int,int,int); if(g_xfull){ xfull_mouse(btn,rbtn,sc); btn=0; rbtn=0; sc=0; dx=dy=0; } }
         { extern int xover_mouse(int,int,int,int); if(!g_launcher&&xover_mouse(btn,rbtn,sc,(btn&&!mouse_btn_prev)||(rbtn&&!mouse_rbtn_prev))){ btn=mouse_btn_prev; rbtn=mouse_rbtn_prev; sc=0; changed=1; } }
-        if(btn&&!mouse_btn_prev){ on_click(mx,my); changed=1; }
+        if(btn&&!mouse_btn_prev){ INM("mouse click",-1,0,0,on_click(mx,my)); changed=1; }
         { extern void xdisp_mouse(int,int,int); xdisp_mouse(btn,rbtn,sc); }
         if(btn&&mouse_btn_prev&&(dx||dy)&&focus==W_WRITER&&WN[W_WRITER].open&&drag<0&&g_resize<0){ extern void writer_drag(int,int); writer_drag(mx,my); changed=1; }
         { extern int browser_mouse_down(void); extern void browser_mouse_held(int,int); extern void browser_mouse_release(int,int); if(browser_mouse_down()){ if(btn&&(dx||dy)&&drag<0&&g_resize<0){ browser_mouse_held(mx,my); changed=1; } if(!btn&&mouse_btn_prev){ browser_mouse_release(mx,my); changed=1; } } }
@@ -195,11 +203,12 @@ static int mouse_step(int dx,int dy,int btn,int rbtn,int sc){ int changed=0;
                         if(fld>=0&&g_fdrag_slot>=0){ FS[g_fdrag_slot].folder=fld; toast("Moved"); } else toast("Can only drop in Documents/Downloads"); break; } }
                 g_fdrag=0; g_fdrag_slot=-1; }
             if(drag>=0&&g_snap) apply_snap(drag,g_snap); drag=-1; g_resize=-1; g_snap=0; g_marq=0; changed=1; }
-        if(g_marq&&btn) changed=1;
+        if(g_marq&&btn&&(dx||dy)) changed=1;
+        if(drag>=0&&btn&&WN[drag].max&&(dx||dy)){ WN[drag].max=0; if(WN[drag].sw>0&&WN[drag].sh>0){ if(dox>=WN[drag].sw)dox=WN[drag].sw/2; WN[drag].w=WN[drag].sw; WN[drag].h=WN[drag].sh; } }
         if(drag>=0&&btn){ int nx=mx-dox, ny=my-doy;
             if(ny<0)ny=0; if(ny>(int)H-TITLEH)ny=(int)H-TITLEH;
             if(nx>(int)W-90)nx=(int)W-90; if(nx<90-WN[drag].w)nx=90-WN[drag].w;
-            WN[drag].x=nx; WN[drag].y=ny; if(WN[drag].max)WN[drag].max=0;
+            if(!WN[drag].max){ WN[drag].x=nx; WN[drag].y=ny; }
             g_snap=0; if(my<=3)g_snap=3; else if(mx<=3)g_snap=(my<(int)H/3)?4:(my>2*(int)H/3)?6:1; else if(mx>=(int)W-4)g_snap=(my<(int)H/3)?5:(my>2*(int)H/3)?7:2;
             changed=1; }
         if(g_resize>=0&&btn){ Win* w=&WN[g_resize]; int ddx=mx-r_mx0, ddy=my-r_my0; int nx=r_sx0, ny=r_sy0, nw=r_sw0, nh=r_sh0; const int MW=240, MH=160;
@@ -234,7 +243,7 @@ static int mouse_step(int dx,int dy,int btn,int rbtn,int sc){ int changed=0;
         mouse_btn_prev=btn; mouse_rbtn_prev=rbtn; return changed; }
 int g_pi_depth;
 static int process_input_body(void);
-int process_input(void){ g_pi_depth++; int r=process_input_body(); g_pi_depth--; return r; }
+int process_input(void){ crumb("process_input>"); g_pi_depth++; int r; INM("input handling",-1,0,0,r=process_input_body()); g_pi_depth--; crumb("process_input<"); return r; }
 static int process_input_body(void){
     int changed=0;
     if(g_doom_mcap && (kdown[0x01] || focus!=W_DOOM || !WN[W_DOOM].open)){ g_doom_mcap=0; changed=1; }
@@ -244,9 +253,9 @@ static int process_input_body(void){
       if(kdown[0x1D]){ int sc4[4]={0x02,0x03,0x04,0x05};
           for(int w=0;w<4;w++){ if(kdown[sc4[w]]){ if(ws_arm[w]){ ws_switch(w); changed=1; } ws_arm[w]=0; } else ws_arm[w]=1; } }
       else for(int w=0;w<4;w++) ws_arm[w]=1;
-      { extern int hk_poll(void); if(hk_poll())changed=1; }
+      { extern int hk_poll(void); int hr; INM("keyboard shortcut",-1,0,0,hr=hk_poll()); if(hr)changed=1; }
       { static int cse=0; if(kdown[0x1D]&&(kdown[0x2A]||kdown[0x36])&&kdown[0x01]){ if(!cse){ open_win(W_SYSMON); changed=1; } cse=1; } else cse=0; }
-      static int winheld=0, winR=0;
+      static int winheld=0, winR=0; if(kdown[0x5B])in_mark("Windows-key shortcut",-1,0,0);
       if(kdown[0x5B]){ if(!winheld){ winheld=1; winR=0; }
           if(kdown[0x13] && (kdown[0x2A]||kdown[0x36]) && !winR){ open_win(W_CHATGPT); winR=1; changed=1; }
           if(kdown[0x13] && !winR){ open_win(W_TERM); winR=1; changed=1; }
@@ -254,31 +263,48 @@ static int process_input_body(void){
           if(kdown[0x26] && !winR){ extern void hk_do(int); hk_do(20); winR=1; changed=1; }
           if(kdown[0x19] && !winR){ extern void hk_do(int); hk_do(15); winR=1; changed=1; }
           if(kdown[0x17] && !winR){ open_win(W_SETTINGS); winR=1; changed=1; }
-          if(kdown[0x1E] && !winR){ g_qs=!g_qs; g_fpop=0; winR=1; changed=1; } }
+          if(kdown[0x1E] && !winR){ g_qs=!g_qs; g_fpop=0; winR=1; changed=1; }
+          { static int wde=0; if(kdown[0x20]){ if(!wde){ static unsigned char wdh[NWIN]; static int wdn=0; int any=0;
+                  for(int k=0;k<NWIN;k++) if(WN[k].open&&!WN[k].min&&WN[k].ws==g_ws){ any=1; break; }
+                  if(any){ for(int k=0;k<NWIN;k++){ wdh[k]=0; if(WN[k].open&&!WN[k].min&&WN[k].ws==g_ws){ wdh[k]=1; win_min(k); } } wdn=1; }
+                  else if(wdn){ for(int k=0;k<NWIN;k++) if(wdh[k]&&WN[k].open&&WN[k].min){ focus_win(k); } for(int k=0;k<NWIN;k++)wdh[k]=0; wdn=0; }
+                  winR=1; changed=1; } wde=1; } else wde=0; }
+          { static int war[4]; static const unsigned char wsc[4]={0x4B,0x4D,0x48,0x50};
+            for(int a=0;a<4;a++){ if(kdown[wsc[a]]){ if(!war[a]){ int f=focus; if(f>=0&&f<NWIN&&WN[f].open&&!WN[f].min){
+                    if(a==0)apply_snap(f,1); else if(a==1)apply_snap(f,2);
+                    else if(a==2){ if(WN[f].max)apply_snap(f,3); else win_max(f); }
+                    else { if(WN[f].max)win_max(f); else win_min(f); } }
+                  winR=1; changed=1; } war[a]=1; } else war[a]=0; } } }
       else { if(winheld){ if(!winR){ g_notifpanel=!g_notifpanel; changed=1; } winheld=0; winR=0; } }
+      { static int cau=0; if(kdown[0x1D]&&kdown[0x38]&&kdown[0x16]){ if(!cau){ extern void xhci_mouse_autoinit(void); xhci_mouse_autoinit(); toast("USB input restarted"); changed=1; } cau=1; } else cau=0; }
       { static int cafl=0; if(kdown[0x1D]&&kdown[0x38]&&kdown[0x21]){ if(!cafl){ extern void igpu_flip_off(const char*); igpu_flip_off("turned off with Ctrl+Alt+F"); toast("Tear-free drawing off"); changed=1; } cafl=1; } else cafl=0; }
     }
-    if(g_gesture){ int g=g_gesture; g_gesture=0; changed=1;
+    in_unmark("input handling",-1);
+    if(g_gesture){ int g=g_gesture; g_gesture=0; changed=1; in_mark("touchpad gesture",-1,0,0);
         if(g==GES_SWIPE_UP){ g_launcher=1; } else if(g==GES_SWIPE_DOWN){ g_launcher=0; g_notifpanel=0; }
         else if(g==GES_SWIPE_LEFT){ ws_switch(g_ws+1); } else if(g==GES_SWIPE_RIGHT){ ws_switch(g_ws-1); }
         else if(g==GES_ZOOM_IN||g==GES_ZOOM_OUT){ extern int xover_zoom(int); if(!g_launcher)xover_zoom(g==GES_ZOOM_IN); } }
-    if(mouse_evt||in_mq_pending()){ g_last_input_t=g_ticks; int dx,dy,btn,rbtn,sc; { int hs=mouse_hscroll; if(hs&&focus==W_BROWSER&&WN[W_BROWSER].open&&g_page==3){ mouse_hscroll=0; extern void browser_wheelxy(int,int); browser_wheelxy(0,hs); changed=1; } } static int ex[IN_MQ_N],ey[IN_MQ_N],eb[IN_MQ_N]; static u64 et[IN_MQ_N]; int ne=0;
-        cpu_irq_off(); while(ne<IN_MQ_N&&in_mq_take(&ex[ne],&ey[ne],&eb[ne],&et[ne]))ne++; dx=mouse_dx;dy=mouse_dy;mouse_dx=0;mouse_dy=0;btn=mouse_btn;rbtn=mouse_rbtn;sc=mouse_scroll;mouse_scroll=0;mouse_evt=0; cpu_irq_on();
+    in_unmark("input handling",-1);
+    if(mouse_evt||in_mq_pending()){ g_last_input_t=g_ticks; in_mark("mouse event",-1,0,0); int dx,dy,btn,rbtn,sc; { int hs=mouse_hscroll; if(hs&&focus==W_BROWSER&&WN[W_BROWSER].open&&g_page==3){ mouse_hscroll=0; extern void browser_wheelxy(int,int); browser_wheelxy(0,hs); changed=1; } } static int ex[IN_MQ_N],ey[IN_MQ_N],eb[IN_MQ_N]; static u64 et[IN_MQ_N]; int ne=0;
+        { extern u64 in_lock_x(void); extern void in_unlock_x(u64); extern int in_mq_take_locked(int*,int*,int*,u64*); u64 lf=in_lock_x(); while(ne<IN_MQ_N&&in_mq_take_locked(&ex[ne],&ey[ne],&eb[ne],&et[ne]))ne++; dx=mouse_dx;dy=mouse_dy;mouse_dx=0;mouse_dy=0;btn=mouse_btn;rbtn=mouse_rbtn;sc=mouse_scroll;mouse_scroll=0;mouse_evt=0; in_unlock_x(lf); }
         int ux=0, uy=0;
         for(int i=0;i<ne;i++){ g_click_t=et[i]; { u32 lg=(u32)(g_ticks-et[i])*10u; if(lg>g_in_lag_acc)g_in_lag_acc=lg; } int sx=ex[i]-ux, sy=ey[i]-uy; ux=ex[i]; uy=ey[i]; if(sx||sy){ if(mouse_step(sx,sy,mouse_btn_prev,mouse_rbtn_prev,0))changed=1; } if(mouse_step(0,0,eb[i]&1,(eb[i]>>1)&1,0))changed=1; }
         g_click_t=g_ticks; if(mouse_step(dx-ux,dy-uy,btn,rbtn,sc))changed=1; mouse_hscroll=0; }
     { static int xb_seen=0; int xb=mouse_xback; if(xb!=xb_seen){ xb_seen=xb; if(!g_launcher&&focus==W_BROWSER&&WN[W_BROWSER].open){ extern int browser_xback(void); if(browser_xback())changed=1; } } }
     { static int mp_seen=0; int mp=mouse_mpress; if(mp!=mp_seen){ mp_seen=mp; if(!g_launcher){ int top=-1,tz=-1; for(int i=0;i<NWIN;i++) if(WN[i].open&&!WN[i].min&&in_rect(mx,my,WN[i].x,WN[i].y,WN[i].w,WN[i].h)&&WN[i].z>tz){tz=WN[i].z;top=i;}
         if(top==W_BROWSER&&my>WN[top].y+TITLEH){ extern int browser_mclick(int,int); if(browser_mclick(mx,my))changed=1; } } } }
+    in_unmark("input handling",-1);
     int c; while((c=kpop())>=0){ g_last_input_t=g_ticks;
+        { char ka[12]; int q=0; if(c>32&&c<127){ ka[q++]=(char)c; } else { const char* nm=c=='\n'?"Enter":c==' '?"Space":c=='\b'?"Backspace":c==27?"Esc":c==9?"Tab":0; if(nm)while(*nm)ka[q++]=*nm++; else { ka[q++]='#'; if(c>=100)ka[q++]=(char)('0'+c/100%10); if(c>=10)ka[q++]=(char)('0'+c/10%10); ka[q++]=(char)('0'+c%10); } } ka[q]=0; in_mark(g_launcher?"Start menu key":"key",g_launcher?-1:focus,ka,-1); }
+        if(focus==W_TERM&&WN[W_TERM].open&&c=='\n'&&!g_tty_fg&&!g_launcher)in_mark("Terminal command",W_TERM,tline,tlen);
         { extern int acct_dlg_active(void); extern void acct_dlg_key(int); if(acct_dlg_active()){ acct_dlg_key(c); changed=1; continue; } }
         { extern int g_screen_off, g_lid_open; if(g_screen_off){ if(g_lid_open!=0){ extern void bl_screen(int); g_screen_off=0; bl_screen(1); changed=1; } continue; } }
         { extern int g_pm_on; extern int pm_key(int); if(g_pm_on){ pm_key(c); changed=1; continue; } }
         { extern int g_ss_on; extern int ss_key(int); if(g_ss_on){ ss_key(c); changed=1; continue; } }
-        { extern int g_xfull; extern void xfull_exit(void); extern void xdisp_key(int); if(g_xfull){ if(c==30||c==31){ xfull_exit(); changed=1; } else xdisp_key(c); continue; } { extern int g_xover, g_xkbd; if(g_xover&&g_xkbd&&!g_launcher&&!(c==9&&kalt)){ xdisp_key(c); continue; } } }
+        { extern int g_xfull; extern void xfull_exit(void); extern void xdisp_key(int); if(g_xfull){ if(c==30||c==31){ xfull_exit(); changed=1; } else xdisp_key(c); continue; } { extern int g_xover, g_xkbd; if(g_xover&&g_xkbd&&!g_launcher&&!(c==9&&(kalt||kdown[0x38]))){ xdisp_key(c); continue; } } }
         if(g_rename){ if(c=='\n'){ fx_rename_commit(); }
             else if(c==27){ g_rename=0; g_renmode=0; } else if(c=='\b'){ if(g_renlen>0)g_renlen--; g_renbuf[g_renlen]=0; } else if(c>=32&&c<127){ if(g_renlen<63){g_renbuf[g_renlen++]=(char)c; g_renbuf[g_renlen]=0;} } changed=1; continue; }
-        if(c==9 && kalt){ if(!g_alttab){ g_altn=0; extern int xwin_count(void), xwin_active(int); int xa=-1; for(int k=0;k<xwin_count()&&k<32;k++) if(xwin_active(k))xa=k; if(xa>=0)g_altlist[g_altn++]=NWIN+xa; for(int i=0;i<NWIN;i++) if(WN[i].open)g_altlist[g_altn++]=i; for(int k=0;k<xwin_count()&&k<32;k++) if(k!=xa)g_altlist[g_altn++]=NWIN+k; if(g_altn>0){ g_alttab=1; g_altsel=(g_altn>1)?1:0; } } else g_altsel=(g_altn>0)?(g_altsel+1)%g_altn:0; changed=1; continue; }
+        if(c==9 && (kalt||kdown[0x38])){ if(!g_alttab){ g_altn=0; extern int xwin_count(void), xwin_active(int); int xa=-1; for(int k=0;k<xwin_count()&&k<32;k++) if(xwin_active(k))xa=k; if(xa>=0)g_altlist[g_altn++]=NWIN+xa; for(int i=0;i<NWIN;i++) if(WN[i].open)g_altlist[g_altn++]=i; { int s0=(xa>=0)?1:0, s1=g_altn; for(int a=s0;a<s1;a++)for(int b=a+1;b<s1;b++) if(WN[g_altlist[b]].z>WN[g_altlist[a]].z){int t=g_altlist[a];g_altlist[a]=g_altlist[b];g_altlist[b]=t;} } for(int k=0;k<xwin_count()&&k<32;k++) if(k!=xa)g_altlist[g_altn++]=NWIN+k; if(g_altn>0){ g_alttab=1; g_altsel=(g_altn>1)?1:0; } } else g_altsel=(g_altn>0)?(g_altsel+1)%g_altn:0; changed=1; continue; }
         if(g_launcher){ launcher_key((char)c); changed=1; continue; }
         if(g_wifipop && g_wifi_entry && g_wifi_sel>=0){ extern int wifi_entry_key(int); if(wifi_entry_key(c))changed=1;
             continue; }
@@ -306,10 +332,12 @@ static int process_input_body(void){
         else if(focus==W_SNAKE&&WN[W_SNAKE].open){ snake_key(c); changed=1; }
         else if(focus==W_GPU3D&&WN[W_GPU3D].open){ extern void gpu3d_key(int); gpu3d_key(c); changed=1; }
         else if(focus==W_FLAPPY&&WN[W_FLAPPY].open){ flappy_key(c); changed=1; }
-        else if(focus==W_CALENDAR&&WN[W_CALENDAR].open){ cal_key(c); changed=1; } }
-    if(!kalt && alt_prev && g_alttab){ if(g_altn>0){ int a=g_altlist[g_altsel]; if(a>=NWIN){ extern void xwin_activate(int); xwin_activate(a-NWIN); } else focus_win(a); } g_alttab=0; changed=1; } alt_prev=kalt;
-    if(WN[W_BROWSER].open){ g_pi_depth--; int bt=browser_tick(); g_pi_depth++; if(bt)changed=1; }
-    { extern int video_tick(void); if(video_tick())changed=1; }
+        else if(focus==W_CALENDAR&&WN[W_CALENDAR].open){ cal_key(c); changed=1; }
+        else if(focus==W_CALC&&WN[W_CALC].open){ extern void calc_key(int); calc_key(c); changed=1; } }
+    in_unmark("input handling",-1);
+    { int ka=kalt||kdown[0x38]; if(!ka && alt_prev && g_alttab){ if(g_altn>0){ int a=g_altlist[g_altsel]; if(a>=NWIN){ extern void xwin_activate(int); xwin_activate(a-NWIN); } else focus_win(a); } g_alttab=0; changed=1; } alt_prev=ka; }
+    if(WN[W_BROWSER].open){ g_pi_depth--; int bt; INM("browser update",W_BROWSER,0,0,bt=browser_tick()); g_pi_depth++; if(bt)changed=1; }
+    { extern int video_tick(void); int vt; INM("video update",W_VIDEO,0,0,vt=video_tick()); if(vt)changed=1; }
     if(WN[W_SNAKE].open&&!WN[W_SNAKE].min&&focus==W_SNAKE&&snake_state==1&&(u64)(g_ticks-snake_last)>=8){ snake_last=g_ticks; snake_step(); changed=1; }
     if(WN[W_FLAPPY].open&&!WN[W_FLAPPY].min&&focus==W_FLAPPY&&fb_state==1&&(u64)(g_ticks-flappy_last)>=3){ flappy_last=g_ticks; flappy_step(); changed=1; }
     if(toast_t && (u64)(g_ticks-toast_t)<300) changed=1;
@@ -323,11 +351,13 @@ static int process_input_body(void){
 #define CTX_IHV (g_dstyle==1?24:30)
 #define CTX_PADV (g_dstyle==1?3:5)
 static void new_note(void){
+    { extern int editor_open_blocked(void); if(editor_open_blocked())return; }
     char nm[16]="note.txt"; int used=0; for(int i=0;i<FS_N;i++) if(FS[i].used&&seq(FS[i].name,nm))used=1;
     if(used) for(int n=2;n<60;n++){ char b[16],*p=b; p=scopy(p,"note"); p=udec(p,(u32)n); scopy(p,".txt"); int u=0; for(int i=0;i<FS_N;i++) if(FS[i].used&&seq(FS[i].name,b))u=1; if(!u){ scopy(nm,b); break; } }
     int s=fs_save_bin(nm,(const u8*)"",0,0); if(s>=0){ g_fsel=s; g_filesnav=2; editor_open(s); toast("New note"); }
 }
 static void view_source(void){
+    { extern int editor_open_blocked(void); if(editor_open_blocked())return; }
     int off=g_bodyoff, len=g_httplen-g_bodyoff; if(len<0)len=0; if(len>FS_CAP-1)len=FS_CAP-1;
     g_fs_pulling=1; int s=fs_save_bin("source.html",http_buf+off,len,0); g_fs_pulling=0;
     if(s>=0){ g_filesnav=2; editor_open(s); }
@@ -415,8 +445,8 @@ int ctx_click(int px,int py){ const char*it[8]; int n=ctx_items(it); int x,y; ct
         else if(k==1){ if(g_fsel>=0) fx_start_input(0,FS[g_fsel].name,g_fsel,-1); }
         else if(k==2){ if(g_fsel>=0)fx_delete_sel(); }
         else if(k==3){ fx_do(8,0); } else if(k==4){ fx_do(9,0); }
-        else if((k==5||k==6)&&g_fsel>=0&&FS[g_fsel].used&&fx_is_elf(g_fsel)){ char p[192],cl[220]; dt_path(FS[g_fsel].dir,p); char* q=cl; if(k==6)q=scopy(q,"sudo "); q=scopy(q,p); if(!(p[0]=='/'&&!p[1]))*q++='/'; q=scopy(q,FS[g_fsel].name); *q=0;
-            open_win(W_TERM); term_puts(cl); term_putc('\n'); run_cmd(cl); if(!g_tty_fg)term_prompt(); return 1; }
+        else if((k==5||k==6)&&g_fsel>=0&&FS[g_fsel].used&&fx_is_elf(g_fsel)){ char p[192],cl[272]; dt_path(FS[g_fsel].dir,p); char* q=cl; if(k==6)q=scopy(q,"sudo "); q=scopy(q,p); if(!(p[0]=='/'&&!p[1]))*q++='/'; q=scopy(q,FS[g_fsel].name); *q=0;
+            open_win(W_TERM); term_puts(cl); term_putc('\n'); in_mark("Terminal command (Files menu)",W_TERM,cl,-1); run_cmd(cl); if(!g_tty_fg)term_prompt(); return 1; }
         else { const char*lbl=it[k];
             if(lbl[0]=='S'){ if(g_fsel>=0){ wall_custom_slot=g_fsel; g_wallmode=1; build_bg(); toast("Wallpaper set"); } }
             else if(g_fsel>=0&&fkind(g_fsel)==4){ zip_open(g_fsel); int cnt=0;
@@ -429,7 +459,7 @@ int ctx_click(int px,int py){ const char*it[8]; int n=ctx_items(it); int x,y; ct
         if(lbl[0]=='O'){ if(g_tctx_type==0)g_cwd=g_tctx_val; else if(g_tctx_type==1){ if(fkind(g_tctx_val)==0)editor_open(g_tctx_val); } else if(g_tctx_type==2){ int L=0; while(FFILE[g_tctx_val].text[L])L++; editor_open_buf(FFILE[g_tctx_val].text,L); } }
         else if(lbl[0]=='R'&&lbl[1]=='e'&&lbl[2]=='n'){ g_rename=1; g_renslot=g_tctx_val; g_renlen=0; { const char*nm=FS[g_tctx_val].name; while(nm[g_renlen]&&g_renlen<63){g_renbuf[g_renlen]=nm[g_renlen];g_renlen++;} } g_renbuf[g_renlen]=0; }
         else if(lbl[0]=='D'){ if(g_tctx_val>=0){ fs_drop_name(g_tctx_val); g_fsel=-1; toast("Deleted"); } }
-        else if(lbl[0]=='N'){ g_submenu=1; g_ctx=1; return 0; }   /* New... -> keep menu open for submenu hover */
+        else if(lbl[0]=='N'){ g_submenu=1; return 2; }   /* New... -> keep menu open for submenu hover */
         else { toast("Refreshed"); }
         return 1; }
     if(g_ctxkind==7){ if(k==0){ if(fx_seldir>=0)fx_go(fx_seldir); } else if(k==1)fx_rename_sel(); else if(k==2)fx_delete_sel(); else { extern int fx_sel_dir(void); int d=fx_sel_dir(); if(d>=0){ g_prop=1; g_prop_dir=d; g_prop_slot=-1; g_prop_app=-1; } } return 1; }

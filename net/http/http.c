@@ -71,14 +71,14 @@ void secure_zero(void*p,int n){ volatile u8*v=(volatile u8*)p; for(int i=0;i<n;i
 static u32 ts_dip; static u16 ts_dport, ts_sp; static u8 ts_dmac[6];
 static u32 ts_snd, ts_rcv; static int ts_est, ts_fin;
 int tcps_open(u32 dip,u16 dport){
-    if(!nic_up())return 0;
+    if(!nic_up()||!my_ip)return 0;
     u32 route=((dip&my_mask)==(my_ip&my_mask))?dip:gw_ip;
     if(!arp_resolve(route,ts_dmac))return 0;
     nic_kick(); nic_flush_rx();
     ts_dip=dip; ts_dport=dport; ts_sp=next_ephport();
     ts_snd=net_rand(); ts_rcv=0; ts_est=0; ts_fin=0; u8 rx[1600];
     for(int att=0;att<4&&!ts_est;att++){ tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,0,TF_SYN,0,0);
-        for(int k=0;k<300;k++){ int n=net_poll(rx,1600,1); if(n<54)continue; if(rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6)continue; int ihl=(ip[0]&0x0F)*4; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue; u8 fl=t[13];
+        for(int k=0;k<300;k++){ int n=net_poll(rx,1600,1); if(n<54)continue; if(rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; } int ihl=(ip[0]&0x0F)*4; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue; u8 fl=t[13];
             if((fl&(TF_SYN|TF_ACK))==(TF_SYN|TF_ACK)&&rd32(t+8)==ts_snd+1){ ts_rcv=rd32(t+4)+1; ts_snd+=1; ts_est=1; break; }
             if(fl&TF_RST)return 0; } }
     if(!ts_est){ netlog("TLS TCP no SYN-ACK"); return 0; }
@@ -89,7 +89,7 @@ int tcps_wr(void* c,const u8* buf,int len){ (void)c; int off=0;
 }
 int tcps_rd(void* c,u8* buf,int max){ (void)c; if(ts_fin)return 0; u8 rx[1600];
     for(int idle=0; idle<2500; ){ int n=net_poll(rx,1600,1); if(n<=0){ idle++; continue; }
-        if(rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6)continue; int ihl=(ip[0]&0x0F)*4; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue;
+        if(rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; } int ihl=(ip[0]&0x0F)*4; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue;
         int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; if(ihl<20||thl<20||14+ihl+thl>n)continue; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0; u32 seq=rd32(t+4); u8 fl=t[13];
         if(fl&TF_RST){ ts_fin=1; return 0; }
         if(dl>0){ if(seq==ts_rcv){ int cp=dl; if(cp>max)cp=max; for(int i=0;i<cp;i++)buf[i]=t[thl+i]; ts_rcv+=(u32)cp;
@@ -246,5 +246,5 @@ extern int kshift; extern volatile unsigned char kdown[128]; static unsigned cha
 void kpush(char c){ int n=(kh+1)%KBUFN; if(n!=kt){kbuf[kh]=c; kmod[kh]=(unsigned char)((kdown[0x1D]?1:0)|(kshift?2:0)|(g_krep_flag?4:0)); kh=n;} }
 volatile unsigned char kdown[128];
 int kpending(void){ return kh!=kt; }
-void kidle(void){ extern int xhid_n; extern void xhci_mouse_poll(void); extern volatile u32 g_ml_beat; g_ml_beat++; if(xhid_n)xhci_mouse_poll(); if(kh==kt)cpu_idle(); }
+void kidle(void){ extern int xhid_n; extern void xhci_mouse_poll(void); extern volatile u32 g_ml_beat, g_nest_beat, g_nest_live; extern int term_prompt_visible(void); g_ml_beat++; if(term_prompt_visible())g_nest_live++; else g_nest_beat++; if(xhid_n)xhci_mouse_poll(); if(kh==kt)cpu_idle(); }
 int kpop(void){ if(kh==kt)return -1; int c=(unsigned char)kbuf[kt]; g_key_ctrl=kmod[kt]&1; g_key_shift=(kmod[kt]>>1)&1; g_key_rep=(kmod[kt]>>2)&1; kt=(kt+1)%KBUFN; return c; }

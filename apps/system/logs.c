@@ -56,6 +56,7 @@ static const char* TF_CMD[]={
     "wifi init/scan/wpa","bring up + scan + join Wi-Fi (RTL8821CE)",
     "wifi rx","raw baseband frame counter (RE debug)",
     "wifi cryptotest","verify WPA2 crypto vs RFC vectors",
+    "iwx status/up","Intel AX200/AX210 Wi-Fi probe + firmware boot",
     "sig","show the kernel build signature (SHA-256)",
     "crypto","list crypto suite + run self-test",
     "run <ELF>","execute an ELF64 from USB/FAT",

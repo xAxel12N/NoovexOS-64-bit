@@ -30,13 +30,14 @@ struct jproc {
     u64 sigpend, sigmask, sigamask[65]; u32 saflags[65]; u64 sighand[65], sigrest[65];
     u64 fsbase, gsbase, pollwake, lxbrk, sockwake; u64 suspold; int susp, lx;
     int exitst, stopnote;
-    volatile int runcpu; u64 cputicks; int lastcpu;
+    volatile int runcpu; u64 cputicks; int lastcpu; u64 start_tick, argv_va; int argc_n;
     u64 it_next, it_int;
     int tg, tgid, gexit, tkill;
     u64 ctid, robust, fx_addr, fx_dead, wdl; int fx_wait, fx_woken, fx_tg, wdl_arm; u32 fx_bits;
     u64 ss_sp, ss_size, flt_addr; int ss_flags, flt_sig, flt_code, flt_trap; u32 flt_err; int sicode[65], sipid[65], siuid[65]; u64 sival[65]; struct { int sig, code, pid, uid; u64 val; } rtq[32]; int rtn;
     int nice, policy, rtprio; u64 vrt, runns;
     int sc_mode, sc_head, nnp;
+    u32 aluid, asess; int nofc, nofm;
     char cmd[48];
     char exe[128];
     u8 fx[1024] __attribute__((aligned(64)));

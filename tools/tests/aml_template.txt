@@ -235,6 +235,11 @@ static void edge_tests(const unsigned char* dsdt,unsigned dl){
     ec.stuck=1; long w0=g_iow; for(int i=0;i<40;i++){ aec_read(0x10,&b); } long dw=g_iow-w0;
     chk("stuck EC trips the circuit breaker: 40 reads cost only 8 timeouts", g_aec.trips==1&&dw<9*20000+1000);
     g_clk+=6000000000ULL; ec.stuck=0; int ok2=aec_read(0x10,&b)==0&&b==5; chk("EC retried after 5 s and works again", ok2);
+    ec.stuck=1; for(int i=0;i<40;i++)aec_read(0x10,&b); g_clk+=6000000000ULL; w0=g_iow; for(int i=0;i<40;i++)aec_read(0x10,&b); long d2=g_iow-w0;
+    g_clk+=6000000000ULL; w0=g_iow; for(int i=0;i<40;i++)aec_read(0x10,&b); long d3=g_iow-w0;
+    chk("EC that stays stuck backs off: short probe after 5 s, then 10 s of silence", g_aec.trips==3&&d2<3*2000+100&&d3==0);
+    g_clk+=5000000000ULL; ec.stuck=0; ok2=aec_read(0x10,&b)==0&&b==5; w0=g_iow; ec.stuck=1; aec_read(0x10,&b); long d4=g_iow-w0; ec.stuck=0;
+    chk("EC answering again resets the back-off (full wait restored)", ok2&&d4>=20000&&d4<20000+100);
     g_mm_on=0; int w1=acpi_wr(0,0x5000,4,1,0), w2=acpi_wr(0,0x55000000,4,1,0), w3=acpi_wr(0,0x20000040,1,0x77,0);
     chk("no memory map: writes below 256 MB and into the heap are refused, NVS allowed", w1!=0&&w2!=0&&w3==0&&GN[0x40]==0x77); g_mm_on=1;
     memset(&g_bl,0,sizeof g_bl); pcidev(0,2,0,0x8086,0x0126,0x030000); { u8* s=pcis(0,2,0); u32 bar=(u32)(u64)GPU|4; memcpy(s+0x10,&bar,4); }

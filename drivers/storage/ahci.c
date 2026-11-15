@@ -127,6 +127,6 @@ void nic_kick(void){ if(nic_kind==0 && net_ok){ u16 c=rcsr(0); wcsr(0,(u16)((c&0
  
 void (*g_wait_pump)(void)=0;
 int net_poll(u8* rx,int max,int ticks){
-    for(int k=0;k<ticks;k++){ if(g_wait_pump)g_wait_pump(); u16 a=pit_read(); for(;;){ int n=g_rx?g_rx(rx,max):nic_recv(rx,max); if(n>0&&arp_auto_reply(rx,n))continue; if(n>0)return n; u16 b=pit_read(); if(((u16)(a-b))>=1193)break; } }
+    for(int k=0;k<ticks;k++){ if(g_wait_pump)g_wait_pump(); u16 a=pit_read(); for(;;){ int n=g_rx?g_rx(rx,max):nic_recv(rx,max); if(n>0&&!arp_auto_reply(rx,n))return n; u16 b=pit_read(); if(((u16)(a-b))>=1193)break; } }
     return 0;
 }

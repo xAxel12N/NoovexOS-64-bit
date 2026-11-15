@@ -20,7 +20,7 @@ int sock_alloc(void){ for(int i=0;i<NSOCK;i++) if(!g_sock[i].used){ for(int j=0;
 /* connect: DNS-resolve host if needed done by caller; here dip is numeric */
 int sock_connect(int sid,u32 dip,u16 dport){
     if(sid<0||sid>=NSOCK||!g_sock[sid].used)return -1; g_sock_last[sid]=g_ticks;
-    if(!nic_up())return -2;
+    if(!nic_up()||!my_ip)return -2;
     u32 route=((dip&my_mask)==(my_ip&my_mask))?dip:gw_ip;
     u8 dmac[6]; if(!arp_resolve(route,dmac))return -3;
     nic_kick(); nic_flush_rx();
@@ -30,7 +30,7 @@ int sock_connect(int sid,u32 dip,u16 dport){
     u8 rx[1600]; int est=0;
     for(int att=0;att<4&&!est;att++){ tcp_send(dip,s->sp,dport,dmac,s->snd,0,TF_SYN,0,0);
         for(int k=0;k<300;k++){ int n=net_poll(rx,1600,1);
-            if(n<54)continue; if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6)continue;
+            if(n<54)continue; if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
             int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=dport||rd16(t+2)!=s->sp)continue; u8 fl=t[13];
             if((fl&(TF_SYN|TF_ACK))==(TF_SYN|TF_ACK)&&rd32(t+8)==s->snd+1){ s->rcv=rd32(t+4)+1; s->snd+=1; est=1; break; }
             if(fl&TF_RST)return -4; } }
@@ -50,7 +50,7 @@ int sock_recv(int sid,u8* out,int maxout){
     nsock_t* s=&g_sock[sid]; u8 rx[1600]; int outlen=0,idle=0;
     while(outlen<maxout){ int n=net_poll(rx,1600,1);
         if(n<=0){ if(++idle>900)break; continue; }
-        if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6)continue;
+        if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
         int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=s->dport||rd16(t+2)!=s->sp)continue;
         int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0;
         u32 seq=rd32(t+4); u8 fl=t[13];
@@ -73,7 +73,7 @@ int sock_close(int sid){
         while((int)(nxt-end)<0&&(int)(nxt-una)<8*1400){ int off=(int)(nxt-base); int ch=len-off; if(ch>1400)ch=1400; tcp_send(s->dip,s->sp,s->dport,s->dmac,nxt,s->rcv,TF_PSH|TF_ACK,buf+off,ch); nxt+=(u32)ch; }
         int n=net_poll(rx,1600,1);
         if(n<54){ if(++idle>250){ idle=0; nxt=una; if(++tries>24){ s->snd=una; return -1; } } continue; }
-        if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6)continue;
+        if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
         int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=s->dport||rd16(t+2)!=s->sp)continue;
         u8 fl=t[13]; if(fl&TF_RST){ s->connected=0; return -2; }
         int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0;

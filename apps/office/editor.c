@@ -23,24 +23,31 @@
 #define ED_ROWS 200
 #define ED_COLS 200
 static char ED[ED_ROWS][ED_COLS]; static int ed_ll[ED_ROWS];
-int ed_nl=1, ed_cx=0, ed_cy=0, ed_top=0, ed_file=-1, ed_dirty=0;
+int ed_nl=1, ed_cx=0, ed_cy=0, ed_top=0, ed_file=-1, ed_dirty=0, ed_ro=0, ed_warned=0;
+#define ED_RO_MSG "File too big for the editor (max 199 lines of 199 characters) - opened read-only"
 int eb_save_x,eb_save_y,eb_new_x,eb_new_y,eb_bw=78,eb_bh=26;
 int eb_run_x,eb_run_y,eb_conx_x,eb_conx_y;
 static char ed_con[6000]; int ed_con_n=0, ed_show_con=0;
 static char ed_src[ED_ROWS*40];
 static void ed_run_cb(const char* s,int n){ for(int i=0;i<n && ed_con_n<5998;i++){ char c=s[i]; ed_con[ed_con_n++]=c; } ed_con[ed_con_n]=0; }
 int ed_py=0;
+static char ed_fname[64]; static int ed_fdir=-1, ed_gwarn=0;
+static void ed_open_slot(int fsidx);
+static void ed_open_mem(const char*d,int len);
+static int ed_guard(void){ if(ed_dirty&&!ed_ro&&!ed_gwarn&&WN[W_EDITOR].open){ ed_gwarn=1; toast("Editor has unsaved changes - open again to discard, or Save first"); focus_win(W_EDITOR); return 1; } ed_gwarn=0; return 0; }
+int editor_open_blocked(void){ if(ed_dirty&&!ed_ro&&!ed_gwarn&&WN[W_EDITOR].open){ ed_gwarn=1; toast("Editor has unsaved changes - open again to discard, or Save first"); focus_win(W_EDITOR); return 1; } return 0; }
 #define PYIDE_FILE "/root/main.py"
 int pyide_installed(void){ return sysroot_exists("/usr/share/applications/python3-ide.desktop"); }
 static int ed_text(char* o,int cap){ int n=0; for(int r=0;r<ed_nl;r++){ for(int c=0;c<ed_ll[r]&&n<cap-2;c++)o[n++]=ED[r][c]; if(r<ed_nl-1&&n<cap-2)o[n++]='\n'; } o[n]=0; return n; }
-static void py_save(void){ static char b[ED_ROWS*ED_COLS+ED_ROWS]; int n=ed_text(b,(int)sizeof(b)); if(n>0&&b[n-1]!='\n')b[n++]='\n';
+static void py_save(void){ if(ed_ro){ toast(ED_RO_MSG); return; } static char b[ED_ROWS*ED_COLS+ED_ROWS]; int n=ed_text(b,(int)sizeof(b)); if(n>0&&b[n-1]!='\n')b[n++]='\n';
     k_unlink(PYIDE_FILE); int fd=vfs_open(PYIDE_FILE,O_CREAT|O_TRUNC|O_WRONLY); if(fd<0){ toast("Cannot write " PYIDE_FILE); return; } vfs_write(fd,b,n); vfs_close(fd); ed_dirty=0; }
 void pyide_run(void){ py_save(); static char cl[]="python3 " PYIDE_FILE; open_win(W_TERM); term_puts(cl); term_putc('\n'); run_cmd(cl); if(!g_tty_fg)term_prompt(); }
 void pyide_open(void){
     if(!pyide_installed()){ toast("Python IDE is not installed - run: sudo apt install python3-ide"); return; }
     int k=k_find_file(PYIDE_FILE);
-    if(k>=0){ editor_open(k); ed_file=-1; }
-    else { u32 L=0; const u8* d=sysroot_get("/usr/lib/python3-ide/examples/hello.py",&L,0); if(d)editor_open_buf((const char*)d,(int)L); else editor_open_buf("print('Hello from Python 3')\n",28); }
+    if(ed_guard())return;
+    if(k>=0){ ed_open_slot(k); ed_file=-1; }
+    else { u32 L=0; const u8* d=sysroot_get("/usr/lib/python3-ide/examples/hello.py",&L,0); if(d)ed_open_mem((const char*)d,(int)L); else ed_open_mem("print('Hello from Python 3')\n",28); }
     ed_py=1; ed_show_con=0; open_win(W_EDITOR); }
 void editor_run(void){
     if(ed_py){ pyide_run(); return; }
@@ -50,47 +57,59 @@ void editor_run(void){
     if(ed_con_n==0){ const char* m=js_err?"[program error]":"(no output)"; *scopy(ed_con,m)=0; ed_con_n=slen(ed_con); }
     else if(js_err && ed_con_n<5980){ *scopy(ed_con+ed_con_n,"\n[error]")=0; ed_con_n+=8; }
 }
-void editor_reset(void){ for(int r=0;r<ED_ROWS;r++){ED[r][0]=0;ed_ll[r]=0;} ed_nl=1;ed_cx=ed_cy=ed_top=0;ed_dirty=0; }
-void editor_open(int fsidx){
-    editor_reset(); ed_file=fsidx; ed_py=0; ed_show_con=0;
+void editor_reset(void){ for(int r=0;r<ED_ROWS;r++){ED[r][0]=0;ed_ll[r]=0;} ed_nl=1;ed_cx=ed_cy=ed_top=0;ed_dirty=0;ed_ro=0; }
+static void ed_open_slot(int fsidx){
+    editor_reset(); ed_file=fsidx; scopy(ed_fname,FS[fsidx].name)[0]=0; ed_fdir=(int)FS[fsidx].dir; ed_py=0; ed_show_con=0;
     const char*d=fsd(fsidx); int r=0,c=0; int dl=FS[fsidx].len;
-    for(int k=0; k<dl && d[k] && r<ED_ROWS-1; k++){ if(d[k]=='\n'){ ED[r][c]=0; ed_ll[r]=c; r++; c=0; }
-        else if(c<ED_COLS-1){ ED[r][c++]=d[k]; } }
+    int k=0; for(; k<dl && d[k] && r<ED_ROWS-1; k++){ if(d[k]=='\n'){ ED[r][c]=0; ed_ll[r]=c; r++; c=0; }
+        else if(c<ED_COLS-1){ ED[r][c++]=d[k]; } else ed_ro=1; }
+    if(k<dl&&d[k])ed_ro=1;
     ED[r][c]=0; ed_ll[r]=c; ed_nl=r+1;
+    if(ed_ro)toast(ED_RO_MSG);
     open_win(W_EDITOR);
 }
-void editor_open_buf(const char*d,int len){
+static void ed_open_mem(const char*d,int len){
     editor_reset(); ed_file=-1; ed_py=0; ed_show_con=0;
     int r=0,c=0;
-    for(int k=0; k<len && r<ED_ROWS-1; k++){ char ch=d[k]; if(ch=='\r')continue;
+    int k=0; for(; k<len && r<ED_ROWS-1; k++){ char ch=d[k]; if(ch=='\r')continue;
         if(ch=='\n'){ ED[r][c]=0; ed_ll[r]=c; r++; c=0; }
-        else { if(ch=='\t')ch=' '; if((unsigned char)ch<32)ch='.'; if(c<ED_COLS-1) ED[r][c++]=ch; } }
+        else { if(ch=='\t')ch=' '; if((unsigned char)ch<32)ch='.'; if(c<ED_COLS-1) ED[r][c++]=ch; else ed_ro=1; } }
+    if(k<len)ed_ro=1;
     ED[r][c]=0; ed_ll[r]=c; ed_nl=r+1;
+    if(ed_ro)toast(ED_RO_MSG);
     open_win(W_EDITOR);
 }
+void editor_open(int fsidx){ if(ed_guard())return; ed_open_slot(fsidx); }
+void editor_open_buf(const char*d,int len){ if(ed_guard())return; ed_open_mem(d,len); }
 /* read a USB file (by ufs index) into the editor */
 void ed_load_usb(int fi){ extern int ufat_read(int,char*,int); static char ubuf[16000];
     int n=ufat_read(fi,ubuf,(int)sizeof(ubuf)-1); if(n<0)n=0; ubuf[n]=0; editor_open_buf(ubuf,n); }
 void editor_save(void){
+    if(ed_ro){ toast(ED_RO_MSG); return; }
     if(ed_py){ py_save(); toast("Saved " PYIDE_FILE); return; }
-    if(ed_file<0) return; { extern int perm_file(int,int); if(((FS[ed_file].mode&0777u)&&!perm_file(ed_file,2))||(FS[ed_file].mode&0170000u)==0120000u){ toast("Permission denied - you cannot change this file"); return; } } long need=0; for(int r=0;r<ed_nl;r++)need+=ed_ll[r]+1; char*o=fs_wr(ed_file,need); if(!o){ toast("Not enough memory to save"); return; } int p=0;
+    if(ed_file>=0&&(!FS[ed_file].used||!seq(FS[ed_file].name,ed_fname)||(int)FS[ed_file].dir!=ed_fdir))ed_file=-1;
+    if(ed_file<0){ static char b[ED_ROWS*(ED_COLS+1)]; int n=ed_text(b,(int)sizeof b); char nm[24]; scopy(nm,"Untitled.txt")[0]=0;
+        for(int t=2;t<100;t++){ int hit=0; for(int j=0;j<FS_N;j++) if(FS[j].used&&seq(FS[j].name,nm)){ hit=1; break; } if(!hit)break; char* p=scopy(nm,"Untitled "); p=udec(p,(u32)t); scopy(p,".txt")[0]=0; }
+        extern int fs_save_bin(const char*,const u8*,int,int); int s=fs_save_bin(nm,(const u8*)b,n,0); if(s<0){ toast("Could not save"); return; } ed_file=s; scopy(ed_fname,nm)[0]=0; ed_fdir=(int)FS[s].dir; ed_dirty=0; ed_warned=0; char m[48]; scopy(scopy(m,"Saved as "),nm)[0]=0; toast(m); return; }
+    { extern int perm_file(int,int); if(((FS[ed_file].mode&0777u)&&!perm_file(ed_file,2))||(FS[ed_file].mode&0170000u)==0120000u){ toast("Permission denied - you cannot change this file"); return; } } long need=0; for(int r=0;r<ed_nl;r++)need+=ed_ll[r]+1; char*o=fs_wr(ed_file,need); if(!o){ toast("Not enough memory to save"); return; } int p=0;
     for(int r=0;r<ed_nl && p<FS_CAP-1;r++){ for(int c=0;c<ed_ll[r]&&p<FS_CAP-1;c++) o[p++]=ED[r][c]; if(r<ed_nl-1&&p<FS_CAP-1)o[p++]='\n'; }
     o[p]=0; FS[ed_file].len=p; ux_touch(ed_file,1); if(disk_ok)fs_sync(ed_file); ed_dirty=0; toast("Saved");
 }
-static void ed_ins(char c){ int L=ed_ll[ed_cy]; if(L>=ED_COLS-1)return;
+static void ed_ins(char c){ if(ed_ro)return; int L=ed_ll[ed_cy]; if(L>=ED_COLS-1)return;
     for(int k=L;k>ed_cx;k--) ED[ed_cy][k]=ED[ed_cy][k-1]; ED[ed_cy][ed_cx]=c; ed_ll[ed_cy]=L+1; ED[ed_cy][L+1]=0; ed_cx++; ed_dirty=1; }
-static void ed_enter(void){ if(ed_nl>=ED_ROWS)return;
+static void ed_enter(void){ if(ed_ro||ed_nl>=ED_ROWS)return;
     for(int r=ed_nl;r>ed_cy+1;r--){ for(int c=0;c<=ed_ll[r-1];c++)ED[r][c]=ED[r-1][c]; ed_ll[r]=ed_ll[r-1]; }
     int L=ed_ll[ed_cy],c2=0; for(int k=ed_cx;k<L;k++)ED[ed_cy+1][c2++]=ED[ed_cy][k]; ED[ed_cy+1][c2]=0; ed_ll[ed_cy+1]=c2;
     ED[ed_cy][ed_cx]=0; ed_ll[ed_cy]=ed_cx; ed_nl++; ed_cy++; ed_cx=0; ed_dirty=1; }
-static void ed_bs(void){ if(ed_cx>0){ int L=ed_ll[ed_cy]; for(int k=ed_cx-1;k<L;k++)ED[ed_cy][k]=ED[ed_cy][k+1]; ed_ll[ed_cy]=L-1; ed_cx--; ed_dirty=1; }
+static void ed_bs(void){ if(ed_ro)return; if(ed_cx>0){ int L=ed_ll[ed_cy]; for(int k=ed_cx-1;k<L;k++)ED[ed_cy][k]=ED[ed_cy][k+1]; ed_ll[ed_cy]=L-1; ed_cx--; ed_dirty=1; }
     else if(ed_cy>0){ int pl=ed_ll[ed_cy-1],L=ed_ll[ed_cy]; if(pl+L<ED_COLS-1){ for(int k=0;k<L;k++)ED[ed_cy-1][pl+k]=ED[ed_cy][k]; ED[ed_cy-1][pl+L]=0; ed_ll[ed_cy-1]=pl+L;
         for(int r=ed_cy;r<ed_nl-1;r++){ for(int c=0;c<=ed_ll[r+1];c++)ED[r][c]=ED[r+1][c]; ed_ll[r]=ed_ll[r+1]; } ed_nl--; ed_cy--; ed_cx=pl; ed_dirty=1; } } }
 char g_clip[65536]; int g_clip_len=0;
 void editor_key(char c){
+    ed_warned=0; ed_gwarn=0;
     if(kdown[0x1D]){                                        /* Ctrl held: clipboard */
         if(c=='c'||c==3){ int L=ed_ll[ed_cy]; if(L>1020)L=1020; for(int k=0;k<L;k++)g_clip[k]=ED[ed_cy][k]; g_clip_len=L; return; }
-        if(c=='x'||c==24){ int L=ed_ll[ed_cy]; if(L>1020)L=1020; for(int k=0;k<L;k++)g_clip[k]=ED[ed_cy][k]; g_clip_len=L; ed_ll[ed_cy]=0; ED[ed_cy][0]=0; ed_cx=0; ed_dirty=1; return; }
+        if((c=='x'||c==24)&&!ed_ro){ int L=ed_ll[ed_cy]; if(L>1020)L=1020; for(int k=0;k<L;k++)g_clip[k]=ED[ed_cy][k]; g_clip_len=L; ed_ll[ed_cy]=0; ED[ed_cy][0]=0; ed_cx=0; ed_dirty=1; return; }
         if(c=='v'||c==22){ for(int k=0;k<g_clip_len;k++){ if(g_clip[k]=='\n')ed_enter(); else ed_ins(g_clip[k]); } return; }
     }
     if(c=='\n') ed_enter();
@@ -152,7 +171,7 @@ void editor_draw(int i){
     ed_hbtn(bx,Y+8,44,0,0,1,0); bx+=48;
     { int w=pw_str("Save",1)+44; ed_hbtn(bx,Y+8,w,1,"Save",2,0); bx+=w+4; }
     if(lang==2||ed_py){ int w=pw_str("Run",1)+44; ed_hbtn(bx,Y+8,w,2,"Run",3,1); bx+=w+4; }
-    { char sub[80]; if(ed_dirty)*scopy(sub,"Modified")=0; else if(ed_py)*scopy(sub,"Python IDE")=0; else if(ed_file>=0){ dt_path_n(FS[ed_file].dir,sub,(int)sizeof sub); } else *scopy(sub,"Not saved yet")=0;
+    { char sub[80]; if(ed_ro)*scopy(sub,"Read-only (file too big to edit)")=0; else if(ed_dirty)*scopy(sub,"Modified")=0; else if(ed_py)*scopy(sub,"Python IDE")=0; else if(ed_file>=0){ dt_path_n(FS[ed_file].dir,sub,(int)sizeof sub); } else *scopy(sub,"Not saved yet")=0;
       int cx=X+ww/2; int tw=pw_str(nm,1)+1; int lim=ww-2*(bx-X)-80; if(tw<=lim)ebold(cx-tw/2,Y+9,nm,EI_INK);
       int sw=pw_str(sub,1); if(sw<=lim)pdstr(cx-sw/2,Y+26,sub,EI_DIM,1); }
     for(int b=0;b<3;b++){ int cx=X+ww-6-18; int wx=(b==2)?cx:(b==1)?cx-2-18:cx-2-18-18; ed_winbtn(b,wx,Y+16); }
@@ -186,7 +205,7 @@ void editor_draw(int i){
 }
 static int ed_hit(int px,int py){ for(int k=eh_n-1;k>=0;k--) if(in_rect(px,py,eh_x[k],eh_y[k],eh_w[k],eh_h[k]))return eh_id[k]; return 0; }
 int editor_click(int px,int py){ int id=ed_hit(px,py);
-    if(id==1){ editor_reset(); ed_file=-1; ed_py=0; ed_show_con=0; return 1; }
+    if(id==1){ if(ed_dirty&&!ed_warned){ ed_warned=1; toast("Unsaved changes - press again to discard, or Save first"); return 1; } ed_warned=0; editor_reset(); ed_file=-1; ed_py=0; ed_show_con=0; return 1; }
     if(id==2){ editor_save(); return 1; }
     if(id==3){ editor_run(); return 1; }
     if(id==4){ ed_show_con=0; return 1; }

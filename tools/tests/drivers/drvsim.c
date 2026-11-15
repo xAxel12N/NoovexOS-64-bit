@@ -21,17 +21,19 @@ static u64 g_now; static void (*g_tick)(void);
 void kapi_delay_us(u32 us){ g_now+=(u64)us*1000; if(g_tick)g_tick(); }
 u64 kapi_ns(void){ g_now+=1000; if(g_tick)g_tick(); return g_now; }
 void kapi_mb(void){ __sync_synchronize(); if(g_tick)g_tick(); }
-void* kapi_mmio(u64 pa,u64 len){ (void)len; return (void*)pa; }
+static u64 g_hi_pa; static u8* g_hi_va;
+void* kapi_mmio(u64 pa,u64 len){ (void)len; if(pa>=0x100000000ULL)return (g_hi_pa&&pa==g_hi_pa)?(void*)g_hi_va:0; return (void*)pa; }
 
 struct pdev { int present; u16 ven, dev; u8 cls, sub; u32 bar[6]; u32 cmd; };
-static struct pdev g_pci;
-u32 kapi_pci_rd32(int b,int d,int f,int off){ (void)b;(void)d;(void)f; if(!g_pci.present)return 0xFFFFFFFFu;
-    switch(off){ case 0: return g_pci.ven|((u32)g_pci.dev<<16); case 4: return g_pci.cmd; case 8: return ((u32)g_pci.cls<<24)|((u32)g_pci.sub<<16); case 0x0C: return 0; }
-    if(off>=0x10&&off<0x28)return g_pci.bar[(off-0x10)/4]; return 0; }
-void kapi_pci_wr32(int b,int d,int f,int off,u32 v){ (void)b;(void)d;(void)f; if(off==4)g_pci.cmd=v; }
+static struct pdev g_pci, g_pcix;
+static struct pdev* pdev_at(int d){ return d==8?&g_pcix:&g_pci; }
+u32 kapi_pci_rd32(int b,int d,int f,int off){ (void)b;(void)f; struct pdev* p=pdev_at(d); if(!p->present)return 0xFFFFFFFFu;
+    switch(off){ case 0: return p->ven|((u32)p->dev<<16); case 4: return p->cmd; case 8: return ((u32)p->cls<<24)|((u32)p->sub<<16); case 0x0C: return 0; }
+    if(off>=0x10&&off<0x28)return p->bar[(off-0x10)/4]; return 0; }
+void kapi_pci_wr32(int b,int d,int f,int off,u32 v){ (void)b;(void)f; if(off==4)pdev_at(d)->cmd=v; }
 int kapi_pci_find(u16 ven,const u16* devs,int nth,int* b,int* d,int* f){ if(!g_pci.present||g_pci.ven!=ven)return 0; for(int i=0;devs[i];i++) if(devs[i]==g_pci.dev){ if(nth)return 0; *b=0;*d=3;*f=0; return 1; } return 0; }
-int kapi_pci_find_class(int c,int s,int nth,int* b,int* d,int* f){ if(!g_pci.present||g_pci.cls!=c||g_pci.sub!=s||nth)return 0; *b=0;*d=4;*f=0; return 1; }
-void kapi_pci_enable(int b,int d,int f){ (void)b;(void)d;(void)f; g_pci.cmd|=7; }
+int kapi_pci_find_class(int c,int s,int nth,int* b,int* d,int* f){ int ds[2]={4,8}; for(int i=0;i<2;i++){ struct pdev* p=pdev_at(ds[i]); if(!p->present||p->cls!=c||p->sub!=s)continue; if(nth--)continue; *b=0;*d=ds[i];*f=0; return 1; } return 0; }
+void kapi_pci_enable(int b,int d,int f){ (void)b;(void)f; pdev_at(d)->cmd|=7; }
 
 static u8 (*io_in8)(u16); static void (*io_out8)(u16,u8);
 static u16 (*io_in16)(u16); static void (*io_out16)(u16,u16);
@@ -263,15 +265,29 @@ static u32 hverb(u32 v){
     if((verb>>16)==0x3){ u32 pl=verb&0xFFFF; if(pl&0x8000)h_amp_out[nid&63]=pl; if(pl&0x4000)h_amp_in[nid&63][(pl>>8)&3]=pl; return 0; }
     return 0;
 }
-static int h_mute_codec;
-static void hda_tick(void){
-    if(!(H[0x4C]&2)||!(H[0x5C]&2))return;
-    int wp=hr16(0x48)&0xFF; u32* corb=(u32*)P((u64)hr32(0x40)|((u64)hr32(0x44)<<32)); u64* rirb=(u64*)P((u64)hr32(0x50)|((u64)hr32(0x54)<<32));
-    int n=(H[0x4E]&3)==2?256:(H[0x4E]&3)==1?16:2; int rn=(H[0x5E]&3)==2?256:(H[0x5E]&3)==1?16:2;
-    if(hr16(0x4A)&0x8000){ hcorb_rp=0; return; }
-    if(hr16(0x58)&0x8000){ hrirb_wp=0; hw16(0x58,0); }
-    while(hcorb_rp!=wp){ hcorb_rp=(hcorb_rp+1)%n; u32 v=corb[hcorb_rp]; if(h_mute_codec)continue; u32 r=hverb(v); hrirb_wp=(hrirb_wp+1)%rn; rirb[hrirb_wp]=r; hw16(0x58,(u16)hrirb_wp); H[0x5D]|=1; }
+static int h_mute_codec, h_cad_analog;
+static u32 hverb_hdmi(u32 v){
+    int nid=(v>>20)&0x7F; u32 verb=v&0xFFFFF;
+    if((verb>>8)==0xF00){ int p=verb&0xFF;
+        if(nid==0){ if(p==0)return 0x80862882u; if(p==4)return (1u<<16)|1; return 0; }
+        if(nid==1){ if(p==4)return (2u<<16)|2; if(p==5)return 1; return 0; }
+        if(nid==2){ if(p==9)return 1u|(1u<<9); return 0; }
+        if(nid==3){ if(p==9)return (4u<<20)|(1u<<8)|(1u<<9); if(p==0x0C)return (1u<<4)|(1u<<7); if(p==0x0E)return 1; return 0; }
+        return 0; }
+    if((verb>>8)==0xF02)return nid==3?0x02u:0;
+    if((verb>>8)==0xF1C)return nid==3?0x18560010u:0;
+    return 0;
 }
+static void hda_win_tick(u8* W,int* crp,int* rwp,int hdmi){
+    if(!(W[0x4C]&2)||!(W[0x5C]&2))return;
+    int wp=*(u16*)(W+0x48)&0xFF; u32* corb=(u32*)P((u64)*(u32*)(W+0x40)|((u64)*(u32*)(W+0x44)<<32)); u64* rirb=(u64*)P((u64)*(u32*)(W+0x50)|((u64)*(u32*)(W+0x54)<<32));
+    int n=(W[0x4E]&3)==2?256:(W[0x4E]&3)==1?16:2; int rn=(W[0x5E]&3)==2?256:(W[0x5E]&3)==1?16:2;
+    if(*(u16*)(W+0x4A)&0x8000){ *crp=0; return; }
+    if(*(u16*)(W+0x58)&0x8000){ *rwp=0; *(u16*)(W+0x58)=0; }
+    while(*crp!=wp){ *crp=(*crp+1)%n; u32 v=corb[*crp]; if(h_mute_codec)continue; u32 r=(hdmi||(int)(v>>28)!=h_cad_analog)?hverb_hdmi(v):hverb(v); *rwp=(*rwp+1)%rn; rirb[*rwp]=r; *(u16*)(W+0x58)=(u16)*rwp; W[0x5D]|=1; }
+}
+static u8* H2; static int h2corb_rp, h2rirb_wp;
+static void hda_tick(void){ if(H)hda_win_tick(H,&hcorb_rp,&hrirb_wp,0); if(H2)hda_win_tick(H2,&h2corb_rp,&h2rirb_wp,1); }
 static int hsd(int r){ return 0x80+4*0x20+r; }
 static void hda_play(int bytes){
     if(!(H[hsd(0)]&2))return;
@@ -305,12 +321,46 @@ static void test_hda(void){
     char det[120]; snprintf(det,sizeof det,"%s (written %ld, played %ld)",why,off,spk_n);
     rec(off==n&&sok,"HDA: 700 KB streamed, exact order, the looping buffer plays silence after the end",det);
     s.volume(0); rec((h_amp_out[0x02]&0x80)!=0,"HDA: volume 0 mutes the DAC output amplifier",0);
+    { h_mute_codec=1; u64 spent=0; for(int k=0;k<40;k++){ g_now+=310000000ULL; u64 a=g_now; s.poll(); spent+=g_now-a; } h_mute_codec=0;
+      rec(spent<1000000000ULL,"HDA: codec that stops answering mid-play: jack polling backs off (12 s of polls cost < 1 s)",0); }
     s.stop(); free(spk); free(pat);
     hda_reset_regs(); h_mute_codec=1; u64 t0=g_now; struct nvx_snd s2; int ok2=hda_probe(&s2);
     rec(!ok2&&g_now-t0<2000000000ULL,"HDA: a codec that never answers is given up within 2 s",0);
     hda_reset_regs(); hw16(0x0E,0); h_mute_codec=0; ok2=hda_probe(&s2);
     rec(!ok2,"HDA: controller without codecs is refused",0);
     munmap(H,0x4000);
+}
+#define HBAR2 ((u8*)0x34000000)
+static void hda_pci(struct pdev* p,u16 dev,u8 sub,u32 b0,u32 b1){ memset(p,0,sizeof *p); p->present=1; p->ven=0x8086; p->dev=dev; p->cls=4; p->sub=sub; p->bar[0]=b0; p->bar[1]=b1; }
+static void test_hda_multi(void){
+    H=mmap(HBAR,0x4000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0); H2=mmap(HBAR2,0x4000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    if(H!=HBAR||H2!=HBAR2){ rec(0,"HDA multi: simulator MMIO windows",0); return; }
+    io_in8=0; io_out8=0; io_in16=0; io_out16=0; io_in32=0; io_out32=0; g_tick=hda_tick; h_mute_codec=0; h_cad_analog=0;
+    struct nvx_snd s; char det[200];
+    hda_reset_regs(); memset(H2,0,0x4000); *(u16*)H2=0x4401; *(u16*)(H2+0x0E)=1; H2[0x4E]=0x40; H2[0x5E]=0x40; h2corb_rp=h2rirb_wp=0;
+    hda_pci(&g_pci,0x0F04,3,(u32)(u64)HBAR2,0); hda_pci(&g_pcix,0xA170,3,(u32)(u64)HBAR,0);
+    memset(&s,0,sizeof s); int ok=hda_probe(&s); snprintf(det,sizeof det,"ok=%d %s corb2=%x rirb2=%x",ok,hda_info(),H2[0x4C],H2[0x5C]);
+    rec(ok&&strstr(hda_info(),"10ec:269")&&strstr(hda_info(),"speaker(pin 14")&&!(H2[0x4C]&2)&&!(H2[0x5C]&2)&&!(g_pci.cmd&4)&&(g_pcix.cmd&4),"HDA: HDMI-only controller first is skipped (CORB/RIRB stopped, bus master off), analog controller used",det);
+    H2=0; munmap(HBAR2,0x4000); memset(&g_pcix,0,sizeof g_pcix);
+    hda_reset_regs(); hw16(0x0E,0x5); h_cad_analog=2; hda_pci(&g_pci,0xA170,3,(u32)(u64)HBAR,0);
+    memset(&s,0,sizeof s); ok=hda_probe(&s); snprintf(det,sizeof det,"ok=%d %s",ok,hda_info());
+    rec(ok&&strstr(hda_info(),"10ec:269")&&strstr(hda_info(),"headphones(pin 21"),"HDA: HDMI codec 0 skipped, analog codec 2 on the same controller used",det);
+    hda_reset_regs(); hw16(0x0E,0x1); h_cad_analog=1; memset(&s,0,sizeof s); ok=hda_probe(&s);
+    rec(!ok,"HDA: HDMI-only machine still refused (falls back to AC97 as before)",hda_info());
+    h_cad_analog=0; memset(&g_pci,0,sizeof g_pci);
+    hda_reset_regs(); hda_pci(&g_pcix,0x9C36,1,0x30000004u,0x1u); g_hi_pa=0x130000000ULL; g_hi_va=HBAR; H[0x02]=0; H[0x03]=0;
+    memset(&s,0,sizeof s); ok=hda_probe(&s); snprintf(det,sizeof det,"ok=%d gctl=%x corb=%x cmd=%x",ok,hr32(0x08),hr32(0x40),g_pcix.cmd);
+    rec(!ok&&!hr32(0x08)&&!hr32(0x40)&&!H[0x4C]&&!(g_pcix.cmd&4),"HDA: class 0401 DSP without HDA version registers is skipped before any register write",det);
+    hda_reset_regs(); hda_pci(&g_pcix,0x9DC8,1,0x30000004u,0x1u); H[0x03]=1;
+    memset(&s,0,sizeof s); ok=hda_probe(&s); snprintf(det,sizeof det,"ok=%d %s",ok,hda_info());
+    rec(ok&&strstr(hda_info(),"10ec:269"),"HDA: Intel DSP-class controller (0401) with a 64-bit BAR above 4 GB is mapped and used",det);
+    hda_reset_regs(); H[0x03]=1; g_hi_pa=0; memset(&s,0,sizeof s); ok=hda_probe(&s);
+    rec(!ok,"HDA: a BAR above 4 GB that cannot be mapped is skipped cleanly",0);
+    hda_reset_regs(); hda_pci(&g_pcix,0x2415,1,0xC000|1,0xD000|1); memset(&s,0,sizeof s); ok=hda_probe(&s);
+    rec(!ok&&!(g_pcix.cmd&2),"HDA: an AC97 controller (class 0401, I/O BARs) is not touched",0);
+    hda_reset_regs(); hda_pci(&g_pcix,0x9DC8,1,0x30000000u,0); g_pci.present=0; memset(&s,0,sizeof s); ok=hda_probe(&s);
+    rec(!ok,"HDA: class 0401 with a 32-bit memory BAR is not taken for HD Audio",0);
+    memset(&g_pcix,0,sizeof g_pcix); g_hi_pa=0; g_hi_va=0; munmap(H,0x4000); H=0;
 }
 #define EBAR ((u8*)0x31000000)
 static volatile u32* E; static u32 e_rxh, e_txh; static u16 e_eeprom[3]={0x1100,0x3322,0x5544};
@@ -445,7 +495,7 @@ static void test_e1000e(void){
 int main(void){
     setvbuf(stdout,0,_IOLBF,0);
     if(mmap(ARENA,ARENA_SZ,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)!=ARENA){ printf("arena mmap failed\n"); return 2; }
-    test_e1000(); test_e1000e(); test_igb(); test_rtl8139(); test_rtl8169(); test_rtl8125(); test_virtio_net(); test_virtio_blk(); test_ac97(); test_hda();
+    test_e1000(); test_e1000e(); test_igb(); test_rtl8139(); test_rtl8169(); test_rtl8125(); test_virtio_net(); test_virtio_blk(); test_ac97(); test_hda(); test_hda_multi();
     memset(&g_pci,0,sizeof g_pci); { struct nvx_nic n; struct nvx_snd s; u64 x; rec(!e1000_probe(&n)&&!e1000e_probe(&n)&&!igb_probe(&n)&&!vmxnet3_probe(&n)&&!rtl8139_probe(&n)&&!rtl8169_probe(&n)&&!virtio_net_probe(&n)&&!virtio_blk_probe(&x)&&!ac97_probe(&s)&&!hda_probe(&s),"no device present: every probe returns 0 without touching hardware",0); }
     printf("%s\n",g_fail?"FAILURES":"ALL PASS");
     return g_fail?1:0;

@@ -14,9 +14,9 @@
 #define NV_BOOTINFO 0x5000ULL
 #endif
 
-#include "drivers/video/nvidia/nvgsp_parts/01_xzk_decode_into.c"
-#include "drivers/video/nvidia/nvgsp_parts/02_boot_gsp.c"
-#include "drivers/video/nvidia/nvgsp_parts/03_nvgsp_fb_present.c"
-#include "drivers/video/nvidia/nvgsp_parts/04_nvgsp_tick.c"
-#include "drivers/video/nvidia/nvgsp_parts/05_nvdisp_mode.c"
-#include "drivers/video/nvidia/nvgsp_parts/06_nv3d.c"
+#include "drivers/video/nvidia/gsp/firmware_unpack_and_memory.c"
+#include "drivers/video/nvidia/gsp/boot.c"
+#include "drivers/video/nvidia/gsp/framebuffer_present.c"
+#include "drivers/video/nvidia/gsp/tick_on_off.c"
+#include "drivers/video/nvidia/gsp/display_modes.c"
+#include "drivers/video/nvidia/gsp/accel_3d.c"

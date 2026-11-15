@@ -42,7 +42,7 @@ typedef struct { int used; u8 type; u32 start, size; int gi; char name[40]; char
 static dmpart g_dm_p[DM_ROWS]; static int g_dm_np=0, g_dm_gpt=0;
 static u8 g_dm_ghdr[512]; static u8* g_dm_gent=0; static u32 g_dm_gn=0, g_dm_gsz=0, g_dm_gsec=0; static u64 g_dm_gelba=0, g_dm_galt=0;
 
-#include "core/init/installer_parts/01_dm_crc32.c"
-#include "core/init/installer_parts/02_ip_mem_verify.c"
-#include "core/init/installer_parts/03_ip_pick_disk.c"
-#include "core/init/installer_parts/04_inst_svc.c"
+#include "core/init/installer/disk_manager.c"
+#include "core/init/installer/install_files.c"
+#include "core/init/installer/disk_picker.c"
+#include "core/init/installer/usb_clone_service.c"

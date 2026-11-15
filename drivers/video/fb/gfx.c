@@ -7,6 +7,8 @@
 #include "include/nvx/drivers/video/fb/gfx.h"
 #include "include/nvx/graphics/ui/desktop.h"
 #include "include/nvx/mem/heap.h"
+#include "include/nvx/lib/base/fmt.h"
+#include "include/nvx/core/klog.h"
 
 int g_gfx=GFX_OFF, g_gfx_fx=1, g_gfx_ok=0, g_rt=0, gs_scene=0, gs_bg=0, gs_nc=0, g_gfx_present=0;
 u32 g_gfx_frames=0, g_gfx_frame_us=0, g_gfx_layers=0, g_gfx_layer_mb=0; char g_gfx_why[64];
@@ -236,11 +238,20 @@ static void composite(int i,int x,int y,int w,int h,int alpha,int yoff){
         if(a1>a0&&X0<wx0) gq_overc(gs_scene,X0,a0,wx0-X0,a1-a0,L->sid,X0-ox,a0-oy,alpha);
         if(a1>a0&&X1>wx1) gq_overc(gs_scene,wx1,a0,X1-wx1,a1-a0,L->sid,wx1-ox,a0-oy,alpha); } }
 void gfx_scroll_area(int i,int x,int y,int w,int h,int pos){ if(g_gfx==GFX_OFF||i<0||i>=NL||g_cur_layer!=i)return; layer* L=&LY[i]; L->nx=x; L->ny=y; L->nw=w; L->nh=h; L->npos=pos; L->nset=1; }
+volatile int g_draw_win=-1; volatile int g_draw_last=-1; volatile u64 g_draw_t0=0; volatile u32 g_draw_n=0;
+void draw_app_marked(int i){
+    extern void draw_app(int); extern const char *APPNAME[NWIN];
+    int pw=g_draw_win; u64 pt=g_draw_t0;
+    g_draw_win=i; g_draw_n++; u64 t0=hr_rdtsc(); g_draw_t0=t0;
+    draw_app(i);
+    u64 dc=hr_rdtsc()-t0; g_draw_last=i; g_draw_win=pw; g_draw_t0=pt;
+    u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; u64 ms=dc*1000ULL/hz;
+    if(ms>=50){ static u64 lk=0; if(g_ticks-lk>=100){ lk=g_ticks; char b[96],*q=b; q=scopy(q,"lag: drawing window "); q=udec(q,(u32)i); q=scopy(q," ("); q=scopy(q,(i>=0&&i<NWIN)?APPNAME[i]:"?"); q=scopy(q,") took "); q=udec(q,(u32)ms); q=scopy(q," ms"); *q=0; klog(b); } } }
 void gfx_window(int i){
-    extern void draw_app(int); int s=lay_get(i);
-    if(!s){ draw_app(i); return; }
+    int s=lay_get(i);
+    if(!s){ draw_app_marked(i); return; }
     layer* L=&LY[i]; int x=WN[i].x, y=WN[i].y, w=WN[i].w, h=WN[i].h;
-    int moving=(drag>=0)&&!live_app(i)&&L->valid&&L->dw==w&&L->dh==h;
+    int moving=(drag==i)&&!live_app(i)&&L->valid&&L->dw==w&&L->dh==h;
     if(!moving||g_resize==i){
         int cx0=imin(L->bx0,x)-64, cy0=imin(L->by0,y)-64, cx1=imax(L->bx1,x+w)+64, cy1=imax(L->by1,y+h)+64; if(!L->valid){ cx0=0; cy0=0; cx1=(int)W; cy1=(int)H; }
         int snapped=0, cur_o=scroll_o(L);
@@ -253,7 +264,7 @@ void gfx_window(int i){
         if(!capt) gq_fill(s,cx0,cy0,cx1-cx0,cy1-cy0,GQ_EMPTY);
         pre_hook(); int ort=g_rt; u32* osc=g_scene; g_rt=s; g_scene=L->px; gq_touch_reset(s); L->ng=0; g_cur_layer=i; L->nset=0;
         if(capt) gq_cap_begin(s,L->opB,OPMAX,cx0,cy0,cx1-cx0,cy1-cy0);
-        draw_app(i); pre_hook();
+        draw_app_marked(i); pre_hook();
         int ncap=capt?gq_cap_end():-1;
         g_rt=ort; g_scene=osc; g_cur_layer=-1;
         int usebb=0, nb0=0, nb1=0, nb2=0, nb3=0;

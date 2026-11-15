@@ -31,6 +31,6 @@
 #include "include/nvx/shell/vt.h"
 #include "include/nvx/apps/internet/browser.h"
 
-#include "core/proc/jobs_parts/01_jc_resume.c"
-#include "core/proc/jobs_parts/02_jc_tg_sync_ids.c"
-#include "core/proc/jobs_parts/03_segv_str.c"
+#include "core/proc/jobs/resume_and_fds.c"
+#include "core/proc/jobs/thread_groups_and_exit.c"
+#include "core/proc/jobs/faults.c"

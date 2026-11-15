@@ -157,10 +157,11 @@ static int nvme_init(void){
 }
 /* ---- generic disk layer: routes to IDE / AHCI / NVMe ---- */
 
-int g_dktype=DK_NONE; u32 g_dksectors=0;
+int g_dktype=DK_NONE; u32 g_dksectors=0; volatile int g_disk_busy;
 static char g_dk_nm[24];
-const char* gdisk_name(void){ switch(g_dktype){ case DK_IDE:{ extern int g_ata_drv; return g_ata_drv==1?"IDE slave":"IDE master"; } case DK_AHCI:{ extern int ahci_cur_port(void); char* q=scopy(g_dk_nm,"SATA port "); q=udec(q,(u32)ahci_cur_port()); *q=0; return g_dk_nm; } case DK_NVME:return "NVMe"; case DK_VIRTIO:return "VirtIO"; default:return "none"; } }
-int gdisk_read(u32 lba,int cnt,u8* buf){ if(g_dktype==DK_IDE)return ata_read(lba,cnt,buf); if(g_dktype==DK_AHCI)return ahci_read(lba,cnt,buf); if(g_dktype==DK_NVME)return nvme_read(lba,cnt,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_read(lba,cnt,buf); return -1; }
+const char* gdisk_name(void){ switch(g_dktype){ case DK_IDE:{ extern int g_ata_drv; return g_ata_drv==1?"IDE slave":"IDE master"; } case DK_AHCI:{ extern int ahci_cur_port(void); char* q=scopy(g_dk_nm,"SATA port "); q=udec(q,(u32)ahci_cur_port()); *q=0; return g_dk_nm; } case DK_NVME:return "NVMe"; case DK_VIRTIO:return "VirtIO"; case DK_USB:return "USB stick"; default:return "none"; } }
+static int gdisk_read_raw(u32 lba,int cnt,u8* buf){ if(g_dktype==DK_IDE)return ata_read(lba,cnt,buf); if(g_dktype==DK_AHCI)return ahci_read(lba,cnt,buf); if(g_dktype==DK_NVME)return nvme_read(lba,cnt,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_read(lba,cnt,buf); if(g_dktype==DK_USB){ extern int usb_msd_rdn(u32,int,u8*); return usb_msd_rdn(lba,cnt,buf); } return -1; }
+int gdisk_read(u32 lba,int cnt,u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_read_raw(lba,cnt,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
 
 /* ---- buffer cache: LRU of recently-read 512-byte sectors ----
    Repeat reads of the same LBA hit RAM instead of the disk. Single-sector
@@ -182,8 +183,10 @@ int gdisk_read_cached(u32 lba,int cnt,u8* buf){
 }
 static void gdisk_write_through(u32 lba){ bc_invalidate(lba,1); }   /* call after any write so the cache stays coherent */
 
-int gdisk_flush(void){ if(g_dktype==DK_NVME)return nvme_flush(); if(g_dktype==DK_AHCI)return ahci_flush(); if(g_dktype==DK_VIRTIO)return virtio_blk_flush(); return 0; }
-int gdisk_write(u32 lba,const u8* buf){ if(g_dktype==DK_IDE)return ata_write(lba,buf); if(g_dktype==DK_AHCI)return ahci_write1(lba,buf); if(g_dktype==DK_NVME)return nvme_write1(lba,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_write(lba,1,buf); return -1; }
+static int gdisk_flush_raw(void){ if(g_dktype==DK_NVME)return nvme_flush(); if(g_dktype==DK_AHCI)return ahci_flush(); if(g_dktype==DK_VIRTIO)return virtio_blk_flush(); if(g_dktype==DK_USB){ extern int usb_msd_sync(void); usb_msd_sync(); return 0; } return 0; }
+int gdisk_flush(void){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_flush_raw(); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+static int gdisk_write_raw(u32 lba,const u8* buf){ if(g_dktype==DK_IDE)return ata_write(lba,buf); if(g_dktype==DK_AHCI)return ahci_write1(lba,buf); if(g_dktype==DK_NVME)return nvme_write1(lba,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_write(lba,1,buf); if(g_dktype==DK_USB){ extern int usb_msd_wrn(u32,int,const u8*); return usb_msd_wrn(lba,1,buf); } return -1; }
+int gdisk_write(u32 lba,const u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_write_raw(lba,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
 static int nvme_writen(u32 lba,int cnt,const u8* in){
     u32 r=nvme_ratio, maxb=nvme_maxpg*4096u/(r*512u); if(!maxb)maxb=1;
     while(cnt>0){
@@ -194,14 +197,16 @@ static int nvme_writen(u32 lba,int cnt,const u8* in){
         if(nvme_write1(lba,in))return -1; lba++; in+=512; cnt--; }
     return 0;
 }
-int gdisk_writen(u32 lba,int cnt,const u8* buf){
+static int gdisk_writen_raw(u32 lba,int cnt,const u8* buf){
     if(cnt<=0)return 0; bc_invalidate(lba,cnt);
     if(g_dktype==DK_IDE)return ata_writen(lba,cnt,buf);
     if(g_dktype==DK_NVME)return nvme_writen(lba,cnt,buf);
     if(g_dktype==DK_VIRTIO){ while(cnt>0){ int c=cnt>128?128:cnt; if(virtio_blk_write(lba,c,buf))return -1; lba+=(u32)c; buf+=c*512; cnt-=c; } return 0; }
+    if(g_dktype==DK_USB){ extern int usb_msd_wrn(u32,int,const u8*); return usb_msd_wrn(lba,cnt,buf); }
     if(g_dktype==DK_AHCI){ if(!ahci_ok)return -1; while(cnt>0){ int c=cnt>128?128:cnt; volatile u8* d=(volatile u8*)(u64)AHCI_BUF; for(int i=0;i<c*512;i++)d[i]=buf[i]; if(ahci_cmd(lba,(u32)c,AHCI_BUF,1,0x35))return -1; lba+=(u32)c; buf+=c*512; cnt-=c; } return 0; }
     return -1;
 }
+int gdisk_writen(u32 lba,int cnt,const u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_writen_raw(lba,cnt,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
 int gdisk_readn(u32 lba,int cnt,u8* buf){
     bc_invalidate(lba,cnt);
     while(cnt>0){ int c=cnt>128?128:cnt; if(gdisk_read(lba,c,buf))return -1; lba+=(u32)c; buf+=c*512; cnt-=c; }
@@ -233,6 +238,11 @@ void ins83(const char* nm,u8 out[11]){ for(int i=0;i<11;i++)out[i]=' '; int i=0,
     while(nm[i]&&nm[i]!='.'&&o<8){ char c=nm[i]; if(c>='a'&&c<='z')c-=32; out[o++]=(u8)c; i++; }
     while(nm[i]&&nm[i]!='.')i++; if(nm[i]=='.'){ i++; int e=8; while(nm[i]&&e<11){ char c=nm[i]; if(c>='a'&&c<='z')c-=32; out[e++]=(u8)c; i++; } } }
 
+int gdisk_usb_refresh(void){
+    extern int msd_ok; extern u32 msd_lastlba, msd_bsize; extern int msd_autoinit_safe(void); gdisk_ensure();
+    for(int i=0;i<g_dk_count;i++) if(g_dk_ct[i]==DK_USB){ if(i==g_dk_cur){ if(msd_ok&&msd_bsize==512){ g_dk_cs[i]=msd_lastlba+1; g_dksectors=g_dk_cs[i]; } return i; } for(int j=i;j<g_dk_count-1;j++){ g_dk_ct[j]=g_dk_ct[j+1]; g_dk_cs[j]=g_dk_cs[j+1]; g_dk_cu[j]=g_dk_cu[j+1]; } g_dk_count--; if(g_dk_cur>i)g_dk_cur--; i--; }
+    if(!msd_ok)msd_autoinit_safe(); if(!msd_ok||msd_bsize!=512||g_dk_count>=12)return -1;
+    int n=g_dk_count; g_dk_ct[n]=DK_USB; g_dk_cs[n]=msd_lastlba+1; g_dk_cu[n]=0; g_dk_count=n+1; if(g_dktype==DK_NONE)gdisk_set(n); return n; }
 int gdisk_count(void){ gdisk_ensure(); return g_dk_count; }
 int gdisk_current(void){ return g_dk_cur; }
 int gdisk_pick(int i){ gdisk_ensure(); if(i<0||i>=g_dk_count)return -1; if(i==g_dk_cur)return 0;
@@ -242,4 +252,21 @@ u32 gdisk_ratio_of(int i){ gdisk_ensure(); if(i<0||i>=g_dk_count)return 1; retur
 int gdisk_kind_of(int i){ gdisk_ensure(); return (i>=0&&i<g_dk_count)?g_dk_ct[i]:0; }
 u32 gdisk_size_of(int i){ gdisk_ensure(); return (i>=0&&i<g_dk_count)?g_dk_cs[i]:0; }
 const char* gdisk_name_of(int i){ static char b[24]; gdisk_ensure(); if(i<0||i>=g_dk_count)return "none";
-    switch(g_dk_ct[i]){ case DK_IDE:return ata_unit(g_dk_cu[i])==1?"IDE slave":"IDE master"; case DK_AHCI:{ char* q=scopy(b,"SATA port "); q=udec(q,(u32)ahci_unit_port(g_dk_cu[i])); *q=0; return b; } case DK_NVME:return "NVMe"; case DK_VIRTIO:return "VirtIO"; default:return "disk"; } }
+    switch(g_dk_ct[i]){ case DK_IDE:return ata_unit(g_dk_cu[i])==1?"IDE slave":"IDE master"; case DK_AHCI:{ char* q=scopy(b,"SATA port "); q=udec(q,(u32)ahci_unit_port(g_dk_cu[i])); *q=0; return b; } case DK_NVME:return "NVMe"; case DK_VIRTIO:return "VirtIO"; case DK_USB:return "USB stick"; default:return "disk"; } }
+int nvme_shutdown(void){
+    extern int hr_precise(void); extern u64 hr_ns(void);
+    if(!nvme_ok||!nvme_regs)return 0;
+    int r=nvme_flush();
+    volatile u32* cc=(volatile u32*)((u64)nvme_regs+0x14);
+    *cc=(*cc&~(3u<<14))|(1u<<14);
+    int done=0; u64 t0=hr_precise()?hr_ns():0;
+    for(u32 i=0;i<10000000u;i++){ u32 cs=nvme_csts(); if(cs==0xFFFFFFFFu)break; if(((cs>>2)&3u)==2u){ done=1; break; }
+        if(t0&&hr_ns()-t0>5000000000ULL)break; io_wait(); }
+    nvme_ok=0; nvme_cblk=0xFFFFFFFFu;
+    return (r||!done)?-1:0; }
+void gdisk_shutdown(int poweroff){
+    extern void klog(const char*); extern int ahci_shutdown_all(int);
+    int a=ahci_shutdown_all(poweroff), n=nvme_shutdown();
+    if(a||n){ char b[96],*q=scopy(b,"storage: clean shutdown incomplete (SATA errors "); q=udec(q,(u32)a); q=scopy(q,n?", NVMe did not confirm)":", NVMe ok)"); *q=0; klog(b); }
+    else klog(poweroff?"storage: disks flushed, SATA disks in standby, NVMe shut down":"storage: disks flushed, NVMe shut down");
+}

@@ -570,8 +570,8 @@ static int up_boot(void){
 int upd_tick(void){
     static int ph=0, tries=0; static u64 t0=0, tn=0;
     if(!t0){ t0=g_ticks?g_ticks:1; return 0; }
-    if(ph==0){ if(g_ticks-t0<300||g_upd.busy)return 0; ph=1; tries++; if(!up_boot()&&!up_installed()&&tries<24){ ph=2; tn=g_ticks; } return 1; }
-    if(ph==2){ if(g_ticks-tn<500||g_upd.busy)return 0; ph=0; t0=g_ticks-300; return 0; }
+    if(ph==0){ if(g_ticks-t0<300||g_upd.busy)return 0; ph=1; tries++; if(!up_boot()&&!up_installed()&&tries<8){ ph=2; tn=g_ticks; } return 1; }
+    if(ph==2){ u64 wait=500ULL<<(tries<5?tries:5); if(g_ticks-tn<wait||g_upd.busy)return 0; ph=0; t0=g_ticks-300; return 0; }   /* v11.10: 10 s, 20 s ... 160 s between boot-partition searches (each one blocks the screen) */
     if(g_upd.trial&&!g_upd.busy&&g_ticks-g_upd.trial_t0>=6000){ g_upd.trial=0; up_confirm(); return 1; }
     if(g_upd.want_check&&!g_upd.busy&&g_state==ST_DESKTOP){ upd_check(); return 1; }
     if(g_upd.sr_missing&&!g_upd.sr_tried&&!g_upd.busy&&!g_upd.trial&&g_state==ST_DESKTOP&&ph==1&&g_ticks-t0>=3000){ g_upd.sr_tried=1; klog("update: the Linux files are missing, downloading them"); upd_repair(); return 1; }

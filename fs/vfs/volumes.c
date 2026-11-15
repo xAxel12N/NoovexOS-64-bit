@@ -55,21 +55,21 @@ static int vntfs_rec(int disk,u64 st,u64 off,u32 rsz,u8* out){
     if(!(out[0]=='F'&&out[1]=='I'&&out[2]=='L'&&out[3]=='E'))return -1;
     u16 uo=r16(out+4), uc=r16(out+6); if(uo+uc*2>rsz)return -1; for(u16 i=1;i<uc;i++){ u32 p=(u32)i*512-2; if(p+1>=rsz)break; out[p]=out[uo+i*2]; out[p+1]=out[uo+i*2+1]; }
     return 0; }
-static const u8* vntfs_attr(const u8* rec,u32 rsz,u32 type){ u32 a=r16(rec+20); while(a+16<=rsz){ u32 t=r32(rec+a), l=r32(rec+a+4); if(t==0xFFFFFFFFu||l<16||a+l>rsz)break; if(t==type)return rec+a; a+=l; } return 0; }
+static const u8* vntfs_attr(const u8* rec,u32 rsz,u32 type){ u32 a=r16(rec+20); while(a+16<=rsz){ u32 t=r32(rec+a), l=r32(rec+a+4); if(t==0xFFFFFFFFu||l<16||l>rsz-a)break; if(t==type)return rec+a; a+=l; } return 0; }
 static void vprobe_ntfs(nvol* v,int disk,u64 st,const u8* s){
-    vcp(v->fs,"NTFS",12); u32 bps=r16(s+11); u32 spc=s[13]; if(spc>128)spc=1u<<(256-spc); if(bps<512||bps>4096||!spc)return;
-    u64 cs=(u64)bps*spc, tot=r64(s+40), mft=r64(s+48); int c=(int)(signed char)s[64]; u32 rsz=c>0?(u32)(c*cs):(1u<<(-c)); if(rsz<512||rsz>4096)return;
+    vcp(v->fs,"NTFS",12); u32 bps=r16(s+11); u32 spc=s[13]; if(spc>128){ if(256-spc>31)return; spc=1u<<(256-spc); } if(bps<512||bps>4096||!spc)return;
+    u64 cs=(u64)bps*spc, tot=r64(s+40), mft=r64(s+48); int c=(int)(signed char)s[64]; if(c<=0&&-c>31)return; u32 rsz=c>0?(u32)(c*cs):(1u<<(-c)); if(rsz<512||rsz>4096)return;
     v->total=tot*bps; u64 ncl=tot/spc;
     u8* rec=(u8*)kmalloc(4096); if(!rec)return;
     if(!vntfs_rec(disk,st,mft*cs+3ull*rsz,rsz,rec)){ const u8* a=vntfs_attr(rec,rsz,0x60); if(a&&!a[8]){ u32 vl=r32(a+16); u16 vo=r16(a+20); if(vl&&vl<72)vutf16(v->label,a+vo,(int)vl/2,36); } }
-    if(!vntfs_rec(disk,st,mft*cs+6ull*rsz,rsz,rec)){ const u8* a=vntfs_attr(rec,rsz,0x80); if(a&&a[8]){
+    if(!vntfs_rec(disk,st,mft*cs+6ull*rsz,rsz,rec)){ const u8* a=vntfs_attr(rec,rsz,0x80); if(a&&a[8]&&r32(a+4)>=0x40&&r16(a+32)<r32(a+4)){
         const u8* rl=a+r16(a+32); const u8* end=a+r32(a+4); u64 lcn=0, bit=0, fr=0; int ok=1; u64 totbytes=(ncl+7)/8; if(totbytes>(64ull<<20))ok=0;
-        while(ok&&rl<end&&*rl){ int ln=*rl&15, of=*rl>>4; rl++; u64 len=0; for(int k=0;k<ln;k++)len|=(u64)rl[k]<<(8*k); rl+=ln; long long d=0; if(of){ for(int k=0;k<of;k++)d|=(long long)rl[k]<<(8*k); if(of<8&&(rl[of-1]&0x80))d|=(long long)(~0ULL<<(8*of)); } rl+=of; lcn+=(u64)d;
+        while(ok&&rl<end&&*rl){ int ln=*rl&15, of=*rl>>4; rl++; if(rl+ln+of>end){ ok=0; break; } u64 len=0; for(int k=0;k<ln;k++)len|=(u64)rl[k]<<(8*k); rl+=ln; long long d=0; if(of){ for(int k=0;k<of;k++)d|=(long long)rl[k]<<(8*k); if(of<8&&(rl[of-1]&0x80))d|=(long long)(~0ULL<<(8*of)); } rl+=of; lcn+=(u64)d;
             if(!of)continue; u64 bytes=len*cs; u64 remain_bits=ncl-bit; if(bytes*8>remain_bits)bytes=(remain_bits+7)/8; u64 f=vcount_free(disk,st+lcn*cs/512,bytes,remain_bits); if(f==(u64)-1){ ok=0; break; } fr+=f; bit+=bytes*8; if(bit>=ncl)break; }
         if(ok&&bit>=ncl){ v->freeb=fr*cs; v->has_free=1; } } }
     kfree(rec); }
 static void vprobe_exfat(nvol* v,int disk,u64 st,const u8* s){
-    vcp(v->fs,"exFAT",12); u32 bs=1u<<s[108], cs=bs<<s[109]; u32 heap=r32(s+88), cnt=r32(s+92), root=r32(s+96); if(bs<512||bs>4096)return; v->total=(u64)cnt*cs;
+    vcp(v->fs,"exFAT",12); if(s[108]<9||s[108]>12||s[108]+s[109]>25)return; u32 bs=1u<<s[108], cs=bs<<s[109]; u32 heap=r32(s+88), cnt=r32(s+92), root=r32(s+96); if(bs<512||bs>4096)return; v->total=(u64)cnt*cs;
     u64 rl=st+((u64)heap*bs+(u64)(root-2)*cs)/512; if(vrd(disk,rl,8,vb))return; u32 bmc=0; u64 bml=0; char lb[36]; lb[0]=0;
     for(int e=0;e<128;e++){ const u8* d=vb+e*32; if(!d[0])break; if(d[0]==0x81){ bmc=r32(d+20); bml=r64(d+24); } else if(d[0]==0x83){ vutf16(lb,d+2,d[1],36); } }
     if(lb[0])vcp(v->label,lb,36);

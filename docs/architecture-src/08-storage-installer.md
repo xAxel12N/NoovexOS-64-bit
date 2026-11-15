@@ -468,7 +468,7 @@ Since v10.65 the screens of the installer run as a separate, signed user-mode pr
 
 Files
 - `usr/src/nvxinstall.c`: the program (native NoovexOS ELF linked with nvxlibc, about 20 KB). Pages: Welcome, Disk, Where (whole disk or a usable MBR partition), File system (NoovexOS, FAT32, NTFS, FAT16), Confirm, Installing (one line per stage), Done or Error. Same look as the built-in installer: blue background, white dialog box with a dashed title line and black shadow, "(*)" lists, red "< Button >" buttons; Up/Down choose in a list, Left/Right or Tab move between buttons, Enter, Esc, mouse.
-- `core/init/installer_parts/04_inst_svc.c`: the kernel side: system calls, the step-by-step install and the launcher.
+- `core/init/installer/usb_clone_service.c`: the kernel side: system calls, the step-by-step install and the launcher.
 - `build.sh` step `[inst]` builds it, signs it (`tools/nvxsign.py signfile`) and checks the signature (`verifyfile`); the result `build/install.nvx` is copied into the Linux files as `/usr/lib/noovex/install.nvx`. `boot/mkhybrid.py` puts it in the root of the image's FAT partition as `INSTALL.NVX` (8.3 name, the FAT code has no long names), so it is visible on a flashed USB stick.
 
 Signed file format: the ELF followed by an 88-byte trailer: ECDSA P-256 signature r||s (64 bytes) over the SHA-256 of the ELF, the 8-byte key id, the ELF length (u32), version 1 (u32) and the magic `NVXFILE1`. `secboot_check_file()` in `core/secboot.c` checks it with the public key of the running kernel; a file signed with another key, changed after signing, or without a trailer is refused.

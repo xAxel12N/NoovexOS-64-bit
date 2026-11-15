@@ -723,7 +723,7 @@ The plan, ordered by what is most likely to work first on the GTX 1650. Every st
 
 Photos needed for stage 1: the `nvgsp all` RESULT screen and of `cat /System/Hardware/gpu.nvh`, plus `gpuinfo`.
 
-### 10.10.9 NVIDIA second screen through GSP-RM (`nvgsp_parts/05_nvdisp_mode.c`) (v10.81)
+### 10.10.9 NVIDIA second screen through GSP-RM (`gsp/display_modes.c`) (v10.81)
 
 Step 20, command `nvgsp mode` (also Settings > Display > Screens > Second screen on). It follows the Linux nouveau r535 code (`r535/disp.c`, `dispnv50/`) and NVIDIA's class headers `clc57d.h` (core channel) and `clc57e.h` (window channel) for driver version 535.113.01.
 
@@ -747,7 +747,7 @@ Limits. Not tested on a real card. DisplayPort monitors (link training) and dual
 
 A review by a separate agent against nouveau and NVIDIA's headers confirmed every method number, bit field and RM structure offset, and found, fixed before release: the window owner changed inside a window-interlocked update (nouveau warns that the hardware rejects this), no input colour table on the window (nouveau always programs one on this class), usage bounds written for the firmware's windows, one DMA object shared by several channels, half-set state after a timeout, missing SET_HDMI_SINK_CAPS, and the page-size flag of the DMA objects (found while writing the review brief).
 
-### 10.10.10 NVIDIA 3D engine (`nvgsp_parts/06_nv3d.c`) (v10.81)
+### 10.10.10 NVIDIA 3D engine (`gsp/accel_3d.c`) (v10.81)
 
 Step 21, command `nvgsp 3d`, key T in Gears. Real triangles on the 3D engine (class TURING_A, 0xC597) with a depth buffer. References: Mesa NVK and its compiler NAK, the gallium nouveau driver, NVIDIA's class header `clc597.h` (kept in `third_party/nvidia-classes/`).
 

@@ -251,7 +251,7 @@ The arena is a bump allocator over 16 MiB of identity-mapped memory below 4 GiB,
 
 | Caller | Purpose |
 |---|---|
-| `drivers/net/wifi/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
+| `drivers/net/wifi/rtw88/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
 | `shell/commands.c` (`RXNUM`/`BENUM` rings) | Wi-Fi RX and beacon rings |
 | `drivers/usb/xhci.c` | xHCI scratchpad buffers when a controller needs more than 32 |
 | `drivers/video/nvidia/nvdisp.c` | display push buffer |

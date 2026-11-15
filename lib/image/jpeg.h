@@ -44,7 +44,8 @@ static void jhuff_build(JHuff* h,const u8* bits,const u8* vals){
         else h->maxcode[l]=-1;
         code<<=1;
     }
-    h->nval=k; for(int i=0;i<k;i++)h->val[i]=vals[i];
+    h->nval=k>256?256:k;
+    for(int i=0;i<h->nval;i++)h->val[i]=vals[i];
 }
 static int jhuff_dec(JHuff* h){
     int code=jgetbit(),l=1;
@@ -169,20 +170,20 @@ static void jp_prog_finish(void){
 int jpeg_decode(const u8* buf,int len,u8* rgba,int rgbamax,int* ow,int* oh){
     const u8* p=buf; const u8* end=buf+len;
     if(len<4||jrd16(p)!=0xFFD8)return -1; p+=2;
-    int Hmax=1,Vmax=1,NC=0,W=0,H=0,RI=0;
-    jp_off=0;
+    int Hmax=1,Vmax=1,NC=0,W=0,H=0,RI=0,nscan=0;
+    jp_off=0; JPROG=0;
     while(p+4<=end){
         if(p[0]!=0xFF){ p++; continue; }
         int m=p[1]; p+=2;
         if(m==0xD9)break;
         if(m==0x01||(m>=0xD0&&m<=0xD7))continue;
-        int L=jrd16(p); const u8* seg=p+2; const u8* nx=p+L; p+=L; if(nx>end)return -1;
-        if(m==0xDB){ const u8* q=seg; while(q<nx){ int pq=q[0]>>4,tq=q[0]&15; q++; if(tq>3)return -2;
+        int L=jrd16(p); if(L<2)return -1; const u8* seg=p+2; const u8* nx=p+L; p+=L; if(nx>end)return -1;
+        if(m==0xDB){ const u8* q=seg; while(q<nx){ int pq=q[0]>>4,tq=q[0]&15; q++; if(tq>3)return -2; if(q+(pq?128:64)>nx)return -2;
                 for(int i=0;i<64;i++){ if(pq){ JQt[tq][i]=jrd16(q); q+=2; } else JQt[tq][i]=*q++; } } }
-        else if(m==0xC0||m==0xC1||m==0xC2){ JPROG=(m==0xC2); H=jrd16(seg+1); W=jrd16(seg+3); NC=seg[5]; if(NC<1||NC>4)return -3;
-            const u8* q=seg+6; for(int i=0;i<NC;i++){ JC[i].id=q[0]; JC[i].h=q[1]>>4; JC[i].v=q[1]&15; JC[i].q=q[2]; q+=3;
+        else if(m==0xC0||m==0xC1||m==0xC2){ if(NC||L<8||seg+6+3*seg[5]>nx)return -3; JPROG=(m==0xC2); H=jrd16(seg+1); W=jrd16(seg+3); NC=seg[5]; if(NC<1||NC>4||NC==2)return -3;
+            const u8* q=seg+6; for(int i=0;i<NC;i++){ JC[i].id=q[0]; JC[i].h=q[1]>>4; JC[i].v=q[1]&15; JC[i].q=q[2]&3; q+=3;
                 if(JC[i].h<1)JC[i].h=1; if(JC[i].v<1)JC[i].v=1; if(JC[i].h>Hmax)Hmax=JC[i].h; if(JC[i].v>Vmax)Vmax=JC[i].v; JC[i].plane=0; }
-            if(W<1||H<1||W>4096||H>4096||W*H>JP_MAXPIX)return -11;
+            if(W<1||H<1||W>4096||H>4096||W*H>JP_MAXPIX||W*H*4>rgbamax)return -11;
             if(JPROG){ JNC=NC; JHmaxg=Hmax; JVmaxg=Vmax; int mcuW=8*Hmax,mcuH=8*Vmax; Jmcux=(W+mcuW-1)/mcuW; Jmcuy=(H+mcuH-1)/mcuH;
                 jcoef_off=0; jp_off=0;
                 for(int i=0;i<NC;i++){ JCOEF_bw[i]=Jmcux*JC[i].h; JCOEF_bh[i]=Jmcuy*JC[i].v;
@@ -192,13 +193,14 @@ int jpeg_decode(const u8* buf,int len,u8* rgba,int rgbamax,int* ow,int* oh){
                     for(long z=0;z<(long)JCOEF_bw[i]*JCOEF_bh[i]*64;z++)JCOEF[i][z]=0;
                     JC[i].plane=jp_alloc((u32)JC[i].pw*JC[i].ph); if(!JC[i].plane)return -13; } } }
         else if(m==0xC4){ const u8* q=seg; while(q<nx){ int tc=q[0]>>4,th=q[0]&15; q++; if(th>3)return -4;
-                int tot=0; const u8* bits=q; for(int i=0;i<16;i++)tot+=q[i]; q+=16;
+                if(q+16>nx){ return -4; }
+                int tot=0; const u8* bits=q; for(int i=0;i<16;i++)tot+=q[i]; q+=16; if(tot>256||q+tot>nx)return -4;
                 if(tc) jhuff_build(&JHAC[th],bits,q); else jhuff_build(&JHDC[th],bits,q); q+=tot; } }
         else if(m==0xDD){ RI=jrd16(seg); }
         else if(m==0xDA){
-            int ns=seg[0]; const u8* q=seg+1; int sc[4]={0,0,0,0};
-            for(int i=0;i<ns;i++){ int cid=q[0],tt=q[1]; q+=2; for(int j=0;j<NC;j++) if(JC[j].id==cid){ JC[j].dct=tt>>4; JC[j].act=tt&15; sc[i]=j; } }
-            if(JPROG){ int Ss=q[0],Se=q[1],AhAl=q[2],Ah=AhAl>>4,Al=AhAl&15;
+            int ns=seg[0]; const u8* q=seg+1; int sc[4]={0,0,0,0}; if(!NC||ns<1||ns>4||seg+1+2*ns+3>nx)return -6;
+            for(int i=0;i<ns;i++){ int cid=q[0],tt=q[1]; q+=2; for(int j=0;j<NC;j++) if(JC[j].id==cid){ JC[j].dct=(tt>>4)&3; JC[j].act=tt&3; sc[i]=j; } }
+            if(JPROG){ int Ss=q[0],Se=q[1],AhAl=q[2],Ah=AhAl>>4,Al=AhAl&15; if(Se>63||Ss>Se)return -7; if(++nscan>64)break;
                 JRI=RI; JP=nx; JPE=end; jbr_reset(); jp_eobrun=0; jp_prog_scan(ns,sc,Ss,Se,Ah,Al); p=JP; continue; }
             if((int)(W*H*4)>rgbamax)return -12;
             int mcuW=8*Hmax, mcuH=8*Vmax;

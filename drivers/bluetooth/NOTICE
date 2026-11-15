@@ -1,0 +1,72 @@
+NoovexOS Bluetooth (drivers/bluetooth)
+
+btusb.c, hci.c, hci_parse.h
+  Own code (NoovexOS project, GPLv3 like the rest of the OS). Written from the
+  Bluetooth Core Specification (Vol 4 Part B, USB transport; Vol 4 Part E, HCI).
+
+rtlbt_fw.c, rtlbt_fw.h
+  Port of FreeBSD usr.sbin/bluetooth/rtlbtfw (rtlbt_fw.c, rtlbt_hw.c, main.c).
+  SPDX-License-Identifier: BSD-2-Clause
+  Copyright (c) 2013 Adrian Chadd <adrian@freebsd.org>
+  Copyright (c) 2019 Vladimir Kondratyev <wulf@FreeBSD.org>
+  Copyright (c) 2023 Future Crew LLC.
+  The full BSD-2-Clause text is kept at the top of both files.
+  Cross-checked against Linux drivers/bluetooth/btrtl.c (GPL-2.0-or-later,
+  used as a reference only). One deliberate difference from FreeBSD: a V2
+  security subsection whose key id matches the chip is included in the patch
+  (as Linux btrtl does); FreeBSD stops at it. The config file is appended
+  whenever present (as FreeBSD and Linux do).
+  The chip table (15 entries with the CONFIG / MSFT flags) and the list of 58
+  non-Realtek-vendor USB ids are taken from FreeBSD rtlbt_fw.c / main.c
+  (BSD-2-Clause, fetched from freebsd-src main). Differences: RTLBT_IC_FLAG_SIMPLE
+  is a real bit here (FreeBSD defines it as 0, so its 8723A path never runs):
+  an 8723A file is sent raw, without ROM query or config, and an epatch file is
+  refused for it (as Linux btrtl does). 8821C and 8822C keep the built-in
+  firmware; every other chip loads /lib/firmware/rtl_bt/<name>.
+
+Firmware: assets/firmware/rtl_bt/
+  rtl8821c_fw.bin, rtl8821c_config.bin, rtl8822cu_fw.bin, rtl8761bu_config.bin
+  (rtl8761bu_config.bin is what linux-firmware links rtl_bt/rtl8822cu_config.bin to).
+  From linux-firmware (git.kernel.org/.../firmware/linux-firmware.git, WHENCE
+  entry "Driver: btusb - Bluetooth USB driver").
+  Licence: Redistributable. See LICENCE.rtlwifi_firmware.txt (next to the files).
+  SPDX-License-Identifier: LicenseRef-LICENCE.rtlwifi_firmware.txt
+  The blobs are shipped unmodified.
+
+intelbt_fw.c, intelbt_fw.h
+  Port of FreeBSD usr.sbin/bluetooth/iwmbtfw (iwmbt_fw.c, iwmbt_hw.c, main.c).
+  SPDX-License-Identifier: BSD-2-Clause
+  Copyright (c) 2013 Adrian Chadd <adrian@freebsd.org>
+  Copyright (c) 2019 Vladimir Kondratyev <wulf@FreeBSD.org>
+  Copyright (c) 2023 Future Crew LLC.
+  The full BSD-2-Clause text is kept at the top of both files.
+  Deliberate differences from FreeBSD: TLV entries with a wrong length are
+  rejected instead of assert(); hardware variants 0x15/0x16 are refused (FreeBSD
+  leaves the header length unset); a DDC record is sent whole (length byte plus
+  data, as Linux btintel does); the boot event after Intel Reset is awaited for
+  up to 5 s; secure-send acks are accepted from the bulk or the interrupt pipe.
+  Firmware: not shipped. Loaded at run time from /lib/firmware/intel/
+  (ibt-*.sfi, ibt-*.ddc, ibt-hw-*.bseq) from linux-firmware if the user has it.
+mtkbt_fw.c, mtkbt_fw.h
+  MediaTek MT79xx (MT7921/MT7922/MT7925/MT7902/MT6639) USB Bluetooth firmware
+  download, ported from Linux drivers/bluetooth/btmtk.c and btmtk.h
+  (patch header and section map layout, WMT vendor command 0xFC6F, WMT event
+  poll on the control pipe, section download, endpoint reset option, function
+  on, firmware file naming).
+  SPDX-License-Identifier: ISC
+  Copyright (C) 2021 MediaTek Inc.
+  The full ISC text is kept at the top of both files.
+  The USB id list was taken as facts from Linux drivers/bluetooth/btusb.c.
+  Firmware is not shipped: it is read from /lib/firmware/mediatek/... if present
+  (linux-firmware, LICENCE.mediatek).
+bcmbt_fw.c, bcmbt_fw.h
+  Broadcom BCM20702/BCM43xx USB patchram loader, derived from Linux
+  drivers/bluetooth/btbcm.c (SPDX line verified on the fetched file).
+  SPDX-License-Identifier: GPL-2.0-or-later
+  Copyright (C) 2015  Intel Corporation
+  The Broadcom USB ID/vendor list (vendor-specific 0xFF/0x01/0x01 interfaces)
+  follows the facts in Linux drivers/bluetooth/btusb.c (GPL-2.0-or-later).
+  Firmware: NOT shipped. Broadcom .hcd patch files are not in linux-firmware
+  and are not redistributable; they are read at run time from
+  /lib/firmware/brcm/<chip>-<vid>-<pid>.hcd, BCM-<vid>-<pid>.hcd or <chip>.hcd
+  when present. Without them the controller keeps running its ROM firmware.

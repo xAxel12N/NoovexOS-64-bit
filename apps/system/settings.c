@@ -49,5 +49,5 @@ static int g_st_appscroll;
 const char *THN[NWALL]={"Porsche","Crane","Wireframe","Peaks","Earth","Yosemite"};
 u32 wall_thumb[NWALL][64*40]; int wall_thumb_ready=0; 
 
-#include "apps/system/settings_parts/01_nvx_settings_save.c"
-#include "apps/system/settings_parts/02_settings_wheel.c"
+#include "apps/system/settings/storage_and_layout.c"
+#include "apps/system/settings/pages.c"

@@ -7,6 +7,10 @@
 #define AHCI_CT  DMW(0x182000u)
 
 static volatile u32* ahci_abar=0; static volatile u32* ahci_port=0; int ahci_ok=0; u32 ahci_sectors=0;
+static void ahci_port_stop(volatile u32* P); static void ahci_port_start(volatile u32* P);
+static int ahci_fail(volatile u32* P){ ahci_port_stop(P); if(P[0x18/4]&((1u<<15)|(1u<<14))){ if(P==ahci_port){ ahci_ok=0; ahci_port=0; } return -1; } P[0x30/4]=0xFFFFFFFFu; P[0x10/4]=0xFFFFFFFFu;
+    if(P[0x20/4]&(0x80|0x08)){ u32 sc=P[0x2C/4]&~0xFu; P[0x2C/4]=sc|1u; for(int t=0;t<20000;t++)(void)P[0x28/4]; P[0x2C/4]=sc; for(int t=0;t<2000000&&(P[0x28/4]&0xF)!=3;t++){} for(int t=0;t<2000000&&(P[0x20/4]&0x88);t++){} P[0x30/4]=0xFFFFFFFFu; }
+    ahci_port_start(P); return -1; }
 int ahci_cmd(u32 lba,u32 count,u32 buf,int write,int atacmd){
     if(!ahci_port)return -1; volatile u32* P=ahci_port;
     P[0x10/4]=0xFFFFFFFFu;                                 /* clear PxIS */
@@ -22,8 +26,8 @@ int ahci_cmd(u32 lba,u32 count,u32 buf,int write,int atacmd){
     fis[12]=(u8)(count&0xFF); fis[13]=(u8)((count>>8)&0xFF);
     for(int t=0;t<2000000;t++){ if(!(P[0x20/4]&(0x80|0x08)))break; }   /* wait BSY|DRQ clear */
     P[0x38/4]=1;                                                        /* issue slot 0 (PxCI) */
-    { int ok=0; for(int t=0;t<20000000;t++){ if(!(P[0x38/4]&1)){ ok=1; break; } if(P[0x10/4]&(1u<<30))return -1; } if(!ok)return -1; }
-    if(P[0x20/4]&0x01)return -1;
+    { int ok=0; for(int t=0;t<20000000;t++){ if(!(P[0x38/4]&1)){ ok=1; break; } if(P[0x10/4]&(1u<<30))return ahci_fail(P); } if(!ok)return ahci_fail(P); }
+    if(P[0x20/4]&0x01)return ahci_fail(P);
     return 0;
 }
 u32 ahci_ports_list(u32* sig_ok){ if(!ahci_abar)return 0; u32 pi=ahci_abar[0x0C/4], m=0; for(int p=0;p<32;p++){ if(!(pi&(1u<<p)))continue; volatile u32* P=(volatile u32*)((u64)ahci_abar+0x100+(u32)p*0x80); if((P[0x28/4]&0x0F)!=3)continue; u32 sig=P[0x24/4]; if(sig!=0x00000101&&sig!=0)continue; m|=1u<<p; } if(sig_ok)*sig_ok=m; return m; }
@@ -37,8 +41,8 @@ static int ahci_cmd48(u64 lba,u32 count,int atacmd){
     volatile u32* prdt=(volatile u32*)(u64)(AHCI_CT+0x80); prdt[0]=AHCI_BUF; prdt[1]=0; prdt[2]=0; prdt[3]=(count?count*512u:512u)-1u;
     ct[0]=0x27; ct[1]=0x80; ct[2]=(u8)atacmd; ct[4]=(u8)lba; ct[5]=(u8)(lba>>8); ct[6]=(u8)(lba>>16); ct[7]=0x40; ct[8]=(u8)(lba>>24); ct[9]=(u8)(lba>>32); ct[10]=(u8)(lba>>40); ct[12]=(u8)count; ct[13]=(u8)(count>>8);
     for(int t=0;t<2000000;t++){ if(!(P[0x20/4]&(0x80|0x08)))break; }
-    P[0x38/4]=1; { int ok=0; for(int t=0;t<20000000;t++){ if(!(P[0x38/4]&1)){ ok=1; break; } if(P[0x10/4]&(1u<<30))return -1; } if(!ok)return -1; }
-    return (P[0x20/4]&1)?-1:0; }
+    P[0x38/4]=1; { int ok=0; for(int t=0;t<20000000;t++){ if(!(P[0x38/4]&1)){ ok=1; break; } if(P[0x10/4]&(1u<<30))return ahci_fail(P); } if(!ok)return ahci_fail(P); }
+    return (P[0x20/4]&1)?ahci_fail(P):0; }
 int ahci_port_io(int port,u64 lba,u8* out,u64* sectors){
     if(!ahci_abar||port<0||port>31)return -1; volatile u32* old=ahci_port; volatile u32* P=(volatile u32*)((u64)ahci_abar+0x100+(u32)port*0x80);
     int sw=(P!=old); if(sw){ if(old)ahci_port_stop(old); ahci_port_stop(P); ahci_port_start(P); ahci_port=P; }
@@ -96,3 +100,11 @@ int ahci_select(int k){
     if(!ahci_abar||k<0||k>=ahci_pn)return -1; volatile u32* P=(volatile u32*)((u64)ahci_abar+0x100+(u32)ahci_pl[k]*0x80);
     if(P!=ahci_port){ if(ahci_port)ahci_port_stop(ahci_port); ahci_port_stop(P); ahci_port_start(P); ahci_port=P; }
     ahci_sectors=ahci_ps[k]; ahci_ok=1; return 0; }
+int ahci_shutdown_all(int standby){
+    if(!ahci_abar||!ahci_pn)return 0; int bad=0, cur=-1, wasok=ahci_ok;
+    for(int k=0;k<ahci_pn;k++) if(ahci_port==(volatile u32*)((u64)ahci_abar+0x100+(u32)ahci_pl[k]*0x80))cur=k;
+    for(int k=0;k<ahci_pn;k++){ if(ahci_select(k))continue;
+        if(ahci_cmd(0,0,AHCI_BUF,0,0xEA)){ bad++; continue; }
+        if(standby&&ahci_cmd(0,0,AHCI_BUF,0,0xE0))bad++; }
+    if(standby)ahci_ok=0; else if(cur>=0){ ahci_select(cur); ahci_ok=wasok; }
+    return bad; }

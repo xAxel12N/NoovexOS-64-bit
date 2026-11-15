@@ -36,3 +36,33 @@ void pci_quiesce(void){ g_pci_quiesced=0;
             if(!stop)continue;
             u32 cmd=pci_cfg(bus,slot,fn,0x04); if(!(cmd&0x04))continue;
             pci_cfgw(bus,slot,fn,0x04,(cmd&0xFFFFu)&~0x04u); g_pci_quiesced++; } } }
+int pci_find_cap(int bus,int slot,int fn,int id){
+    if(!(pci_cfg(bus,slot,fn,0x04)&(1u<<20)))return 0;
+    int p=(int)(pci_cfg(bus,slot,fn,0x34)&0xFC);
+    for(int g=0;p>=0x40&&g<48;g++){ u32 v=pci_cfg(bus,slot,fn,p); if((int)(v&0xFF)==id)return p; p=(int)((v>>8)&0xFC); }
+    return 0;
+}
+int pci_parent_bridge(int bus,int* ob,int* os,int* of){
+    if(bus<=0)return 0;
+    for(int b=0;b<bus;b++) for(int s=0;s<32;s++){
+        u32 id0=pci_cfg(b,s,0,0); if((id0&0xFFFF)==0xFFFF)continue;
+        int nf=(pci_cfg(b,s,0,0x0C)&0x800000)?8:1;
+        for(int f=0;f<nf;f++){ u32 id=pci_cfg(b,s,f,0); if((id&0xFFFF)==0xFFFF)continue;
+            if(((pci_cfg(b,s,f,0x0C)>>16)&0x7F)!=1)continue;
+            u32 br=pci_cfg(b,s,f,0x18); int sec=(int)((br>>8)&0xFF);
+            if(sec==bus){ if(ob)*ob=b; if(os)*os=s; if(of)*of=f; return 1; } } }
+    return 0;
+}
+int pci_enable_upstream(int bus){
+    int n=0;
+    for(int g=0;g<8&&bus>0;g++){ int b,s,f; if(!pci_parent_bridge(bus,&b,&s,&f))break;
+        u32 c=pci_cfg(b,s,f,0x04)&0xFFFFu; if((c&0x06u)!=0x06u){ pci_cfgw(b,s,f,0x04,c|0x06u); n++; }
+        bus=b; }
+    return n;
+}
+int pci_aspm_off(int bus,int slot,int fn){
+    int p=pci_find_cap(bus,slot,fn,0x10); if(!p)return -1;
+    u32 v=pci_cfg(bus,slot,fn,p+0x10); u32 lc=v&0xFFFFu;
+    if(lc&3u){ pci_cfgw(bus,slot,fn,p+0x10,lc&~3u); return 1; }
+    return 0;
+}

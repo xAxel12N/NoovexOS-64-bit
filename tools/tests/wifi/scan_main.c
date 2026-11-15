@@ -1,4 +1,4 @@
-static u8 buf[2048]; static int fl;
+static u8 buf[8192]; static int fl;
 static void hdr(int plen){ u32 w0=(u32)plen; *(u32*)buf=w0; }
 static void beacon(const u8* bssid,const u8* ies,int il){ u8* f=buf+24; memset(f,0,24); f[0]=0x80; memcpy(f+16,bssid,6); memcpy(f+10,bssid,6); u8* b=f+24; memset(b,0,12); b[10]=0x11; memcpy(b+12,ies,il); hdr(24+12+il+4); }
 int main(){ int bad=0;

@@ -77,6 +77,7 @@ void xdisp_draw(int i){
         dstr(ax+20,ay+68,"Then run X programs with DISPLAY=127.0.0.1:0, for example:  xdemo &",rgb(160,170,190),1); return; }
     xd_blit(i); }
 int xdisp_fast(void){
+    { extern int g_drag_settle; if(g_drag_settle) return 0; }
     if(!WN[W_XDISP].open||WN[W_XDISP].min||!g_xfb_live)return 0;
     if(g_ticks-g_xd_last<5)return 0; g_xd_last=g_ticks;
     int dv=xfb_collect(); if(dv==0)return 0;

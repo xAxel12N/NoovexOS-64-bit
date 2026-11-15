@@ -31,8 +31,11 @@ for m in $MODS; do o=$B/mod_$(basename $m .c).o; gcc $CFLAGS -c $m -o $o || { ec
 echo "[3a] compile Rune graphics module (lang/rune/rune_gfx.rn) with the Rune compiler"
 tools/rune build lang/rune/rune_gfx.rn --freestanding --target=x86_64-none -o $B/rune_gfx.o >/dev/null 2>&1 || { echo "RUNE BUILD FAILED"; exit 1; }
 
-echo "[3a2] embed RTL8821CE firmware blob"
+echo "[3a2] embed RTL8821CE + RTL8822BE + RTL8822CE firmware blobs"
 ( cd assets/firmware && ld -r -b binary -o ../../$B/rtw_fw.o rtw8821c_fw.bin )
+( cd assets/firmware && ld -r -b binary -o ../../$B/rtw8822b_fw.o rtw8822b_fw.bin )
+( cd assets/firmware && ld -r -b binary -o ../../$B/rtw8822c_fw.o rtw8822c_fw.bin )
+( cd assets/firmware/rtl_bt && ld -r -b binary -o ../../../$B/rtlbt_fw.o rtl8821c_fw.bin rtl8821c_config.bin rtl8822cu_fw.bin rtl8761bu_config.bin )
 ( cd assets && ld -r -b binary -o ../$B/doom_wad.o doom1.wad.xz )
 ( cd assets && ld -r -b binary -o ../$B/wpf_data.o wpf_data.bin )
 ( cd assets && ld -r -b binary -o ../$B/emoji_data.o emoji32.bin )
@@ -147,16 +150,27 @@ $MCC -O2 -Wall -Wno-unused-result -I$BR/inc -Iusr/musl -o $P/fetch usr/musl/fetc
 port kilo $MCC -O2 -w -std=c99 -D_DEFAULT_SOURCE -D_BSD_SOURCE -o $P/kilo $TP/kilo/kilo.c
 QJS=$TP/quickjs
 port qjs $MCC -O2 -w -D_GNU_SOURCE -I$QJS -o $P/qjs $QJS/qjs.c $QJS/quickjs.c $QJS/libregexp.c $QJS/libunicode.c $QJS/dtoa.c $QJS/quickjs-libc.c $QJS/gen/repl.c $QJS/gen/standalone.c -lm
-FF=$TP/ffmpeg; FB=$B/ffmpeg
-if [ ! -f $FB/inst/lib/libavcodec.a ]; then
-  echo "  [ffmpeg] configuring and building libavcodec/libavformat/libswscale/libswresample (once, cached in build/ffmpeg)"
-  mkdir -p $FB && FFS=$(pwd)/$FF && ( cd $FB && $FFS/configure --prefix=$(pwd)/inst --enable-cross-compile --arch=x86_64 --target-os=linux --cc=$MCC --ar=ar --ranlib=ranlib --nm=nm --strip=strip \
+FF=$TP/ffmpeg; FB=$B/ffmpeg; DVB=$FB/dav1d
+FFDEMUX=mov,mp3,aac,matroska,ogg,wav,flac
+FFDEC=h264,hevc,aac,aac_latm,mp3float,vorbis,opus,pcm_s16le,vp8,vp9,flac,alac,pcm_s24le,pcm_s32le,pcm_f32le,libdav1d
+FFPARSE=h264,hevc,aac,mpegaudio,vp9,opus,vorbis,flac,av1
+FFSTAMP="$FFDEMUX $FFDEC $FFPARSE"
+if [ ! -f $FB/inst/lib/libavcodec.a ] || [ ! -f $DVB/lib/libdav1d.a ] || [ "$(cat $FB/flags.stamp 2>/dev/null)" != "$FFSTAMP" ]; then
+  echo "  [ffmpeg] building libdav1d (third_party/dav1d, C only) and libavcodec/libavformat/libswscale/libswresample (once, cached in build/ffmpeg)"
+  rm -rf $FB $P/play; mkdir -p $DVB/o $DVB/lib/pkgconfig $DVB/include/dav1d && cp $TP/dav1d/include/dav1d/*.h $DVB/include/dav1d/
+  DVM="-Ithird_party/dav1d -Ithird_party/dav1d/include -Ithird_party/dav1d/include/dav1d -include third_party/dav1d/config.h"
+  for f in cdf cpu ctx data decode dequant_tables getbits intra_edge itx_1d lf_mask lib log mem msac obu pal picture qm ref refmvs scan tables thread_task warpmv wedge; do $MCC -O2 -w -fPIC $DVM -c $TP/dav1d/src/$f.c -o $DVB/o/$f.o || { echo "DAV1D BUILD FAILED: $f"; exit 1; }; done
+  for b in 8 16; do for f in cdef_apply_tmpl cdef_tmpl fg_apply_tmpl filmgrain_tmpl ipred_prepare_tmpl ipred_tmpl itx_tmpl lf_apply_tmpl loopfilter_tmpl looprestoration_tmpl lr_apply_tmpl mc_tmpl recon_tmpl; do $MCC -O2 -w -fPIC $DVM -DBITDEPTH=$b -c $TP/dav1d/src/$f.c -o $DVB/o/${f}_$b.o || { echo "DAV1D BUILD FAILED: $f $b"; exit 1; }; done; done
+  ar rcs $DVB/lib/libdav1d.a $DVB/o/*.o
+  printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: libdav1d\nDescription: AV1 decoder (vendored, C only)\nVersion: 1.5.0\nLibs: -L${libdir} -ldav1d\nLibs.private: -lpthread -lm\nCflags: -I${includedir}\n' $(pwd)/$DVB > $DVB/lib/pkgconfig/dav1d.pc
+  FFS=$(pwd)/$FF && ( cd $FB && PKG_CONFIG_PATH=$(pwd)/dav1d/lib/pkgconfig $FFS/configure --prefix=$(pwd)/inst --enable-cross-compile --arch=x86_64 --target-os=linux --cc=$MCC --ar=ar --ranlib=ranlib --nm=nm --strip=strip --pkg-config=pkg-config --pkg-config-flags=--static \
     --disable-everything --disable-autodetect --disable-programs --disable-doc --disable-avdevice --disable-avfilter --disable-network --disable-debug \
-    --enable-static --disable-shared --enable-pic --enable-pthreads --enable-x86asm --enable-swscale --enable-swresample \
-    --enable-demuxer=mov,mp3,aac,matroska,ogg,wav --enable-decoder=h264,hevc,aac,aac_latm,mp3float,vorbis,opus,pcm_s16le,vp8,vp9 \
-    --enable-parser=h264,hevc,aac,mpegaudio,vp9,opus,vorbis --enable-protocol=file --extra-cflags=-O2 > configure.log 2>&1 && make -j$(nproc) > make.log 2>&1 && make install > install.log 2>&1 ) || { echo "FFMPEG BUILD FAILED (see build/ffmpeg/*.log)"; exit 1; }
+    --enable-static --disable-shared --enable-pic --enable-pthreads --enable-x86asm --enable-swscale --enable-swresample --enable-libdav1d \
+    --enable-demuxer=$FFDEMUX --enable-decoder=$FFDEC \
+    --enable-parser=$FFPARSE --enable-protocol=file --extra-cflags=-O2 > configure.log 2>&1 && make -j$(nproc) > make.log 2>&1 && make install > install.log 2>&1 ) || { echo "FFMPEG BUILD FAILED (see build/ffmpeg/*.log)"; exit 1; }
+  echo "$FFSTAMP" > $FB/flags.stamp
 fi
-port play $MCC -O2 -Wall -Wno-unused-result -I$FB/inst/include -I$BR/inc -Iusr/musl -o $P/play usr/musl/play.c usr/musl/httpio.c usr/musl/nvxtls.c $BL/libbearssl.a -L$FB/inst/lib -lavformat -lavcodec -lswscale -lswresample -lavutil
+port play $MCC -O2 -Wall -Wno-unused-result -I$FB/inst/include -I$BR/inc -Iusr/musl -o $P/play usr/musl/play.c usr/musl/httpio.c usr/musl/nvxtls.c $BL/libbearssl.a -L$FB/inst/lib -lavformat -lavcodec -lswscale -lswresample -lavutil -L$DVB/lib -ldav1d -lpthread -lm
 for n in sqlite3 gzip bzip2 xz zstd kilo fetch qjs play; do
   cp $P/$n $B/user/$n.elf
   embz user_${n}_bin.o $n
@@ -166,7 +180,7 @@ done
 echo "[web] build the Noovex web engine (HTML, CSS, layout, paint) with QuickJS and musl libm (SSE, own heap)"
 QJ=third_party/quickjs; MSRC=third_party/musl; WB=$B/web; mkdir -p $WB/m
 WEBF="-m64 -O2 -ffreestanding -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone -mcmodel=small -msse -msse2 -mfpmath=sse -w -nostdinc -isystem $M/include -isystem $(gcc -print-file-name=include) -DNDEBUG -D_GNU_SOURCE -I. -I$QJ"
-python3 tools/js2c.py web/prelude.js web/prelude_gen.c nwe_prelude || exit 1
+python3 tools/js2c.py web/js/prelude.js web/js/prelude_gen.c nwe_prelude || exit 1
 for f in quickjs libregexp libunicode dtoa; do { [ -f $WB/q_$f.o ] && [ $WB/q_$f.o -nt $QJ/$f.c ] && [ $WB/q_$f.o -nt $QJ/quickjs.h ]; } || gcc $WEBF -c $QJ/$f.c -o $WB/q_$f.o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
 if [ ! -f $WB/libmk.a ]; then
   MF="-m64 -O2 -ffreestanding -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables -mno-red-zone -mcmodel=small -msse -msse2 -mfpmath=sse -w -nostdinc -std=c99 -D_XOPEN_SOURCE=700 -I$MSRC/arch/x86_64 -I$MSRC/arch/generic -I$B/musl-obj/obj/src/internal -I$MSRC/src/include -I$MSRC/src/internal -I$B/musl-obj/obj/include -I$MSRC/include -isystem $(gcc -print-file-name=include)"
@@ -176,12 +190,12 @@ fi
 DVF="-Ithird_party/dav1d -Ithird_party/dav1d/include -Ithird_party/dav1d/include/dav1d -include third_party/dav1d/config.h"
 for f in cdf cpu ctx data decode dequant_tables getbits intra_edge itx_1d lf_mask lib log mem msac obu pal picture qm ref refmvs scan tables thread_task warpmv wedge; do [ -f $WB/w_dv_$f.o ] && [ $WB/w_dv_$f.o -nt third_party/dav1d/src/$f.c ] || gcc $WEBF $DVF -c third_party/dav1d/src/$f.c -o $WB/w_dv_$f.o || { echo "WEB BUILD FAILED: dav1d $f"; exit 1; }; done
 for b in 8 16; do for f in cdef_apply_tmpl cdef_tmpl fg_apply_tmpl filmgrain_tmpl ipred_prepare_tmpl ipred_tmpl itx_tmpl lf_apply_tmpl loopfilter_tmpl looprestoration_tmpl lr_apply_tmpl mc_tmpl recon_tmpl; do [ -f $WB/w_dv_${f}_$b.o ] && [ $WB/w_dv_${f}_$b.o -nt third_party/dav1d/src/$f.c ] || gcc $WEBF $DVF -DBITDEPTH=$b -c third_party/dav1d/src/$f.c -o $WB/w_dv_${f}_$b.o || { echo "WEB BUILD FAILED: dav1d $f $b"; exit 1; }; done; done
-for f in krt util font fontdata dom cssparse cssstyle layout layout2 paint svg canvas webgl js engine wmedia anim imgx webfont ttf woff2 brotli brotli_tab prelude_gen; do gcc $WEBF -c web/$f.c -o $WB/w_$f.o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
+for f in core/krt core/util text/font text/fontdata html/dom css/cssparse css/cssstyle layout/layout layout/layout2 paint/paint paint/svg paint/canvas paint/webgl js/js core/engine media/wmedia css/anim image/imgx text/webfont text/ttf text/woff2 codec/brotli codec/brotli_tab js/prelude_gen; do gcc $WEBF -c web/$f.c -o $WB/w_$(basename $f).o || { echo "WEB BUILD FAILED: $f"; exit 1; }; done
 W3F="-DM3_THREAD_LOCAL= -Dd_m3HasPosixHost=0 -Dd_m3HasTypedRefs=0 -Dd_m3HasStackSwitching=0 -Dd_m3HasSnapshots=0 -Dd_m3HasGasMetering=0 -Dd_m3MaxNativeStack=1572864 -Dd_m3LogOutput=0 -Dd_m3HasThreads=0"
-for f in third_party/wasm3/m3_*.c web/wasm.c; do b=$(basename $f .c); gcc $WEBF $W3F -c $f -o $WB/w_x$b.o || { echo "WEB BUILD FAILED: $b"; exit 1; }; done
+for f in third_party/wasm3/m3_*.c web/js/wasm.c; do b=$(basename $f .c); gcc $WEBF $W3F -c $f -o $WB/w_x$b.o || { echo "WEB BUILD FAILED: $b"; exit 1; }; done
 RSLIB=""; rm -f $WB/w_rust_stub.o
 if command -v cargo >/dev/null 2>&1 && sh tools/build_rust.sh $B/rust > $B/rust.log 2>&1; then RSLIB=$B/rust/release/libnvxlayout.a; echo "  rust: nvxlayout (Taffy grid layout) $(stat -c %s $RSLIB) bytes"
-else gcc $WEBF -c web/rust_stub.c -o $WB/w_rust_stub.o || exit 1; echo "  rust: cargo not found or build failed (see build/rust.log), grid layout uses the C code"; fi
+else gcc $WEBF -c web/core/rust_stub.c -o $WB/w_rust_stub.o || exit 1; echo "  rust: cargo not found or build failed (see build/rust.log), grid layout uses the C code"; fi
 ld -r -o $B/web_pre.o $WB/w_*.o $WB/q_*.o $RSLIB $WB/libmk.a || exit 1
 objcopy --keep-global-symbol=nwe_entry --keep-global-symbol=nwe_fail $B/web_pre.o $B/web_all.o || exit 1
 for K in 2 3 4 5 6; do
@@ -192,9 +206,9 @@ for K in 2 3 4 5 6; do
   rm -f $B/web${K}_pre.o
 done
 echo "  web engine: $(stat -c %s $B/web_all.o) bytes, needs from kernel: $(nm -u $B/web_all.o | awk '{print $2}' | tr '\n' ' ')"
-python3 tools/js2c.py web/wk_prelude.js web/wk_prelude_gen.c nwe_wkprelude || exit 1
-gcc $WEBF -c web/wk.c -o $WB/k_wk.o || { echo "WEB BUILD FAILED: wk"; exit 1; }
-gcc $WEBF -c web/wk_prelude_gen.c -o $WB/k_wkp.o || exit 1
+python3 tools/js2c.py web/worker/wk_prelude.js web/worker/wk_prelude_gen.c nwe_wkprelude || exit 1
+gcc $WEBF -c web/worker/wk.c -o $WB/k_wk.o || { echo "WEB BUILD FAILED: wk"; exit 1; }
+gcc $WEBF -c web/worker/wk_prelude_gen.c -o $WB/k_wkp.o || exit 1
 ld -r -o $B/wkx_pre.o $WB/k_wk.o $WB/k_wkp.o $WB/q_*.o $WB/w_krt.o $WB/libmk.a || exit 1
 objcopy --redefine-sym nwk_alloc_arena=wk_k_arena --redefine-sym nwk_log=wk_k_log $B/wkx_pre.o $B/wkx_pre2.o || exit 1
 objcopy --keep-global-symbol=wkx_entry --keep-global-symbol=wkx_fail $B/wkx_pre2.o $B/wkx_all.o || exit 1
@@ -239,6 +253,7 @@ if [ -f $B/glibc-root/lib64/libc.so.6 ]; then
   else echo "  (mlibc build failed - sysroot without mlibc)"; fi
   [ -n "$NVX_SR_EXTRA" ] && [ -d "$NVX_SR_EXTRA" ] && cp -a "$NVX_SR_EXTRA"/. $SR/
   mkdir -p $SR/usr/bin $SR/usr/share/X11 $SR/usr/lib/xorg
+  if [ -d /usr/share/terminfo ]; then mkdir -p $SR/usr/share/terminfo && cp -rL /usr/share/terminfo/. $SR/usr/share/terminfo/; for t in /lib/terminfo /usr/lib/terminfo; do [ -d $t ] && cp -rL $t/. $SR/usr/share/terminfo/; done; mkdir -p $SR/etc && rm -rf $SR/etc/terminfo && ln -sfn /usr/share/terminfo $SR/etc/terminfo; fi
   for x in Xvfb xkbcomp; do cp -L /usr/bin/$x $SR/usr/bin/ && strip $SR/usr/bin/$x 2>/dev/null; done
   gcc -O2 -o $SR/usr/bin/xdemo usr/x11/xdemo.c -lX11 -lm && strip $SR/usr/bin/xdemo
   gcc -O2 -o $SR/usr/bin/nvx-xinput usr/x11/nvx-xinput.c -lX11 /usr/lib/x86_64-linux-gnu/libXtst.so.6 /usr/lib/x86_64-linux-gnu/libXfixes.so.3 && strip $SR/usr/bin/nvx-xinput
@@ -286,11 +301,14 @@ if sh tools/stage_libreoffice.sh $B/apps-stage $SR; then cp -a $B/apps-stage/. $
 rm -rf $B/apps-stage
 mkdir -p $SR/usr/lib/noovex && cp $B/install.nvx $SR/usr/lib/noovex/install.nvx
 rm -rf $B/packs; mkdir -p $B/packs; for d in $B/packs-root/*/; do [ -d "$d" ] || continue; n=$(basename $d); M=$SR/usr/share/noovex/packs/$n; [ -f $M ] || continue; F=$B/packs/$(echo $n | tr a-z A-Z).NVS; NVX_SR_ALLZSTD=1 python3 tools/mksysroot.py $F =$d >/dev/null || continue; head -1 $M > $M.t; python3 -c "import zlib,sys,os; d=open(sys.argv[1],'rb').read(); print(len(d), '%08X' % (zlib.crc32(d)&0xffffffff))" $F >> $M.t; mv $M.t $M; echo "  pack $n: $(tail -1 $M) (/PACKS on the boot disk, loaded on first start)"; done
+mkdir -p $SR/usr/share/licenses/firmware && cp assets/nvidia/LICENCE.nvidia assets/firmware/LICENCE.rtlwifi_firmware.txt $SR/usr/share/licenses/firmware/ && cp assets/nvidia/README.txt $SR/usr/share/licenses/firmware/README.nvidia.txt && cp assets/firmware/README.txt $SR/usr/share/licenses/firmware/README.realtek.txt
+mkdir -p $SR/usr/share/licenses/bluetooth && cp drivers/bluetooth/NOTICE $SR/usr/share/licenses/bluetooth/NOTICE && sed -n '1,29p' drivers/bluetooth/rtlbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.rtlbtfw-BSD-2-Clause && cp assets/firmware/rtl_bt/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.rtl_bt.txt && sed -n '1,18p' drivers/bluetooth/mtkbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.btmtk-ISC && sed -n '1,29p' drivers/bluetooth/intelbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.iwmbtfw-BSD-2-Clause
+LF=assets/firmware/linux-firmware; mkdir -p $SR/lib/firmware && for d in intel mediatek rtl_bt; do cp -a $LF/$d $SR/lib/firmware/; done && while read l t; do [ -n "$l" ] && mkdir -p $SR/lib/firmware/$(dirname $l) && ln -sfn $t $SR/lib/firmware/$l; done < $LF/links.txt && cp $LF/LICENSES/LICENCE.* $SR/usr/share/licenses/firmware/ && cp $LF/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.linux-firmware.txt && echo "  linux-firmware: $(find $SR/lib/firmware -type f | wc -l) files, $(du -sb $SR/lib/firmware | cut -f1) bytes in /lib/firmware" || { echo "FIRMWARE STAGING FAILED"; exit 1; }
 python3 tools/mksysroot.py $B/sysroot.bin =$SR
 
 echo "[4/6] link (elf_x86_64, base 0x100000)"
 OBJS="boot64.o isr64.o userspace.o ap_trampoline.o"
-BLOBS="rune_gfx.o rtw_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_abi2test_bin.o user_schedtest_bin.o user_sysfstest_bin.o user_swaptest_bin.o user_abi3test_bin.o user_contest_bin.o user_container_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
+BLOBS="rune_gfx.o rtw_fw.o rtw8822b_fw.o rtw8822c_fw.o rtlbt_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_abi2test_bin.o user_schedtest_bin.o user_sysfstest_bin.o user_swaptest_bin.o user_abi3test_bin.o user_contest_bin.o user_container_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
 ld -m elf_x86_64 -nostdlib -no-pie -z noexecstack -T arch/x86_64/kernel64.ld \
    -o $B/kernel64.elf $(for o in $OBJS; do printf '%s ' $B/$o; done) $UNITOBJS $MODOBJS $NTFSOBJ $(for o in $BLOBS; do printf '%s ' $B/$o; done)
 

@@ -7,10 +7,12 @@
 #include "include/nvx/drivers/net/wifi/rtw_efuse.h"
 #include "include/nvx/drivers/net/wifi/rtw8821ce.h"
 #include "include/nvx/net/wifi/wifi_netdev.h"
+#include "include/nvx/net/wifi/wifi_hw.h"
+#include "include/nvx/net/wifi/wifi_ampdu.h"
 static u8  g_wnd_mac[6], g_wnd_bssid[6];
 int g_wnd_up=0; static int g_wnd_qos=0;
 static u64 g_wnd_tx_pn=1;
-static u64 g_wnd_rx_pn_uni[17], g_wnd_rx_pn_grp=0;
+static u64 g_wnd_rx_pn_uni[17], g_wnd_rx_pn_grp[4];
 extern volatile u64 g_ticks;
 u64 g_wnd_beacon_t=0; int g_wnd_lost=0, g_wnd_beacons=0; u32 g_wnd_bcn_int=100;
 int wpa_rx_eapol(const u8* eap,int el); int wpa_rx_eapol_p(const u8* eap,int el,int prot);
@@ -20,15 +22,17 @@ static u32 g_wnd_mmio=0; int g_wnd_open=0; void (*g_wnd_pre_tx)(void)=0;
 static int g_wnd_txfail=0;
 u32 g_wnd_rx_frames=0, g_wnd_rx_drop=0, g_wnd_tx_frames=0;
 
+static u64 g_wnd_mpn=0;
 void wnd_setup(u32 m,const u8* bssid,const u8* mac,const u8* tk,int qos){
+    g_wnd_mpn=0;
     g_wnd_mmio=m; for(int i=0;i<6;i++){ g_wnd_bssid[i]=bssid[i]; g_wnd_mac[i]=mac[i]; }
     for(int i=0;i<16;i++)g_wnd_tk[i]=tk[i];
-    g_wnd_tx_pn=1; for(int i=0;i<17;i++)g_wnd_rx_pn_uni[i]=0; g_wnd_rx_pn_grp=0; g_wnd_qos=qos; g_wnd_up=1; g_wnd_txfail=0; g_wnd_lost=0; g_wnd_beacon_t=g_ticks; g_wnd_beacons=0;
-    g_wnd_rx_frames=g_wnd_rx_drop=g_wnd_tx_frames=0; g_wnd_open=0;
+    g_wnd_tx_pn=1; for(int i=0;i<17;i++)g_wnd_rx_pn_uni[i]=0; for(int i=0;i<4;i++)g_wnd_rx_pn_grp[i]=0; g_wnd_qos=qos; g_wnd_up=1; g_wnd_txfail=0; g_wnd_lost=0; g_wnd_beacon_t=g_ticks; g_wnd_beacons=0;
+    g_wnd_rx_frames=g_wnd_rx_drop=g_wnd_tx_frames=0; g_wnd_open=0; ampdu_reset();
 }
 void wnd_setup_open(u32 m,const u8* bssid,const u8* mac,int qos){ u8 z[16]={0}; wnd_setup(m,bssid,mac,z,qos); g_wnd_open=1; }
-void wnd_set_gtk(const u8* gtk,int keyid){ int same=g_wnd_have_gtk&&g_wnd_gtk_id==keyid; for(int i=0;i<16;i++){ if(g_wnd_gtk[i]!=gtk[i])same=0; g_wnd_gtk[i]=gtk[i]; } g_wnd_gtk_id=keyid; g_wnd_have_gtk=1; if(!same)g_wnd_rx_pn_grp=0; }
-void wnd_down(void){ g_wnd_up=0; g_wnd_have_gtk=0; }
+void wnd_set_gtk(const u8* gtk,int keyid){ int same=g_wnd_have_gtk&&g_wnd_gtk_id==keyid; for(int i=0;i<16;i++){ if(g_wnd_gtk[i]!=gtk[i])same=0; g_wnd_gtk[i]=gtk[i]; } g_wnd_gtk_id=keyid; g_wnd_have_gtk=1; if(!same)g_wnd_rx_pn_grp[keyid&3]=0; }
+void wnd_down(void){ g_wnd_up=0; g_wnd_have_gtk=0; ampdu_reset(); }
 int wnd_is_up(void){ return g_wnd_up; }
 const u8* wnd_bssid(void){ return g_wnd_bssid; }
 
@@ -46,11 +50,12 @@ u32 g_wnd_dead=0, g_wnd_txfull=0;
 static int wnd_tx_eth(const u8* eth,int len){
     if(!g_wnd_up||len<14||len>1514) return -1;
     if(g_wnd_pre_tx)g_wnd_pre_tx();
-    if(!g_benum)return -1;
-    { u32 raw=rtw_r32(g_wnd_mmio,0x03A8); if(raw==0xFFFFFFFFu){ g_wnd_dead++; return -1; }
+    int gen=!g_wnd_mmio&&wifi_hw_generic();
+    if(!gen&&!g_benum)return -1;
+    if(!gen){ u32 raw=rtw_r32(g_wnd_mmio,0x03A8); if(raw==0xFFFFFFFFu){ g_wnd_dead++; return -1; }
       u32 nx=(g_beidx+1u)%g_benum; int full=1; for(int w=0;w<200;w++){ u32 hr=((rtw_r32(g_wnd_mmio,0x03A8)>>16)&0x0FFFu)%g_benum; if(nx!=hr){ full=0; break; } io_wait(); io_wait(); io_wait(); io_wait(); io_wait(); }
       if(full){ g_wnd_txfull++; return -1; } }
-    static u8* pkts[256]; u32 slot=(g_beidx%g_benum)&255u; if(!pkts[slot]){ pkts[slot]=(u8*)dma_alloc(2048); if(!pkts[slot])return -1; } u8* pkt=pkts[slot];
+    static u8* pkts[256]; u8* pkt=0; if(!gen){ u32 slot=(g_beidx%g_benum)&255u; if(!pkts[slot]){ pkts[slot]=(u8*)dma_alloc(2048); if(!pkts[slot])return -1; } pkt=pkts[slot]; }
     const u8* dst=eth; const u8* src=eth+6; u16 etype=((u16)eth[12]<<8)|eth[13];
     const u8* payload=eth+14; int plen=len-14;
 
@@ -84,6 +89,7 @@ static int wnd_tx_eth(const u8* eth,int len){
     u8 mic[8]; aes_ccm_auth_encrypt(g_wnd_tk,nonce,aad,al,fr+dataoff,dlen,mic);
     for(int i=0;i<8;i++)fr[fl++]=mic[i]; }
 
+    if(gen){ if(wifi_hw_tx(fr,fl)<0){ g_wnd_txfull++; return -1; } g_wnd_tx_frames++; return len; }
     for(u32 i=0;i<48u;i++)pkt[i]=0;
     u32 w0=((u32)fl&0xFFFFu)|((48u&0xFFu)<<16)|(1u<<26);
     *(volatile u32*)(pkt+0)=w0;
@@ -92,6 +98,7 @@ static int wnd_tx_eth(const u8* eth,int len){
     *(volatile u32*)(pkt+16)=0x00u;
     rtw_txdesc_rate(pkt,0);
     *(volatile u32*)(pkt+32)=(1u<<15);
+    rtw_desc_csum(pkt);
     for(int i=0;i<fl;i++)pkt[48+i]=fr[i];
 
     u32 total=48u+(u32)fl;
@@ -100,101 +107,143 @@ static int wnd_tx_eth(const u8* eth,int len){
     *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
     *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
     cpu_wmb();
-    rtw_w32(g_wnd_mmio,0x0328,(u32)(u64)g_bering); rtw_w16(g_wnd_mmio,0x0388,(u16)(g_benum&0x0FFF));
     g_beidx=(g_beidx+1)%g_benum; rtw_w16(g_wnd_mmio,0x03A8,(u16)g_beidx);
     g_wnd_tx_frames++;
     return len;
 }
 
 static int wnd_eq6(const u8* a,const u8* b){ for(int i=0;i<6;i++) if(a[i]!=b[i])return 0; return 1; }
-static void wnd_addba_decline(const u8* fr,int len){
-    if(len<24+9)return; u8 f[64]; int n=0; f[n++]=0xD0; f[n++]=0; f[n++]=0; f[n++]=0;
-    for(int i=0;i<6;i++)f[n++]=g_wnd_bssid[i]; for(int i=0;i<6;i++)f[n++]=g_wnd_mac[i]; for(int i=0;i<6;i++)f[n++]=g_wnd_bssid[i]; f[n++]=0; f[n++]=0;
-    f[n++]=3; f[n++]=1; f[n++]=fr[26]; f[n++]=37; f[n++]=0; f[n++]=fr[27]; f[n++]=fr[28]; f[n++]=0; f[n++]=0;
-    rtw_tx_mgmt(g_wnd_mmio,f,n); }
-static void wnd_rx_mgmt(const u8* base,const u8* fr,int len){
+static void wnd_tx_mgmt(const u8* f,int n){ if(g_wnd_mmio)rtw_tx_mgmt(g_wnd_mmio,f,n); else if(wifi_hw_generic())wifi_hw_tx(f,n); }
+static void wnd_addba(const u8* fr,int len){
+    u16 prm=(u16)(fr[27]|(fr[28]<<8)); int tid=(prm>>2)&15, win=0;
+    if(len<24+9)return;
+    if(g_ampdu_on&&g_wnd_qos&&!(fr[1]&0x40)&&(prm&2))win=ampdu_addba(tid,(u16)((fr[31]|(fr[32]<<8))>>4),(u16)(prm>>6),g_ticks);
+    else g_ampdu_decl++;
+    u16 rp=win?(u16)(2u|((u32)tid<<2)|((u32)win<<6)):prm;
+    u8 f[64]; int n=0; f[n++]=0xD0; f[n++]=0; f[n++]=0; f[n++]=0;
+    for(int i=0;i<6;i++){ f[4+i]=g_wnd_bssid[i]; f[10+i]=g_wnd_mac[i]; f[16+i]=g_wnd_bssid[i]; }
+    n=22; f[n++]=0; f[n++]=0; f[n++]=3; f[n++]=1; f[n++]=fr[26]; f[n++]=win?0:37; f[n++]=0; f[n++]=(u8)rp; f[n++]=(u8)(rp>>8); f[n++]=win?fr[29]:0; f[n++]=win?fr[30]:0;
+    wnd_tx_mgmt(f,n); }
+static void wnd_rx_mgmt(const u8* base,int rssi,const u8* fr,int len){
     u8 st=fr[0]&0xF0; if(len<24)return; const u8* a1=fr+4; const u8* a2=fr+10;
     if(!wnd_eq6(a2,g_wnd_bssid))return;
-    if(st==0x80){ g_wnd_beacon_t=g_ticks; g_wnd_beacons++; int r=rtw_rx_rssi(base); if(r>-127)g_wifi_rssi=g_wifi_rssi<=-127?r:(g_wifi_rssi*7+r)/8; if(len>=24+12){ u32 bi=(u32)(fr[32]|(fr[33]<<8)); if(bi>=10&&bi<=1000)g_wnd_bcn_int=bi; } return; }
+    if(st==0x80){ g_wnd_beacon_t=g_ticks; g_wnd_beacons++; int r=base?rtw_rx_rssi(base):rssi; if(r>-127)g_wifi_rssi=g_wifi_rssi<=-127?r:(g_wifi_rssi*7+r)/8; if(len>=24+12){ u32 bi=(u32)(fr[32]|(fr[33]<<8)); if(bi>=10&&bi<=1000)g_wnd_bcn_int=bi; } return; }
     int tome=wnd_eq6(a1,g_wnd_mac)||(a1[0]==0xFF&&a1[1]==0xFF);
     if((st==0xC0||st==0xA0)&&tome){ extern int g_wpa_mfp;
         if(g_wpa_mfp&&!g_wnd_open){ if(!(fr[1]&0x40)||!wnd_eq6(a1,g_wnd_mac)||len<24+8+2+8)return;
-            const u8* cc=fr+24; if(!(cc[3]&0x20))return; u64 pn=((u64)cc[0])|((u64)cc[1]<<8)|((u64)cc[4]<<16)|((u64)cc[5]<<24)|((u64)cc[6]<<32)|((u64)cc[7]<<40); static u64 mpn=0; if(pn<=mpn)return;
+            const u8* cc=fr+24; if(!(cc[3]&0x20))return; u64 pn=((u64)cc[0])|((u64)cc[1]<<8)|((u64)cc[4]<<16)|((u64)cc[5]<<24)|((u64)cc[6]<<32)|((u64)cc[7]<<40); u64 mpn=g_wnd_mpn; if(pn<=mpn)return;
             u8 aad[22]; int al=0; aad[al++]=fr[0]; aad[al++]=fr[1]&0xC7; for(int i=0;i<18;i++)aad[al++]=fr[4+i]; aad[al++]=fr[22]&0x0F; aad[al++]=0;
             u8 nonce[13]; ccmp_nonce(nonce,a2,pn,0x10); int dl=len-24-8-8; if(dl<2||dl>64)return; u8 pt[64]; for(int i=0;i<dl;i++)pt[i]=fr[32+i]; u8 mic[8]; for(int i=0;i<8;i++)mic[i]=fr[32+dl+i];
-            if(aes_ccm_decrypt_verify(g_wnd_tk,nonce,aad,al,pt,dl,mic)!=0)return; mpn=pn; g_wnd_lost=pt[0]|(pt[1]<<8); if(!g_wnd_lost)g_wnd_lost=1; wnd_down(); return; } g_wnd_lost=len>=26?(fr[24]|(fr[25]<<8)):1; if(!g_wnd_lost)g_wnd_lost=1; wnd_down(); return; }
-    if(st==0xD0&&wnd_eq6(a1,g_wnd_mac)&&len>=24+9&&fr[24]==3&&fr[25]==0)wnd_addba_decline(fr,len); }
+            if(aes_ccm_decrypt_verify(g_wnd_tk,nonce,aad,al,pt,dl,mic)!=0)return; g_wnd_mpn=pn; g_wnd_lost=pt[0]|(pt[1]<<8); if(!g_wnd_lost)g_wnd_lost=1; wnd_down(); return; } g_wnd_lost=len>=26?(fr[24]|(fr[25]<<8)):1; if(!g_wnd_lost)g_wnd_lost=1; wnd_down(); return; }
+    if(st==0xD0&&wnd_eq6(a1,g_wnd_mac)&&len>=24+9&&fr[24]==3&&fr[25]==0)wnd_addba(fr,len);
+    if(st==0xD0&&wnd_eq6(a1,g_wnd_mac)&&len>=24+6&&fr[24]==3&&fr[25]==2&&!(fr[1]&0x40)&&(fr[27]&0x08))ampdu_delba(fr[27]>>4); }
+void wnd_rx_mgmt_hw(const u8* fr,int len,int rssi){ if(g_wnd_up)wnd_rx_mgmt(0,rssi,fr,len); }
 int wnd_send_eapol(const u8* eap,int el){ static u8 f[600]; if(el>580||!g_wnd_up)return -1; for(int i=0;i<6;i++){ f[i]=g_wnd_bssid[i]; f[6+i]=g_wnd_mac[i]; } f[12]=0x88; f[13]=0x8E; for(int i=0;i<el;i++)f[14+i]=eap[i]; return wnd_tx_eth(f,14+el); }
+static u8 g_amq[8][1600]; static int g_amql[8], g_amqh=0, g_amqn=0;
+static int wnd_amq_pop(u8* out,int max){ if(!g_amqn)return 0; int L=g_amql[g_amqh]; int r=0; if(L>max)g_wnd_rx_drop++; if(L<=max){ for(int i=0;i<L;i++)out[i]=g_amq[g_amqh][i]; r=L; } g_amqh=(g_amqh+1)&7; g_amqn--; return r; }
+static int wnd_amsdu(const u8* p,int n,u8* out,int max){
+    int off=0;
+    if(n>=6&&p[0]==0xAA&&p[1]==0xAA&&p[2]==0x03&&p[3]==0&&p[4]==0&&p[5]==0){ g_wnd_rx_drop++; return 0; }
+    while(off+14<=n){
+        int ln=(p[off+12]<<8)|p[off+13]; if(ln<8||off+14+ln>n)break;
+        const u8* sub=p+off+14;
+        if(g_amqn>=8||14+ln-8>1600)g_wnd_rx_drop++;
+        else if(sub[0]==0xAA&&sub[1]==0xAA&&sub[2]==0x03){
+            u16 et=(u16)((sub[6]<<8)|sub[7]);
+            if(et!=0x888E){ int t=(g_amqh+g_amqn)&7; u8* q=g_amq[t]; for(int i=0;i<12;i++)q[i]=p[off+i]; q[12]=(u8)(et>>8); q[13]=(u8)et; for(int i=0;i<ln-8;i++)q[14+i]=sub[8+i]; g_amql[t]=14+ln-8; g_amqn++; g_wnd_rx_frames++; } }
+        off+=14+ln; off=(off+3)&~3;
+    }
+    return wnd_amq_pop(out,max);
+}
+static int wnd_ba_pop(u8* out,int max){ u64 pn; int tid,r;
+    while((r=ampdu_pop(out,max,&pn,&tid))>=0){ if(pn){ u64* ps=&g_wnd_rx_pn_uni[tid&15]; if(pn<=*ps){ g_wnd_rx_drop++; continue; } *ps=pn; } if(r>0){ g_wnd_rx_frames++; return r; } }
+    return 0; }
+static u8 g_wnd_bae[AMPDU_SLOT];
+static int wnd_ba_put(int tid,u16 seq,const u8* fr,const u8* llc,int dl,u64 pn,u8* out,int max){ int el=0;
+    if(llc&&dl>=8&&llc[0]==0xAA&&llc[1]==0xAA&&llc[2]==0x03){ u16 et=(u16)((llc[6]<<8)|llc[7]);
+        if(et==0x888E){ if(pn)wpa_rx_eapol(llc+8,dl-8); }
+        else if(14+dl-8<=AMPDU_SLOT){ for(int i=0;i<6;i++){ g_wnd_bae[i]=fr[4+i]; g_wnd_bae[6+i]=fr[16+i]; } g_wnd_bae[12]=(u8)(et>>8); g_wnd_bae[13]=(u8)et; for(int i=0;i<dl-8;i++)g_wnd_bae[14+i]=llc[8+i]; el=14+dl-8; } }
+    ampdu_rx(tid,seq,g_wnd_bae,el,pn,g_ticks); return wnd_ba_pop(out,max); }
+static int wnd_rx_frame(const u8* fr,int fe,int hwhint,u8* out,int max){
+    int outlen=0;
+    u8 fc=fr[0]; u8 fc2=fr[1];
+    if((fc&0x0C)==0x08 && (fc2&0x02)){
+        if(!wnd_eq6(fr+10,g_wnd_bssid))return outlen;   /* v10.99: another network's frame - no decrypt attempt */
+        u32 hlen=24u; if((fc&0x80))hlen+=2u;
+        if((fc&0x80)&&(fc2&0x80))hlen+=4u;
+        u8 prio=(fc&0x80)?(fr[24]&0x0F):0;
+        int ba=(fc&0xF0)==0x80&&!(fr[4]&1)&&ampdu_active(prio&15); u16 bseq=(u16)((fr[22]|(fr[23]<<8))>>4);
+        u32 sec=hlen;
+        if(!g_wnd_open&&!(fc2&0x40)){ u32 d=sec; int dl2=fe-(int)d; if(dl2>=12&&fr[d]==0xAA&&fr[d+1]==0xAA&&fr[d+2]==0x03&&fr[d+6]==0x88&&fr[d+7]==0x8E&&wnd_eq6(fr+10,g_wnd_bssid))wpa_rx_eapol_p(fr+d+8,dl2-8,0); return outlen; }
+        if(g_wnd_open&&!(fc2&0x40)){ u32 d=sec; int dl2=fe-(int)d; if(ba&&!(fr[24]&0x80)){ outlen=wnd_ba_put(prio&15,bseq,fr,dl2>0?fr+d:0,dl2,0,out,max); return outlen; } if((fc&0x80)&&(fr[24]&0x80)&&dl2>0){ outlen=wnd_amsdu(fr+d,dl2,out,max); return outlen; } if(dl2>=8&&fr[d]==0xAA&&fr[d+1]==0xAA&&fr[d+2]==0x03){ u16 et=((u16)fr[d+6]<<8)|fr[d+7]; int need=14+dl2-8;
+                if(et!=0x888E&&need<=max){ for(int i=0;i<6;i++){ out[i]=fr[4+i]; out[6+i]=fr[16+i]; } out[12]=(u8)(et>>8); out[13]=(u8)et; for(int i=0;i<dl2-8;i++)out[14+i]=fr[d+8+i]; outlen=need; g_wnd_rx_frames++; } } return outlen; }
+        if((fc2&0x40) && sec+8u<=(u32)fe){
+            const u8* cc=fr+sec;
+            if(cc[3]&0x20){
+                int keyid=(cc[3]>>6)&3;
+                u64 pn=((u64)cc[0])|((u64)cc[1]<<8)|((u64)cc[4]<<16)|((u64)cc[5]<<24)|((u64)cc[6]<<32)|((u64)cc[7]<<40);
+                u32 doff=sec+8; int dlen=fe-(int)doff-8;
+                if(dlen>=8){
+                    const u8* a1=fr+4; int bcast=(a1[0]&1);
+                    const u8* key; u64* pnslot;
+                    if(bcast){ if(!g_wnd_have_gtk){ g_wnd_rx_drop++; return outlen; } key=g_wnd_gtk; pnslot=&g_wnd_rx_pn_grp[keyid]; }
+                    else { key=g_wnd_tk; pnslot=&g_wnd_rx_pn_uni[(fc&0x80)?(prio&15):16]; }
+                    if(!ba&&pn<=*pnslot){ g_wnd_rx_drop++; return outlen; }
+                    u8 aad[32]; int al=0;
+                    aad[al++]=fr[0]&0x8F; aad[al++]=(fr[0]&0x80)?(fr[1]&0x47):(fr[1]&0xC7);
+                    for(int i=0;i<6;i++)aad[al++]=fr[4+i];
+                    for(int i=0;i<6;i++)aad[al++]=fr[10+i];
+                    for(int i=0;i<6;i++)aad[al++]=fr[16+i];
+                    aad[al++]=fr[22]&0x0F; aad[al++]=0;
+                    if(fc&0x80){ aad[al++]=prio; aad[al++]=0; }
+                    const u8* a2=fr+10;
+                    u8 nonce[13]; ccmp_nonce(nonce,a2,pn,prio);
+                    int hwdec=hwhint; if(hwdec&&!(fr[doff]==0xAA&&fr[doff+1]==0xAA&&fr[doff+2]==0x03))hwdec=0;
+                    static u8 pt[RTW_RXBUF]; if(dlen>(int)sizeof(pt)){ g_wnd_rx_drop++; return outlen; } for(int i=0;i<dlen;i++)pt[i]=fr[doff+i];
+                    u8 mic[8]; for(int i=0;i<8;i++)mic[i]=hwdec?0:fr[doff+dlen+i];
+                    if(hwdec||aes_ccm_decrypt_verify(key,nonce,aad,al,pt,dlen,mic)==0){
+                        g_wnd_beacon_t=g_ticks;
+                        if(ba){ if(fr[24]&0x80){ outlen=wnd_amsdu(pt,dlen,out,max); ampdu_rx(prio&15,bseq,0,0,pn,g_ticks); if(!outlen)outlen=wnd_ba_pop(out,max); return outlen; } outlen=wnd_ba_put(prio&15,bseq,fr,pt,dlen,pn,out,max); return outlen; }
+                        *pnslot=pn;
+                        if((fc&0x80)&&(fr[24]&0x80)){ outlen=wnd_amsdu(pt,dlen,out,max); return outlen; }
+                        if(dlen>=8 && pt[0]==0xAA && pt[1]==0xAA && pt[2]==0x03){
+                            u16 etype=((u16)pt[6]<<8)|pt[7];
+                            if(etype==0x888E){ wpa_rx_eapol(pt+8,dlen-8); return outlen; }
+                            const u8* da=fr+4; const u8* sa=fr+16;
+                            int need=14+(dlen-8);
+                            if(need<=max && need>=14){
+                                for(int i=0;i<6;i++)out[i]=da[i];
+                                for(int i=0;i<6;i++)out[6+i]=sa[i];
+                                out[12]=(u8)(etype>>8); out[13]=(u8)etype;
+                                for(int i=0;i<dlen-8;i++)out[14+i]=pt[8+i];
+                                outlen=need; g_wnd_rx_frames++;
+                            }
+                        }
+                    } else { g_wnd_rx_drop++; if(ba){ ampdu_rx(prio&15,bseq,0,0,0,g_ticks); outlen=wnd_ba_pop(out,max); } }
+                }
+            }
+        }
+    }
+    return outlen;
+}
 static int wnd_rx_eth(u8* out,int max){
-    if(!g_wnd_up||!g_rxnum)return 0;
+    if(!g_wnd_mmio&&wifi_hw_generic()){ if(!g_wnd_up){ g_amqn=0; return 0; } { int r=wnd_amq_pop(out,max); if(r)return r; } wifi_hw_poll(); static u8 hf[2400]; int rs, n;
+        while((n=wifi_hw_rx_pop(hf,(int)sizeof(hf),&rs))!=0){ if(n<32)continue; int o=wnd_rx_frame(hf,n,0,out,max); if(o)return o; } return 0; }
+    if(!g_wnd_up||!g_rxnum){ g_amqn=0; return 0; }
+    { int r=wnd_amq_pop(out,max); if(r)return r; ampdu_tick(g_ticks); r=wnd_ba_pop(out,max); if(r)return r; }
     u32 m=g_wnd_mmio;
     { u32 raw=rtw_r32(m,0x03B4); if(raw==0xFFFFFFFFu){ g_wnd_dead++; return 0; } }
     int wp=rtw_rx_hw_wp(m); if(wp<0||(u32)wp>=0x1000u)return 0;
     while((int)(g_rxidx%g_rxnum)!=(wp%(int)g_rxnum)){
-        u32 ri=g_rxidx % g_rxnum; u8* base=g_rxbuf+ri*2048;
+        u32 ri=g_rxidx % g_rxnum; u8* base=g_rxbuf+ri*RTW_RXBUF; if(!*(volatile u32*)(u64)base)break;
         u32 rw0=*(volatile u32*)(u64)base; u32 plen=rw0&0x3FFFu;
-        u32 drvsz=((rw0>>16)&0xFu)*8u; u32 shift=(rw0>>24)&3u; u32 crc=(rw0>>14)&1u;
-        u32 hoff=24u+drvsz+shift; u32 fe=hoff+plen; if(fe>2048u)fe=2048u;
+        u32 drvsz=((rw0>>16)&0xFu)*8u; u32 shift=(rw0>>24)&3u; u32 crc=((rw0>>14)&1u)|(u32)rtw_rx_bad(base);
+        u32 hoff=24u+drvsz+shift; u32 fe=hoff+plen-(plen>=4u?4u:0u); if(fe>RTW_RXBUF)fe=RTW_RXBUF;
         int outlen=0;
-        if(plen>=24 && !crc && (base[hoff]&0x0C)==0x00){ extern int g_wifi_scanning; extern u8 g_scan_ch; extern int rtw_scan_frame(const u8*,u8); if(g_wifi_scanning&&g_scan_ch)rtw_scan_frame(base,g_scan_ch); wnd_rx_mgmt(base,base+hoff,(int)(fe-hoff)); }
-        if(plen>=32 && !crc){
-            u8* fr=base+hoff; u8 fc=fr[0]; u8 fc2=fr[1];
-            if((fc&0x0C)==0x08 && (fc2&0x02)){
-                u32 hlen=24u; if((fc&0x80))hlen+=2u;
-                if((fc&0x80)&&(fc2&0x80))hlen+=4u;
-                u8 prio=(fc&0x80)?(fr[24]&0x0F):0;
-                u32 sec=hoff+hlen;
-                if(!g_wnd_open&&!(fc2&0x40)){ u32 d=sec; int dl2=(int)fe-(int)d; if(dl2>=12&&base[d]==0xAA&&base[d+1]==0xAA&&base[d+2]==0x03&&base[d+6]==0x88&&base[d+7]==0x8E&&wnd_eq6(fr+10,g_wnd_bssid))wpa_rx_eapol_p(base+d+8,dl2-8,0); goto next; }
-                if(g_wnd_open&&!(fc2&0x40)){ u32 d=sec; int dl2=(int)fe-(int)d; if(dl2>=8&&base[d]==0xAA&&base[d+1]==0xAA&&base[d+2]==0x03){ u16 et=((u16)base[d+6]<<8)|base[d+7]; int need=14+dl2-8;
-                        if(et!=0x888E&&need<=max){ for(int i=0;i<6;i++){ out[i]=fr[4+i]; out[6+i]=fr[16+i]; } out[12]=(u8)(et>>8); out[13]=(u8)et; for(int i=0;i<dl2-8;i++)out[14+i]=base[d+8+i]; outlen=need; g_wnd_rx_frames++; } } goto next; }
-                if((fc2&0x40) && sec+8u<=fe){
-                    u8* cc=base+sec;
-                    if(cc[3]&0x20){
-                        int keyid=(cc[3]>>6)&3;
-                        u64 pn=((u64)cc[0])|((u64)cc[1]<<8)|((u64)cc[4]<<16)|((u64)cc[5]<<24)|((u64)cc[6]<<32)|((u64)cc[7]<<40);
-                        u32 doff=sec+8; int dlen=(int)fe-(int)doff-8;
-                        if(dlen>=8){
-                            const u8* a1=fr+4; int bcast=(a1[0]&1);
-                            const u8* key; u64* pnslot;
-                            if(bcast){ if(!g_wnd_have_gtk){ g_wnd_rx_drop++; goto next; } key=g_wnd_gtk; pnslot=&g_wnd_rx_pn_grp; }
-                            else { key=g_wnd_tk; pnslot=&g_wnd_rx_pn_uni[(fc&0x80)?(prio&15):16]; }
-                            if(pn<=*pnslot){ g_wnd_rx_drop++; goto next; }
-                            u8 aad[32]; int al=0;
-                            aad[al++]=fr[0]&0x8F; aad[al++]=(fr[0]&0x80)?(fr[1]&0x47):(fr[1]&0xC7);
-                            for(int i=0;i<6;i++)aad[al++]=fr[4+i];
-                            for(int i=0;i<6;i++)aad[al++]=fr[10+i];
-                            for(int i=0;i<6;i++)aad[al++]=fr[16+i];
-                            aad[al++]=fr[22]&0x0F; aad[al++]=0;
-                            if(fc&0x80){ aad[al++]=prio; aad[al++]=0; }
-                            const u8* a2=fr+10;
-                            u8 nonce[13]; ccmp_nonce(nonce,a2,pn,prio);
-                            int hwdec=!((rw0>>27)&1u)&&((rw0>>20)&7u)==4u&&!(rw0&(1u<<15)); if(hwdec&&!(base[doff]==0xAA&&base[doff+1]==0xAA&&base[doff+2]==0x03))hwdec=0;
-                            static u8 pt[2048]; for(int i=0;i<dlen;i++)pt[i]=base[doff+i];
-                            u8 mic[8]; for(int i=0;i<8;i++)mic[i]=hwdec?0:base[doff+dlen+i];
-                            if(hwdec||aes_ccm_decrypt_verify(key,nonce,aad,al,pt,dlen,mic)==0){
-                                *pnslot=pn;
-                                if(dlen>=8 && pt[0]==0xAA && pt[1]==0xAA && pt[2]==0x03){
-                                    u16 etype=((u16)pt[6]<<8)|pt[7];
-                                    if(etype==0x888E){ wpa_rx_eapol(pt+8,dlen-8); goto next; }
-                                    const u8* da=fr+4; const u8* sa=fr+16;
-                                    int need=14+(dlen-8);
-                                    if(need<=max && need>=14){
-                                        for(int i=0;i<6;i++)out[i]=da[i];
-                                        for(int i=0;i<6;i++)out[6+i]=sa[i];
-                                        out[12]=(u8)(etype>>8); out[13]=(u8)etype;
-                                        for(int i=0;i<dlen-8;i++)out[14+i]=pt[8+i];
-                                        outlen=need; g_wnd_rx_frames++;
-                                    }
-                                }
-                            } else g_wnd_rx_drop++;
-                        }
-                    }
-                }
-            }
-        }
-    next:
+        if(plen>=24 && !crc && (base[hoff]&0x0C)==0x00){ extern int g_wifi_scanning; extern u8 g_scan_ch; extern int rtw_scan_frame(const u8*,u8); if(g_wifi_scanning&&g_scan_ch)rtw_scan_frame(base,g_scan_ch); wnd_rx_mgmt(base,0,base+hoff,(int)(fe-hoff)); outlen=wnd_ba_pop(out,max); }
+        if(plen>=32 && !crc && (base[hoff]&0x0C)==0x08)outlen=wnd_rx_frame(base+hoff,(int)(fe-hoff),!((rw0>>27)&1u)&&((rw0>>20)&7u)==4u&&!(rw0&(1u<<15)),out,max);
         *(volatile u32*)(u64)base=0;
-        *(volatile u16*)(u64)(g_rxring+ri*8)=2048; *(volatile u32*)(u64)(g_rxring+ri*8+4)=(u32)(u64)base;
+        *(volatile u16*)(u64)(g_rxring+ri*8)=(u16)RTW_RXBUF; *(volatile u16*)(u64)(g_rxring+ri*8+2)=0; *(volatile u32*)(u64)(g_rxring+ri*8+4)=(u32)(u64)base;
         g_rxidx++; if((int)g_rxidx>=(int)g_rxnum)g_rxidx=0; rtw_w16(m,0x03B4,(u16)g_rxidx);
         if(outlen)return outlen;
     }

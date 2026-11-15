@@ -1,0 +1,18 @@
+NoovexOS Intel Wi-Fi 6/6E driver (drivers/net/wifi/iwx)
+
+iwx.h, iwx_pcie.c, iwx_fw.c, iwx_cmd.h, iwx_cmd.c, iwx_scan.c, iwx_data.c, iwx_glue.c
+(and iwx_pnvm.c when added)
+  Port of OpenBSD sys/dev/pci/if_iwx.c (rev 1.230) and if_iwxreg.h (rev 1.75).
+  SPDX-License-Identifier: ISC
+  Copyright (c) 2014, 2016 genua gmbh <info@genua.de> (Author: Stefan Sperling)
+  Copyright (c) 2014 Fixup Software Ltd.
+  Copyright (c) 2017, 2019, 2020 Stefan Sperling <stsp@openbsd.org>
+  Intel portions (if_iwxreg.h: Copyright(c) 2017 Intel Deutschland GmbH,
+  Copyright(c) 2018 - 2019 Intel Corporation) are dual BSD/GPLv2 and are used
+  here under the BSD-3-Clause branch.
+  The full ISC and BSD-3-Clause texts are kept at the top of every file.
+  iwx_glue.c's wifi_hw_ops adapter and the shell commands are own code (GPLv3).
+
+Firmware: none committed. The driver loads iwlwifi-<name>-<api>.ucode (and
+iwlwifi-<name>.pnvm for AX210/AX211) from /lib/firmware on disk and names the
+missing file in the kernel log if it is not there.

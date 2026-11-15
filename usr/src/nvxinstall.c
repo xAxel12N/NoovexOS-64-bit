@@ -6,7 +6,7 @@ typedef struct { int ok, gpt, ratio, nparts; u64 sectors; int ptype[4], pok[4]; 
 typedef struct { int mode, part, fs, copy; char label[16]; } iparams;
 typedef struct { int stage, prog, done, failed; char e1[120]; char e2[120]; char stagename[48]; } iprog;
 
-enum { P_WELCOME, P_DISK, P_WHERE, P_FS, P_CONFIRM, P_RUN, P_DONE, P_ERR };
+enum { P_WELCOME, P_DISK, P_WHERE, P_FS, P_CONFIRM, P_RUN, P_DONE, P_ERR, P_PREP };
 #define BLUE 0x4882C8
 #define BOX 0xF8F9FB
 #define INK 0x141822
@@ -16,7 +16,7 @@ enum { P_WELCOME, P_DISK, P_WHERE, P_FS, P_CONFIRM, P_RUN, P_DONE, P_ERR };
 #define OK 0x3C965A
 #define WARN 0xC88C28
 
-static int W, H, LOCKED, SRC;
+static int W, H, LOCKED, SRC, CLONE; static long CLONE_MB;
 static int page=P_WELCOME, mxp, myp;
 static int nl, lsel, lx, ly[8], lw;
 static int nb, bfoc, bx[3], by, bw[3]; static const char* bt[3];
@@ -62,9 +62,21 @@ static void buttons(int cx,int y){
 
 static void draw(void){
     char b[200]; int ox,oy,ow; nl=0; nb=0;
-    if(page==P_WELCOME){
+    if(CLONE&&page==P_WELCOME){
+        box(&ox,&oy,&ow,640,214,"Take NoovexOS With You");
+        text(ox,oy,"This copies the whole system - apps, settings, users and",INK); oy+=18;
+        text(ox,oy,"files - to a USB stick that starts on other PCs.",INK); oy+=26;
+        text(ox,oy,"Everything on the USB stick will be erased.",RED); oy+=18;
+        text(ox,oy,"This computer restarts when the copy is finished.",GREY); oy+=18;
+        text(ox,oy,"Ctrl+Alt+Esc closes this program at any time.",GREY); oy+=30;
+        bt[0]="Continue"; bt[1]="Cancel"; nb=2; buttons(ox+ow/2,oy); }
+    else if(page==P_PREP){
+        box(&ox,&oy,&ow,560,120,"Take NoovexOS With You");
+        text(ox,oy,"Reading every file into memory before the copy...",INK); oy+=18;
+        text(ox,oy,"This can take a minute.",GREY); }
+    else if(page==P_WELCOME){
         box(&ox,&oy,&ow,620,LOCKED?196:176,"NoovexOS Setup");
-        text(ox,oy,"Welcome. This program installs NoovexOS 10.86 on a disk",INK); oy+=18;
+        text(ox,oy,"Welcome. This program installs NoovexOS 11.10 on a disk",INK); oy+=18;
         text(ox,oy,"in this computer.",INK); oy+=26;
         text(ox,oy,SRC==1?"Installer: INSTALL.NVX on the USB stick (signature OK)":"Installer: built into the Linux files (signature OK)",OK); oy+=18;
         if(LOCKED){ text(ox,oy,"Signed boot is on: checked with the kernel's key.",GREY); oy+=18; }
@@ -72,11 +84,12 @@ static void draw(void){
         bt[0]="Continue"; bt[1]="Cancel"; nb=2; buttons(ox+ow/2,oy); }
     else if(page==P_DISK){
         int n=ndisks<1?1:ndisks; box(&ox,&oy,&ow,660,150+(n-1)*24,"Select Target Disk");
-        text(ox,oy,"Choose the disk to install NoovexOS to (click it or use Up/Down):",INK); oy+=18;
-        text(ox,oy,"The USB stick itself is not listed.",GREY); oy+=28;
+        if(CLONE){ snprintf(b,200,"Choose the USB stick (needs room for about %ld MB):",CLONE_MB+CLONE_MB/6+80); text(ox,oy,b,INK); oy+=18; text(ox,oy,"Only USB sticks can be chosen. Plug one in, then Back and Continue.",GREY); oy+=28; }
+        else { text(ox,oy,"Choose the disk to install NoovexOS to (click it or use Up/Down):",INK); oy+=18;
+        text(ox,oy,"The USB stick itself is not listed.",GREY); oy+=28; }
         if(!ndisks){ text(ox+8,oy,"No disk was found (SATA, NVMe or IDE).",RED); oy+=24; }
-        for(int i=0;i<ndisks;i++){ char sz[32]; size_str(sz,32,disks[i].sectors); snprintf(b,200,"%-14s -   %s%s",disks[i].name,sz,disks[i].ok?"":"  (too small)"); item(i,ox,oy,ow,b); oy+=24; }
-        nl=ndisks; oy+=8; bt[0]="Continue"; bt[1]="Back"; nb=2; buttons(ox+ow/2,oy); }
+        for(int i=0;i<ndisks;i++){ char sz[32]; size_str(sz,32,disks[i].sectors); snprintf(b,200,"%-14s -   %s%s",disks[i].name,sz,disks[i].ok?"":(CLONE&&disks[i].kind!=5)?"  (not a USB stick)":"  (too small)"); item(i,ox,oy,ow,b); oy+=24; }
+        nl=ndisks; oy+=8; bt[0]="Continue"; bt[1]=CLONE?"Refresh":"Back"; nb=2; buttons(ox+ow/2,oy); }
     else if(page==P_WHERE){
         nwhere=0; where_part[nwhere++]=-1; for(int e=0;e<4;e++) if(di.ptype[e]&&di.pok[e])where_part[nwhere++]=e;
         box(&ox,&oy,&ow,660,176+(nwhere-1)*24+(di.nparts?di.nparts*18:18),"Installation Type");
@@ -92,24 +105,25 @@ static void draw(void){
         for(int i=0;i<4;i++){ snprintf(b,200,"%-12s %s",FSN[i],FSD[i]); item(i,ox,oy,ow,b); oy+=22; }
         nl=4; oy+=18; bt[0]="Continue"; bt[1]="Back"; nb=2; buttons(ox+ow/2,oy); }
     else if(page==P_CONFIRM){
-        box(&ox,&oy,&ow,560,176,"Confirm Installation");
-        text(ox,oy,"NoovexOS will be installed to:",INK); oy+=24;
+        box(&ox,&oy,&ow,560,176,CLONE?"Confirm Copy":"Confirm Installation");
+        if(CLONE){ snprintf(b,200,"About %ld MB of this system will be copied to:",CLONE_MB); text(ox,oy,b,INK); } else text(ox,oy,"NoovexOS will be installed to:",INK); oy+=24;
         if(pr.mode==0)snprintf(b,200,"  %s",di.name); else snprintf(b,200,"  %s, partition %d",di.name,pr.part+1); text(ox,oy,b,INK); oy+=22;
         int fi=0; for(int i=0;i<4;i++) if(FSV[i]==pr.fs)fi=i; snprintf(b,200,"File system: %s",FSN[fi]); text(ox,oy,b,INK); oy+=24;
-        text(ox,oy,pr.mode==0?"All data on this disk will be erased.":"All data in this partition will be erased.",RED); oy+=38;
-        bt[0]="Back"; bt[1]="Install"; nb=2; buttons(ox+ow/2,oy); }
+        text(ox,oy,CLONE?"Everything on the USB stick will be erased.":pr.mode==0?"All data on this disk will be erased.":"All data in this partition will be erased.",RED); oy+=38;
+        bt[0]="Back"; bt[1]=CLONE?"Copy":"Install"; nb=2; buttons(ox+ow/2,oy); }
     else {
-        const char* t=page==P_RUN?"Installing NoovexOS":page==P_DONE?"Installation Complete":"Installation Failed";
+        const char* t=CLONE?(page==P_RUN?"Copying NoovexOS":page==P_DONE?"USB Stick Ready":"Copy Failed"):page==P_RUN?"Installing NoovexOS":page==P_DONE?"Installation Complete":"Installation Failed";
         int extra=page==P_RUN?0:page==P_DONE?36:72;
         box(&ox,&oy,&ow,560,268+extra,t);
-        text(ox,oy,page==P_RUN?"Please wait. Do not turn off the computer.":page==P_DONE?"NoovexOS has been installed successfully.":"The installation stopped. Nothing more was written.",INK); oy+=24;
+        text(ox,oy,page==P_RUN?(CLONE?"Please wait. Do not remove the USB stick.":"Please wait. Do not turn off the computer."):page==P_DONE?(CLONE?"This system was copied to the USB stick.":"NoovexOS has been installed successfully."):"The installation stopped. Nothing more was written.",INK); oy+=24;
         rect(ox,oy,ow,14,0xE2E6EE); rect(ox,oy,(int)((long)ow*pg.prog/1000),14,page==P_ERR?RED:0x4882C8); oy+=26;
         for(int i=0;i<8;i++){ const char* tag; int c;
             if(page==P_DONE||i<pg.stage){ tag="[ OK ]"; c=OK; } else if(i==pg.stage){ tag=page==P_ERR?"[FAIL]":"[ .. ]"; c=page==P_ERR?RED:0x4882C8; } else { tag="[    ]"; c=0xB4BAC6; }
-            if(i==6&&pr.fs==0&&page!=P_ERR&&i<pg.stage){ tag="[ -- ]"; c=GREY; }
-            if(page==P_DONE&&i==6&&pr.fs==0){ tag="[ -- ]"; c=GREY; }
+            if(i==6&&pr.fs==0&&!CLONE&&page!=P_ERR&&i<pg.stage){ tag="[ -- ]"; c=GREY; }
+            if(page==P_DONE&&i==6&&pr.fs==0&&!CLONE){ tag="[ -- ]"; c=GREY; }
             text(ox,oy,tag,c); text(ox+64,oy,STG[i],INK); oy+=18; }
-        if(page==P_DONE){ oy+=6; text(ox,oy,"Remove the install media and reboot.",GREY); oy+=30; bt[0]="Reboot"; bt[1]="Close"; nb=2; buttons(ox+ow/2,oy); }
+        if(page==P_DONE&&CLONE){ oy+=6; text(ox,oy,"Restart now. Then the stick starts NoovexOS on any PC.",GREY); oy+=30; bt[0]="Restart"; nb=1; bfoc=0; buttons(ox+ow/2,oy); }
+        else if(page==P_DONE){ oy+=6; text(ox,oy,"Remove the install media and reboot.",GREY); oy+=30; bt[0]="Reboot"; bt[1]="Close"; nb=2; buttons(ox+ow/2,oy); }
         if(page==P_ERR){ oy+=6; text(ox,oy,pg.e1,RED); oy+=18; text(ox,oy,pg.e2,INK); oy+=30; bt[0]="Back"; bt[1]="Close"; nb=2; buttons(ox+ow/2,oy); } }
     present(); }
 
@@ -122,6 +136,13 @@ static void run_install(void){
     for(;;){ if(__sys(205,(long)&pg,0,0,0,0))break; draw(); if(pg.done){ go(P_DONE); logk("installer program: install finished"); break; } if(pg.failed){ go(P_ERR); logk("installer program: install failed"); break; } } }
 
 static void press(int b){
+    if(CLONE&&page==P_WELCOME){ if(b!=0){ quit(); return; } go(P_PREP); draw(); long r=__sys(211,0,0,0,0,0);
+        if(r<=0){ snprintf(pg.e1,120,r==-2?"Start NoovexOS from the disk inside this computer first.":r==-3?"Not enough free memory to copy all files at once.":"The files could not be read (code %ld).",r); snprintf(pg.e2,120,r==-2?"A system started from a USB stick cannot copy itself.":r==-3?"Close programs and try again.":"Nothing was written."); pg.stage=0; pg.prog=0; go(P_ERR); return; }
+        CLONE_MB=r; ndisks=(int)__sys(202,(long)disks,8,0,0,0); if(ndisks<0)ndisks=0; go(P_DISK); for(int i=0;i<ndisks;i++) if(disks[i].ok){ lsel=i; break; } return; }
+    if(CLONE&&page==P_DISK&&b==0){ if(lsel<ndisks&&disks[lsel].ok&&__sys(203,lsel,(long)&di,0,0,0)==0){ pr.mode=0; pr.part=-1; pr.fs=0; pr.copy=1; snprintf(pr.label,16,"NoovexOS"); go(P_CONFIRM); } return; }
+    if(CLONE&&page==P_DISK&&b==1){ ndisks=(int)__sys(202,(long)disks,8,0,0,0); if(ndisks<0)ndisks=0; lsel=0; return; }
+    if(CLONE&&page==P_CONFIRM&&b==0){ go(P_DISK); return; }
+    if(CLONE&&page==P_DONE){ __sys(209,1,0,0,0,0); return; }
     if(page==P_WELCOME){ if(b==0){ ndisks=(int)__sys(202,(long)disks,8,0,0,0); if(ndisks<0)ndisks=0; go(P_DISK); for(int i=0;i<ndisks;i++) if(disks[i].ok){ lsel=i; break; } } else quit(); }
     else if(page==P_DISK){ if(b==1){ go(P_WELCOME); return; } if(lsel<ndisks&&disks[lsel].ok&&__sys(203,lsel,(long)&di,0,0,0)==0)go(P_WHERE); }
     else if(page==P_WHERE){ if(b==1){ go(P_DISK); return; } if(lsel<nwhere){ pr.mode=where_part[lsel]<0?0:1; pr.part=where_part[lsel]; go(P_FS); } }
@@ -131,11 +152,13 @@ static void press(int b){
     else if(page==P_ERR){ if(b==0)go(P_WELCOME); else quit(); } }
 
 static void back(void){
+    if(CLONE&&page==P_CONFIRM){ go(P_DISK); return; } if(CLONE&&page==P_DISK){ quit(); return; }
     if(page==P_WELCOME)quit(); else if(page==P_DISK)go(P_WELCOME); else if(page==P_WHERE)go(P_DISK); else if(page==P_FS)go(P_WHERE); else if(page==P_CONFIRM)go(P_FS); }
 
 int main(void){
     if(__sys(200,0,0,0,0,0)!=1){ printf("nvx-install: this program can only be started by NoovexOS (install command)\n"); return 1; }
     int info[4]; __sys(201,(long)info,0,0,0,0); W=info[0]; H=info[1]; LOCKED=info[2]; SRC=info[3];
+    { u64 ci[2]={0,0}; if(__sys(212,(long)ci,0,0,0,0)==0&&ci[0])CLONE=1; }
     draw();
     for(;;){
         int ev[4]; int dirty=0;
@@ -144,7 +167,7 @@ int main(void){
                 for(int k=0;k<nl;k++) if(mxp>=lx&&mxp<lx+lw&&myp>=ly[k]&&myp<ly[k]+20){ lsel=k; hit=1; dirty=1; break; }
                 if(!hit) for(int i=0;i<nb;i++) if(mxp>=bx[i]&&mxp<bx[i]+bw[i]&&myp>=by&&myp<by+20){ bfoc=i; press(i); dirty=1; break; } }
             int c=ev[0]; if(c<0&&!(ev[3]&2))break; if(c<0)continue; dirty=1;
-            if(page==P_RUN)continue;
+            if(page==P_RUN||page==P_PREP)continue;
             if(c==19&&nl)lsel=(lsel+nl-1)%nl; else if(c==20&&nl)lsel=(lsel+1)%nl;
             else if((c==17||c==18||c=='\t')&&nb>1)bfoc=(bfoc+(c==17?nb-1:1))%nb;
             else if(c=='\n'&&nb)press(bfoc); else if(c==27)back(); }

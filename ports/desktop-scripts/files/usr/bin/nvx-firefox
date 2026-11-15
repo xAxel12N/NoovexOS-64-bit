@@ -1,6 +1,10 @@
 #!/bin/bash
-rm -f /tmp/ff.done
-export HOME=/root
+U=$(id -u 2>/dev/null || echo 0)
+if [ "$U" = 0 ]; then H=/root; else H=${HOME:-}; [ -n "$H" ] && [ -d "$H" ] && [ -w "$H" ] || H=$(getent passwd "$U" 2>/dev/null | cut -d: -f6); [ -n "$H" ] && [ -d "$H" ] && [ -w "$H" ] || H=/tmp/nvx-home-$U; fi
+mkdir -p "$H" 2>/dev/null
+rm -f /tmp/ff.done 2>/dev/null
+[ -e /tmp/ff.log ] || { : > /tmp/ff.log 2>/dev/null; chmod 666 /tmp/ff.log 2>/dev/null; }
+export HOME="$H"
 export DISPLAY=127.0.0.1:0
 export MOZ_DISABLE_CONTENT_SANDBOX=1
 export MOZ_DISABLE_GMP_SANDBOX=1
@@ -9,29 +13,32 @@ export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
 export MOZ_SANDBOX=0
 export LIBGL_ALWAYS_SOFTWARE=1
 export MOZ_WEBRENDER=0
-export MOZ_X11_EGL=0
+WEBGL=0
+for d in /usr/lib/x86_64-linux-gnu /lib64 /usr/lib64; do [ -e "$d/libEGL_mesa.so.0" ] && WEBGL=1; done
+if [ "$WEBGL" = 1 ]; then export MOZ_X11_EGL=1; export EGL_PLATFORM=x11; else export MOZ_X11_EGL=0; fi
 export GTK_A11Y=none
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/.nvx-no-session-bus
 export MOZ_ACCELERATED=0
 export MOZ_CRASHREPORTER_DISABLE=1
 export NO_AT_BRIDGE=1
 echo "=== nvx-firefox $(date) ===" >> /tmp/ff.log
+if [ "$WEBGL" = 1 ]; then echo "WebGL: on (Mesa software rendering)" >> /tmp/ff.log; else echo "WebGL: off - Mesa is not installed. Turn it on with: firefox-webgl (as root) or sudo apt install libegl-mesa0 libgl1-mesa-dri" >> /tmp/ff.log; fi
 if ! command -v firefox-esr >/dev/null 2>&1; then echo "firefox-esr is not installed - run: sudo apt install firefox-esr" >> /tmp/ff.log; echo 127 > /tmp/ff.done; exit 127; fi
 for i in $(seq 150); do [ -e /tmp/Xvfb_screen0 ] && break; sleep 0.2; done
 [ -S /tmp/.X11-unix/X0 ] && [ -z "$NVX_X_TCP" ] && export DISPLAY=:0
 [ -e /tmp/Xvfb_screen0 ] || echo "X server did not start (see /tmp/Xvfb.log)" >> /tmp/ff.log
-export XDG_CACHE_HOME=/root/.cache
-mkdir -p /root/.cache/fontconfig
-FCS=/root/.cache/nvx-fc-stamp
-if command -v fc-cache >/dev/null 2>&1; then if [ ! -e "$FCS" ] || [ -n "$(find /usr/share/fonts /usr/local/share/fonts /root/.fonts /root/.local/share/fonts -newer "$FCS" 2>/dev/null | head -1)" ]; then echo "updating the font cache (only after fonts change)" >> /tmp/ff.log; fc-cache >/dev/null 2>&1; touch "$FCS"; fi; fi
-P=/root/.nvx-firefox
+export XDG_CACHE_HOME="$H/.cache"
+mkdir -p "$H/.cache/fontconfig"
+FCS="$H/.cache/nvx-fc-stamp"
+if command -v fc-cache >/dev/null 2>&1; then if [ ! -e "$FCS" ] || [ -n "$(find /usr/share/fonts /usr/local/share/fonts "$H/.fonts" "$H/.local/share/fonts" -newer "$FCS" 2>/dev/null | head -1)" ]; then echo "updating the font cache (only after fonts change)" >> /tmp/ff.log; fc-cache >/dev/null 2>&1; touch "$FCS"; fi; fi
+P="$H/.nvx-firefox"
 mkdir -p "$P"
 L=$(readlink "$P/lock" 2>/dev/null); LP=${L##*+}
 if [ -n "$L" ] && { [ -z "$LP" ] || ! kill -0 "$LP" 2>/dev/null; }; then rm -f "$P/lock" "$P/.parentlock"; echo "removed a stale profile lock" >> /tmp/ff.log; fi
 if [ -e "$P/.nvx-running" ]; then echo "last run did not end cleanly - Firefox will restore the previous session" >> /tmp/ff.log; fi
 touch "$P/.nvx-running"
 MP=0; [ -e "$P/.nvx-multiprocess" ] && MP=1
-cat > /tmp/.nvx-user.js <<'NVXPREFS'
+cat > "$P/.nvx-user.js.new" <<'NVXPREFS'
 user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
@@ -78,17 +85,17 @@ user_pref("browser.cache.disk.smart_size.enabled", false);
 user_pref("browser.places.importBookmarksHTML", false);
 user_pref("extensions.webextensions.remote", false);
 user_pref("network.process.enabled", false);
-user_pref("media.rdd-process.enabled", false);
 user_pref("dom.ipc.forkserver.enable", false);
 user_pref("gfx.webrender.software", true);
 user_pref("toolkit.startup.max_resumed_crashes", -1);
 NVXPREFS
-if [ "$MP" = 1 ]; then sed -i -e 's/"dom.ipc.processCount", 1/"dom.ipc.processCount", 4/' -e 's/"extensions.webextensions.remote", false/"extensions.webextensions.remote", true/' /tmp/.nvx-user.js; echo "multi-process mode: 4 content processes" >> /tmp/ff.log; fi
-cmp -s /tmp/.nvx-user.js "$P/user.js" || cp /tmp/.nvx-user.js "$P/user.js"
+if [ "$WEBGL" = 1 ]; then printf 'user_pref("webgl.force-enabled", true);\nuser_pref("webgl.disabled", false);\nuser_pref("webgl.enable-webgl2", true);\nuser_pref("gfx.x11-egl.force-enabled", true);\nuser_pref("webgl.out-of-process", false);\n' >> "$P/.nvx-user.js.new"; else printf 'user_pref("webgl.disabled", true);\n' >> "$P/.nvx-user.js.new"; fi
+if [ "$MP" = 1 ]; then sed -i -e 's/"dom.ipc.processCount", 1/"dom.ipc.processCount", 4/' -e 's/"extensions.webextensions.remote", false/"extensions.webextensions.remote", true/' "$P/.nvx-user.js.new"; echo "multi-process mode: 4 content processes" >> /tmp/ff.log; fi
+cmp -s "$P/.nvx-user.js.new" "$P/user.js" || cp "$P/.nvx-user.js.new" "$P/user.js"
 T0=$(date +%s)
 firefox-esr --no-remote --new-instance --profile "$P" >> /tmp/ff.log 2>&1
 R=$?
 echo "Firefox ran for $(( $(date +%s) - T0 )) s, exit code $R" >> /tmp/ff.log
 [ $R -eq 0 ] && rm -f "$P/.nvx-running"
 if [ $R -ne 0 ]; then for f in /usr/lib/firefox-esr/firefox-esr /usr/lib/firefox-esr/libxul.so; do [ -e "$f" ] && /lib64/ld-linux-x86-64.so.2 --list "$f" 2>&1 | grep -i "not found" | sed "s|^|missing library for ${f##*/}: |" >> /tmp/ff.log; done; fi
-echo $R > /tmp/ff.done
+echo $R > /tmp/ff.done; chmod 666 /tmp/ff.done 2>/dev/null

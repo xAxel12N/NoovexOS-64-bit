@@ -9,6 +9,8 @@
 extern void sched_swap(u64* save_ksp,u64 load_ksp); extern void user_trampoline(void);
 
 volatile int g_preempt_on=0; u64 g_preempt_kern[8];  
+static int pk_bkl_save(void){ return bkl_held()?g_bkl.depth:0; }
+static void pk_bkl_restore(int d){ if(!bkl_held())return; if(d>0)g_bkl.depth=d; else { g_bkl.depth=1; bkl_unlock(); } }
 struct proc g_proc[MAXPROC]; int g_curproc=-1;
 u8  g_pstack[MAXPROC][16384] __attribute__((aligned(16)));
 u64 g_kern_ksp=0, g_kern_cr3=0;
@@ -65,11 +67,13 @@ void preempt_run(void){
     if(a<0||b<0)return;
     u64 kcr3; kcr3=cpu_get_pt(); g_kern_cr3=kcr3;
     g_curproc=a; g_sched_active=1;
+    volatile int bd=pk_bkl_save();
     if(k_setjmp(g_preempt_kern)==0){
         g_preempt_on=1; g_tss.rsp0=(u64)(g_pstack[a]+16384);
         cpu_set_pt(g_proc[a].cr3);
         enter_ring3(g_proc[a].ctx.rip, g_proc[a].ctx.rsp);   /* first proc; the timer preempts from here */
     }
+    pk_bkl_restore(bd);
     g_preempt_on=0; g_sched_active=0;
     cpu_set_pt(kcr3);
     cpu_irq_on();
@@ -108,9 +112,10 @@ void preempt_run_elf(const u8* elf,u32 len){
     for(int i=0;i<MAXPROC;i++){g_proc[i].used=0;g_proc[i].alive=0;} g_r3out_n=0; g_r3out[0]=0;
     int a=proc_create_pt(elf,len,'1'); int b=proc_create_pt(elf,len,'2'); if(a<0||b<0)return;
     u64 kcr3; kcr3=cpu_get_pt(); g_kern_cr3=kcr3; g_curproc=a; g_sched_active=1;
+    volatile int bd=pk_bkl_save();
     if(k_setjmp(g_preempt_kern)==0){ g_preempt_on=1; g_tss.rsp0=(u64)(g_pstack[a]+16384);
         cpu_set_pt(g_proc[a].cr3); enter_ring3(g_proc[a].ctx.rip, g_proc[a].ctx.rsp); }
-    g_preempt_on=0; g_sched_active=0; cpu_set_pt(kcr3); cpu_irq_on();
+    pk_bkl_restore(bd); g_preempt_on=0; g_sched_active=0; cpu_set_pt(kcr3); cpu_irq_on();
 }
 /* ================= RUNG 4: windowing protocol (over the IPC primitives) =================
    Message format an app sends the compositor on queue 0. The app draws its pixels into a
@@ -133,9 +138,10 @@ void compositor_run(void){
     int b=proc_create_pt(_binary_user_user_compdemo_elf_start,el,'2');
     if(c<0||a<0||b<0)return;
     u64 kcr3; kcr3=cpu_get_pt(); g_kern_cr3=kcr3; g_curproc=c; g_sched_active=1;
+    volatile int bd=pk_bkl_save();
     if(k_setjmp(g_preempt_kern)==0){ g_preempt_on=1; g_tss.rsp0=(u64)(g_pstack[c]+16384);
         cpu_set_pt(g_proc[c].cr3); enter_ring3(g_proc[c].ctx.rip, g_proc[c].ctx.rsp); }
-    g_preempt_on=0; g_sched_active=0; cpu_set_pt(kcr3); cpu_irq_on();
+    pk_bkl_restore(bd); g_preempt_on=0; g_sched_active=0; cpu_set_pt(kcr3); cpu_irq_on();
 }
 /* ================= STAGE 9: fork (duplicate the address space) ================= */
 extern void user_trampoline_fork(void);

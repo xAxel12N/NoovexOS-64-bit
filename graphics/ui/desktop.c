@@ -22,7 +22,7 @@
 #include "include/nvx/drivers/acpi/acpi_dev.h"
 #include "include/nvx/apps/office/editor.h"
 
-#include "graphics/ui/desktop_parts/01_xapps_count.c"
-#include "graphics/ui/desktop_parts/02_win_title_icon.c"
-#include "graphics/ui/desktop_parts/03_prop_click.c"
-#include "graphics/ui/desktop_parts/04_desk_win_exposed.c"
+#include "graphics/ui/desktop/app_tiles_and_icons.c"
+#include "graphics/ui/desktop/window_titles_and_bars.c"
+#include "graphics/ui/desktop/desktop_clicks.c"
+#include "graphics/ui/desktop/present_and_pump.c"

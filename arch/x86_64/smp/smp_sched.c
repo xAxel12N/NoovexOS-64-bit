@@ -44,6 +44,13 @@ void smp_tlb_sync(u64 cr3){
         if(!wait)return; __asm__ volatile("pause"); }
 }
 void smp_halt_others(void){ if(g_ncpu>1)ipi_others(IPI_HALT); }
+void smp_nmi_cpu(int cpu){
+    if(cpu<0||cpu>=g_ncpu||!g_cpu[cpu].online||cpu==cpu_id())return;
+    u64 f=cpu_irq_save();
+    if(g_lapic_x2)cpu_wrmsr(0x830,((u64)g_cpu[cpu].apic_id<<32)|0x4400u);
+    else { for(int i=0;i<200000&&(lapic_rd(0x300)&(1u<<12));i++)cpu_pause(); lapic_wr(0x310,g_cpu[cpu].apic_id<<24); lapic_wr(0x300,0x4400u); }
+    cpu_irq_restore(f);
+}
 
 void smp_ipi(regs_t* r,int user){
     struct pcpu* c=PCPU; c->ipis++;
@@ -56,6 +63,7 @@ void ap_timer(regs_t* r,int user){
     struct pcpu* c=PCPU; c->ticks++;
     if(user)c->user_ticks++; else if(!c->js_running&&!bkl_held())c->idle_ticks++;
     lapic_eoi();
+    { extern void nmiwd_check(void); nmiwd_check(); }
     if(user&&c->js_running&&c->jcur>=0&&c->ticks-c->js_slice>=2){ bkl_lock(); jc_preempt(r); }
 }
 static int smp_work_step(void){
@@ -68,12 +76,25 @@ static int smp_work_step(void){
     int ci=cpu_id()&7; __sync_fetch_and_add(&g_core_load[ci],1); __sync_fetch_and_add(&g_core_cycles[ci],g_jobs[found].arg/1000);
     return 1;
 }
+extern volatile u64 g_ticks;
+static volatile u64 g_ap_sweep, g_ap_sweep_ok;
+u64 g_ap_full, g_ap_sweeps, g_ap_skip;
 static void ap_loop(void){
     struct pcpu* c=PCPU;
     for(;;){
         if(c->stop){ c->parked=1; while(c->stop){ cpu_idle(); cpu_irq_off(); } c->parked=0; }
         int ran=0;
-        if(g_smp_sched){ bkl_lock(); int pick=g_smp_sched?jc_pick():-1; if(pick>=0){ jc_enter(pick); ran=1; } bkl_unlock(); }
+        if(g_smp_sched){
+            extern int jc_ap_peek(void);
+            int got=0;
+            if(jc_ap_peek()){ bkl_lock(); got=1; g_ap_full++; }
+            else { u64 t=g_ticks, o=g_ap_sweep;
+                if(t!=o&&__atomic_compare_exchange_n(&g_ap_sweep,&o,t,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){
+                    if(t-g_ap_sweep_ok>=5){ bkl_lock(); got=1; } else got=bkl_try();
+                    if(got){ g_ap_sweeps++; g_ap_sweep_ok=t; } else g_ap_skip++;
+                } else g_ap_skip++; }
+            if(got){ int pick=g_smp_sched?jc_pick():-1; if(pick>=0){ jc_enter(pick); ran=1; } bkl_unlock(); }
+        }
         { extern int wk_ap_turn(void); if(wk_ap_turn())ran=1; }
         if(!ran&&!smp_work_step()){ u64 it0=cpu_tsc(); cpu_idle(); cpu_irq_off(); extern void cpupower_idle_add(u64); cpupower_idle_add(cpu_tsc()-it0); }
         { extern void cpupower_tick(void); cpupower_tick(); }

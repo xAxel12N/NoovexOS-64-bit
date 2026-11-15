@@ -29,7 +29,8 @@ typedef struct { int s, e, y, h, asc, pg, w, x0; } wline_t;
 static wc_t* D=0; static int N=0, CAP=0; static wimg_t IM[WP_MAXI]; static int NIM=0;
 static wline_t* LN=0; static int NL=0, NPG=1, dirty=1;
 static int cur=0, sa=0, scrolly=0, tfam=0, tsz=4, tfl=0; static u32 tcol=0x000000; static int tal=0;
-static char wp_name[64]="Document1.docx"; static int wp_mod=0, wp_slot=-1;
+static char wp_name[64]="Document1.docx"; static int wp_mod=0, wp_slot=-1, wp_warned=0;
+static int wp_name_used(const char* n){ for(int j=0;j<FS_N;j++) if(FS[j].used&&j!=wp_slot&&seq(FS[j].name,n))return 1; return 0; }
 static int px0=0, py0=0, pvx=0, pvy=0, pvw=1, pvh=1;
 static int modal=0, mlist[64], mn=0; static char mtext[64]; static int mtl=0;
 static int bx_[48], by_[48], bw_[48], bh_[48], bid_[48], bn=0;
@@ -225,15 +226,21 @@ static int open_docx(int slot){
     if(N>1){ N--; D[N-1].ch='\n'; }
     kfree(x); if(rels)kfree(rels); cur=sa=0; dirty=1; wp_mod=0; ucnt=0; return 0; }
 static int open_txt(int slot){ doc_reset(); const char* t=fsd(slot); int n=FS[slot].len; for(int i=0;i<n;i++){ u8 c=(u8)t[i]; if(c=='\r')continue; if(c=='\n'){ push_ch('\n',0,4,0,0,0); continue; } if(c=='\t'||c>=32)push_ch(c<128||c>=160?c:'?',0,4,0,0,0); } if(N>1){ N--; D[N-1].ch='\n'; } cur=sa=0; dirty=1; wp_mod=0; ucnt=0; return 0; }
-int writer_open_slot(int k){
+static int wr_open_slot(int k){
     if(k<0||!FS[k].used)return -1; if(!D)doc_reset();
     int r=fext_eq(FS[k].name,"docx")?open_docx(k):open_txt(k);
     if(r==0){ int i=0; for(;FS[k].name[i]&&i<63;i++)wp_name[i]=FS[k].name[i]; wp_name[i]=0; if(!fext_eq(wp_name,"docx")){ int d=-1; for(int j=0;wp_name[j];j++)if(wp_name[j]=='.')d=j; if(d<0)d=i; if(d<58){ scopy(wp_name+d,".docx"); } } wp_slot=k; }
     open_win(W_WRITER); return r; }
-static void do_save(void){ int r=save_docx(wp_name); char t[96],*q=t; q=scopy(q,r>=0?"Saved ":"Could not save "); q=scopy(q,wp_name); *q=0; toast(t); }
+int writer_open_slot(int k){
+    if(k<0||!FS[k].used)return -1;
+    if(D&&wp_mod&&!wp_warned&&WN[W_WRITER].open){ wp_warned=1; toast("Writer has unsaved changes - open again to discard, or Save first"); focus_win(W_WRITER); return -1; } wp_warned=0;
+    return wr_open_slot(k); }
+static void cmd(int id);
+static void do_save(void){ if(wp_name_used(wp_name)){ cmd(4); toast("A file with that name already exists - type another name"); return; } wp_warned=0; int r=save_docx(wp_name); char t[96],*q=t; q=scopy(q,r>=0?"Saved ":"Could not save "); q=scopy(q,wp_name); *q=0; toast(t); }
 static void mlist_build(int images){ mn=0; for(int k=0;k<FS_N&&mn<64;k++){ if(!FS[k].used)continue; const char* nm=FS[k].name; int ok=images?(fext_eq(nm,"png")||fext_eq(nm,"jpg")||fext_eq(nm,"jpeg")):(fext_eq(nm,"docx")||fext_eq(nm,"txt")||fext_eq(nm,"md")); if(ok)mlist[mn++]=k; } }
 static void cmd(int id){
-    if(id==1){ snap(3); doc_reset(); scopy(wp_name,"Document1.docx"); wp_mod=0; wp_slot=-1; }
+    if(id==1||id==2){ if(wp_mod&&!wp_warned){ wp_warned=1; toast("Unsaved changes - press again to discard, or Save first"); return; } wp_warned=0; }
+    if(id==1){ snap(3); doc_reset(); wp_mod=0; wp_slot=-1; scopy(wp_name,"Document1.docx"); for(int t=2;t<1000&&wp_name_used(wp_name);t++){ char* q=scopy(wp_name,"Document"); q=udec(q,(u32)t); scopy(q,".docx"); } }
     else if(id==2){ modal=1; mlist_build(0); }
     else if(id==3){ do_save(); }
     else if(id==4){ modal=3; int i=0; for(;wp_name[i]&&i<63;i++)mtext[i]=wp_name[i]; mtext[i]=0; mtl=i; }
@@ -273,7 +280,7 @@ static void click_doc(int px,int py,int extend){ layout(); int best=-1, bd=1<<30
     if(best<0)return; cur=pos_at(best,px-px0-PGM); if(!extend)sa=cur; pick_style(); }
 void writer_click(int px,int py){
     if(modal){ for(int k=bn-1;k>=0;k--) if(px>=bx_[k]&&px<bx_[k]+bw_[k]&&py>=by_[k]&&py<by_[k]+bh_[k]&&bid_[k]>=100){ int s=mlist[bid_[k]-100];
-                if(modal==1){ modal=0; writer_open_slot(s); } else { modal=0; char* d=fsd(s); int ii=add_image((const u8*)d,FS[s].len); if(ii<0)toast("Could not read that picture"); else { snap(3); del_sel(); ins(0xFFFC,(u16)(ii+1)); } } return; }
+                if(modal==1){ modal=0; wr_open_slot(s); } else { modal=0; char* d=fsd(s); int ii=add_image((const u8*)d,FS[s].len); if(ii<0)toast("Could not read that picture"); else { snap(3); del_sel(); ins(0xFFFC,(u16)(ii+1)); } } return; }
         return; }
     for(int k=bn-1;k>=0;k--) if(px>=bx_[k]&&px<bx_[k]+bw_[k]&&py>=by_[k]&&py<by_[k]+bh_[k]){ cmd(bid_[k]); return; }
     if(px>=pvx&&px<pvx+pvw-12&&py>=pvy&&py<pvy+pvh) click_doc(px,py,kshift); }
@@ -282,6 +289,7 @@ void writer_wheel(int d){ scrolly-=d*60; if(scrolly<0)scrolly=0; }
 static void move(int np,int ext){ if(np<0)np=0; if(np>N-1)np=N-1; cur=np; if(!ext)sa=cur; pick_style(); ensure_visible(); }
 void writer_key(int c){
     if(!D)doc_reset();
+    { extern int g_key_ctrl; if(!g_key_ctrl&&!kdown[0x1D])wp_warned=0; }
     if(modal){ if(c==27){ modal=0; return; } if(modal==3){ if(c=='\n'||c=='\r'){ if(mtl){ mtext[mtl]=0; if(!fext_eq(mtext,"docx")&&mtl<58){ scopy(mtext+mtl,".docx"); } int i=0; for(;mtext[i]&&i<63;i++)wp_name[i]=mtext[i]; wp_name[i]=0; modal=0; do_save(); } return; }
             if(c==8||c==127){ if(mtl)mtl--; mtext[mtl]=0; return; } if(c>=32&&c<127&&c!='/'&&mtl<50){ mtext[mtl++]=(char)c; mtext[mtl]=0; } } return; }
     extern int g_key_ctrl, g_key_shift; int ctrl=g_key_ctrl||kdown[0x1D]; int ext=g_key_shift||kshift;

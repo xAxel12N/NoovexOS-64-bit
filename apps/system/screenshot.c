@@ -21,7 +21,7 @@ void gq_blend(int d,int x,int y,int w,int h,u32 c,int a);
 
 int g_ss_on=0;
 u32* g_clip_img=0; int g_clip_iw=0, g_clip_ih=0;
-char g_ss_last[80];
+char g_ss_last[144];
 static int ss_mode=0, ss_x0, ss_y0, ss_x1, ss_y1, ss_have=0, ss_drag=0, ss_pending=0, ss_bprev=0, ss_pick=-1;
 static int ss_hx[8], ss_hy[8], ss_hw[8], ss_hh[8], ss_hid[8], ss_hn=0;
 static void ss_hit(int x,int y,int w,int h,int id){ if(ss_hn<8){ ss_hx[ss_hn]=x; ss_hy[ss_hn]=y; ss_hw[ss_hn]=w; ss_hh[ss_hn]=h; ss_hid[ss_hn]=id; ss_hn++; } }
@@ -91,7 +91,7 @@ static void ss_capture(int x,int y,int w,int h){
     p=scopy(p,".png"); *p=0;
     int r=ss_store(nm,png,n); kfree(png);
     p=g_ss_last; { extern char g_home[]; p=scopy(p,g_home); } p=scopy(p,"/Pictures/"); p=scopy(p,nm); *p=0;
-    { extern void klog(const char*); char t[120],*q=t; q=scopy(q,"screenshot: "); q=udec(q,(u32)w); *q++='x'; q=udec(q,(u32)h); q=scopy(q,", "); q=udec(q,(u32)(n/1024)); q=scopy(q," KB, "); q=scopy(q,r>=0?g_ss_last:"not saved"); *q=0; klog(t); }
+    { extern void klog(const char*); char t[224],*q=t; q=scopy(q,"screenshot: "); q=udec(q,(u32)w); *q++='x'; q=udec(q,(u32)h); q=scopy(q,", "); q=udec(q,(u32)(n/1024)); q=scopy(q," KB, "); q=scopy(q,r>=0?g_ss_last:"not saved"); *q=0; klog(t); }
     toast(r>=0?"Screenshot saved to Pictures and copied":"Screenshot copied, but it could not be saved"); }
 static int ss_win_at(int x,int y){ int top=-1,tz=-1; for(int i=0;i<NWIN;i++) if(WN[i].open&&!WN[i].min&&in_rect(x,y,WN[i].x,WN[i].y,WN[i].w,WN[i].h)&&WN[i].z>tz){ tz=WN[i].z; top=i; } return top; }
 static void ss_norm(int* x,int* y,int* w,int* h){ int a=ss_x0<ss_x1?ss_x0:ss_x1, b=ss_y0<ss_y1?ss_y0:ss_y1; *x=a; *y=b; *w=(ss_x0<ss_x1?ss_x1-ss_x0:ss_x0-ss_x1)+1; *h=(ss_y0<ss_y1?ss_y1-ss_y0:ss_y0-ss_y1)+1; }

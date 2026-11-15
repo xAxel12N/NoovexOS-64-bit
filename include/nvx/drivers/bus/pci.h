@@ -15,5 +15,9 @@ void pci_cfgw(int bus,int slot,int fn,int off,u32 v);
 int pci_find(int cls,int sub,int prog,int* obus,int* oslot,int* ofn);
 void pci_scan(void);
 void pci_quiesce(void);
+int pci_find_cap(int bus,int slot,int fn,int id);
+int pci_parent_bridge(int bus,int* ob,int* os,int* of);
+int pci_enable_upstream(int bus);
+int pci_aspm_off(int bus,int slot,int fn);
 
 #endif

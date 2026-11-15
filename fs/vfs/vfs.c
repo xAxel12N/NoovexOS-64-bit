@@ -37,11 +37,12 @@ static void procbuf_grow(void){ if(g_proccap>=PROCCAP)return; extern void* kmall
 static int procfs_match(const char* p){ if(!(p[0]=='/'&&p[1]=='p'&&p[2]=='r'&&p[3]=='o'&&p[4]=='c'&&(p[5]=='/'||p[5]==0)))return 0; procbuf_grow(); return procfs_build(p,g_procbuf,g_proccap)>=0; }
 static int procfs_build(const char* p,char* out,int cap){
     char* o=out; const char* leaf=p+5; while(*leaf=='/')leaf++;
+    { extern int lx_proc_sys_gen(const char*,char*,int); int n=lx_proc_sys_gen(p,out,cap); if(n>=0&&n<cap){ out[n]=0; return n; } }
     #define PW(str) do{ const char* z=str; while(*z&&(o-out)<cap-1)*o++=*z++; }while(0)
     #define PN(n) do{ char nb[16]; int L=0; unsigned v=(unsigned)(n); if(!v)nb[L++]='0'; char t[16]; int ti=0; while(v){t[ti++]='0'+v%10;v/=10;} while(ti)nb[L++]=t[--ti]; for(int q=0;q<L&&(o-out)<cap-1;q++)*o++=nb[q]; }while(0)
     if(seq((char*)leaf,"meminfo")){ extern int proc_gen(const char*,char*,int); if(cap>=1024){ int n=proc_gen("/proc/meminfo",o,cap-1); if(n>0)o+=n; } }
     else if(seq((char*)leaf,"uptime")){ PN((unsigned)(g_ticks/100)); PW(" ticks\n"); }
-    else if(seq((char*)leaf,"version")){ PW("NoovexOS 64 v10.86 (from-scratch, Unix-like)\n"); }
+    else if(seq((char*)leaf,"version")){ PW("NoovexOS 64 v11.10 (from-scratch, Unix-like)\n"); }
     else if(seq((char*)leaf,"fb")){ PN(W); PW(" "); PN(H); PW(" 32 "); PN(W*4); PW("\n"); }
     else if(seq((char*)leaf,"mounts")){ for(int i=0;i<g_vfs_n;i++){ PW(g_vfs[i]->name); PW("\n"); } PW("rootfs\n"); }
     else if(!*leaf){ PW("meminfo\nuptime\nversion\ncpuinfo\nmounts\nfb\n"); }

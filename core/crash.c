@@ -6,6 +6,7 @@
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
 #include "include/nvx/core/proc/sched.h"
 #include "include/nvx/drivers/usb/xhci.h"
+#include "include/nvx/arch/x86_64/time/hrtimer.h"
 
 extern volatile u64 g_ticks;
 extern volatile u32 g_ml_beat;
@@ -40,7 +41,7 @@ int kpop(void);
 #define CX_CL_W 120
 #define CX_STK_MAX 80
 #define CX_STK_MAGIC 0x5AFE57AC4B0C0DE5ULL
-#define CX_VERS "NoovexOS 64 v10.86"
+#define CX_VERS "NoovexOS 64 v11.10"
 
 u8 g_ksyms[CX_KSYM_CAP] __attribute__((section(".data.ksyms"),aligned(16)))={'N','V','X','K','S','Y','M','1'};
 u64 __stack_chk_guard=0x00E4B79A5C3D2F17ULL;
@@ -52,6 +53,11 @@ static char g_cx_rep[CX_REP_CAP]; static int g_cx_rep_n;
 static char g_cx_frz_rep[CX_REP_CAP]; static int g_cx_frz_n; static char g_cx_frz_scr[CX_REP_CAP];
 static volatile int g_cx_frz_shown, g_cx_frz_saved, g_cx_frz_redraw, g_cx_frz_done_s;
 static int g_cx_boot_done, g_cx_notice_t;
+const char* volatile g_in_what; volatile int g_in_win=-1; char g_in_arg[64];
+static char g_bkl_box[600]; static volatile int g_bkl_box_n, g_bkl_box_s, g_bkl_box_new; static volatile u64 g_bkl_box_t;
+void crumb(const char* s);
+void in_mark(const char* what,int win,const char* arg,int n){ crumb(what); int k=0; if(arg){ while(*arg==' '&&n)arg++,n--; while(arg[k]&&k<63&&(n<0||k<n)){ g_in_arg[k]=arg[k]; k++; } } g_in_arg[k]=0; g_in_win=win; g_in_what=what; }
+void in_unmark(const char* what,int win){ g_in_arg[0]=0; g_in_win=win; g_in_what=what; }
 static u64 g_cx_desk_t; unsigned long g_cx_heap_kb;
 static char g_cx_drv[24]; static char g_cx_drv_skip[8][24]; static int g_cx_drv_nskip, g_cx_drv_store, g_cx_drv_notice;
 static struct { const char* nm; int idx; u64* base; } g_cx_stk[CX_STK_MAX]; static int g_cx_stk_n; static int g_cx_stk_hit;
@@ -64,6 +70,39 @@ static void cx_c(cx_buf* b,char c){ if(b->p<b->e)*b->p++=c; }
 static void cx_s(cx_buf* b,const char* s){ while(s&&*s&&b->p<b->e)*b->p++=*s++; }
 static void cx_u(cx_buf* b,u64 v){ char t[24]; int n=0; do{ t[n++]=(char)('0'+v%10); v/=10; }while(v); while(n)cx_c(b,t[--n]); }
 static void cx_x(cx_buf* b,u64 v){ static const char H[]="0123456789abcdef"; cx_s(b,"0x"); int st=0; for(int i=60;i>=0;i-=4){ int d=(int)((v>>i)&15); if(d||st||!i){ cx_c(b,H[d]); st=1; } } }
+#define CRUMB_N 64
+typedef struct { u64 tsc; const char* s; const char* inw; volatile u32 seq; int stage; } crumb_t;
+static crumb_t g_crumb[CRUMB_N];
+static volatile u32 g_crumb_n;
+volatile int g_crumb_serial=-1;
+static const char* volatile g_crumb_seen[4];
+static volatile u32 g_crumb_sk;
+static inline u64 crumb_tsc(void){ return cpu_tsc(); }
+void crumb_serial_detect(void){ if(g_crumb_serial>=0)return; outb(0x3F8+7,0x5A); g_crumb_serial=(inb(0x3F8+7)==0x5A&&inb(0x3F8+5)!=0xFF)?1:0; }
+static void crumb_ser(const char* s){
+    for(int i=0;i<4;i++) if(g_crumb_seen[i]==s) return;
+    g_crumb_seen[__atomic_fetch_add(&g_crumb_sk,1,__ATOMIC_RELAXED)&3]=s;
+    if(!(inb(0x3F8+5)&0x20)) return;
+    outb(0x3F8,'@'); int k=0; while(s[k]&&k<13){ outb(0x3F8,(u8)s[k]); k++; } outb(0x3F8,'\r'); outb(0x3F8,'\n');
+}
+void crumb(const char* s){
+    u32 i=__atomic_fetch_add(&g_crumb_n,1,__ATOMIC_RELAXED); crumb_t* e=&g_crumb[i&(CRUMB_N-1)];
+    e->seq=0; __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    e->tsc=crumb_tsc(); e->s=s; e->inw=g_in_what; e->stage=g_ml_stage;
+    __atomic_signal_fence(__ATOMIC_SEQ_CST); e->seq=i+1u;
+    if(g_crumb_serial>0) crumb_ser(s);
+}
+int crumb_dump(char* out,int max){
+    if(!out||max<=0) return 0;
+    cx_buf b={out,out+max-1}; u32 n=g_crumb_n; u64 now=crumb_tsc(); u32 c=n<8u?n:8u; u64 khz=g_hr.tsc_hz/1000ULL;
+    for(u32 k=0;k<c;k++){ u32 j=n-1u-k; crumb_t* e=&g_crumb[j&(CRUMB_N-1)];
+        const char* s=e->s; const char* w=e->inw; u64 t=e->tsc; int st=e->stage;
+        if(e->seq!=j+1u){ cx_s(&b,"  (being written)\n"); continue; }
+        cx_s(&b,"  "); cx_s(&b,s?s:"?"); cx_s(&b,"  stage "); cx_u(&b,(u64)(st<0?0:st));
+        if(w){ cx_s(&b,"  in: "); cx_s(&b,w); }
+        if(khz&&now>=t){ cx_s(&b,"  "); cx_u(&b,(now-t)/khz); cx_s(&b," ms ago"); }
+        cx_c(&b,'\n'); }
+    *b.p=0; return (int)(b.p-out); }
 static int cx_eq(const char* a,const char* b){ while(*a&&*a==*b){ a++; b++; } return *a==*b; }
 static int cx_ieq(const char* a,const char* b){ while(*a&&*b){ char x=*a,y=*b; if(x>='a'&&x<='z')x=(char)(x-32); if(y>='a'&&y<='z')y=(char)(y-32); if(x!=y)return 0; a++; b++; } return *a==*b; }
 static void cx_cp(char* d,const char* s,int n){ int k=0; while(s&&s[k]&&k<n-1){ d[k]=s[k]; k++; } d[k]=0; }
@@ -123,6 +162,8 @@ static int cx_build(char* out,int cap,int kind,regs_t* r,const char* msg,u64 cr2
     else { cx_s(&b,msg?msg:"unspecified fatal error"); }
     cx_c(&b,'\n');
     if(r){ kname_fmt(t,sizeof t,r->rip); cx_s(&b,"Where: "); cx_s(&b,t); cx_s(&b,(r->cs&3)==3?"  (user mode)":""); cx_c(&b,'\n'); }
+    { void cx_in_fmt(cx_buf*); if(g_in_what){ cx_s(&b,"Input action: "); cx_in_fmt(&b); cx_c(&b,'\n'); } }
+    if(g_crumb_n){ cx_s(&b,"Last steps (newest first):\n"); int m=crumb_dump(b.p,(int)(b.e-b.p)+1); b.p+=m; }
     if(g_cx_drv[0]){ cx_s(&b,"Driver being started: "); cx_s(&b,g_cx_drv); cx_c(&b,'\n'); }
     if(r&&(r->cs&3)==0){ u64 fr[16]; int n=crash_bt(r->rbp,fr,16); if(n>0&&fr[0]==r->rip){ for(int i=1;i<n;i++)fr[i-1]=fr[i]; n--; }
         cx_s(&b,"\nCall chain (newest first):\n"); kname_fmt(t,sizeof t,r->rip); cx_s(&b,"  #0 "); cx_s(&b,t); cx_c(&b,'\n');
@@ -222,7 +263,7 @@ static void cx_panic_main(void){
     y=cx_lines(mx,y,scr,rgb(255,232,232),mw,(int)H-90);
     int ys=(int)H-70; cx_box(0,ys-6,(int)W,76,rgb(80,10,18));
     cx_text(mx,ys,"Saving the report...",rgb(255,255,255),1,mw);
-    int u=0,f=0; { extern volatile int g_heap_busy; g_cx_nofs=g_heap_busy; g_cx_nousb=cx_in_usb(g_cx_pr.rip); } cx_save(g_cx_rep,g_cx_rep_n,&u,&f); if(!disk_ok)f=0;
+    int u=0,f=0; { extern volatile int g_heap_busy, g_disk_busy; g_cx_nofs=g_heap_busy||g_disk_busy; g_cx_nousb=cx_in_usb(g_cx_pr.rip); } cx_save(g_cx_rep,g_cx_rep_n,&u,&f); if(!disk_ok)f=0;
     cx_box(0,ys-6,(int)W,76,rgb(80,10,18));
     cx_text(mx,ys,u&&f?"Report saved: CRASH.TXT on the USB stick and crash-report.txt in Files.":u?"Report saved: CRASH.TXT on the USB stick.":f?"Report saved: crash-report.txt in Files.":"No USB stick or installed disk to save to - please take a photo of this screen.",rgb(255,255,255),1,mw);
     int rn=cx_rec_note();
@@ -230,7 +271,8 @@ static void cx_panic_main(void){
     (void)cx_fb_base;
     cx_panic_wait(rn?15:0,mx,ys,mw); }
 
-void crash_panic(regs_t* r,const char* msg,u64 rip,u64 rbp){
+volatile int g_cx_panicking;
+void crash_panic(regs_t* r,const char* msg,u64 rip,u64 rbp){ { extern volatile int g_nmiwd_on; extern volatile int g_frz_hold; g_nmiwd_on=0; g_frz_hold=1; g_cx_panicking=1; }
     static volatile int in_panic=0;
     cpu_irq_off();
     if(in_panic){ for(;;)cpu_stop(); }
@@ -242,23 +284,123 @@ void crash_panic(regs_t* r,const char* msg,u64 rip,u64 rbp){
 
 void __stack_chk_fail(void){ crash_panic(0,"!Xstack protector",(u64)__builtin_return_address(0),(u64)__builtin_frame_address(0)); }
 
+void cx_in_fmt(cx_buf* b){
+    extern const char* APPNAME[]; enum{ CX_NWIN=28 }; const char* w=g_in_what; if(!w)return; int wi=g_in_win;
+    cx_s(b,w); if(g_in_arg[0]){ cx_s(b," '"); cx_s(b,g_in_arg); cx_s(b,"'"); }
+    if(wi>=0&&wi<CX_NWIN&&APPNAME[wi]){ cx_s(b," ("); cx_s(b,APPNAME[wi]); cx_s(b," window)"); } }
+static void cx_where(cx_buf* b){
+    extern u64 g_ml_t; extern const char* lag_stage_name(int); extern u8 g_lag_st[16]; extern u16 g_lag_ms[16]; extern u64 g_lag_at[16]; extern u32 g_lag_n;
+    u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; u64 now=hr_rdtsc(); int st=g_ml_stage;
+    cx_s(b,"last step: "); cx_s(b,lag_stage_name(st)); cx_s(b," (stage "); cx_u(b,(u64)(st<0?0:st)); cx_s(b,")");
+    if(g_in_what){ cx_s(b,": "); cx_in_fmt(b); }
+    if(g_ml_t&&now>g_ml_t){ cx_s(b,", started "); cx_u(b,(now-g_ml_t)/hz); cx_s(b," s ago"); }
+    if(g_lag_n){ u32 j=(g_lag_n-1u)%16u; cx_s(b,"; last slow: "); cx_s(b,lag_stage_name(g_lag_st[j])); cx_s(b," "); cx_u(b,g_lag_ms[j]); cx_s(b," ms, "); cx_u(b,(g_ticks-g_lag_at[j])/100u); cx_s(b," s ago"); } }
+
+volatile int g_frz_sleep;
+static volatile int g_frz_bkl_busy; static u64 g_frz_bkl_last;
+extern volatile int g_frz_hold; extern volatile int g_frz_sleep;
+void frz_bkl_wait(int me,int owner,u64 w0){
+    if(me!=0)nmiwd_check();
+    if(!FBB||!W||!H)return;
+    if(g_frz_hold||g_frz_sleep)return;
+    u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; u64 now=hr_rdtsc();
+    if(now<w0)return;
+    u64 s=(now-w0)/hz;
+    if(s<5||s==g_frz_bkl_last)return;
+    if(__atomic_exchange_n(&g_frz_bkl_busy,1,__ATOMIC_ACQUIRE))return;
+    if(s!=g_frz_bkl_last){ g_frz_bkl_last=s;
+        int bw=(int)W-80; if(bw>1100)bw=1100; int bx=40, by=30;
+        char t[256]; cx_buf b={t,t+255};
+        cx_s(&b,"NoovexOS is stuck ("); cx_u(&b,s); cx_s(&b," s): CPU "); cx_u(&b,(u64)me); cx_s(&b," waits for the kernel lock held by CPU "); if(owner<0)cx_s(&b,"none"); else cx_u(&b,(u64)owner); *b.p=0;
+        char t2[256]; cx_buf b2={t2,t2+255}; cx_where(&b2); *b2.p=0;
+        cx_box(bx,by,bw,64,rgb(150,16,24)); cx_box(bx,by,bw,3,rgb(255,120,130));
+        cx_text(bx+14,by+12,t,rgb(255,255,255),1,bw-28); cx_text(bx+14,by+36,t2,rgb(255,226,226),1,bw-28);
+        { int k=0; for(int i=0;t[i]&&k<298;i++)g_bkl_box[k++]=t[i]; g_bkl_box[k++]='\n'; for(int i=0;t2[i]&&k<597;i++)g_bkl_box[k++]=t2[i]; g_bkl_box[k++]='\n'; g_bkl_box[k]=0; g_bkl_box_n=k; g_bkl_box_s=(int)s; g_bkl_box_t=hr_rdtsc(); __atomic_store_n(&g_bkl_box_new,1,__ATOMIC_RELEASE); } }
+    __atomic_store_n(&g_frz_bkl_busy,0,__ATOMIC_RELEASE); }
+
+volatile int g_nmiwd_on=1;
+static volatile u64 g_nw_lt, g_nw_t0; static volatile int g_nw_lock, g_nw_sent, g_nw_hit, g_nw_busy, g_nw_drawn, g_nw_gone, g_nw_secs;
+static u64 g_nw_rip, g_nw_rsp, g_nw_rfl; static int g_nw_user;
+static char g_nw_l[4][256]; static char g_nw_cr[1200];
+void nmiwd_check(void){
+    if(!g_nmiwd_on||!g_smp_on||cpu_id()==0)return;
+    { extern int g_ticks_live; if(!g_ticks_live||g_frz_hold||g_frz_sleep){ g_nw_t0=0; return; } }
+    if(__atomic_exchange_n(&g_nw_lock,1,__ATOMIC_ACQUIRE))return;
+    u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; u64 now=hr_rdtsc(); u64 t=g_ticks;
+    if(t!=g_nw_lt||!g_nw_t0){ if(g_nw_sent){ g_nw_secs=(int)((now>g_nw_t0?now-g_nw_t0:0)/hz); g_nw_sent=0; if(g_nw_drawn){ g_nw_drawn=0; __atomic_store_n(&g_nw_gone,1,__ATOMIC_RELEASE); } } g_nw_lt=t; g_nw_t0=now; }
+    else if(!g_nw_sent&&now>g_nw_t0&&now-g_nw_t0>=3*hz){ g_nw_sent=1; __atomic_store_n(&g_nw_hit,1,__ATOMIC_RELEASE); smp_nmi_cpu(0); }
+    __atomic_store_n(&g_nw_lock,0,__ATOMIC_RELEASE); }
+void nmiwd_nmi(regs_t* r){
+    if(!__atomic_exchange_n(&g_nw_hit,0,__ATOMIC_ACQ_REL))return;
+    if(cpu_id()!=0||g_ticks!=g_nw_lt||!FBB||!W||!H)return;
+    int nw_ifon=(r->rflags&0x200)!=0;
+    if(nw_ifon&&(g_frz_hold||g_frz_sleep||g_cx_panicking))return;
+    if(__atomic_exchange_n(&g_nw_busy,1,__ATOMIC_ACQUIRE))return;
+    g_nw_rip=r->rip; g_nw_rsp=r->rsp; g_nw_rfl=r->rflags; g_nw_user=(r->cs&3)!=0;
+    { cx_buf b={g_nw_l[0],g_nw_l[0]+255}; cx_s(&b,nw_ifon?"NoovexOS froze: CPU 0 timer ticks stopped for 3 s with interrupts ON (timer IRQ lost; NMI watchdog)":"NoovexOS froze: CPU 0 has had interrupts off for 3 s (NMI watchdog, sent by another CPU)"); *b.p=0; }
+    { cx_buf b={g_nw_l[1],g_nw_l[1]+255}; char nm[96]; cx_s(&b,"stuck in: "); if(!g_nw_user){ kname_fmt(nm,sizeof nm,g_nw_rip); cx_s(&b,nm); cx_s(&b,"  "); } else cx_s(&b,"(user program) ");
+        cx_s(&b,"rip="); cx_x(&b,g_nw_rip); cx_s(&b," rsp="); cx_x(&b,g_nw_rsp); cx_s(&b," rflags="); cx_x(&b,g_nw_rfl); *b.p=0; }
+    { cx_buf b={g_nw_l[2],g_nw_l[2]+255}; cx_s(&b,"called from: "); u64 bt[6]; int n=g_nw_user?0:crash_bt(r->rbp,bt,6);
+        for(int i=0;i<n;i++){ const char* nm=0; u64 off=0; if(i)cx_s(&b," < "); if(kname_find(bt[i],&nm,&off)&&nm)cx_s(&b,nm); else cx_x(&b,bt[i]); } if(!n)cx_s(&b,"(unknown)"); *b.p=0; }
+    { cx_buf b={g_nw_l[3],g_nw_l[3]+255}; cx_where(&b); *b.p=0; }
+    g_nw_cr[0]=0; crumb_dump(g_nw_cr,(int)sizeof g_nw_cr);
+    int nl=0; for(int i=0;g_nw_cr[i];i++) if(g_nw_cr[i]=='\n')nl++; if(g_nw_cr[0])nl++; if(nl>9)nl=9;
+    int bw=(int)W-80; if(bw>1100)bw=1100; int bx=40, by=110, bh=12+4*24+(nl?nl*17+8:0)+6;
+    cx_box(bx,by,bw,bh,rgb(150,16,24)); cx_box(bx,by,bw,3,rgb(255,120,130));
+    cx_text(bx+14,by+12,g_nw_l[0],rgb(255,255,255),1,bw-28);
+    for(int i=1;i<4;i++)cx_text(bx+14,by+12+i*24,g_nw_l[i],rgb(255,226,226),1,bw-28);
+    if(nl)cx_lines(bx+14,by+12+4*24+4,g_nw_cr,rgb(255,200,120),bw-28,by+bh-4);
+    g_nw_drawn=1;
+    __atomic_store_n(&g_nw_busy,0,__ATOMIC_RELEASE); }
+
 static void cx_frz_draw(int secs){
     if(!FBB||!W||!H)return; int bw=(int)W-80; if(bw>1100)bw=1100; int bx=40, by=30, bh=(int)H-60; if(bh>48*17)bh=48*17;
     cx_box(bx,by,bw,bh,rgb(40,10,16)); cx_box(bx,by,bw,3,rgb(240,90,100));
     char t[80]; cx_buf b={t,t+79}; cx_s(&b,"NoovexOS is not responding ("); cx_u(&b,(u64)secs); cx_s(&b," s) - the report below is kept"); *b.p=0;
     cx_text(bx+14,by+12,t,rgb(255,255,255),1,bw-28);
-    cx_lines(bx+14,by+36,g_cx_frz_scr,rgb(255,226,226),bw-28,by+bh-18); }
+    { char w[256]; cx_buf b2={w,w+255}; cx_where(&b2); *b2.p=0; cx_text(bx+14,by+36,w,rgb(255,200,120),1,bw-28); }
+    cx_lines(bx+14,by+60,g_cx_frz_scr,rgb(255,226,226),bw-28,by+bh-18); }
+
+volatile int g_frz_down; int web_busy(void) __attribute__((weak)); static int cx_web_busy(void){ return web_busy&&web_busy(); }
+static volatile int g_cx_busy_shown, g_cx_busy_redraw, g_cx_busy_done_s, g_cx_busy_esc;
+static char g_cx_busy_l[4][256]; static char g_cx_busy_cr[1200];
+static void cx_busy_draw(int secs){
+    if(!FBB||!W||!H)return;
+    { cx_buf b={g_cx_busy_l[0],g_cx_busy_l[0]+255}; cx_s(&b,"NoovexOS is busy ("); cx_u(&b,(u64)secs); cx_s(&b," s): the desktop is waiting inside a task that has not finished"); *b.p=0; }
+    { cx_buf b={g_cx_busy_l[1],g_cx_busy_l[1]+255}; cx_s(&b,"busy in: "); if(g_in_what)cx_in_fmt(&b); else cx_s(&b,"(no click or key handler - a main loop step)"); *b.p=0; }
+    { cx_buf b={g_cx_busy_l[2],g_cx_busy_l[2]+255}; cx_where(&b); *b.p=0; }
+    { cx_buf b={g_cx_busy_l[3],g_cx_busy_l[3]+255}; cx_s(&b,g_cx_busy_esc?"Esc pressed - a busy web page will stop; other tasks must finish":(cx_web_busy()?"Please wait - it is still working. Esc stops the busy web page.":"Please wait - it is still working.")); *b.p=0; }
+    g_cx_busy_cr[0]=0; crumb_dump(g_cx_busy_cr,(int)sizeof g_cx_busy_cr);
+    int nl=0; for(int i=0;g_cx_busy_cr[i];i++) if(g_cx_busy_cr[i]=='\n')nl++; if(g_cx_busy_cr[0])nl++; if(nl>9)nl=9;
+    int bw=(int)W-80; if(bw>1100)bw=1100; int bx=40, by=30, bh=12+4*24+(nl?nl*17+8:0)+6;
+    cx_box(bx,by,bw,bh,rgb(92,58,8)); cx_box(bx,by,bw,3,rgb(255,190,80));
+    cx_text(bx+14,by+12,g_cx_busy_l[0],rgb(255,255,255),1,bw-28);
+    for(int i=1;i<4;i++)cx_text(bx+14,by+12+i*24,g_cx_busy_l[i],rgb(255,236,200),1,bw-28);
+    if(nl)cx_lines(bx+14,by+12+4*24+4,g_cx_busy_cr,rgb(255,214,140),bw-28,by+bh-4); }
+static void cx_busy_tick(void){
+    extern volatile u32 g_ml_top, g_nest_beat, g_nest_live; extern volatile int g_busy_esc; extern volatile unsigned char kdown[128];
+    static u32 lt, ll, ln, still, nst;
+    if(g_ml_top!=lt||g_nest_live!=ll||!g_ml_top||g_cx_frz_shown||g_frz_down||g_cx_panicking||g_frz_sleep||g_preempt_on||(g_state!=CX_ST_DESKTOP&&g_state!=CX_ST_LIVE)){
+        lt=g_ml_top; ll=g_nest_live; ln=g_nest_beat; nst=0;
+        if(g_cx_busy_shown){ g_cx_busy_done_s=(int)(still/100); g_cx_busy_shown=0; g_cx_busy_redraw=1; }
+        still=0; g_cx_busy_esc=0; return; }
+    if(still<0x7FFFFFF0u)still++;
+    if(g_nest_beat!=ln){ ln=g_nest_beat; nst=0; } else if(nst<0x7FFFFFF0u)nst++;
+    if(still<500||nst>200)return;
+    if(g_cx_busy_shown&&kdown[0x01]&&!g_cx_busy_esc&&cx_web_busy()){ g_cx_busy_esc=1; g_busy_esc=1; cx_busy_draw((int)(still/100)); return; }
+    if(still==500||!g_cx_busy_shown||still%50==0){ g_cx_busy_shown=1; cx_busy_draw((int)(still/100)); } }
 
 volatile int g_frz_hold;
 void freeze_tick(regs_t* r){
     static u32 lb;
-    if(g_frz_hold){ g_frz_still=0; return; }
+    cx_busy_tick();
+    if(g_frz_hold||g_frz_sleep){ g_frz_still=0; return; }
     if(!g_ml_beat||g_ml_beat!=lb||g_preempt_on){ lb=g_ml_beat; if(g_cx_frz_shown){ g_cx_frz_done_s=(int)(g_frz_still/100); g_cx_frz_shown=0; g_cx_frz_redraw=1; } g_frz_still=0; return; }
     if(g_frz_still<0x7FFFFFF0u)g_frz_still++;
-    if(g_frz_still==500){ regs_t c=*r; if((c.cs&3)!=0)c.rbp=0; g_cx_frz_n=cx_build(g_cx_frz_rep,CX_REP_CAP,CRASH_FREEZE,&c,0,0,5,20); cx_build(g_cx_frz_scr,CX_REP_CAP,CRASH_FREEZE,&c,0,0,5,H>=1000?8:4); g_cx_frz_shown=1; g_cx_frz_saved=0; klog("freeze: the main loop has not run for 5 s - report kept"); cx_frz_draw(5); }
+    if(g_frz_still==500){ regs_t c=*r; if((c.cs&3)!=0)c.rbp=0; g_cx_frz_n=cx_build(g_cx_frz_rep,CX_REP_CAP,CRASH_FREEZE,&c,0,0,5,20); cx_build(g_cx_frz_scr,CX_REP_CAP,CRASH_FREEZE,&c,0,0,5,H>=1000?8:4); g_cx_frz_shown=1; g_cx_frz_saved=0; if(!bkl_held()&&bkl_try()){ klog("freeze: the main loop has not run for 5 s - report kept"); bkl_unlock(); } cx_frz_draw(5); }
     else if(g_cx_frz_shown&&g_frz_still%500==0&&g_frz_still<=6000)cx_frz_draw((int)(g_frz_still/100));
-    if(g_frz_still==3000&&g_cx_frz_shown&&!g_cx_frz_saved){ g_cx_frz_saved=1; int u,f; extern volatile int g_heap_busy;
-        g_cx_nousb=cx_in_usb(r->rip); g_cx_nofs=g_heap_busy; cx_save(g_cx_frz_rep,g_cx_frz_n,&u,&f); g_cx_nousb=0; g_cx_nofs=0; klog(u?"freeze: report saved to CRASH.TXT on the USB stick":f?"freeze: report saved to crash-report.txt":"freeze: report could not be saved"); } }
+    if(g_frz_still>=3000&&g_frz_still<=6000&&g_cx_frz_shown&&!g_cx_frz_saved&&!bkl_held()&&bkl_try()){ g_cx_frz_saved=1; int u,f; extern volatile int g_heap_busy;
+        g_cx_nousb=cx_in_usb(r->rip); { extern volatile int g_disk_busy; g_cx_nofs=g_heap_busy||g_disk_busy; } cx_save(g_cx_frz_rep,g_cx_frz_n,&u,&f); g_cx_nousb=0; g_cx_nofs=0; klog(u?"freeze: report saved to CRASH.TXT on the USB stick":f?"freeze: report saved to crash-report.txt":"freeze: report could not be saved"); bkl_unlock(); } }
 
 static int cx_flag_files(const char* nm){ int k=fs_find_name(nm); if(k<0)return -1; char* d=fsd(k); return d?d[0]:-1; }
 static int cx_usb_find(const char* nm){ if(!(msd_ok&&ufat_ok))return -1; for(int i=0;i<ufs_n;i++) if(cx_ieq(ufs[i].name,nm))return i; return -1; }
@@ -284,9 +426,21 @@ int crash_tick(void){
         if(!g_cx_frz_saved&&g_cx_frz_n){ cx_buf a={g_cx_frz_rep+g_cx_frz_n,g_cx_frz_rep+CX_REP_CAP-1}; cx_s(&a,"\nThe system recovered after "); cx_u(&a,(u64)s); cx_s(&a," s.\n"); *a.p=0; g_cx_frz_n=(int)(a.p-g_cx_frz_rep);
             if(fs_save_bin("crash-report.txt",(const u8*)g_cx_frz_rep,g_cx_frz_n,0)>=0&&disk_ok)nvx3_sync_all(); if(msd_ok&&ufat_ok)ufat_write_file("CRASH.TXT",g_cx_frz_rep,g_cx_frz_n); g_cx_frz_saved=1; }
         klog(t); toast(t); }
+    if(g_cx_busy_redraw){ g_cx_busy_redraw=0; need=1; { extern void fb_shadow_invalidate(void); fb_shadow_invalidate(); }
+        char t[400]; cx_buf b={t,t+399}; cx_s(&b,"busy: the desktop was held up for "); cx_u(&b,(u64)g_cx_busy_done_s); cx_s(&b," s - "); cx_s(&b,g_cx_busy_l[1]); *b.p=0; klog(t); }
+    if(__atomic_load_n(&g_bkl_box_new,__ATOMIC_ACQUIRE)&&!g_frz_bkl_busy){ u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; u64 now=hr_rdtsc();
+        if(now>g_bkl_box_t&&now-g_bkl_box_t>2*hz){ g_bkl_box_new=0; g_frz_bkl_last=0; need=1; { extern void fb_shadow_invalidate(void); fb_shadow_invalidate(); }
+            static char sr[CX_REP_CAP]; cx_buf a={sr,sr+CX_REP_CAP-1}; cx_s(&a,CX_VERS); cx_s(&a," - stuck report\n"); cx_s(&a,g_bkl_box); cx_s(&a,"The kernel lock became free again after about "); cx_u(&a,(u64)g_bkl_box_s); cx_s(&a," s and the system recovered.\n"); *a.p=0; int sn=(int)(a.p-sr);
+            { if(fs_save_bin("crash-report.txt",(const u8*)sr,sn,0)>=0&&disk_ok)nvx3_sync_all(); } { if(msd_ok&&ufat_ok)ufat_write_file("CRASH.TXT",sr,sn); }
+            char t[96]; cx_buf b={t,t+95}; cx_s(&b,"NoovexOS was stuck for "); cx_u(&b,(u64)g_bkl_box_s); cx_s(&b," s - report saved as crash-report.txt"); *b.p=0; klog(t); toast(t); } }
+    if(__atomic_load_n(&g_nw_gone,__ATOMIC_ACQUIRE)&&!g_nw_busy){ g_nw_gone=0; need=1; { extern void fb_shadow_invalidate(void); fb_shadow_invalidate(); }
+        static char sr[CX_REP_CAP]; cx_buf a={sr,sr+CX_REP_CAP-1}; cx_s(&a,CX_VERS); cx_s(&a," - frozen with interrupts off (NMI watchdog)\n"); for(int i=0;i<4;i++){ cx_s(&a,g_nw_l[i]); cx_c(&a,'\n'); }
+        if(g_nw_cr[0]){ cx_s(&a,"Last steps:\n"); cx_s(&a,g_nw_cr); cx_c(&a,'\n'); } cx_s(&a,"CPU 0 took interrupts again after about "); cx_u(&a,(u64)g_nw_secs); cx_s(&a," s and the system recovered.\n"); *a.p=0; int sn=(int)(a.p-sr);
+        { if(fs_save_bin("crash-report.txt",(const u8*)sr,sn,0)>=0&&disk_ok)nvx3_sync_all(); } { if(msd_ok&&ufat_ok)ufat_write_file("CRASH.TXT",sr,sn); }
+        klog(g_nw_l[1]); char t[96]; cx_buf b={t,t+95}; cx_s(&b,"NoovexOS froze for "); cx_u(&b,(u64)g_nw_secs); cx_s(&b," s - report saved as crash-report.txt"); *b.p=0; klog(t); toast(t); }
     if(!g_cx_boot_done&&(g_state==CX_ST_DESKTOP||g_state==CX_ST_LIVE)){
         if(!g_cx_desk_t)g_cx_desk_t=g_ticks?g_ticks:1;
-        else if(g_ticks-g_cx_desk_t>=300){ g_cx_boot_done=1; cx_notice();
+        else if(g_ticks-g_cx_desk_t>=300){ g_cx_boot_done=1; cx_notice(); if(cx_flag_files("nmiwd.txt")=='0'||cx_flag_usb("NMIWD.TXT")=='0'){ g_nmiwd_on=0; klog("crash: NMI watchdog is off (crash nmiwd on to turn it back on)"); }
             if(g_cx_drv_notice){ char t[120]; cx_buf b={t,t+119}; cx_s(&b,"The driver '"); for(int i=0;i<g_cx_drv_nskip;i++){ if(i)cx_s(&b,", "); cx_s(&b,g_cx_drv_skip[i]); } cx_s(&b,"' stopped the last start, so it was skipped once."); *b.p=0; notify("Driver skipped",t); g_cx_drv_notice=0; need=1; } } }
     (void)g_cx_notice_t;
     return need; }
@@ -349,8 +503,10 @@ void crash_cmd(const char* a){
     void term_puts(const char*);
     while(*a==' ')a++;
     if(cx_eq(a,"")){
+        if(g_bkl_box_n){ term_puts("Last 'stuck' box this session (CPU waiting for the kernel lock):\n"); term_puts(g_bkl_box); term_puts("\n"); }
         int k=fs_find_name("crash-report.txt"); if(k>=0){ char* d=fsd(k); if(d){ term_puts(d); term_puts("\n"); return; } }
         if(g_cx_frz_n){ term_puts(g_cx_frz_rep); term_puts("\n"); return; }
+        if(g_bkl_box_n)return;
         term_puts("No crash or freeze report has been saved.\n  crash test panic|freeze|stack|smash|heap   cause one on purpose to check the reports\n"); return; }
     if(cx_eq(a,"test panic")){ volatile u64* p=(volatile u64*)0x8000000000000ULL; *p=1; return; }
     if(cx_eq(a,"test msr")){ u64 v=0; int r=cpu_rdmsr_safe(0xDEADBEEFu,&v); term_puts(r?"reading a CPU register that does not exist was refused and recovered - no crash\n":"the CPU accepted the register\n"); return; }
@@ -358,4 +514,7 @@ void crash_cmd(const char* a){
     if(cx_eq(a,"test stack")){ cx_recurse(0); return; }
     if(cx_eq(a,"test smash")){ cx_smash("ABCD"); return; }
     if(cx_eq(a,"test heap")){ void* kmalloc(unsigned long); void kfree(void*); char* p=(char*)kmalloc(24); if(p){ for(int i=0;i<30;i++)p[i]='x'; kfree(p); kfree(p); } term_puts("wrote 6 bytes past a 24-byte block and freed it twice - see the log\n"); return; }
-    term_puts("usage: crash   |   crash test panic|freeze|stack|smash|heap|msr\n"); }
+    if(cx_eq(a,"test hardlock")){ term_puts("interrupts off on this CPU for 8 s - with a second CPU running, the NMI watchdog box should appear after 3 s\n"); u64 hz=g_hr.tsc_hz?g_hr.tsc_hz:1000000000ULL; u64 f=cpu_irq_save(); u64 t=hr_rdtsc(); while(hr_rdtsc()-t<8*hz)cpu_pause(); cpu_irq_restore(f); term_puts("back\n"); return; }
+    if(cx_eq(a,"nmiwd off")||cx_eq(a,"nmiwd on")){ int on=a[7]=='n'; g_nmiwd_on=on; if(disk_ok){ fs_save_bin("nmiwd.txt",(const u8*)(on?"1\n":"0\n"),2,0); nvx3_sync_all(); } if(msd_ok&&ufat_ok)ufat_write_file("NMIWD.TXT",on?"1\n":"0\n",2); term_puts(on?"NMI watchdog on (needs a second CPU)\n":"NMI watchdog off (kept across restarts)\n"); return; }
+    if(cx_eq(a,"nmiwd")){ term_puts(g_nmiwd_on?(g_smp_on?"NMI watchdog: on - another CPU checks CPU 0 every 10 ms\n":"NMI watchdog: on, but idle - it needs a second CPU (smp on)\n"):"NMI watchdog: off\n"); return; }
+    term_puts("usage: crash   |   crash test panic|freeze|stack|smash|heap|msr|hardlock   |   crash nmiwd [on|off]\n"); }

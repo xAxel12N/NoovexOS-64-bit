@@ -46,6 +46,7 @@ void tcol(u32 c){ tcur=c; }
 static char g_shcwd[128]="/home";
 
 void term_tilde(const char* in,char* out){ extern char g_home[]; const char* h=g_uid==0?"/root":g_home; int l=0; while(h[l])l++; int m=1; for(int k=0;k<l;k++) if(in[k]!=h[k]){ m=0; break; } if(m&&(in[l]==0||in[l]=='/')){ *out++='~'; in+=l; } while(*in)*out++=*in++; *out=0; }
+int term_prompt_visible(void){ return g_state==ST_LIVE||(WN[W_TERM].open&&!WN[W_TERM].min); }
 void term_prompt(void){ char pb[192]; dt_init(); dt_path(g_dcwd,pb);
     { extern int g_dstyle; if(g_dstyle==1){ char tb[200]; term_tilde(pb,tb); tcol(rgb(150,222,64)); term_puts(g_hostname); term_putc(':'); term_puts(tb); term_puts(g_uid==0?" # ":" $ "); tcol(WHT); return; } }
     tcol(GREEN);term_puts(cur_user());term_putc('@');term_puts(g_hostname);tcol(GREY);term_puts(":");tcol(rgb(120,200,255));term_puts(pb);tcol(GREY);term_puts(g_uid==0?"# ":"$ ");tcol(WHT); }
@@ -54,7 +55,7 @@ static void neofetch(void){
     char info[9][80]; int n=0; char*p;
     p=info[n++];p=scopy(p,"noovex@noovex64");*p=0;
     p=info[n++];p=scopy(p,"---------------");*p=0;
-    p=info[n++];p=scopy(p,"OS: NoovexOS 64 v10.86");*p=0;
+    p=info[n++];p=scopy(p,"OS: NoovexOS 64 v11.10");*p=0;
     p=info[n++];p=scopy(p,"Kernel: x86-64 long mode");*p=0;
     p=info[n++];p=scopy(p,"CPU: ");p=scopy(p,g_brand);*p=0;
     p=info[n++];p=scopy(p,"Display: ");p=udec(p,W);*p++='x';p=udec(p,H);p=scopy(p," @ ");p=udec(p,BPP);p=scopy(p,"bpp");*p=0;

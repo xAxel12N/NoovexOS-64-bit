@@ -54,9 +54,9 @@ static void s_power(void) {
 }
 static void s_dl(void) { dl_tick(); int n = dl_active(); if (n) { char b[16], *p = b; p = udec(p, (u32)n); *p = 0; st_set(&S[1], b, " active"); } else st_set(&S[1], "None active", 0); }
 static void s_wifi(void) {
-    extern char g_wifi_conn[33]; extern int nic_up(void);
+    extern char g_wifi_conn[33]; extern int nic_up_passive(void);
     if (g_wifi_conn[0]) st_set(&S[6], "Connected to ", g_wifi_conn);
-    else st_set(&S[6], nic_up() ? "Not used (wired network)" : "Not connected", 0);
+    else st_set(&S[6], nic_up_passive() ? "Not used (wired network)" : "Not connected", 0);
 }
 
 static int ck_state, ck_srv, ck_sock = -1;
@@ -113,13 +113,14 @@ static int ck_dns_poll(u32* ip) {
     }
     return -1;
 }
+static u8 ck_org[8];
 static void ck_ntp_send(svc_t* s, u32 ip) {
     (void)s;
     ck_close();
     ck_sock = lxs_new(2);
     if (ck_sock < 0 || lxs_connect(ck_sock, ip, 123, 1) != 0) { ck_close(); ck_state = 0; S[4].every = 100; ck_next = g_ticks + 3000; return; }
     u8 pk[48]; for (int i = 0; i < 48; i++) pk[i] = 0; pk[0] = 0x23;
-    u64 now = k_realtime_ms(); u64 ns = now / 1000ull + 2208988800ull; pk[40] = (u8)(ns >> 24); pk[41] = (u8)(ns >> 16); pk[42] = (u8)(ns >> 8); pk[43] = (u8)ns;
+    { extern void entropy_get(u8* out, int n); entropy_get(ck_org, 8); } for (int i = 0; i < 8; i++) pk[40 + i] = ck_org[i];
     if (lxs_send(ck_sock, pk, 48, 0, 0, 0) != 48) { ck_close(); ck_state = 0; S[4].every = 100; ck_next = g_ticks + 3000; return; }
     ck_t0 = g_ticks; ck_state = 1; S[4].every = 1;
 }
@@ -127,7 +128,7 @@ static void s_clock(void) {
     svc_t* s = svc_find("clock");
     if (ck_state == 0) {
         if (g_ticks < ck_next) return;
-        if (!my_ip) { st_set(s, "Waiting for the network", 0); ck_next = g_ticks + 1000; return; }
+        { extern int nic_up_passive(void); extern int g_netdev_wifi, g_dhcp_ok; if (!my_ip || !nic_up_passive() || (g_netdev_wifi && !g_dhcp_ok)) { st_set(s, "Waiting for the network", 0); ck_next = g_ticks + 1000; return; } }
         if (!NTP_SRV[ck_srv]) ck_srv = 0;
         ck_ip = 0;
         if (parse_ip(NTP_SRV[ck_srv], &ck_ip)) { ck_ntp_send(s, ck_ip); return; }
@@ -145,15 +146,17 @@ static void s_clock(void) {
     }
     u8 rb[96];
     int k = lxs_recv(ck_sock, rb, sizeof rb, 0, 0, 0);
-    if (k < 48) {
+    int bad = k < 48;
+    for (int i = 0; i < 8 && !bad; i++) if (rb[24 + i] != ck_org[i]) bad = 1;
+    if (bad) {
         if (g_ticks - ck_t0 > 300) { ck_close(); ck_state = 0; S[4].every = 100; ck_srv = (ck_srv + 1) % 3; ck_next = g_ticks + 1000; st_set(s, "No answer from the time server, retrying", 0); }
         return;
     }
     ck_close(); ck_state = 0; S[4].every = 100;
-    int mode = rb[0] & 7, stratum = rb[1];
+    int mode = rb[0] & 7, stratum = rb[1], leap = rb[0] >> 6;
     u64 secs = ((u64)rb[40] << 24) | ((u64)rb[41] << 16) | ((u64)rb[42] << 8) | rb[43];
     u64 frac = ((u64)rb[44] << 24) | ((u64)rb[45] << 16) | ((u64)rb[46] << 8) | rb[47];
-    if (mode != 4 || stratum < 1 || stratum > 15 || secs < 2208988800ull + 1700000000ull) { ck_srv = (ck_srv + 1) % 3; ck_next = g_ticks + 3000; st_set(s, "Bad answer from the time server", 0); return; }
+    if (mode != 4 || leap == 3 || stratum < 1 || stratum > 15 || secs < 2208988800ull + 1700000000ull) { ck_srv = (ck_srv + 1) % 3; ck_next = g_ticks + 3000; st_set(s, "Bad answer from the time server", 0); return; }
     u64 rtt = (g_ticks - ck_t0) * 10ull;
     u64 ms = (secs - 2208988800ull) * 1000ull + (frac * 1000ull >> 32) + rtt / 2;
     long long off = (long long)ms - (long long)k_realtime_ms();

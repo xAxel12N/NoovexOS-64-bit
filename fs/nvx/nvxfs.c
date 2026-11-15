@@ -48,6 +48,21 @@ static int nvx_locate(void){
     if(nvx_is_zero(d)){ g_nvx_note="Blank scratch disk"; return 1; }
     g_nvx_note="Unrecognised data at LBA 2048 - not touched"; return 0;
 }
+int g_root_usb=0;
+int disk_usb_root(void){
+    extern int msd_ok; extern int gdisk_usb_refresh(void); extern int gdisk_read_on(int,u32,int,u8*); extern int gdisk_pick(int);
+    extern int msd_autoinit_safe(void);
+    if(disk_ok||g_rootfs)return 0; if(!msd_ok)msd_autoinit_safe(); if(!msd_ok)return 0;
+    int ix=gdisk_usb_refresh(); if(ix<0)return 0;
+    u8 m[512]; if(gdisk_read_on(ix,0,1,m)||m[510]!=0x55||m[511]!=0xAA)return 0;
+    u32 st=0, sz=0; for(int e=0;e<4;e++){ const u8* pe=m+446+e*16; if(pe[4]==NVX_PTYPE&&*(const u32*)(pe+12)>=2048u){ st=*(const u32*)(pe+8); sz=*(const u32*)(pe+12); break; } }
+    if(!sz)return 0;
+    u8 d[512]; if(gdisk_read_on(ix,st,1,d)||*(u32*)d!=0x3458564Eu)return 0;
+    gdisk_pick(ix); g_nvx_generic=1; g_nvx_base=st; g_nvx_secs=sz; g_n4_nres=0; g_n4=0;
+    if(n4_mount(g_nvx_secs)){ g_n4=0; klog2("nvx4: the USB stick's data partition could not be mounted: ",g_n4_err); return 0; }
+    disk_ok=1; g_root_usb=1; g_nvx_note="NoovexOS data partition on the USB stick (NVX4)";
+    { int nf=0; for(int k=0;k<FS_N;k++) if(FS[k].used)nf++; char t[72],*p=t; const char* a2="nvx4: mounted from the USB stick, files="; while(*a2)*p++=*a2++; p=udec(p,(u32)nf); *p=0; klog(t); }
+    return 1; }
 int disk_init(void){
     g_n4_nres=0; g_n4=0;
     int how=nvx_locate();

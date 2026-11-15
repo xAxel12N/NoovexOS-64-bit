@@ -1,0 +1,17 @@
+# H3 report: window cache / partial redraw / damage path at drag end
+
+Verdict: I found no infinite loop, unbounded wait or out-of-bounds write in the cache/damage path itself. The hypothesis is mostly REFUTED. One point narrows the search (finding 1).
+
+## What runs on the first frame after drag=-1 (input.c:197)
+input.c:197 sets changed=1, so main.c:362 calls compose_present() -> compose_build() -> gfx_window(i) for each window (gfx.c:239).
+- gfx.c:243: `moving` is now 0. During the drag, NON-live windows were NOT redrawn: their layer was only composited at an offset, and L->dx/dy were left stale.
+- So on this frame full=1 (x!=L->dx). The app's draw_app(i) runs for the FIRST TIME at the new position, and if snapped (wm.c:62 apply_snap) also at the new w/h. After that come gq_fill on the old and new bounding box plus 64px (dest clipped by norm(), gq.c:102), gq_replay (bounded by ncap<=OPMAX) and gq_cap (bounded). All loops are bounded. gfx_sync timeouts go to gfx_stop, not a hang.
+- The partial diff loop at gfx.c:262 is bounded by nmax. gq_srec has a fixed op limit and aborts when full.
+- desk_win_exposed (present_and_pump.c:1) returns 1 again. The fast paths at main.c:354 run only when !ch, so they do not run on this frame. video_fast, browser_media_fast and xdisp_fast/xover_tick each do one bounded present_rect (clipped, present_and_pump.c:8).
+
+## Findings (ranked)
+1. (35%) The first draw_app at the moved/snapped geometry runs only at release, and only for non-live apps (gfx.c:243, live_app list gfx.c:187). Camera, Recorder, Video, Clock and SysMon are redrawn every frame during the drag. If those apps had a geometry bug they would freeze DURING the drag, not at the end. So the culprit is most likely a NON-live app's draw code (Files, Settings, Terminal, Browser, Logs/dispatcher apps/system/logs.c:96), or anything it calls that reacts to the new x/y/w/h. Examples: relayout or reflow on width change (browser web_call), terminal grid realloc, an unclipped direct write to g_scene/L->px with a negative x (drag allows x down to 90-w, input.c:201) or with y+h>H (y up to H-TITLEH). The same "first draw at new geometry" also happens with GPU drawing off (draw_app via compose_build). Suggested check: in QEMU, drag Files/Settings/Terminal half off the left or bottom edge and release, and also snap to an edge. Suggested hardening: at release, clamp WN[drag].x>=0 and y+h<=g_tby, or make the window draw clip to the screen.
+2. (10%, perf only) videoplayer.c:260: when the window is not exposed, video_fast returns 1 without updating vp_seen_seq. That forces ch=1 and a full compose_present on every main-loop pass, not paced by `due`. While a video is playing and a toast or popup is up, this is a busy redraw loop. It is not a hard freeze, and it does not start at drag end (exposure turns ON then). Fix: set vp_seen_seq=seq before `return 1`.
+3. (5%, during the drag, not at its end) composite() during `moving` (gfx.c:243/composite): the source rect = the clipped destination - ox, and the source is not re-clipped. When the window was drawn at dx and dragged far left or up, this reads past the layer surface. It is a read, so a fault would happen mid-drag, which does not match the report.
+
+Ruled out: stale cache size (full=1 when w/h change), cache rebuilt forever (L->dx/dy/dw/dh are updated at gfx.c:270), endless dirty-rect loop, GPU fence wait (gq_sync failure -> gfx_stop), OOB writes in the gq path (norm clips the destination).

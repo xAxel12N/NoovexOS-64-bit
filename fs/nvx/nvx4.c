@@ -40,6 +40,11 @@ static u8* g_n4_bm; static u8* g_n4_img; static u8* g_n4_shadow; static int g_n4
 static n4ext g_n4x[FS_N][N4_INL]; static u32 g_n4nx[FS_N]; static n4ext* g_n4xx[FS_N]; static u32 g_n4ind[FS_N]; static u8 g_n4indd[FS_N];
 static n4ext* g_n4pf; static int g_n4pfn, g_n4pfcap;
 static u8 g_n4blk[N4_BS];
+int g_fs_src_disk=-1;
+static int g_sk=-1; static u32 g_shi,g_spos;
+static void n4_step_drop(void){ int k=g_sk; if(k<0)return; g_sk=-1; if(!FS[k].used||g_spos>=g_shi)return;
+    long lo=(long)g_spos*N4_BS, hi=(long)g_shi*N4_BS; if(hi>FS[k].len)hi=FS[k].len; if(lo>=hi)return;
+    if(FS[k].clean||FS[k].dlo>=FS[k].dhi){ FS[k].dlo=(int)lo; FS[k].dhi=(int)hi; } else { if(lo<FS[k].dlo)FS[k].dlo=(int)lo; if(hi>FS[k].dhi)FS[k].dhi=(int)hi; } FS[k].clean=0; }
 const char* g_n4_err="";
 static u32 g_n4_crct[256]; static int g_n4_crci;
 
@@ -47,8 +52,9 @@ static u32 n4_crc(const u8* p,u32 n,u32 c){
     if(!g_n4_crci){ for(u32 i=0;i<256;i++){ u32 x=i; for(int j=0;j<8;j++)x=(x>>1)^(0xEDB88320u&(0u-(x&1))); g_n4_crct[i]=x; } g_n4_crci=1; }
     c=~c; for(u32 i=0;i<n;i++)c=g_n4_crct[(c^p[i])&0xFF]^(c>>8); return ~c;
 }
-static int n4_rd(u32 blk,u32 n,void* buf){ if(!n)return 0; u32 lba=g_nvx_base+blk*N4_SPB; return g_nvx_generic?gdisk_readn(lba,(int)(n*N4_SPB),(u8*)buf):ata_read(lba,(int)(n*N4_SPB),(u8*)buf); }
-static int n4_wr(u32 blk,u32 n,const void* buf){ if(!n)return 0; u32 lba=g_nvx_base+blk*N4_SPB; return g_nvx_generic?gdisk_writen(lba,(int)(n*N4_SPB),(const u8*)buf):ata_writen(lba,(int)(n*N4_SPB),(const u8*)buf); }
+extern volatile int g_disk_busy;
+static int n4_rd(u32 blk,u32 n,void* buf){ if(!n)return 0; u32 lba=g_nvx_base+blk*N4_SPB; __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=g_nvx_generic?gdisk_readn(lba,(int)(n*N4_SPB),(u8*)buf):ata_read(lba,(int)(n*N4_SPB),(u8*)buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+static int n4_wr(u32 blk,u32 n,const void* buf){ if(!n)return 0; u32 lba=g_nvx_base+blk*N4_SPB; __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=g_nvx_generic?gdisk_writen(lba,(int)(n*N4_SPB),(const u8*)buf):ata_writen(lba,(int)(n*N4_SPB),(const u8*)buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
 static void n4_barrier(void){ if(g_nvx_generic)gdisk_flush(); }
 static int bm_get(u32 b){ return (g_n4_bm[b>>3]>>(b&7))&1; }
 static void bm_set(u32 b){ g_n4_bm[b>>3]|=(u8)(1u<<(b&7)); }
@@ -167,8 +173,10 @@ static int n4_write_meta(int full){
         n4_barrier(); g_n4_stale[c]=0; }
     return 0;
 }
-static int n4_commit(void){
-    if(!g_n4)return -1; int bad=0;
+static int n4_commit_raw(void);
+static int n4_commit(void){ extern volatile int g_disk_busy; __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=n4_commit_raw(); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+static int n4_commit_raw(void){
+    if(!g_n4)return -1; int bad=0; n4_step_drop();
     for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&n4_sync_file(k))bad=1;
     n4_barrier();
     n4_serialize();
@@ -244,7 +252,7 @@ int n4_mount(u32 secs){
     for(int i=1;i<DN_MAX;i++) if(DT[i].used&&(DT[i].parent<0||DT[i].parent>=DN_MAX||!m->dir[DT[i].parent].used||DT[i].parent==i))DT[i].parent=0;
     for(int i=0;i<NLINKS;i++){ n4lnk* l=&m->lk[i]; g_lk[i].used=(int)l->used&&l->ino<FS_N&&FS[l->ino].used; g_lk[i].dir=(int)l->dir; g_lk[i].ino=(int)l->ino; n4_cpy(g_lk[i].name,l->name,52); }
     for(int k=0;k<FS_N;k++) if(FS[k].used&&(FS[k].dir<0||FS[k].dir>=DN_MAX||!DT[FS[k].dir].used))FS[k].dir=0;
-    g_n4=1; dt_load_done();
+    { extern int gdisk_current(void); g_fs_src_disk=gdisk_current(); } g_n4=1; dt_load_done();
     if(damaged){ g_n4_err="some damaged files were emptied"; klog("nvx4: damaged extents found, affected files emptied"); }
     return 0;
 }
@@ -253,8 +261,12 @@ static int n4_write_super(u64 created){
     s->magic=N4_MAGIC; s->version=4; s->bsize=N4_BS; s->nblocks=g_n4_nb; s->metab=N4_METAB; s->meta_a=g_n4_ma; s->meta_b=g_n4_mb; s->data0=g_n4_d0; s->created=created; s->inodes=FS_N; s->dirs=DN_MAX; s->links=NLINKS;
     int r=g_nvx_generic?gdisk_writen(g_nvx_base,1,b):ata_writen(g_nvx_base,1,b); n4_barrier(); return r;
 }
-static u32 g_n4_res[64][2]; int g_n4_nres;
-void n4_reserve_secs(u32 sec,u32 n){ if(!n||g_n4_nres>=64)return; g_n4_res[g_n4_nres][0]=sec/N4_SPB; g_n4_res[g_n4_nres][1]=(sec+n+N4_SPB-1)/N4_SPB-sec/N4_SPB; g_n4_nres++; }
+static u32 (*g_n4_res)[2]; static int g_n4_rescap; int g_n4_nres;
+static void n4_res_add(u32 s,u32 c){ if(g_n4_nres<0||!c)return;
+    if(g_n4_nres>0){ u32* l=g_n4_res[g_n4_nres-1]; if(s>=l[0]&&s<=l[0]+l[1]){ if(s+c>l[0]+l[1])l[1]=s+c-l[0]; return; } }
+    if(g_n4_nres>=g_n4_rescap){ int nc=g_n4_rescap?g_n4_rescap*2:256; void* p=krealloc(g_n4_res,(unsigned long)nc*8u); if(!p){ g_n4_nres=-1; return; } g_n4_res=(u32(*)[2])p; g_n4_rescap=nc; }
+    g_n4_res[g_n4_nres][0]=s; g_n4_res[g_n4_nres][1]=c; g_n4_nres++; }
+void n4_reserve_secs(u32 sec,u32 n){ if(!n)return; n4_res_add(sec/N4_SPB,(sec+n+N4_SPB-1)/N4_SPB-sec/N4_SPB); }
 static void n4_apply_res(int set){
     for(int i=0;i<g_n4_nres;i++){ u32 s=g_n4_res[i][0], e=s+g_n4_res[i][1]; if(s<g_n4_d0)s=g_n4_d0; if(e>g_n4_nb)e=g_n4_nb; if(s<e)n4_mark(s,e-s,set); }
 }
@@ -269,12 +281,13 @@ static int n4_cb_read(u32 nb,n4cbm* out){ u8* b=(u8*)kmalloc(N4_BS); if(!b)retur
 static void n4_cb_clear(u32 nb){ u8* b=(u8*)kmalloc(N4_BS); if(!b)return; for(u32 i=0;i<N4_BS;i++)b[i]=0; n4_wr(nb-1,1,b); kfree(b); }
 int n4_conv_backup(u32 secs){
     u32 nb=secs/N4_SPB, zone=4+2*N4_METAB; if(nb<2*zone+2)return -1;
+    if(g_n4_nres<0)return -1;
     u32 bs=nb-1-zone; for(int i=0;i<g_n4_nres;i++) if(g_n4_res[i][0]+g_n4_res[i][1]>bs)return -1;
     u8* b=(u8*)kmalloc(N4_CB_CHUNK*N4_BS); if(!b)return -1; u64 h=0xCBF29CE484222325ULL;
     for(u32 c=0;c<zone;c+=N4_CB_CHUNK){ u32 k=zone-c<N4_CB_CHUNK?zone-c:N4_CB_CHUNK; if(n4_rd(c,k,b)||n4_wr(bs+c,k,b)){ kfree(b); return -1; } h=n4_fnv(h,b,k*N4_BS); }
     n4cbm m; for(u32 i=0;i<sizeof(m);i++)((u8*)&m)[i]=0; m.magic=N4_CB_MAGIC; m.zone=zone; m.bstart=bs; m.nb=nb; m.sum=h; m.self=n4_cb_self(&m);
     for(u32 i=0;i<N4_BS;i++)b[i]=0; kmemcpy(b,&m,sizeof(m)); int r=n4_wr(nb-1,1,b); kfree(b); if(r)return -1;
-    if(g_n4_nres<64){ g_n4_res[g_n4_nres][0]=bs; g_n4_res[g_n4_nres][1]=nb-bs; g_n4_nres++; }
+    n4_res_add(bs,nb-bs); if(g_n4_nres<0)return -1;
     return 0; }
 void n4_conv_done(u32 secs){ n4cbm m; u32 nb=secs/N4_SPB; if(n4_cb_read(nb,&m))n4_cb_clear(nb); }
 int n4_conv_restore(u32 secs){
@@ -285,11 +298,12 @@ int n4_conv_restore(u32 secs){
     for(u32 c=0;c<m.zone;c+=N4_CB_CHUNK){ u32 k=m.zone-c<N4_CB_CHUNK?m.zone-c:N4_CB_CHUNK; if(n4_rd(m.bstart+c,k,b)||n4_wr(c,k,b)){ kfree(b); return -1; } }
     kfree(b); return 1; }
 int n4_format(u32 secs){
+    if(g_n4_nres<0){ g_n4_err="not enough memory"; return -1; }
     if(n4_layout(secs))return -1;
     if(n4_alloc_state()){ g_n4_err="not enough memory"; return -1; }
     for(int k=0;k<FS_N;k++){ if(g_n4xx[k]){ kfree(g_n4xx[k]); g_n4xx[k]=0; } n4_drop_file(k); }
     n4_apply_res(1);
-    g_n4=1; g_n4_gen=0;
+    { extern int gdisk_current(void); g_fs_src_disk=gdisk_current(); } g_n4=1; g_n4_gen=0;
     for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan){ if(fs_ensure(k)){ g_n4=0; g_n4_err="not enough memory"; return -1; } FS[k].clean=0; FS[k].dlo=0; FS[k].dhi=0x7FFFFFFF;
         if(n4_sync_file(k)){ g_n4=0; if(!g_n4_err[0])g_n4_err="write failed"; return -1; } }
     n4_barrier();
@@ -308,35 +322,42 @@ int fs_backend_load(int k){
     long len=FS[k].len; if(FS[k].data){ kfree(FS[k].data); FS[k].data=0; FS[k].cap=0; }
     if(fs_reserve(k,len))return -1;
     int r=-1;
+    { extern int g_clone_src; extern int gdisk_current(void); int src=g_clone_src>=0?g_clone_src:g_fs_src_disk; if(src>=0&&gdisk_current()!=src){ kfree(FS[k].data); FS[k].data=0; FS[k].cap=0; return -1; } }
     if(g_rootfs)r=nk_root_read(k,FS[k].data,len); else if(g_n4)r=n4_read_file(k,FS[k].data,len);
     if(r){ kfree(FS[k].data); FS[k].data=0; FS[k].cap=0; return -1; }
     FS[k].data[len]=0; return 0;
 }
+int g_fs_pin=0;
 int fs_reloadable(int k){
-    if(FS[k].orphan||!disk_ok)return 0;
+    if(g_fs_pin||FS[k].orphan||!disk_ok||k==g_sk)return 0;
     if(dt_is_tmp(FS[k].dir))return 0;
     if(g_rootfs)return 1;
     if(g_n4)return (u64)n4_nblocks(k)*N4_BS>=(u64)FS[k].len&&!g_n4indd[k];
     return 0;
 }
 int g_fs_batch;
-int nvx3_sync(int k){
+static int nvx3_sync_raw(int k);
+int nvx3_sync(int k){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=nvx3_sync_raw(k); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+static int nvx3_sync_raw(int k){
     if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan)return -1;
     if(dt_is_tmp(FS[k].dir))return k;
     if(g_rootfs)return nk_root_sync_file(k);
     if(!g_n4)return -1;
+    if(g_sk==k)n4_step_drop();
     if(g_fs_batch)return k;
     if(n4_sync_file(k))return -1;
     if(n4_commit())return -1;
     return k;
 }
-static int g_sk=-1; static u32 g_shi,g_spos;
-int fs_sync_step(int k,int maxblk){
-    if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan){ g_sk=-1; return -1; }
-    if(dt_is_tmp(FS[k].dir)){ g_sk=-1; return 1; }
-    if(g_rootfs||!g_n4||FS[k].lazy){ g_sk=-1; return nvx3_sync(k)<0?-1:1; }
+static int fs_sync_step_raw(int k,int maxblk);
+int fs_sync_step(int k,int maxblk){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=fs_sync_step_raw(k,maxblk); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+static int fs_sync_step_raw(int k,int maxblk){
+    if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan){ n4_step_drop(); return -1; }
+    if(dt_is_tmp(FS[k].dir)){ n4_step_drop(); return 1; }
+    if(g_rootfs||!g_n4||FS[k].lazy){ n4_step_drop(); return nvx3_sync(k)<0?-1:1; }
     if(maxblk<1)maxblk=1;
     if(g_sk!=k){
+        n4_step_drop();
         long len=FS[k].len; u32 nb=(u32)((len+(long)N4_BS-1)/(long)N4_BS); u32 cur=n4_nblocks(k);
         if(FS[k].clean&&cur==nb&&!g_n4indd[k]) return 1;
         if(!FS[k].data&&len)return -1;
@@ -357,6 +378,10 @@ int fs_sync_step(int k,int maxblk){
     if(n4_commit())return -1;
     return 1;
 }
-void nvx3_flush_meta(void){ if(g_fs_batch&&g_n4&&!g_rootfs)return; g_fs_wb_pending=0; if(!disk_ok)return; if(g_rootfs){ nk_root_flush(); return; } if(g_n4)n4_commit(); }
-void nvx3_sync_all(void){ g_fs_wb_pending=0; if(!disk_ok)return; if(g_rootfs){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&!FS[k].clean)nk_root_sync_file(k); nk_root_flush(); return; } if(g_n4)n4_commit(); }
+static void nvx3_flush_meta_raw(void);
+void nvx3_flush_meta(void){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); nvx3_flush_meta_raw(); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); }
+static void nvx3_flush_meta_raw(void){ if(g_fs_batch&&g_n4&&!g_rootfs)return; if(!disk_ok)return; if(g_rootfs){ nk_root_flush(); return; } g_fs_wb_pending=0; if(g_n4)n4_commit(); }
+static void nvx3_sync_all_raw(void);
+void nvx3_sync_all(void){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); nvx3_sync_all_raw(); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); }
+static void nvx3_sync_all_raw(void){ g_fs_wb_pending=0; if(!disk_ok)return; if(g_rootfs){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&!FS[k].clean)nk_root_sync_file(k); nk_root_flush(); return; } if(g_n4)n4_commit(); }
 int fs_sync(int k){ if(!disk_ok||k<0||k>=FS_N||!FS[k].used||FS[k].orphan)return -1; return nvx3_sync(k); }

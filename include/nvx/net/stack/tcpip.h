@@ -30,6 +30,7 @@ int dhcp_config(void);
 int nic_up(void);
 int dhcp_renew(void);
 int dns_query(const char* host,u32* out_ip);
+int dhcp_async_take(const u8* f,int n);
 void tcp_send(u32 dip,u16 sp,u16 dp,const u8* dmac,u32 seq,u32 ack,u8 fl,const u8* data,int dl);
 u16 next_ephport(void);
 int tcp_get(u32 dip,u16 dport,const char* req,int reqlen,u8* out,int maxout);

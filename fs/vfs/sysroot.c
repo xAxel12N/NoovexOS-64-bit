@@ -201,14 +201,25 @@ void sysroot_init(void){
       for(int i=28;i>=0;i-=4)t[k++]="0123456789ABCDEF"[(sb>>i)&15]; t[k]=0; klog(t); }
     sr_rebuild(); }
 
+static int sr_del_idx(int li);
 int sysroot_add_layer(const char* tag,const u8* blob,u32 size,int owned){
     if(sr_eq(tag,"base"))return sysroot_set_base(blob,size,owned);
-    for(int i=1;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)&&!sysroot_del_layer(tag))return 0;
-    int li=sr_addlayer(tag,blob,size,owned); if(li<0)return 0; sr_rebuild(); return 1; }
+    int old=-1; for(int i=1;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)){ old=i; break; }
+    if(old>0){ if(g_ly[old].busy)return 0;
+        int fr=0; for(int i=1;i<g_nly;i++) if(!g_ly[i].used){ fr=1; break; }
+        if(!fr&&g_nly>=SR_MAXL){ if(!sr_del_idx(old))return 0; old=-1; } }
+    int li=sr_addlayer(tag,blob,size,owned); if(li<0)return 0;
+    if(old>0){ sr_layer t=g_ly[old]; g_ly[old]=g_ly[li]; g_ly[li]=t;
+        for(int i=0;i<g_ne;i++){ if(g_e[i].layer==old)g_e[i].layer=li; else if(g_e[i].layer==li)g_e[i].layer=old; }
+        if(sr_del_idx(li))return 1; }
+    sr_rebuild(); return 1; }
 
 int sysroot_del_layer(const char* tag){
     int li=-1; for(int i=0;i<g_nly;i++) if(g_ly[i].used&&sr_eq(g_ly[i].tag,tag)){ li=i; break; }
-    if(li<=0)return 0; sr_layer* l=&g_ly[li]; if(l->busy)return 0;
+    return sr_del_idx(li); }
+
+static int sr_del_idx(int li){
+    if(li<=0||li>=g_nly||!g_ly[li].used)return 0; sr_layer* l=&g_ly[li]; if(l->busy)return 0;
     int w=0; for(int i=0;i<g_ne;i++){ if(g_e[i].layer==li){ if(g_e[i].cache)kfree(g_e[i].cache); if(g_e[i].pch>=0)sr_pc_drop(g_e[i].pch); continue; } g_e[w++]=g_e[i]; } g_ne=w;
     for(int i=0;i<g_ne;i++) if(g_e[i].pch>=0)g_pcf[g_e[i].pch].ent=i;
     if(l->bcache){ for(int i=0;i<l->nblk;i++) if(l->bcache[i]){ kfree(l->bcache[i]); if(g_bc_bytes>=l->blk[i].ulen)g_bc_bytes-=l->blk[i].ulen; if(l->bpin&&l->bpin[i]&&g_bc_pin>=l->blk[i].ulen)g_bc_pin-=l->blk[i].ulen; } kfree(l->bcache); l->bcache=0; } if(l->bt){ kfree(l->bt); l->bt=0; } if(l->bpin){ kfree(l->bpin); l->bpin=0; }

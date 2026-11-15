@@ -14,11 +14,14 @@ static char info[640];
 static int isd=-1, irun=0, nin=0, in_adc=-1, in_pin=-1, in_dev=0, in_conn=0; static u8 in_path[8], in_idx[8]; static int in_len=0; static u8* ipcm; static u64* ibdl; static u32 in_rd=0; static char in_name[48];
 static u8 r8(int o){ return R[o]; } static u16 r16(int o){ return *(volatile u16*)(R+o); } static u32 r32(int o){ return *(volatile u32*)(R+o); }
 static void w8(int o,u8 v){ R[o]=v; } static void w16(int o,u16 v){ *(volatile u16*)(R+o)=v; } static void w32(int o,u32 v){ *(volatile u32*)(R+o)=v; }
+static int vfail, vdead_log;
 static int verb(int nid,u32 v,u32* resp){
     u16 wp=(u16)((r16(0x48)+1)%corbn);
     corb[wp]=((u32)codec<<28)|((u32)nid<<20)|(v&0xFFFFF);
     kapi_mb(); w16(0x48,wp);
-    for(int t=0;t<20000;t++){ u16 w=(u16)(r16(0x58)&0xFF); if(w!=rirb_rp){ rirb_rp=(u16)((rirb_rp+1)%rirbn); u64 e=rirb[rirb_rp]; if(resp)*resp=(u32)e; w8(0x5D,0x05); return 0; } kapi_delay_us(10); }
+    int lim=vfail>=2?1000:20000;
+    for(int t=0;t<lim;t++){ u16 w=(u16)(r16(0x58)&0xFF); if(w!=rirb_rp){ rirb_rp=(u16)((rirb_rp+1)%rirbn); u64 e=rirb[rirb_rp]; if(resp)*resp=(u32)e; w8(0x5D,0x05); vfail=0; return 0; } kapi_delay_us(10); }
+    rirb_rp=(u16)(r16(0x58)&0xFF); if(vfail<1000)vfail++;
     return -1;
 }
 static u32 param(int nid,int p){ u32 r=0; if(verb(nid,0xF0000|(u32)p,&r))return 0; return r; }
@@ -148,7 +151,9 @@ static void hda_jack(void){
     for(int i=0;i<npaths;i++) if(pdev[i]==1){ u32 pc=cmd(ppin[i],0xF07,0)&0xFF; cmd(ppin[i],0x707,(int)(in?(pc&~0x40u):(pc|0x40u))); }
     kapi_log(in?"hda: headphones plugged in - speakers off":"hda: headphones removed - speakers on"); }
 static void hda_sync(void){ if(running)sring_hw(&ring,hwpos()%(NBUF*BSZ)); }
-static void hda_poll(void){ hda_sync(); u64 t=kapi_ns(); if(codec>=0&&t-jk_t>300000000ULL){ jk_t=t; hda_jack(); } }
+static void hda_poll(void){ hda_sync(); u64 t=kapi_ns(); if(codec<0)return;
+    int dead=vfail>=3; if(dead&&!vdead_log){ vdead_log=1; kapi_log("hda: codec stopped answering - jack polling every 30 s"); }
+    if(t-jk_t>(dead?30000000000ULL:300000000ULL)){ jk_t=t; hda_jack(); if(dead&&!vfail){ vdead_log=0; kapi_log("hda: codec answers again"); } } }
 static int hda_start(void){
     if(running)return 1;
     w8((int)sd(0),1); for(int t=0;t<1000&&!(r8((int)sd(0))&1);t++)kapi_delay_us(10);
@@ -175,25 +180,18 @@ static void hda_volume(int pct){
 const char* hda_info(void){ return info; }
 static char* ap(char* o,const char* s){ while(*s)*o++=*s++; *o=0; return o; }
 static char* apn(char* o,u32 v,int base){ char t[12]; int n=0; if(!v)t[n++]='0'; while(v){ u32 d=v%(u32)base; t[n++]=(char)(d<10?'0'+d:'a'+d-10); v/=(u32)base; } while(n)*o++=t[--n]; *o=0; return o; }
-int hda_probe(struct nvx_snd* out){
-    codec=-1; afg=-1; npaths=0; running=0; info[0]=0;
-    int b,d,f; if(!kapi_pci_find_class(0x04,0x03,0,&b,&d,&f))return 0;
-    u32 lo=kapi_pci_rd32(b,d,f,0x10); if(lo&1)return 0;
-    u64 bar=lo&0xFFFFFFF0u; if(((lo>>1)&3)==2)bar|=(u64)kapi_pci_rd32(b,d,f,0x14)<<32;
-    if(!bar||bar>=0x100000000ULL){ kapi_log("hda: BAR above 4 GB, not mapped"); return 0; }
-    kapi_pci_enable(b,d,f);
-    R=(volatile u8*)(u64)bar;
+static int hda_ctl_init(void){
     w32(0x08,r32(0x08)&~1u); for(int t=0;t<1000&&(r32(0x08)&1);t++)kapi_delay_us(10);
     kapi_delay_us(100);
     w32(0x08,r32(0x08)|1u); int ok=0; for(int t=0;t<1000;t++){ if(r32(0x08)&1){ ok=1; break; } kapi_delay_us(10); }
     if(!ok){ kapi_log("hda: controller reset failed"); return 0; }
     kapi_delay_us(1000);
-    u16 st=r16(0x0E); for(int i=0;i<15;i++) if(st&(1u<<i)){ codec=i; break; }
-    if(codec<0){ kapi_log("hda: no codec"); return 0; }
+    if(!(r16(0x0E)&0x7FFF)){ kapi_log("hda: no codec"); return 0; }
     u16 gcap=r16(0x00); int iss=(gcap>>8)&0xF, oss=(gcap>>12)&0xF; if(!oss){ kapi_log("hda: no output streams"); return 0; }
     osd=iss; isd=iss?0:-1; nin=iss;
-    corb=(u32*)kapi_dma_pages(1); rirb=(u64*)kapi_dma_pages(1); bdl=(u64*)kapi_dma_pages(1); pcm=(u8*)kapi_dma_pages(NBUF*BSZ/4096);
-    if(!corb||!rirb||!bdl||!pcm)return 0;
+    if(!corb)corb=(u32*)kapi_dma_pages(1);
+    if(!rirb)rirb=(u64*)kapi_dma_pages(1);
+    if(!corb||!rirb)return 0;
     w8(0x4C,0); w8(0x5C,0); kapi_delay_us(100);
     u8 cs=r8(0x4E); corbn=(cs&0x40)?256:(cs&0x20)?16:2; w8(0x4E,(u8)((cs&0xFC)|(corbn==256?2:corbn==16?1:0)));
     u8 rs=r8(0x5E); rirbn=(rs&0x40)?256:(rs&0x20)?16:2; w8(0x5E,(u8)((rs&0xFC)|(rirbn==256?2:rirbn==16?1:0)));
@@ -204,12 +202,49 @@ int hda_probe(struct nvx_snd* out){
     w16(0x48,0);
     w16(0x58,0x8000); rirb_rp=0; w16(0x5A,1);
     w8(0x4C,0x02); w8(0x5C,0x03);
-    u32 vid=param(0,0);
-    if(!vid||vid==0xFFFFFFFFu){ kapi_log("hda: codec does not answer"); return 0; }
-    scan();
-    if(afg<0||!npaths){ char b[160],*o=b; o=ap(o,"hda: no usable output path (afg "); o=apn(o,(u32)(afg<0?255:afg),10); o=ap(o," root4="); o=apn(o,param(0,4),16); o=ap(o," n1p5="); o=apn(o,param(1,5),16); o=ap(o," vid="); o=apn(o,param(0,0),16); o=ap(o," widgets"); for(int n=1;n<MAXW&&n<12;n++){ if(!wcaps[n])continue; o=ap(o," "); o=apn(o,(u32)n,10); o=ap(o,":t"); o=apn(o,wtype[n],10); o=ap(o,"/c"); o=apn(o,nconn[n],10); } *o=0; kapi_log(b); return 0; }
+    return 1; }
+static void hda_no_path_log(void){ char b[160],*o=b; o=ap(o,"hda: no usable output path (afg "); o=apn(o,(u32)(afg<0?255:afg),10); o=ap(o," root4="); o=apn(o,param(0,4),16); o=ap(o," n1p5="); o=apn(o,param(1,5),16); o=ap(o," vid="); o=apn(o,param(0,0),16); o=ap(o," widgets"); for(int n=1;n<MAXW&&n<12;n++){ if(!wcaps[n])continue; o=ap(o," "); o=apn(o,(u32)n,10); o=ap(o,":t"); o=apn(o,wtype[n],10); o=ap(o,"/c"); o=apn(o,nconn[n],10); } *o=0; kapi_log(b); }
+static int hda_pick_codec(u32* vid){
+    u16 st=r16(0x0E);
+    for(int i=0;i<15;i++){ if(!(st&(1u<<i)))continue;
+        codec=i; afg=-1; npaths=0; vfail=0; for(int n=0;n<MAXW;n++){ wcaps[n]=0; wtype[n]=0; nconn[n]=0; }
+        u32 v=param(0,0); if(!v||v==0xFFFFFFFFu){ kapi_log("hda: codec does not answer"); continue; }
+        scan(); if(afg>=0&&npaths){ *vid=v; return 1; }
+        hda_no_path_log(); }
+    codec=-1; return 0; }
+static int hda_candidate(int k,int nth,int* b,int* d,int* f){
+    if(k==0)return kapi_pci_find_class(0x04,0x03,nth,b,d,f);
+    for(int m=0,seen=0;kapi_pci_find_class(0x04,0x01,m,b,d,f);m++){
+        u32 lo=kapi_pci_rd32(*b,*d,*f,0x10);
+        if((kapi_pci_rd32(*b,*d,*f,0)&0xFFFF)!=0x8086||(lo&1)||((lo>>1)&3)!=2)continue;
+        if(seen++==nth)return 1; }
+    return 0; }
+static void hda_drop(int b,int d,int f){
+    w8(0x4C,0); w8(0x5C,0);
+    for(int t=0;t<1000&&((r8(0x4C)&2)||(r8(0x5C)&2));t++)kapi_delay_us(10);
+    kapi_pci_wr32(b,d,f,0x04,kapi_pci_rd32(b,d,f,0x04)&0xFFFBu); }
+int hda_probe(struct nvx_snd* out){
+    codec=-1; afg=-1; npaths=0; running=0; info[0]=0; vfail=0; vdead_log=0;
+    int b,d,f, found=0; u32 vid=0;
+    for(int k=0;k<2&&!found;k++) for(int nth=0;nth<8&&!found;nth++){
+        if(!hda_candidate(k,nth,&b,&d,&f))break;
+        u32 lo=kapi_pci_rd32(b,d,f,0x10); if(lo&1)continue;
+        u64 bar=lo&0xFFFFFFF0u; if(((lo>>1)&3)==2)bar|=(u64)kapi_pci_rd32(b,d,f,0x14)<<32;
+        if(!bar)continue;
+        volatile u8* m=(volatile u8*)kapi_mmio(bar,0x4000); if(!m){ kapi_log("hda: BAR above 4 GB, not mapped"); continue; }
+        R=m;
+        if(k==1){ u32 c0=kapi_pci_rd32(b,d,f,0x04); kapi_pci_wr32(b,d,f,0x04,(c0&0xFFFFu)|2u); u16 gc=r16(0x00);
+            if(r8(0x03)!=1||r8(0x02)!=0||gc==0||gc==0xFFFF){ kapi_pci_wr32(b,d,f,0x04,c0&0xFFFFu); kapi_log("hda: class 0401 device is not HD Audio, skipped"); continue; } }
+        kapi_pci_enable(b,d,f);
+        if(hda_ctl_init()&&hda_pick_codec(&vid)){ found=1; break; }
+        hda_drop(b,d,f); }
+    if(!found)return 0;
+    if(!bdl)bdl=(u64*)kapi_dma_pages(1);
+    if(!pcm)pcm=(u8*)kapi_dma_pages(NBUF*BSZ/4096);
+    if(!bdl||!pcm)return 0;
+    for(int i=0;i<NBUF*BSZ;i++)pcm[i]=0;
     route(); hda_volume(80);
-    if(isd>=0){ scan_in(); if(in_pin>=0){ ibdl=(u64*)kapi_dma_pages(1); ipcm=(u8*)kapi_dma_pages(NBUF*BSZ/4096); if(!ibdl||!ipcm)in_pin=-1; } }
+    if(isd>=0){ scan_in(); if(in_pin>=0){ if(!ibdl)ibdl=(u64*)kapi_dma_pages(1); if(!ipcm)ipcm=(u8*)kapi_dma_pages(NBUF*BSZ/4096); if(!ibdl||!ipcm)in_pin=-1; } }
     char* o=info; o=ap(o,"HD Audio codec "); o=apn(o,vid>>16,16); o=ap(o,":"); o=apn(o,vid&0xFFFF,16); o=ap(o,", outputs:");
     for(int i=0;i<npaths;i++){ o=ap(o," "); o=ap(o,pdev[i]==1?"speaker":pdev[i]==2?"headphones":"line-out"); o=ap(o,"(pin "); o=apn(o,ppin[i],16); o=ap(o," dac "); o=apn(o,path[i][plen[i]-1],16); o=ap(o,")"); }
     running=0;

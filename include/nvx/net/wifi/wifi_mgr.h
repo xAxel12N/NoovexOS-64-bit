@@ -15,6 +15,7 @@ int wifi_saved_forget(const char* ssid);
 void wifi_saved_prio(const char* ssid,int delta);
 int wifi_up(void);
 void wifi_radio_off(void);
+void wifi_user_power(int on);
 void wifi_radio_on(void);
 int wifi_scan_start(int full);
 int wifi_scan_busy(void);

@@ -83,7 +83,7 @@ int nvd_start(void){
     klog("nvgsp: the desktop is drawn by the NVIDIA GPU (compute shaders)"); return 0; }
 int nvd_desktop(void){ int r=nvd_start(); if(r){ char b[120],*p=b; p=scopy(p,"nvgsp: GPU drawing not started - "); p=scopy(p,g_nvd_why); *p=0; klog(b); } return r; }
 static int nd_pending=0, nd_trial=0, nd_auto_done=0; static u32 nd_f0=0; static u64 nd_t_desk=0;
-int g_nvd_auto=1, g_nvd_auto_skipped=0;
+int g_nvd_auto=0, g_nvd_auto_skipped=0;
 void nvd_request(void){ nd_pending=1; }
 static int nd_flag_get(const char* nm){ extern int fs_find_name(const char*); extern char* fsd(int); int k=fs_find_name(nm); if(k<0)return -1; char* d=fsd(k); return d?d[0]:-1; }
 static void nd_flag_set(const char* nm,char v){ extern int fs_save_bin(const char*,const u8*,int,int); extern void nvx3_sync_all(void); u8 b[2]={(u8)v,'\n'}; fs_save_bin(nm,b,2,0); nvx3_sync_all(); }
@@ -99,7 +99,8 @@ static void nd_auto(void){
     extern int nv_probe(void); extern int nvgsp_cmd(const char*); extern volatile u64 g_ticks;
     if(nd_auto_done)return; if(!nd_t_desk){ nd_t_desk=g_ticks?g_ticks:1; return; } if(g_ticks<nd_t_desk+300)return;
     nd_auto_done=1;
-    if(nd_flag_get("nvgsp-auto.cfg")=='0'){ g_nvd_auto=0; return; }
+    if(nd_flag_get("nvgsp-auto.cfg")=='1')g_nvd_auto=1;
+    if(!g_nvd_auto){ klog("nvgsp: automatic NVIDIA start is off (run nvgsp all once, or nvgsp auto on to start it at every boot)"); return; }
     if(!nv_probe()||!nd_turing())return;
     if(nd_flag_get("nvgsp-start.flag")=='1'||nd_usb_flag()=='1'){ g_nvd_auto_skipped=1; nd_flag_set("nvgsp-start.flag",'0'); nd_usb_set('0'); klog("nvgsp: the NVIDIA start-up did not finish last time - skipped this boot (press G in Gears or run nvgsp all to try again)"); return; }
     nd_flag_set("nvgsp-start.flag",'1'); nd_usb_set('1');
@@ -113,7 +114,7 @@ void nvd_poll(void){
     extern int nvgsp_cmd(const char*);
     nvgsp_tick();
     if(nd_run==1){ nd_run=2; nd_run_res=nvgsp_cmd("all"); nd_run=0; return; }
-    if(g_nvd_auto)nd_auto();
+    nd_auto();
     if(nd_pending){ nd_pending=0; if(nvd_desktop()==0){ nd_trial=5; nd_f0=g_gfx_frames; } return; }
     if(g_nvd_on&&g_gfx==GFX_GPU&&!nd_trial){ static u32 wf=0; static int slow=0;
         { extern int g_gfx_nomem; if(g_gfx_nomem){ slow=0; gfx_stop("not enough memory for a window layer - the CPU draws"); klog("nvgsp: not enough memory for a window layer - the desktop is drawn by the CPU again"); return; } }

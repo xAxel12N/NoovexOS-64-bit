@@ -2,3 +2,5 @@ build/
 boot/build/*.o
 boot/stage/kernel64.bin
 __pycache__/
+/build
+/tools/out

@@ -67,7 +67,10 @@ void power_init(void){
     klog(g_acpi.have_s5?"acpi: ready - S5 power off available":"acpi: tables found but no _S5 object");
     if(g_acpi.have_s1)klog("acpi: S1 sleep available");
 }
-static void power_prepare(void){ { extern int nvgsp_shutdown(void); nvgsp_shutdown(); } klog("power: flushing filesystems"); if(nvxntfs_mounted())nvxntfs_umount(); if(vf_mounted())vf_umount(); }
+static int power_fs_ok(void){ extern volatile int g_heap_busy, g_disk_busy, g_cx_panicking; return !g_cx_panicking||(!g_heap_busy&&!g_disk_busy); }
+static void power_prepare(void){ int fs_ok=power_fs_ok(); { extern int nvgsp_shutdown(void); nvgsp_shutdown(); }
+    if(!fs_ok){ klog("power: disk or heap busy - skipping filesystem sync"); return; }
+    { extern void nvx3_sync_all(void); nvx3_sync_all(); } { extern void ufat_sync(void); ufat_sync(); } klog("power: flushing filesystems"); if(nvxntfs_mounted())nvxntfs_umount(); if(vf_mounted())vf_umount(); }
 void acpi_enable_mode(void){
     if(!g_acpi.pm1a_cnt||!g_acpi.smi_cmd||!g_acpi.acpi_en)return;
     if(inw((u16)g_acpi.pm1a_cnt)&1)return;
@@ -82,8 +85,8 @@ static void power_safe_screen(const char* line){
     dstr(bx+40,by+23,line,rgb(20,24,34),1); blit_all();
 }
  
-void power_off(void){ { extern void nwk_webcache_tick(int) __attribute__((weak)); if(nwk_webcache_tick)nwk_webcache_tick(1); } if(g_gdisk_probed)gdisk_flush();
-    power_prepare(); klog("power: shutting down");
+void power_off(void){ { extern volatile int g_nmiwd_on; g_nmiwd_on=0; extern volatile int g_frz_hold, g_frz_down; g_frz_hold=1; g_frz_down=1; } { extern void nwk_webcache_tick(int) __attribute__((weak)); if(nwk_webcache_tick)nwk_webcache_tick(1); } if(g_gdisk_probed)gdisk_flush();
+    power_prepare(); if(g_gdisk_probed)gdisk_flush(); if(g_gdisk_probed)gdisk_shutdown(1); klog("power: shutting down");
     if(g_acpi.ok&&g_acpi.have_s5){
         if(g_acpi.hwred&&g_acpi.slp_addr){ acpi_gas_write8(g_acpi.slp_space,g_acpi.slp_addr,(u8)(((g_acpi.s5a&7)<<2)|0x20)); }
         else if(g_acpi.pm1a_cnt){ acpi_enable_mode(); cpu_irq_off();
@@ -96,8 +99,8 @@ void power_off(void){ { extern void nwk_webcache_tick(int) __attribute__((weak))
     power_safe_screen("It is now safe to turn off your computer.");
     for(;;)cpu_stop();
 }
-void power_reboot(void){ { extern void nwk_webcache_tick(int) __attribute__((weak)); if(nwk_webcache_tick)nwk_webcache_tick(1); } if(g_gdisk_probed)gdisk_flush();
-    power_prepare(); klog("power: restarting"); cpu_irq_off();
+void power_reboot(void){ { extern volatile int g_nmiwd_on; g_nmiwd_on=0; extern volatile int g_frz_hold, g_frz_down; g_frz_hold=1; g_frz_down=1; } { extern void nwk_webcache_tick(int) __attribute__((weak)); if(nwk_webcache_tick)nwk_webcache_tick(1); } if(g_gdisk_probed)gdisk_flush();
+    power_prepare(); if(g_gdisk_probed)gdisk_flush(); if(g_gdisk_probed)gdisk_shutdown(0); klog("power: restarting"); cpu_irq_off();
     if(g_acpi.ok&&g_acpi.rst_addr&&(g_acpi.rst_space==0||g_acpi.rst_space==1)){ acpi_gas_write8(g_acpi.rst_space,g_acpi.rst_addr,g_acpi.rst_val); for(int i=0;i<500000;i++)io_wait(); }
     outb(0xCF9,0x02); for(int i=0;i<1000;i++)io_wait(); outb(0xCF9,0x06); for(int i=0;i<500000;i++)io_wait();
     for(int i=0;i<100000&&(inb(0x64)&2);i++)io_wait(); outb(0x64,0xFE); for(int i=0;i<500000;i++)io_wait();
@@ -135,7 +138,7 @@ int power_s2idle(void){
     if(g_sleeping)return 0;
     klog("power: light sleep - open the lid, press the power button or a key to wake");
     lps0_init();
-    { extern volatile int g_fs_wb_pending; extern void nvx3_sync_all(void); if(g_fs_wb_pending)nvx3_sync_all(); }
+    if(power_fs_ok()){ extern void nvx3_sync_all(void); nvx3_sync_all(); }
     if(g_gdisk_probed)gdisk_flush();
     int took=0; if(!bkl_held()){ bkl_lock(); took=1; }
     fill_rect(0,0,(int)W,(int)H,rgb(0,0,0)); blit_all(); bl_screen(0);

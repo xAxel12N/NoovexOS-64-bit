@@ -58,6 +58,7 @@
 #include "include/nvx/net/wifi/wpa2.h"
 #include "include/nvx/drivers/net/wifi/rtw_sec.h"
 #include "include/nvx/net/wifi/wifi_netdev.h"
+#include "include/nvx/net/wifi/wifi_ampdu.h"
 #include "include/nvx/fs/vfs/dirtree.h"
 #include "include/nvx/sys/native/syscall.h"
 #include "include/nvx/drivers/video/nvidia/nvgpu.h"

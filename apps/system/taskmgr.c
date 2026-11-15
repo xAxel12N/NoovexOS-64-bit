@@ -31,7 +31,7 @@ extern int g_syn_ready, g_etp_ready, g_wnd_up, msd_ok; extern u32 msd_lastlba; e
 extern volatile u64 g_ticks; extern int g_refresh_hz;
 
 static int tmt=0, tmsel=-1, tmdev=0, tmperf=0;
-static int tm_showhid=1, tm_jsel=-1; static u64 tm_bg_t, tm_svc_prev[16], tm_job_prev[JMAX]; static int tm_svc_pct[16], tm_job_pct[JMAX];
+static int tm_showhid=1, tm_jsel=-1, tm_jpid=-1; static u64 tm_bg_t, tm_svc_prev[16], tm_job_prev[JMAX]; static int tm_svc_pct[16], tm_job_pct[JMAX];
 int svc_count(void); int svc_info(int i,const char** name,const char** desc,const char** status,int* on,int* required); int svc_set(int i,int on); u64 svc_us(int i);
 static int hx_[200], hy_[200], hw_[200], hh_[200], hid_[200], hn_=0;
 static void hit(int x,int y,int w,int h,int id){ if(hn_<200){ hx_[hn_]=x; hy_[hn_]=y; hw_[hn_]=w; hh_[hn_]=h; hid_[hn_]=id; hn_++; } }
@@ -323,11 +323,11 @@ void sysmon_click(int px,int py){
         if(id>=100&&id<111){ tmdev=(tmdev==id-100)?-1:id-100; dscroll=0; return; }
         if(id>=200&&id<205){ tmperf=id-200; return; }
         if(id>=300&&id<300+NWIN){ tmsel=id-300; tm_jsel=-1; return; }
-        if(id==398){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1){ int tg=jp->tg; int nv=g_jp[tg].nice; int nn=nv==0?10:nv==10?19:nv==19?-5:0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB&&g_jp[j].tg==tg)g_jp[j].nice=nn; toast(nn<0?"Priority set to High":nn==0?"Priority set to Normal":nn==10?"Priority set to Below normal":"Priority set to Low"); } } return; }
-        if(id==399){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1){ jc_kill(jp->pid,9,0); toast("The program was ended"); } tm_jsel=-1; return; } if(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open){ close_win(tmsel); tmsel=-1; } return; }
+        if(id==398){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1&&jp->pid==tm_jpid){ int tg=jp->tg; int nv=g_jp[tg].nice; int nn=nv==0?10:nv==10?19:nv==19?-5:0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB&&g_jp[j].tg==tg)g_jp[j].nice=nn; toast(nn<0?"Priority set to High":nn==0?"Priority set to Normal":nn==10?"Priority set to Below normal":"Priority set to Low"); } } return; }
+        if(id==399){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1&&jp->pid==tm_jpid){ jc_kill(jp->pid,9,0); toast("The program was ended"); } else toast("That program has already ended"); tm_jsel=-1; return; } if(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open){ close_win(tmsel); tmsel=-1; } return; }
         if(id==698){ tm_showhid=!tm_showhid; return; }
         if(id>=700&&id<716){ const char *nm,*ds,*st; int on=0, req=0; if(svc_info(id-700,&nm,&ds,&st,&on,&req)&&!req){ svc_set(id-700,!on); toast(on?"Service stopped":"Service started"); } return; }
-        if(id>=800&&id<800+JMAX){ tm_jsel=id-800; tmsel=-1; return; }
+        if(id>=800&&id<800+JMAX){ tm_jsel=id-800; tm_jpid=g_jp[tm_jsel].pid; tmsel=-1; return; }
         return; } }
 int sysmon_title_click(int px,int py){ if(py>=tm_hdr_lo)return 0; for(int k=hn_-1;k>=0;k--){ int id=hid_[k]; if(((id>=10&&id<14)||id==399)&&in_rect(px,py,hx_[k],hy_[k],hw_[k],hh_[k])){ sysmon_click(px,py); return 1; } } return 0; }
 void taskmgr_tab(int t,int dev){ if(t>=0&&t<4)tmt=t; if(dev>=0&&dev<11)tmdev=dev; }

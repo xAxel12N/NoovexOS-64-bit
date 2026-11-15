@@ -107,15 +107,15 @@ static void mouse_feed(u8 v){
     int dx=mb[1], dy=mb[2];
     if(mb[0]&0x10) dx-=256;                       /* sign-extend from the flags*/
     if(mb[0]&0x20) dy-=256;
-    mouse_dx+=dx; mouse_dy+=dy;                   /* loops apply my -= dy, so pass raw dy */
+    in_rel(dx,-dy);                               /* loops apply my -= dy, so pass raw dy */
     in_btn_raw(mb[0]&1,(mb[0]>>1)&1,(mb[0]>>2)&1); mouse_evt=1;
     if(g_mbytes==4){
         extern int g_mimex; u8 b3=mb[3];
-        if(!g_mimex){ int z=(int8_t)b3; if(z){ mouse_scroll-=z; } }
+        if(!g_mimex){ int z=(int8_t)b3; if(z)in_scroll(-z,0); }
         else { int top=b3&0xC0;
-            if(top==0x40){ int h=(int)(b3&32)-(int)(b3&31); if(h){ mouse_hscroll+=h; mouse_evt=1; } }
-            else if(top==0x80){ int v=(int)(b3&32)-(int)(b3&31); if(v) mouse_scroll+=v; }
-            else { int z=b3&0x0F; if(z&8)z-=16; if(z) mouse_scroll-=z; in_xbtn((b3>>4)&1,(b3>>5)&1); } } }
+            if(top==0x40){ int h=(int)(b3&32)-(int)(b3&31); if(h)in_scroll(0,h); }
+            else if(top==0x80){ int v=(int)(b3&32)-(int)(b3&31); if(v)in_scroll(v,0); }
+            else { int z=b3&0x0F; if(z&8)z-=16; if(z)in_scroll(-z,0); in_xbtn((b3>>4)&1,(b3>>5)&1); } } }
 }
 void ps2_byte(void){
     u8 st=inb(0x64); if(!(st&1)) return;

@@ -1,7 +1,7 @@
 import os, re, sys
 
 TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INC = re.compile(r'^#include "([^"]+_parts/[^"]+\.c)"\s*$')
+INC = re.compile(r'^#include \"((?:[^\"]+_parts/|(?:apps/internet/browser/|shell/commands/|graphics/ui/desktop/|apps/system/settings/|sys/linux/syscalls/|drivers/usb/xhci/|drivers/video/nvidia/gsp/|apps/system/file_explorer/|core/init/installer/|fs/pkg/apt/|core/proc/jobs/))[^\"]+\.c)\"\s*$')
 
 
 def scan(lines):

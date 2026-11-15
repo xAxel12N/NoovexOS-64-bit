@@ -53,11 +53,12 @@ void pit_init(u32 hz){
    /* fwd */
 
 struct vfile;  
+static int irq_in_service(void){ extern int lapic_isr_top(void); if(lapic_isr_top()>=0)return 1; outb(0x20,0x0B); if(inb(0x20))return 1; outb(0xA0,0x0B); if(inb(0xA0))return 1; return 0; }
 
 static void isr_body(regs_t*r){
     if(r->vector==14&&vm_user_pf(r))return;
     if(r->vector==13&&g_msr_probe&&(r->cs&3)==0){ const u8* ip=(const u8*)r->rip; if(ip[0]==0x0F&&(ip[1]==0x32||ip[1]==0x30)){ g_msr_fault=1; r->rsi=1; g_msr_faults++; r->rip+=2; return; } }
-    if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } { extern int wk_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&wk_fault_redirect(&r->rip,&r->rsp))return; } { extern int web_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&web_fault_redirect(&r->rip,&r->rsp))return; } panic(r,0); return; }        /* exception -> RSOD */
+    if(r->vector<32){ if(g_js_running&&(r->cs&3)==3){ jc_fault(r); return; } { extern int wk_fault_redirect(u64*,u64*); if((r->cs&3)==0&&r->vector!=2&&r->vector!=8&&r->vector!=18&&wk_fault_redirect(&r->rip,&r->rsp))return; } { extern int web_fault_redirect(u64*,u64*); extern int web_df_ok(u64); if((r->cs&3)==0&&r->vector!=2&&r->vector!=18&&(r->vector!=8||(web_df_ok(r->rsp)&&!irq_in_service()))&&web_fault_redirect(&r->rip,&r->rsp))return; } panic(r,0); return; }        /* exception -> RSOD */
     if(r->vector==HR_LAPIC_VEC){ hr_lapic_isr(); return; }
     int irq=(int)r->vector-32;
     if(irq==0){
@@ -77,17 +78,18 @@ static void isr_body(regs_t*r){
     }
     else if(irq==1||irq==12) ps2_byte();
     if(r->vector==255){ extern void lapic_eoi_any(void); extern int lapic_isr_top(void); int tv=lapic_isr_top(); if(tv>=0)g_stray_vec=tv; g_stray_n++; lapic_eoi_any(); return; }
+    if(irq==7||irq==15){ u16 port=irq==7?0x20:0xA0; outb(port,0x0B); u8 isr=inb(port); if(!(isr&0x80)){ if(irq==15)outb(0x20,0x20); return; } }
     pic_eoi(irq);
-    if(irq==0){ extern void freeze_tick(regs_t*) __attribute__((weak)); extern void stk_check(void) __attribute__((weak)); if(stk_check)stk_check(); if(freeze_tick)freeze_tick(r); }
+    if(irq==0){ extern void stk_check(void) __attribute__((weak)); if(stk_check)stk_check(); }
 }
 
 void isr_dispatch(regs_t*r){
-    if(r->vector==2)return;
+    if(r->vector==2){ extern void nmiwd_nmi(regs_t*) __attribute__((weak)); if(nmiwd_nmi)nmiwd_nmi(r); return; }
     u64 v=r->vector; int user=(r->cs&3)==3;
     if(v>=0xF0&&v<=0xF2){ smp_ipi(r,user); return; }
     if(v==HR_LAPIC_VEC&&cpu_id()!=0){ ap_timer(r,user); return; }
     if(v==HR_LAPIC_VEC&&!user){ hr_lapic_isr(); return; }
-    if(v==32)g_ticks++;
+    if(v==32){ g_ticks++; if(g_ticks%500==0){ extern void lx_load_sample(void); lx_load_sample(); } if(cpu_id()==0){ extern void freeze_tick(regs_t*) __attribute__((weak)); if(freeze_tick)freeze_tick(r); } }
     if(v==33||v==44){ extern void ps2_byte_fast(void); ps2_byte_fast(); pic_eoi((int)v-32); if(!bkl_try())return; extern void ps2_drain(void); ps2_drain(); bkl_unlock(); return; }
     bkl_lock(); { extern void ps2_drain(void); ps2_drain(); } isr_body(r); bkl_unlock();
 }

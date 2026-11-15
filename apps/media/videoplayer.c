@@ -33,7 +33,7 @@ static void tfmt(char* o, i64 ms) {
 }
 
 int video_is_media_name(const char* n) {
-    static const char* ex[] = { "mp4", "m4v", "mov", "mkv", "webm", "mp3", "m4a", "aac", "ogg", "oga", "ogv", "opus", "wav", "nvn", 0 };
+    static const char* ex[] = { "mp4", "m4v", "mov", "mkv", "webm", "mp3", "m4a", "aac", "ogg", "oga", "ogv", "opus", "wav", "flac", "nvn", 0 };
     for (int i = 0; ex[i]; i++) if (fext_eq(n, ex[i])) return 1;
     return 0;
 }
@@ -253,11 +253,12 @@ int desk_win_exposed(int i);
 void present_rect(int x, int y, int w, int h);
 
 int video_fast(void) {
+    { extern int g_drag_settle; if(g_drag_settle) return 0; }
     if (vp_id < 0 || !WN[W_VIDEO].open || WN[W_VIDEO].min) return 0;
     int fw, fh;
     u64 seq = 0;
     if (!media_frame(vp_id, &fw, &fh, &seq) || seq == vp_seen_seq) return 0;
-    if (!desk_win_exposed(W_VIDEO)) return 1;
+    if (!desk_win_exposed(W_VIDEO)) { vp_seen_seq = seq; return 1; }
     int vx, vy, vw, vh, cy;
     geom(&vx, &vy, &vw, &vh, &cy);
     media_blit(vp_id, vx, vy, vw, vh, 0);

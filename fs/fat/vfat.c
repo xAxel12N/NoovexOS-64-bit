@@ -6,9 +6,9 @@ typedef struct { char name[256]; u8 sname[11]; u8 attr; u32 clus; u32 size; u32 
 struct nvx_g_vfat_t g_vfat;
 static u8 g_vfat_sec[512]; static u32 g_vfat_secno=0xFFFFFFFFu;
 extern int g_vf_err; extern u32 g_vf_errlba;
-static int vf_rs(u32 rel,int n,void* b){ int r=g_vfat.rd(g_vfat.base+rel,n,b); if(r){ g_vf_err=3; g_vf_errlba=rel; } return r; }
+static int vf_rs(u32 rel,int n,void* b){ if(n<0||(unsigned long long)rel+(unsigned)n>g_vfat.nsect){ g_vf_err=3; g_vf_errlba=rel; return -1; } int r=g_vfat.rd(g_vfat.base+rel,n,b); if(r){ g_vf_err=3; g_vf_errlba=rel; } return r; }
 int g_vf_err; u32 g_vf_errlba;
-static int vf_ws(u32 rel,int n,const void* b){ if(g_vfat.ro||!g_vfat.wr){ g_vf_err=1; return -1; } int r=g_vfat.wr(g_vfat.base+rel,n,b); if(r){ g_vf_err=2; g_vf_errlba=rel; } return r; }
+static int vf_ws(u32 rel,int n,const void* b){ if(g_vfat.ro||!g_vfat.wr){ g_vf_err=1; return -1; } if(n<0||(unsigned long long)rel+(unsigned)n>g_vfat.nsect){ g_vf_err=2; g_vf_errlba=rel; return -1; } int r=g_vfat.wr(g_vfat.base+rel,n,b); if(r){ g_vf_err=2; g_vf_errlba=rel; } return r; }
 static u16 vf_r16(const u8* p){ return (u16)(p[0]|(p[1]<<8)); }
 static u32 vf_r32(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
 static void vf_w16(u8* p,u32 v){ p[0]=(u8)v; p[1]=(u8)(v>>8); }
@@ -43,6 +43,7 @@ static u32 vf_alloc1(u32 prev){
 static void vf_freechain(u32 c){ int g=0; while(vf_valid(c)&&g++<0x400000){ u32 n=vf_get(c); vf_set(c,0); g_vfat.free_cnt++; if(vf_iseoc(n)||n<2)break; c=n; } }
 static int vf_zclus(u32 c){ vf_zero(g_vfat.cbuf,g_vfat.cbytes); if(vf_ws(vf_c2s(c),(int)g_vfat.spc,g_vfat.cbuf))return -1; if(g_vfat_secno>=vf_c2s(c)&&g_vfat_secno<vf_c2s(c)+g_vfat.spc)g_vfat_secno=0xFFFFFFFFu; return 0; }
 static int vf_loc(u32 dc,int idx,u32* sec,int* off){
+    if(idx<0||idx>=65536)return -1;
     if(dc&&!vf_valid(dc))return -1;
     if(dc==0){ if((u32)idx>=g_vfat.rootent)return -1; *sec=g_vfat.root_lba+(u32)idx/16; *off=(idx%16)*32; return 0; }
     u32 epc=g_vfat.cbytes/32, step=(u32)idx/epc, c=dc;
@@ -131,7 +132,7 @@ static int vf_slot(u32 dc,int need){
     int i=0, run=0, start=0;
     for(;;){ u32 sec; int off;
         if(vf_loc(dc,i,&sec,&off)){
-            if(dc==0)return -1;
+            if(dc==0||i>=65536)return -1;
             u32 c=dc,g=0; while(g++<0x400000){ u32 n=vf_get(c); if(!vf_valid(n))break; c=n; }
             u32 nc=vf_alloc1(c); if(!nc)return -1; if(vf_zclus(nc))return -1; continue; }
         if(vf_rsec(sec))return -1; u8 b=g_vfat_sec[off];
@@ -180,7 +181,7 @@ int vf_mount(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long lon
     if(vf_r16(b+11)!=512)return -1; u32 spc=b[13]; if(!spc||(spc&(spc-1)))return -1;
     u32 rsvd=vf_r16(b+14), nf=b[16], re=vf_r16(b+17), ts=vf_r16(b+19); if(!ts)ts=vf_r32(b+32); u32 fz=vf_r16(b+22); if(!fz)fz=vf_r32(b+36);
     if(!rsvd||!nf||!fz||ts>nsect)return -1;
-    u32 rs=(re*32+511)/512, data=ts-rsvd-nf*fz-rs, cl=data/spc;
+    u32 rs=(re*32+511)/512; if((unsigned long long)rsvd+(unsigned long long)nf*fz+rs>=ts)return -1; u32 data=ts-rsvd-nf*fz-rs, cl=data/spc;
     if(cl<4085)return -2;
     g_vfat.type=cl<65525?16:32;
     { u32 maxe=fz*512/(g_vfat.type==32?4:2); if(maxe<3)return -1; if(cl+2>maxe)cl=maxe-2; } g_vfat.spc=spc; g_vfat.rsvd=rsvd; g_vfat.nfats=nf; g_vfat.fatsz=fz; g_vfat.rootent=re; g_vfat.rootsecs=rs;
@@ -282,7 +283,7 @@ int vf_format(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long lo
     if(type==32){ vf_w32(b+36,fz); vf_w32(b+44,2); vf_w16(b+48,1); vf_w16(b+50,6); b[64]=0x80; b[66]=0x29; vf_w32(b+67,vid); vf_copy(b+71,lab,11); vf_copy(b+82,"FAT32   ",8); }
     else { vf_w16(b+22,fz); b[36]=0x80; b[38]=0x29; vf_w32(b+39,vid); vf_copy(b+43,lab,11); vf_copy(b+54,"FAT16   ",8); }
     b[510]=0x55; b[511]=0xAA;
-    g_vfat.rd=rd; g_vfat.wr=wr; g_vfat.base=base; g_vfat.ro=0;
+    g_vfat.rd=rd; g_vfat.wr=wr; g_vfat.base=base; g_vfat.nsect=nsect; g_vfat.ro=0;
     u8 z[4096]; vf_zero(z,4096);
     for(u32 s=0;s<rsvd;s+=8){ int k=(int)(rsvd-s<8?rsvd-s:8); if(vf_ws(s,k,z))return -5; }
     if(vf_ws(0,1,b))return -5;

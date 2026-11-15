@@ -16,8 +16,9 @@
 static u32 g_xmem=DMW_FIXED+0x10000u; int g_xcur=0, g_xhc_n=0, msd_ctl=0, xhci_pci_fn=0, xhci_hi4g=0;
 static u32 g_xhc_mem[XHC_MAX-1];
 
-#include "drivers/usb/xhci_parts/01_xhc_mem_for.c"
-#include "drivers/usb/xhci_parts/02_hid2ascii.c"
-#include "drivers/usb/xhci_parts/03_ufat_poke.c"
-#include "drivers/usb/xhci_parts/04_uvc_er_init.c"
-#include "drivers/usb/xhci_parts/05_usbnet.c"
+#include "drivers/usb/xhci/controller_init.c"
+#include "drivers/usb/xhci/hid_keyboard_mouse.c"
+#include "drivers/usb/xhci/storage_fat_and_hubs.c"
+#include "drivers/usb/xhci/uvc_webcam.c"
+#include "drivers/usb/xhci/usb_network.c"
+#include "drivers/bluetooth/btusb.c"

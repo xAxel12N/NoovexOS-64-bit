@@ -54,12 +54,12 @@ void open_win(int i){ { extern int g_xkbd; g_xkbd=0; } int was=WN[i].open; WN[i]
     if(!was && g_state==ST_DESKTOP){ win_anim(i,1); gfx_win_event(i,0); } }
 static void focus_next(void){ int best=-1, bz=-1; for(int k=0;k<NWIN;k++) if(WN[k].open&&!WN[k].min&&WN[k].ws==g_ws&&WN[k].z>bz){ bz=WN[k].z; best=k; } focus=best; }
 void close_win(int i){ if(WN[i].open&&!WN[i].min&&g_state==ST_DESKTOP){ win_anim(i,0); gfx_win_event(i,1); } { int wo=WN[i].open; WN[i].open=0; WN[i].min=0; if(focus==i)focus_next(); if(wo)focus_app_closed(i); } if(i==W_DOOM) g_doom_mcap=0; if(i==W_GPU3D){ extern void gpu3d_closed(void); gpu3d_closed(); } if(i==W_CAMERA){ extern void camera_closed(void); camera_closed(); } if(i==W_RECORDER){ extern void recorder_closed(void); recorder_closed(); } if(i==W_QUAKE){ extern void quake_closed(void); quake_closed(); } if(i==W_VIDEO){ extern void video_stop(void); video_stop(); } if(i==W_BROWSER){ extern void browser_media_pause(void); extern int web_busy(void); extern volatile int g_busy_esc; if(web_busy())g_busy_esc=1; browser_media_pause(); } }
-void focus_win(int i){ { extern int g_xkbd; g_xkbd=0; } if(!WN[i].open){ open_win(i); return; } if(WN[i].min)gfx_win_event(i,0); WN[i].min=0; focus=i; WN[i].z=++ztop; }
+void focus_win(int i){ { extern int g_xkbd; g_xkbd=0; } if(!WN[i].open){ open_win(i); return; } if(WN[i].min)gfx_win_event(i,0); WN[i].min=0; WN[i].ws=g_ws; focus=i; WN[i].z=++ztop; }
 void win_min(int i){ if(!WN[i].min&&WN[i].open)gfx_win_event(i,2); WN[i].min=1; if(focus==i)focus_next(); }
 void win_max(int i){ if(!WN[i].max){ WN[i].sx=WN[i].x;WN[i].sy=WN[i].y;WN[i].sw=WN[i].w;WN[i].sh=WN[i].h;
         WN[i].x=6; WN[i].y=32; WN[i].w=(int)W-12; WN[i].h=(int)H-32-86; WN[i].max=1; }
     else { WN[i].x=WN[i].sx; WN[i].y=WN[i].sy; WN[i].w=WN[i].sw; WN[i].h=WN[i].sh; WN[i].max=0; } focus=i; WN[i].z=++ztop; }
-void apply_snap(int i,int s){ int wy=32, wh=(int)H-32-86, hw=((int)W-18)/2, hh=(wh-6)/2; WN[i].max=1;
+void apply_snap(int i,int s){ int wy=32, wh=(int)H-32-86, hw=((int)W-18)/2, hh=(wh-6)/2; if(!WN[i].max){ WN[i].sx=WN[i].x; WN[i].sy=WN[i].y; WN[i].sw=WN[i].w; WN[i].sh=WN[i].h; } WN[i].max=1;
     if(s==3){ WN[i].x=6;WN[i].y=wy;WN[i].w=(int)W-12;WN[i].h=wh; }
     else if(s==1){ WN[i].x=6;WN[i].y=wy;WN[i].w=hw;WN[i].h=wh; }
     else if(s==2){ WN[i].x=(int)W-6-hw;WN[i].y=wy;WN[i].w=hw;WN[i].h=wh; }

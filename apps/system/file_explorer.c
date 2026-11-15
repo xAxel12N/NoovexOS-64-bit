@@ -23,11 +23,11 @@
 #include "include/nvx/core/init/installer.h"
 #include "include/nvx/fs/vfs/volumes.h"
 /* =========================================================================
-   File Explorer (v10.86) - browses the real Unix directory tree (DT + FS)
+   File Explorer (v11.10) - browses the real Unix directory tree (DT + FS)
    ========================================================================= */
 #define FX_MAXROWS 96
 #define FX_MAXB    72
 
-#include "apps/system/file_explorer_parts/01_fx_trash.c"
-#include "apps/system/file_explorer_parts/02_tpc_open.c"
-#include "apps/system/file_explorer_parts/03_fx_rowat.c"
+#include "apps/system/file_explorer/trash_and_sort.c"
+#include "apps/system/file_explorer/open_and_draw.c"
+#include "apps/system/file_explorer/clicks_and_drops.c"

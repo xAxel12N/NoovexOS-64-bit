@@ -227,4 +227,4 @@ void firefox_tick(void){
 void app_launch(int id){
     if(id==1001){ x_launch("idle3"); return; }
     if(id>=1100&&id<1100+g_nxa){ xapp* a=&g_xa[id-1100]; if(xs_has(a->exec,"firefox")){ firefox_launch(); return; }
-        if(a->term){ static char b[200]; int i=0; for(;a->exec[i]&&i<199;i++)b[i]=a->exec[i]; b[i]=0; run_cmd(b); } else xrun_launch(a->exec); } }
+        if(a->term){ static char b[200]; int i=0; for(;a->exec[i]&&i<199;i++)b[i]=a->exec[i]; b[i]=0; open_win(1); run_cmd(b); { extern void term_prompt(void); if(!g_tty_fg)term_prompt(); } } else xrun_launch(a->exec); } }

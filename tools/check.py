@@ -74,10 +74,12 @@ def kmissing(code, tmpl=''):
             out.append('static ' + re.sub(r'\s*=[^,;]*', '', vn[n][7:].strip()))
     return '\n'.join(out) + '\n'
 
+PART_INC = re.compile(r'^#include \"((?:[^\"]+_parts/|(?:apps/internet/browser/|shell/commands/|graphics/ui/desktop/|apps/system/settings/|sys/linux/syscalls/|drivers/usb/xhci/|drivers/video/nvidia/gsp/|apps/system/file_explorer/|core/init/installer/|fs/pkg/apt/|core/proc/jobs/))[^\"]+\.c)\"\s*$')
+
 def kexpand(t):
     out = []
     for l in t.split('\n'):
-        m = re.match(r'^#include "([^"]+_parts/[^"]+\.c)"\s*$', l)
+        m = PART_INC.match(l)
         if m:
             x = kexpand(open(os.path.join(KDIR, m.group(1)), errors='ignore').read())
             out.append(x[:-1] if x.endswith('\n') else x)
@@ -327,6 +329,11 @@ def g_boot(iso):
     m = re.search(r'(\d+) of (\d+) checks passed', out)
     record('boot', f'emulate.py: {m.group(0) if m else "did not finish"}', rc == 0, out[-300:])
 
+def g_bt(work):
+    head('Bluetooth: HCI event parser, event mask, Realtek firmware loader (host test)')
+    rc, out = sh(['sh', os.path.join(TESTS, 'bluetooth', 'run.sh')])
+    n = out.count(' ok\n')
+    record('bt', f'HCI events, event mask, V1/V2 epatch vs Python reference, download sequence ({n} checks)', rc == 0 and 'BLUETOOTH HOST TEST: ALL PASS' in out, out[-400:])
 def g_uvc(work):
     head('Camera (UVC) and microphone (USB Audio 1 and 2) parsing, generated from xhci.c')
     d = os.path.join(TESTS, 'uvc'); c = os.path.join(work, 'uvc_t.c'); b = os.path.join(work, 'uvc_t')
@@ -338,9 +345,39 @@ def g_uvc(work):
 def g_wifi(work):
     head('Wi-Fi security: WPA3 (SAE), AES-CMAC, PEAP/MSCHAPv2, P-256 (from the kernel sources)')
     sc = os.path.join(work, 'wscan_t.c'); sb = os.path.join(work, 'wscan_t')
-    rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'scan_gen.py'), os.path.join(KDIR, 'drivers/net/wifi/rtw8821ce.c'), os.path.join(KDIR, 'include/nvx/drivers/net/wifi/rtw8821ce.h'), sc, os.path.join(TESTS, 'wifi', 'scan_main.c')])
+    rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'scan_gen.py'), os.path.join(KDIR, 'drivers/net/wifi/rtw88/rtw8821ce.c'), os.path.join(KDIR, 'include/nvx/drivers/net/wifi/rtw8821ce.h'), sc, os.path.join(TESTS, 'wifi', 'scan_main.c')])
     if record('wifi', 'scan parser test builds against the current driver', rc == 0 and sh(['gcc', '-O1', '-w'] + SAN + ['-o', sb, sc])[0] == 0, out[-300:]):
         rc, out = sh([sb]); record('wifi', 'scan: UTF-8 names, HT Operation channel, channel settle, WPA1, off-channel, 200000 random frames', rc == 0 and 'scan ok' in out, out[-300:])
+    mc = os.path.join(work, 'wmgmt_t.c'); mb = os.path.join(work, 'wmgmt_t')
+    rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'mgmt_gen.py'), os.path.join(KDIR, 'drivers/net/wifi/rtw88/rtw8821ce.c'), os.path.join(KDIR, 'include/nvx/drivers/net/wifi/rtw8821ce.h'), mc, os.path.join(TESTS, 'wifi', 'mgmt_main.c')])
+    if record('wifi', 'management-frame send test builds against the current driver', rc == 0 and sh(['gcc', '-O1', '-w', '-no-pie'] + SAN + ['-o', mb, mc])[0] == 0, out[-300:]):
+        rc, out = sh([mb]); record('wifi', 'management frames: mgmt queue, stuck queue falls back to the data queue, card gone, ring wrap, join log', rc == 0 and 'mgmt ok' in out and 'skipped' not in out, out[-300:])
+    ab = os.path.join(work, 'wampdu_t')
+    if record('wifi', 'A-MPDU reorder buffer test builds against net/wifi/wifi_ampdu.c', sh(['gcc', '-O1', '-w', '-I', KDIR] + SAN + ['-o', ab, os.path.join(TESTS, 'wifi', 'ampdu', 'ampdu_test.c')])[0] == 0):
+        rc, out = sh([ab]); record('wifi', 'A-MPDU: in-order release, holes, window shift, seq wrap, 100 ms flush, DELBA, placeholders, random reorder', rc == 0 and 'ampdu: all ok' in out, out[-300:])
+    cc = os.path.join(work, 'wchip_t.c'); cb = os.path.join(work, 'wchip_t')
+    rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'chip_gen.py'), KDIR, cc, os.path.join(TESTS, 'wifi', 'chip_main.c')])
+    if record('wifi', 'multi-chip test builds against chip.c, chips/rtw8821c.c and the core', rc == 0 and sh(['gcc', '-O1', '-w', '-no-pie'] + SAN + ['-o', cb, cc])[0] == 0, out[-300:]):
+        rc, out = sh([cb]); record('wifi', 'chips: lookup by PCI ID, 8821C ops, v10.98 register traces unchanged, RF path A/B/mix, H2C ring wrap, IQK guard', rc == 0 and 'chip ok' in out, out[-300:])
+    gc = os.path.join(work, 'wmgr_t.c'); gb = os.path.join(work, 'wmgr_t')
+    rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'mgr_gen.py'), os.path.join(KDIR, 'net/wifi/wifi_mgr.c'), os.path.join(KDIR, 'include/nvx/net/wifi/wifi_mgr.h'), os.path.join(KDIR, 'include/nvx/drivers/net/wifi/rtw8821ce.h'), os.path.join(TESTS, 'wifi', 'mgr_main.c'), gc])
+    if record('wifi', 'Wi-Fi manager test builds against wifi_mgr.c', rc == 0 and sh(['gcc', '-O1', '-w'] + SAN + ['-o', gb, gc])[0] == 0, out[-300:]):
+        rc, out = sh([gb]); record('wifi', 'manager: saved file old/new format, wifi off kept over reboot, last network is default, join back-off', rc == 0 and 'mgr ok' in out, out[-300:])
+    lt = '/tmp/ref/linux/drivers/net/wireless/realtek/rtw88'
+    if os.path.isdir(lt):
+        rc, out = sh(['sh', os.path.join(TESTS, 'wifi', 'rtw8822b_test.sh')], env=dict(os.environ, TMPDIR=work))
+        record('wifi', 'RTL8822BE chip: tables vs Linux source, power sequence, channels, tx power, IQK, coex', rc == 0 and 'all checks passed' in out, out[-300:])
+        cs = os.path.join(work, 'w22c_t.c'); cbin = os.path.join(work, 'w22c_t'); fo = os.path.join(work, 'w22c_fw.o')
+        rc, out = sh(['python3', os.path.join(TESTS, 'wifi', 'rtw8822c_gen.py'), os.path.join(KDIR, 'drivers/net/wifi/rtw88/rtw_sec.c'), os.path.join(KDIR, 'drivers/net/wifi/rtw88/rtw8821ce.c'), os.path.join(lt, 'rtw8822c_table.c'), os.path.join(TESTS, 'wifi', 'rtw8822c_main.c'), cs])
+        ok = rc == 0 and sh(['ld', '-r', '-b', 'binary', '-o', fo, 'rtw8822c_fw.bin'], cwd=os.path.join(KDIR, 'assets/firmware'))[0] == 0 and sh(['gcc', '-w', '-no-pie', '-fsanitize=address,undefined', '-I', os.path.join(TESTS, 'wifi', 'shim'), '-I', KDIR, cs, os.path.join(KDIR, 'drivers/net/wifi/rtw88/chips/rtw8822c.c'), os.path.join(KDIR, 'drivers/net/wifi/rtw88/chips/rtw8822c_tables.c'), fo, '-o', cbin])[0] == 0
+        if record('wifi', 'RTL8822CE chip test builds', ok, out[-300:]):
+            rc, out = sh([cbin]); record('wifi', 'RTL8822CE chip: tables vs Linux source, power-on, efuse, channels, RF addressing, IQK, coex', rc == 0 and 'all rtw8822c tests passed' in out, out[-300:])
+    ib = os.path.join(work, 'iwx_t'); idir = os.path.join(KDIR, 'drivers/net/wifi/iwx')
+    rc, out = sh(['gcc', '-O1', '-w', '-fsanitize=address,undefined', '-I', KDIR, '-o', ib, os.path.join(TESTS, 'iwx', 'iwx_host.c')] + [os.path.join(idir, f) for f in ('iwx_cmd.c', 'iwx_scan.c', 'iwx_data.c')])
+    if record('wifi', 'Intel iwx host test builds against iwx_cmd.c, iwx_scan.c, iwx_data.c', rc == 0, out[-300:]):
+        rc, out = sh([ib]); record('wifi', 'iwx: struct sizes, sync command + timeout, scan v14 command, RX MPDU v1/v3 into BSS table, scan complete, malformed packets, TX', rc == 0 and 'OK' in out, out[-300:])
+    rc, out = sh(['gcc', '-fsyntax-only', '-m64', '-ffreestanding', '-DNOOVEX64', '-I', KDIR, os.path.join(idir, 'iwx_pcie.c')])
+    record('wifi', 'iwx transport structs match Linux/OpenBSD sizes (context info gen2/gen3, prph scratch, TFD)', rc == 0, out[-300:])
     b = os.path.join(work, 'wifi_t')
     rc, out = sh(['gcc', '-O1', '-w', '-I', KDIR, '-o', b, os.path.join(TESTS, 'wifi', 'crypto.c')])
     if not record('wifi', 'Wi-Fi crypto test builds against the current sources', rc == 0, out[-300:]): return
@@ -363,20 +400,22 @@ def g_usb(work):
     tp = template(os.path.join(TESTS, 'usb_template.txt'), ['PRE', 'PRE2', 'MAIN'])
     decl = s[s.find('/* per-entry HID state'):s.find('static void xhid_reset(void)')]
     if 'static u8 xhid_bs[64];' in s and 'xhid_bs' not in decl: decl += '\nstatic u8 xhid_bs[64];\n'
+    if 'xhid_sim_e' in s and 'xhid_sim_e' not in decl: decl += '\nstatic int xhid_sim_e=-1;\n'
     m_inf = re.search(r'#define XHID_INFLIGHT[^\n]*', s)
     if m_inf and 'XHID_INFLIGHT' not in decl: decl = m_inf.group(0) + '\n' + decl
     decl = decl.replace('static int xhci_csz=0; static u32 xhci_dboff=0, xhci_rtoff=0;\n', '').replace('static u32 cmd_enq=0, cmd_cyc=1, ev_deq=0, ev_cyc=1;\n', '')
     reps = s[s.find('static int kcaps;'):s.find('static int usb_key_code')] if 'static int kcaps;' in s else 'static int kcaps;\n' + s[s.find('static int usbk_rep_code'):s.find('static int usb_key_code')]
-    names = ['xhid_reset', 'hid_pick', 'hid_parse', 'hid_bits', 'xh_interval', 'ctx_sz', 'ctx_zero', 'xhid_free_region', 'xh_disable_slot', 'xhid_arm', 'xh_set_fail', 'xh_root_reset', 'xh_slot_ctx', 'xh_fix_mps0', 'xhci_hid_enum', 'xhci_enum_loc',
-             'xhub_db', 'xhub_ctrl', 'xhub_status', 'xh_delay_ms', 'xh_under', 'xhub_remove_below', 'xhub_port_reset', 'xhub_child_loc', 'xhub_enum_port', 'xhub_attach', 'xhub_poll_ports',
-             'hid2ascii', 'hid2scan', 'usb_key_code', 'kbd_report', 'usb_kbd_repeat', 'cc_hk', 'hid_report_decode', 'hid_xfer', 'xhci_poll_one', 'xhci_mouse_poll', 'xhid_remove_port', 'xh_event_t', 'xh_ctrl']
+    names = ['xhid_reset', 'hid_pick', 'hid_parse', 'hid_bits', 'xh_interval', 'ctx_sz', 'ctx_zero', 'xhid_free_region', 'xh_disable_slot', 'xhid_arm', 'xhid_recover_now', 'xhid_recover', 'xh_set_fail', 'xh_root_reset', 'xh_slot_ctx', 'xh_fix_mps0', 'xhci_hid_enum', 'xhci_enum_loc',
+             'xhub_db', 'xhub_ctrl', 'xhub_status', 'xh_delay_ms', 'xh_under', 'usbk_mods_sync', 'hid2scan', 'xhub_remove_below', 'xhub_port_reset', 'xhub_child_loc', 'xhub_enum_port', 'xhub_attach', 'xhub_poll_ports',
+             'hid2ascii', 'usb_key_code', 'kbd_report', 'usb_kbd_repeat', 'cc_hk', 'hid_report_decode', 'hid_xfer', 'xhci_poll_one', 'xhci_mouse_poll_in', 'xhci_mouse_poll', 'xhid_remove_port', 'xh_hid_ep', 'xh_ptr_ok', 'xh_event_w_in', 'xh_event_w', 'xh_event_t', 'xh_bo_held', 'xh_bo_note', 'xh_ep0_recover', 'xh_ctrl']
     try: funcs = {n: defn(s, n) for n in names}
     except KeyError as e: record('usb', f'function {e} found in xhci.c', False); return
     funcs['xhci_enum_loc'] = funcs['xhci_enum_loc'].replace('#define XFAIL', '#undef XFAIL\n#define XFAIL', 1)
     funcs['xh_ctrl'] = funcs['xh_ctrl'].replace('static int xh_ctrl(', 'static int real_xh_ctrl(', 1)
-    order = ['xh_event_t'] + [n for n in names if n not in ('xh_event_t', 'xh_ctrl')] + ['xh_ctrl']
+    first = [n for n in ('xh_hid_ep', 'xh_ptr_ok', 'xh_event_w_in', 'xh_event_w', 'xh_event_t') if n in funcs]; last = [n for n in ('xh_bo_held', 'xh_bo_note', 'xh_ep0_recover', 'xh_ctrl') if n in funcs]
+    order = first + [n for n in names if n not in first and n not in last] + last
     body = 'static int xhci_enum_loc(const usbloc_t* L);\n' + '\n'.join(funcs[n] if n != 'xh_fix_mps0' else tp['PRE2'] + '\n' + funcs[n] for n in order)
-    body += '\nstatic int usn_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr){ (void)sl; (void)ep; (void)cc; (void)res; (void)ptr; return 0; }\nstatic void usn_remove_below(int root,u32 R,int dR){ (void)root; (void)R; (void)dR; }\nstatic int usn_enum_loc(const usbloc_t* L){ (void)L; return 0; }\nstatic int usn_enum_root(int port){ (void)port; return 0; }\nstatic int usn_active(void){ return 0; }\nstatic void usn_noslot(void){}\nvoid usn_reset_all(void){}\n'
+    body += '\nstatic int usn_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr){ (void)sl; (void)ep; (void)cc; (void)res; (void)ptr; return 0; }\nstatic void usn_remove_below(int root,u32 R,int dR){ (void)root; (void)R; (void)dR; }\nstatic int usn_enum_loc(const usbloc_t* L){ (void)L; return 0; }\nstatic int usn_enum_root(int port){ (void)port; return 0; }\nstatic int usn_active(void){ return 0; }\nstatic void usn_noslot(void){}\nvoid usn_reset_all(void){}\nstatic int btu_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr){ (void)sl; (void)ep; (void)cc; (void)res; (void)ptr; return 0; }\nstatic int btu_active(void){ return 0; }\nstatic int btu_owns(int c,int p){ (void)c; (void)p; return 0; }\nstatic void btu_remove_below(int root,u32 R,int dR){ (void)root; (void)R; (void)dR; }\nvoid btu_reset_all(void){}\n'
     ty = s[s.find('typedef struct { u8 iface'):s.find('static int hid_parse')]
     extra = ty + 'static char xhci_failstep[48]; static int xhci_failcc;\n'
     ctx = s[s.find('typedef struct { int present'):s.find('static void xhc_save(void)')] + '\n'.join(defn(s, n) for n in ('xhc_save', 'xhc_load', 'xhc_select')) + '\n'
@@ -388,6 +427,17 @@ def g_usb(work):
     for l in fails: print('    ' + l)
     n = len([l for l in out.splitlines() if l.rstrip().endswith((' ok', ' FAIL'))])
     record('usb', f'receivers, routing, repeat, keys, hot-unplug, hubs ({n} checks)', rc == 0 and 'ALL PASS' in out, '; '.join(fails[:2]))
+    d = os.path.join(TESTS, 'usb'); hc = os.path.join(work, 'hidmouse_t.c'); hx = os.path.join(work, 'hidmouse_t')
+    rc, out = sh(['python3', os.path.join(d, 'hidmouse_gen.py'), os.path.join(KDIR, 'drivers/usb/xhci/controller_init.c'), os.path.join(KDIR, 'drivers/usb/xhci/hid_keyboard_mouse.c'), os.path.join(KDIR, 'include/nvx/drivers/usb/xhci.h'), hc, os.path.join(d, 'hidmouse_main.c')])
+    if not record('usb', 'wireless/gaming mouse decode test builds', rc == 0 and sh(['gcc', '-O1', '-w'] + SAN + ['-o', hx, hc])[0] == 0, out[-300:]): return
+    rc, out = sh([hx]); n = out.count(' ok\n')
+    record('usb', f'mouse report descriptors: boot, Unifying 12-bit, Lightspeed/gaming 16-bit, combo receiver ({n} checks)', rc == 0 and 'ALL PASS' in out, out[-400:])
+    rc, out = sh(['sh', os.path.join(d, 'hidkbd_test.sh')], env=dict(os.environ, SANFLAGS=' '.join(SAN), TMPDIR=work)); n = out.count(' ok\n')
+    record('usb', f'wireless keyboards: report IDs, NKRO, combo receivers, rollover, two keyboards ({n} checks)', rc == 0 and 'ALL PASS' in out, out[-400:])
+    rc, out = sh(['sh', os.path.join(d, 'hidparse_test.sh')], env=dict(os.environ, SANFLAGS=' '.join(SAN), TMPDIR=work)); n = out.count(' ok\n')
+    record('usb', f'HID descriptor parser: repeated usages, usage ranges, late usage page, push/pop ({n} checks)', rc == 0 and 'ALL PASS' in out, out[-400:])
+    rc, out = sh(['sh', os.path.join(d, 'hidsim_test.sh')], env=dict(os.environ, TMPDIR=work))
+    record('usb', 'combo receiver end-to-end simulation: no case loses Y, no unexpected failures', 'LOST-Y 0,' in out and 'unexpected (not in a known XFAIL class): 0' in out, out[-400:])
 
 def g_acpi(work):
     head('ACPI power off / restart (generated from power.c)')
@@ -1371,7 +1421,7 @@ def main():
     ap.add_argument('--iso', help='image to test (default: the one built with --build, else tools/out/check.iso)')
     ap.add_argument('--quick', action='store_true', help='smaller random test sizes')
     ap.add_argument('--sanitize', action='store_true', help='run driver tests under ASan+UBSan and libc/tool tests with UBSan traps')
-    ap.add_argument('--only', help='comma list: build,static,boot,usb,acpi,gpu,nvme,touchpad,memory,aml,timers,cookies,linux,fs,accounts,nvidia,tls,fetch,qemu,net,nics,drivers,analyze,libc,coreutils')
+    ap.add_argument('--only', help='comma list: build,static,boot,usb,bt,acpi,gpu,nvme,touchpad,memory,aml,timers,cookies,linux,fs,accounts,nvidia,tls,fetch,qemu,net,nics,drivers,analyze,libc,coreutils')
     a = ap.parse_args()
     if a.sanitize:
         SAN[:] = ['-fsanitize=address,undefined', '-fno-sanitize-recover=undefined', '-fno-omit-frame-pointer', '-g']
@@ -1389,6 +1439,7 @@ def main():
             if os.path.exists(iso): g_boot(iso)
             else: record('boot', f'image {iso} exists (use --build or --iso)', False)
         if want('usb'): g_usb(work); g_xhci_init(work); g_uvc(work)
+        if want('bt'): g_bt(work)
         if want('wifi'): g_wifi(work)
         if want('secboot'): g_secboot(work)
         if want('acpi'): g_acpi(work)

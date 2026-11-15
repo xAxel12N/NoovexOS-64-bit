@@ -8,8 +8,9 @@
 #define XHID_MAX 10
 #define XHUB_MAX 6
 typedef struct { int used, ctl, reg, slot, root, depth, speed, nports, ttt, tt_slot, tt_port, parent, pport, ss; u32 route, e0_enq, e0_cyc, conn; } xhub_t;
-typedef struct { u8 id, kind; short btn_off, btn_cnt, x_off, x_sz, y_off, y_sz, w_off, w_sz, mod_off, arr_off, arr_cnt, bm_off, bm_min, bm_cnt, cc_off, cc_sz, cc_cnt, cv_cnt, cc_base; u16 cv_us[12]; short cv_off[12]; } hidlay_t;
+typedef struct { u8 id, kind; short btn_off, btn_cnt, x_off, x_sz, y_off, y_sz, w_off, w_sz, mod_off, arr_off, arr_cnt, bm_off, bm_min, bm_cnt, cc_off, cc_sz, cc_cnt, cv_cnt, cc_base; u16 cv_us[12]; short cv_off[12]; u32 idm[8]; u8 bseen, nil, iid[8], ilen[8]; } hidlay_t;
 #define HIDLAY_MAX 4
+typedef struct { u16 vid, pid, rdlen, rdn, mps; u8 iface, ep, proto, sub; u32 rxi; u16 rxn[4]; short rdx[4], rdy[4]; int ldx, ldy; u8 rx[4][64]; u8 rd[512]; u8 pset, pfmt, ptry; u16 nboot; } xhdiag_t;
 struct nvx_ufs_t { char name[16]; u32 size, clus; };
 
 extern int g_xcur , g_xhc_n , msd_ctl , xhci_pci_fn , xhci_hi4g;
@@ -29,6 +30,8 @@ extern xhub_t xhub[XHUB_MAX];
 extern u32 xhid_route[XHID_MAX];
 extern int xhid_depth[XHID_MAX];
 extern hidlay_t xhid_lay[XHID_MAX][HIDLAY_MAX];
+extern xhdiag_t xhid_diag[XHID_MAX];
+void xhid_note_boot(int e);
 extern char xhci_failstep[48];
 extern int xhci_failcc;
 extern int msd_ok , msd_slot , msd_in_dci , msd_out_dci;

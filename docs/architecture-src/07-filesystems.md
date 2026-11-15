@@ -816,7 +816,7 @@ Access. `ux_perm_ok` checks owner, group and other bits; `perm_dir` (create or d
 Tests. `tools/tests/accounts/ac_glue.c` builds the whole kernel as one host object (like the file-system tests) and runs 29 checks; `tools/check.py --only accounts`.
 
 
-## 7.13 /sys, device nodes in /dev and hotplug events (`sys/linux/linux_parts/08_sysfs.c`) (v10.79)
+## 7.13 /sys, device nodes in /dev and hotplug events (`sys/linux/syscalls/sysfs.c`) (v10.79)
 
 Snapshot. `sx_scan` builds a table of devices (`g_sx`, kind `SXK_*`): the memory nodes (`null`, `zero`, `full`, `random`, `urandom`, `kmsg`), terminals, the framebuffer, the mouse, disks and partitions (from `volumes.c`, sector size `psz`), USB devices (from `xhci.c`), network interfaces, the AC adapter and battery, the backlight, thermal zones and the sound card. Each entry has a device path under `/sys/devices` (`/devices/virtual/mem/null`, `/devices/pci0000:00/...`), a subsystem, a name and a major:minor number. `sx_fresh` rescans when the table is older than 500 ms.
 

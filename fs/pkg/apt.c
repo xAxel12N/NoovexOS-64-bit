@@ -16,5 +16,5 @@
 #include "include/nvx/lib/crypto/nvxcrypto.h"
 #include "include/nvx/fs/fat/fat_ata.h"
 
-#include "fs/pkg/apt_parts/01_unp_auto.c"
-#include "fs/pkg/apt_parts/02_ar_member.c"
+#include "fs/pkg/apt/unpack_and_prompts.c"
+#include "fs/pkg/apt/deb_archive.c"

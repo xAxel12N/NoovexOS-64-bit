@@ -92,7 +92,7 @@ void syscall_dispatch(struct sysregs* r){
         case 0: if(g_curproc>=0){ g_proc[g_curproc].exit_status=(int)r->rbx; g_proc[g_curproc].zombie=1; }
                 if(g_preempt_on){ g_proc[g_curproc].alive=0; g_proc[g_curproc].used=0; int live=0; for(int i=0;i<MAXPROC;i++) if(g_proc[i].used&&g_proc[i].alive)live++; if(live==0){ g_preempt_on=0; cpu_set_pt(g_kern_cr3); k_longjmp(g_preempt_kern,1); } cpu_irq_on(); for(;;)cpu_halt(); } else if(g_sched_active) sched_exit_now(); else k_longjmp(g_kjmp,1); break;   /* exit */
         case 20: if(g_sched_active) sched_yield_now(); break;                            /* yield */
-        case 200: case 201: case 202: case 203: case 204: case 205: case 206: case 207: case 208: case 209: case 210: { extern long inst_syscall(u64,u64,u64,u64); r->rax=(u64)inst_syscall(r->rax,r->rbx,r->rcx,r->rdx); } break;
+        case 200: case 201: case 202: case 203: case 204: case 205: case 206: case 207: case 208: case 209: case 210: case 211: case 212: { extern long inst_syscall(u64,u64,u64,u64); r->rax=(u64)inst_syscall(r->rax,r->rbx,r->rcx,r->rdx); } break;
         case 2: r->rax=(u64)do_fork(r); break;                                           /* fork */
         case 5: r->rax=(u64)(long)sys_spawn((const char*)r->rbx); break;                  /* spawn(path)->pid */
         case 6: r->rax=(u64)(long)sys_waitpid((int)r->rbx); break;                        /* waitpid(pid)->status */
@@ -122,7 +122,7 @@ void syscall_dispatch(struct sysregs* r){
         case 45: blit_all(); break;                                                      /* fb_present */
         /* ---- input ---- */
         case 50: { int k=kpop(); r->rax=(u64)(long)k; } break;                           /* getkey (non-blocking, -1) */
-        case 51: { extern volatile int g_frz_hold; int hold=g_frz_hold; g_frz_hold=1; int k; while((k=kpop())<0){ extern void kidle(void); kidle(); } g_frz_hold=hold; r->rax=(u64)(long)k; } break;  /* waitkey */
+        case 51: { extern volatile int g_frz_hold; extern volatile u32 g_ml_beat, g_nest_live; extern int xhid_n; extern void xhci_mouse_poll(void); extern void busy_pump(void); extern int kpending(void); int c0=cpu_id()==0; int hold=g_frz_hold; if(c0)g_frz_hold=1; int k; while((k=kpop())<0){ if(c0){ g_ml_beat++; g_nest_live++; busy_pump(); if(xhid_n)xhci_mouse_poll(); if((k=kpop())>=0)break; } int bd=bkl_drop(); cpu_irq_off(); if(!kpending())cpu_idle(); else cpu_irq_on(); cpu_irq_off(); bkl_take(bd); } if(c0)g_frz_hold=hold; r->rax=(u64)(long)k; } break;  /* waitkey */
         case 52: { int* xp=(int*)r->rbx,*yp=(int*)r->rcx,*bp=(int*)r->rdx; if(xp)*xp=mx; if(yp)*yp=my; if(bp)*bp=mouse_btn; } break; /* getmouse */
         /* ---- memory: sbrk (grow the user heap) ---- */
         case 61: r->rax=(u64)thread_create_k(r->rbx); break;                             /* thread_create(fn) */
@@ -202,7 +202,7 @@ void syscall_dispatch(struct sysregs* r){
         case 140: r->rax=(u64)g_ticks*10ULL; break;                                                /* monotonic ms since boot */
         /* ---- time ---- */
         case 70: r->rax=(u64)g_ticks; break;                                             /* ticks (100 Hz) */
-        case 71: { extern volatile int g_frz_hold; int hold=g_frz_hold; g_frz_hold=1; u64 until=g_ticks+(r->rbx/10); while(g_ticks<until)cpu_idle(); g_frz_hold=hold; } break;  /* sleep(ms) */
+        case 71: { extern volatile int g_frz_sleep; int fz=cpu_id()==0; if(fz)__atomic_fetch_add(&g_frz_sleep,1,__ATOMIC_SEQ_CST); u64 ms=r->rbx>10000ULL?10000ULL:r->rbx; u64 until=g_ticks+(ms/10); int bd=bkl_drop(); while(g_ticks<until)cpu_idle(); cpu_irq_off(); bkl_take(bd); if(fz)__atomic_fetch_sub(&g_frz_sleep,1,__ATOMIC_SEQ_CST); } break;  /* sleep(ms) */
         default: r->rax=(u64)-1; break;
     }
 }

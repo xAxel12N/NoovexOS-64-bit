@@ -23,14 +23,14 @@ const rfs_ops g_rfs_fat16={"FAT16",vf_mount,vf_umount,vf_exists,vf_mkdir,vf_writ
 const rfs_ops* g_rfs=0;
 static u8 g_nk_blk[4096];
 static int nk_rd(unsigned long long lba,int n,void* buf){
-    u32 r=dk_ratio(); u8* o=(u8*)buf;
+    u32 r=1; u8* o=(u8*)buf;
     if(r<=1){ while(n>0){ int k=n>8?8:n; if(lba+(unsigned long long)k>0xFFFFFFFFULL)return -1; if(gdisk_read((u32)lba,k,o))return -1; lba+=(unsigned long long)k; n-=k; o+=k*512; } return 0; }
     for(int i=0;i<n;i++){ unsigned long long L=lba+(unsigned long long)i; u32 blk=(u32)(L/r); int off=(int)(L%r)*512;
         if(gdisk_read(blk,1,g_nk_blk))return -1; for(int j=0;j<512;j++)o[i*512+j]=g_nk_blk[off+j]; }
     return 0;
 }
 static int nk_wr(unsigned long long lba,int n,const void* buf){
-    u32 r=dk_ratio(); const u8* in=(const u8*)buf;
+    u32 r=1; const u8* in=(const u8*)buf;
     for(int i=0;i<n;i++){ unsigned long long L=lba+(unsigned long long)i;
         if(r<=1){ if(L>0xFFFFFFFFULL)return -1; if(gdisk_write((u32)L,in+i*512))return -1; bc_invalidate((u32)L,1); }
         else { u32 blk=(u32)(L/r); int off=(int)(L%r)*512; if(gdisk_read(blk,1,g_nk_blk))return -1;
@@ -42,7 +42,7 @@ int nk_blk_wr(unsigned long long lba,int n,const void* buf){ return nk_wr(lba,n,
 static int nk_is_ntfs(unsigned long long lba){ u8 b[512]; if(nk_rd(lba,1,b))return 0; return b[3]=='N'&&b[4]=='T'&&b[5]=='F'&&b[6]=='S'&&b[7]==' '; }
 static int nk_find(unsigned long long* base,unsigned long long* nsect){
     gdisk_ensure(); if(g_dktype==DK_NONE)return -1;
-    u32 r=dk_ratio(); unsigned long long total=(unsigned long long)g_dksectors*r;
+    u32 r=dk_ratio(); unsigned long long total=(unsigned long long)g_dksectors;
     if(nk_is_ntfs(0)){ *base=0; *nsect=total; return 0; }
     u8 m[512]; if(nk_rd(0,1,m))return -1; if(m[510]!=0x55||m[511]!=0xAA)return -1;
     int gpt=0;
@@ -52,13 +52,13 @@ static int nk_find(unsigned long long* base,unsigned long long* nsect){
     if(!gpt)return -1;
     static const u8 msdata[16]={0xA2,0xA0,0xD0,0xEB,0xE5,0xB9,0x33,0x44,0x87,0xC0,0x68,0xB6,0xB7,0x26,0x99,0xC7};
     u8 h[512]; if(nk_rd(1ULL*r,1,h))return -1; if(h[0]!='E'||h[1]!='F'||h[2]!='I'||h[3]!=' ')return -1;
-    unsigned long long elba=*(unsigned long long*)(h+72); u32 ne=*(u32*)(h+80), esz=*(u32*)(h+84); if(ne>256)ne=256; if(esz<128||esz>512)return -1;
+    unsigned long long elba=*(unsigned long long*)(h+72); u32 ne=*(u32*)(h+80), esz=*(u32*)(h+84); if(ne>256)ne=256; if(esz<128||esz>512||(esz&(esz-1)))return -1;
     u8 s[512]; unsigned long long last=~0ULL;
     for(u32 i=0;i<ne;i++){ unsigned long long byte=(unsigned long long)i*esz; unsigned long long l512=elba*r+byte/512; int off=(int)(byte%512);
         if(l512!=last){ if(nk_rd(l512,1,s))return -1; last=l512; }
         int match=1; for(int k=0;k<16;k++) if(s[off+k]!=msdata[k]){ match=0; break; }
         if(match){ unsigned long long f=*(unsigned long long*)(s+off+32), lz=*(unsigned long long*)(s+off+40);
-            if(nk_is_ntfs(f*r)){ *base=f*r; *nsect=(lz-f+1)*r; return 0; } } }
+            if(lz>=f&&nk_is_ntfs(f*r)){ *base=f*r; *nsect=(lz-f+1)*r; return 0; } } }
     return -1;
 }
 static void nk_log(const char* s){ klog2("ntfs: ",s); }
@@ -152,7 +152,7 @@ static int nk_probe(unsigned long long lba){ u8 b[512]; if(nk_rd(lba,1,b))return
     if(b[11]==0&&b[12]==2&&b[13]&&!(b[13]&(b[13]-1))&&b[16]&&(b[14]|b[15]))return 2;
     return 0; }
 static int nk_scan(unsigned long long* bs,unsigned long long* ns,int* ty,int cap){
-    gdisk_ensure(); if(g_dktype==DK_NONE)return 0; u32 r=dk_ratio(); unsigned long long total=(unsigned long long)g_dksectors*r; int n=0;
+    gdisk_ensure(); if(g_dktype==DK_NONE)return 0; unsigned long long total=(unsigned long long)g_dksectors; int n=0;
     int t0=nk_probe(0); if(t0){ bs[0]=0; ns[0]=total; ty[0]=t0; return 1; }
     static partent pl[64]; int pn=parts_scan_main(pl,64);
     for(int i=0;i<pn&&n<cap;i++){ if(pl[i].mbrtype==0x05||pl[i].mbrtype==0x0F||pl[i].mbrtype==0x85)continue; int t=nk_probe(pl[i].start); if(t){ bs[n]=pl[i].start; ns[n]=pl[i].count; ty[n]=t; n++; } }
@@ -166,7 +166,7 @@ int nk_root_try(void){
         char m[16]; long r=o->read("/.noovexos",m,15); o->umount();
         if(r<=0){ klog2("rootfs: volume is not a NoovexOS install, left untouched: ",o->name); continue; }
         if(o->mount(nk_rd,nk_wr,bs[i],ns[i],0)){ klog2("rootfs: NoovexOS install found but read-write mount failed: ",o->name); continue; }
-        g_rfs=o; g_nk_nkf=0; g_nk_nkd=0; int files=nk_load_tree(); nk_meta_apply(); g_rootfs=1;
+        g_rfs=o; g_nk_nkf=0; g_nk_nkd=0; int files=nk_load_tree(); nk_meta_apply(); g_rootfs=1; { extern int g_fs_src_disk; extern int gdisk_current(void); g_fs_src_disk=gdisk_current(); }
         g_nvx_note=ty[i]==1?"NoovexOS NTFS partition":(g_vfat.type==16?"NoovexOS FAT16 partition":"NoovexOS FAT32 partition");
         { char t[64],*p=t; const char* a="rootfs: loaded "; while(*a)*p++=*a++; a=g_nvx_note; while(*a)*p++=*a++; a=", files="; while(*a)*p++=*a++; p=nk_num(p,(unsigned)files,10); klog(t); }
         return 1; }

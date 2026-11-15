@@ -1317,13 +1317,13 @@ What changed:
 |---|---|---|
 | Blocks | ELF files (programs and libraries) are packed in zstd blocks (block type 3, level 19, `NVX_SR_ZSTD=0` keeps xz; without `libzstd.so.1` on the build machine it falls back to xz with a warning); data files stay xz. zstd unpacks about 10-15 times faster (measured on the build machine: 8 MB of `libmergedlo.so` in 0.01 s against 0.11 s for xz). The Linux files grow from 210 to 233 MB, inside the 256 MiB slot. Blocks are compressed in parallel. | `tools/mksysroot.py`, `fs/vfs/sysroot.c` `blk_get`, `lib/compress/unpack.c` `zstk_decode_into` |
 | Page cache | Each file of the Linux files gets a handle (`sr_pcf`: entry, page count, one frame per page). A page is copied out of the unpacked data the first time any process needs it and kept with one reference; every process that maps it gets the same frame. Removing an apt layer drops its pages. | `fs/vfs/sysroot.c` `sysroot_pc_handle`, `sysroot_pc_handle_ptr`, `sysroot_pc_page`, `sr_pc_drop` |
-| On-demand pages | `mmap` of a Linux-files file writes a marker into each page table entry instead of copying: not present, `PTE_LAZY` + `PTE_FILE` (bit 8), the page number in bits 12-31, the handle in bits 32-51, the protection bits in 52, 53 and 63 (`vm_file_marker`). The first access maps the cache frame read-only with `PTE_COW`; a write copies it (the existing copy-on-write path), so the cache frame is never written. Fork copies markers, `mprotect` keeps them, `munmap` clears them. | `include/nvx/mem/pmm_vmm.h`, `mem/pmm_vmm.c` `vm_fault_user`, `sys/linux/linux_parts/05_lx_mmap.c`, `core/proc/jobs_parts/01_jc_resume.c`, `sys/linux/linux_parts/04_lx_wait_deadline.c` |
+| On-demand pages | `mmap` of a Linux-files file writes a marker into each page table entry instead of copying: not present, `PTE_LAZY` + `PTE_FILE` (bit 8), the page number in bits 12-31, the handle in bits 32-51, the protection bits in 52, 53 and 63 (`vm_file_marker`). The first access maps the cache frame read-only with `PTE_COW`; a write copies it (the existing copy-on-write path), so the cache frame is never written. Fork copies markers, `mprotect` keeps them, `munmap` clears them. | `include/nvx/mem/pmm_vmm.h`, `mem/pmm_vmm.c` `vm_fault_user`, `sys/linux/syscalls/memory_and_signals.c`, `core/proc/jobs/resume_and_fds.c`, `sys/linux/syscalls/poll_epoll.c` |
 | Program start | `exec` maps whole pages of a program and of `ld.so` the same way when the file comes from the Linux files and the segment's file offset and address agree in the low 12 bits; partial pages are still copied. | `core/proc/elf.c` `elf_map_segs` |
-| Other files | Files outside the Linux files (the writable disk) are read in 256 KB pieces instead of one 4 KB read per page. | `sys/linux/linux_parts/05_lx_mmap.c` |
+| Other files | Files outside the Linux files (the writable disk) are read in 256 KB pieces instead of one 4 KB read per page. | `sys/linux/syscalls/memory_and_signals.c` |
 | Memory | When fewer than 8192 frames (32 MB) are free, or a frame cannot be allocated, cache pages that no process maps any more are given back (`sysroot_pc_reclaim`); a later access reads them again. A cache page that cannot be allocated ends the program as out of memory, not as a crash. | `fs/vfs/sysroot.c`, `mem/pmm_vmm.c` |
-| Removing a package | Before an apt layer is removed or replaced, every page that a running program has mapped but not yet touched is read into the cache (`jc_file_markers` walks the page tables), so running programs keep working; the handle then stops reading new pages. | `fs/vfs/sysroot.c` `sr_pc_drop`, `core/proc/jobs_parts/01_jc_resume.c` |
-| Shared writable maps | `MAP_SHARED` with `PROT_WRITE` on a Linux-files file returns `EACCES` (the files are read-only), as on Linux. | `sys/linux/linux_parts/05_lx_mmap.c` |
-| Numbers | `pagecache` in the Terminal: files with cached pages, pages read and reused, page faults from files, mapped files, program pages mapped on demand or copied, and how much was unpacked in how long. | `shell/commands_parts/02_battery_cmd.c` |
+| Removing a package | Before an apt layer is removed or replaced, every page that a running program has mapped but not yet touched is read into the cache (`jc_file_markers` walks the page tables), so running programs keep working; the handle then stops reading new pages. | `fs/vfs/sysroot.c` `sr_pc_drop`, `core/proc/jobs/resume_and_fds.c` |
+| Shared writable maps | `MAP_SHARED` with `PROT_WRITE` on a Linux-files file returns `EACCES` (the files are read-only), as on Linux. | `sys/linux/syscalls/memory_and_signals.c` |
+| Numbers | `pagecache` in the Terminal: files with cached pages, pages read and reused, page faults from files, mapped files, program pages mapped on demand or copied, and how much was unpacked in how long. | `shell/commands/system_disks_packages_gpu.c` |
 
 Measured in QEMU without hardware acceleration (UEFI, 4 GB, 2 processors), v10.61 against v10.62, first run after start ("cold") and second run ("warm"):
 
@@ -1572,7 +1572,7 @@ Authentication and association requests are sent up to 4 times (400 ms each, the
 
 ## 6.39 More system calls: System V IPC, POSIX message queues, pidfd, splice, openat2, FIFOs, seccomp (v10.82)
 
-New file `sys/linux/linux_parts/09_lx_more.c`, included before `07_lx_dup3.c`. System calls that `lx_dispatch` does not handle go to `lx_more`; a result of `LXM_NO` falls through to the old ENOSYS path. Blocking calls use the usual restart model: `jc_block` re-runs the call, so waiting state lives in per-process side tables (`g_semw_*`, `g_msqw`, `g_fifo_vi`, `g_fxv_*`) or in `p->pollwake`/`p->wdl` (`lx_wait_deadline`).
+New file `sys/linux/syscalls/more_syscalls.c`, included before `07_lx_dup3.c`. System calls that `lx_dispatch` does not handle go to `lx_more`; a result of `LXM_NO` falls through to the old ENOSYS path. Blocking calls use the usual restart model: `jc_block` re-runs the call, so waiting state lives in per-process side tables (`g_semw_*`, `g_msqw`, `g_fifo_vi`, `g_fxv_*`) or in `p->pollwake`/`p->wdl` (`lx_wait_deadline`).
 
 | Calls | What works |
 |---|---|
@@ -1599,7 +1599,7 @@ Test: `abi3test` (`usr/musl/abi3test.c`, QEMU group of `tools/check.py`), 81 che
 
 ## 6.40 Containers: namespaces, chroot, overlay and cgroups (v10.83)
 
-Linux programs can now run in containers: their own view of the files, their own process numbers, host name, IPC keys and network, and limits on processes, memory and CPU. The code is `sys/linux/linux_parts/10_lx_ns.c` (included by `linux.c` after `09_lx_more.c`). The `container` command (`usr/musl/container.c`) uses only these system calls, as a Linux container tool would.
+Linux programs can now run in containers: their own view of the files, their own process numbers, host name, IPC keys and network, and limits on processes, memory and CPU. The code is `sys/linux/syscalls/namespaces_containers.c` (included by `linux.c` after `09_lx_more.c`). The `container` command (`usr/musl/container.c`) uses only these system calls, as a Linux container tool would.
 
 ### Per-task state
 

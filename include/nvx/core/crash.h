@@ -28,6 +28,12 @@ int crash_rec_pending(void);
 const char* crash_report_text(int* n);
 void crash_cmd(const char* args);
 
+extern volatile int g_nmiwd_on;
+void nmiwd_check(void);
+void nmiwd_nmi(regs_t* r);
+void smp_nmi_cpu(int cpu);
+int crumb_dump(char* out,int max) __attribute__((weak));
+
 void stk_watch(const char* nm,int idx,void* base);
 void stk_cpu(int i);
 void stk_check(void);

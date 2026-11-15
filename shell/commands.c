@@ -46,9 +46,11 @@
 #include "include/nvx/drivers/net/wifi/rtw_efuse.h"
 #include "include/nvx/core/buildsig.h"
 #include "include/nvx/drivers/net/wifi/rtw8821ce.h"
+#include "include/nvx/drivers/net/wifi/rtw_chip.h"
 #include "include/nvx/net/wifi/wpa2.h"
 #include "include/nvx/drivers/net/wifi/rtw_sec.h"
 #include "include/nvx/net/wifi/wifi_netdev.h"
+#include "include/nvx/net/wifi/wifi_ampdu.h"
 #include "include/nvx/fs/vfs/dirtree.h"
 #include "include/nvx/sys/native/syscall.h"
 #include "include/nvx/drivers/video/nvidia/nvgpu.h"
@@ -89,9 +91,10 @@ static void run_cmd_one(char*s);
 
 static u64 g_sudo_until=0;
 
-#include "shell/commands_parts/01_sh_redraw.c"
-#include "shell/commands_parts/02_battery_cmd.c"
-#include "shell/commands_parts/03_cmd_nvxlogin.c"
-#include "shell/commands_parts/04_cmd_ring3.c"
-#include "shell/commands_parts/05_cmd_net.c"
-#include "shell/commands_parts/06_term_key.c"
+#include "shell/commands/usbhid.c"
+#include "shell/commands/prompt_and_dispatch.c"
+#include "shell/commands/system_disks_packages_gpu.c"
+#include "shell/commands/accounts_files_info.c"
+#include "shell/commands/processes_devices_wifi_bringup.c"
+#include "shell/commands/network_and_apps.c"
+#include "shell/commands/terminal_keys_and_render.c"

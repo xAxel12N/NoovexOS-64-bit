@@ -1,0 +1,8 @@
+Realtek Bluetooth firmware, unmodified, from linux-firmware (WHENCE: "Driver: btusb - Bluetooth USB driver").
+File: rtl_bt/rtl8821c_fw.bin      (54636 bytes, sha256 dfe7ef772d078ec09490c02190a32fcd40b3eaf3b040049d8930eb80e6d5743c)
+File: rtl_bt/rtl8821c_config.bin  (10 bytes, sha256 292717b0610ce920f66b734c299d349ea59a4c4400044078d8fc65625f17e382)
+File: rtl_bt/rtl8822cu_fw.bin     (37327 bytes, sha256 bb8b1221b62749baebfa3e60271d6d90b1db5e3a480e3255be82c9fb58fe9577)
+File: rtl_bt/rtl8761bu_config.bin (6 bytes, sha256 6c28a3f07c6a30ed208c4b64862a23f02b7d93543ea980edd24df16bab45095f)
+Link: rtl_bt/rtl8822cu_config.bin -> rtl8761bu_config.bin
+Licence: Redistributable. See LICENCE.rtlwifi_firmware.txt for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.rtlwifi_firmware.txt

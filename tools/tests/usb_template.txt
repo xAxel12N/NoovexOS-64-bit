@@ -1,4 +1,5 @@
 @@PRE@@
+static unsigned long cpu_irq_save(void){ return 0x200; } static void cpu_irq_on(void){}
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,7 +11,7 @@ typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t
 static u32 g_devbuf=DMW_FIXED;
 #define DMW(off) (g_devbuf+(u32)(off))
 static void uvc_reset(void){}
-static void aud_reset(void){} static void aud_unplug(int port){ (void)port; } static void aud_sync_e0(void){} static void aud_mark_sync(void){}
+static void aud_reset(void){} static void aud_unplug(int port){ (void)port; } static void aud_sync_e0(void){} static void aud_mark_sync(void){} static void uvc_aud_remove_below(int root,u32 R,int dR){ (void)root; (void)R; (void)dR; }
 void* kmalloc(unsigned long n){ return malloc(n); }
 void kfree(void* p){ free(p); }
 void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name);
@@ -26,6 +27,8 @@ static u32 xhci_base, xhci_op;
 static u64 g_ticks; static u8 kdown[128]; static int mouse_dx,mouse_dy,mouse_evt,mouse_btn,mouse_rbtn,mouse_mid,mouse_scroll;
 static int mouse_lpress,mouse_rpress; static u64 mouse_press_t; int g_krep_delay=50, g_krep_rate=3, g_krep_flag=0;
 void in_xbtn(int b4,int b5){ (void)b4; (void)b5; }
+void in_rel(int dx,int dy){ if(!dx&&!dy)return; mouse_dx+=dx; mouse_dy-=dy; mouse_evt=1; }
+void in_scroll(int v,int h){ (void)h; if(v){ mouse_scroll+=v; mouse_evt=1; } }
 void in_btn_raw(int l,int r,int m){ l=l?1:0; r=r?1:0; if((l&&!mouse_btn)||(r&&!mouse_rbtn))mouse_press_t=g_ticks; if(l&&!mouse_btn)mouse_lpress++; if(r&&!mouse_rbtn)mouse_rpress++; if(l!=mouse_btn||r!=mouse_rbtn)mouse_evt=1; mouse_btn=l; mouse_rbtn=r; mouse_mid=m?1:0; }
 static char kq[256]; static int kqn; static void kpush(int c){ if(kqn<255)kq[kqn++]=(char)c; kq[kqn]=0; }
 int g_hk_last=-1; void hk_push(int id){ g_hk_last=id; }
@@ -41,6 +44,7 @@ static int xh_cmd_s(u32 p0,u32 p1,u32 p2,u32 type,u32 slotid,u8* cc,u8* sl){ (vo
     if(type==11){ u32* sc=(u32*)(u64)(p0+32); g_addr_sc[slotid&255][0]=sc[0]; g_addr_sc[slotid&255][1]=sc[1]; g_addr_sc[slotid&255][2]=sc[2]; if(g_model_on)g_slotdev[slotid&255]=mfind((int)((sc[1]>>16)&0xFF)-1,sc[0]&0xFFFFF); }
     if(type==13){ g_eval_mps[slotid&255]=(int)(((u32*)(u64)(p0+64))[1]>>16); }
     if(type==12){ memcpy(g_cfg_snapshot,(void*)(u64)p0,4096); g_cfg_done=1; u32* sc=(u32*)(u64)(p0+32); g_hubcfg[slotid&255][0]=sc[0]; g_hubcfg[slotid&255][1]=sc[1]; g_hubcfg[slotid&255][2]=sc[2]; } return 1; }
+static int xh_cmd_w(u32 p0,u32 p1,u32 p2,u32 type,u32 slotid,u8* cc,u8* sl,u32 ticks){ (void)ticks; return xh_cmd_s(p0,p1,p2,type,slotid,cc,sl); }
 static int g_db[4096][2], g_ndb; static void xh_db(int slot,u32 t){ if(g_ndb<4096){ g_db[g_ndb][0]=slot; g_db[g_ndb][1]=(int)t; g_ndb++; } }
 
 @@PRE2@@
@@ -133,6 +137,10 @@ static void report_protocol_tests(void){
   chk("keyboard + mouse in ONE interface (IDs 1 and 2) accepted", n==1&&e>=0&&xhid_nlay[e]==2);
   kqn=0; kq[0]=0; mouse_dx=mouse_dy=0; { u8 r[]={1,0,0,0x0B,0,0,0,0,0}; send(e,r,sizeof r); } { u8 r[]={1,0,0,0,0,0,0,0,0}; send(e,r,sizeof r); } { u8 r[]={2,0x01,10,0xF6}; send(e,r,sizeof r); }
   chk("ID 1 types 'h', ID 2 moves the mouse (+10,+10) with left button", !strcmp(kq,"h")&&mouse_dx==10&&mouse_dy==10&&mouse_btn==1);
+  xhid_reset(); g_nreq=0; mkcfg(sizeof RD_COMBO); cfgbuf[15]=1; cfgbuf[16]=1; g_rd[0]=RD_COMBO; g_rdl[0]=sizeof RD_COMBO; plug(5,1); n=xhci_hid_enum(5); e=entry_on(5,3);
+  chk("boot-subclass receiver keyboard whose descriptor has report IDs runs in report protocol", n==1&&e>=0&&xhid_rep[e]==1&&xhid_hasid[e]==1&&xhid_iskbd[e]==1);
+  sp=0; for(int i=0;i<g_nreq;i++) if(g_req[i][0]==0x0B&&g_req[i][1]==1&&g_req[i][2]==0)sp++; chk("and is told so (SET_PROTOCOL 1, not boot)", sp==1);
+  kqn=0; kq[0]=0; memset(kdown,0,sizeof kdown); if(e>=0){ u8 r[]={1,0,0,0x0B,0,0,0,0,0}; send(e,r,sizeof r); chk("its ID 1 report types 'h' without a stuck Ctrl from the ID byte", !strcmp(kq,"h")&&!kdown[0x1D]); u8 z[]={1,0,0,0,0,0,0,0,0}; send(e,z,sizeof z); }
   xhid_reset(); int dis=g_ndis; n=plugrd(4,RD_VENDOR,sizeof RD_VENDOR);
   chk("vendor-only interface rejected, slot released", n==0&&g_ndis==dis+1);
 }
@@ -189,16 +197,34 @@ static void stall_and_queue_tests(void){
   chk("Reset Endpoint issued for slot 7, endpoint 1", rs>=0);
   chk("then Set TR Dequeue to the ring's next TRB with the right cycle bit", sd>rs&&g_cmdlog[sd][2]==((cur_ep0+e0_enq*16)|e0_cyc)&&e0_enq==7);
   printf("== 13. events for other devices are queued, not lost ==\n");
-  xhid_reset(); g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(0,1); xhci_hid_enum(0);
+  xhid_reset(); g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[0]=0; g_rdl[0]=0; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(0,1); xhci_hid_enum(0);
   int kb=entry_on(0,3); volatile u8* kbuf=(volatile u8*)(u64)xhid_dbuf[kb]; u8 h[8]={0,0,0x0B,0,0,0,0,0}; memcpy((void*)kbuf,h,8);
   ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096); xh_qn=0;
   cur_slot=9; cur_ep0=XHID_EP0RING(7); e0_enq=0; e0_cyc=1;
-  put_event(0,xhid_slot[kb],3,1); put_event(1,9,1,1);
+  put_event(0,xhid_slot[kb],3,1); put_event(1,9,1,1); kqn=0; kq[0]=0;
   r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0);
   chk("control transfer for slot 9 still completes", r==1);
-  chk("the keyboard's event was queued instead of discarded", xh_qn==1);
+  chk("the keyboard's event is handled during the wait (typed, re-armed, not queued)", xh_qn==0&&!strcmp(kq,"h"));
   kqn=0; kq[0]=0; int ndb=g_ndb; xhci_mouse_poll();
-  chk("next poll types the queued key and re-arms the keyboard", !strcmp(kq,"h")&&xh_qn==0&&g_ndb==ndb+1);
+  chk("the next poll has nothing left to replay", kqn==0&&xh_qn==0&&g_ndb==ndb);
+  printf("== 13b. stale completions, timeouts and back-off ==\n");
+  { u32 R=XHID_EP0RING(7); cur_slot=11; cur_ep0=R; e0_enq=0; e0_cyc=1; memset((void*)(u64)R,0,4096);
+    ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096); xh_qn=0; u32 st0=xh_stale_ev;
+    volatile u32* e=(volatile u32*)(u64)(XHCI_EVTRING); e[0]=R+200*16; e[2]=(u32)1<<24; e[3]=(32u<<10)|(1u<<16)|(11u<<24)|ev_cyc;
+    e=(volatile u32*)(u64)(XHCI_EVTRING+16); e[0]=R+2*16; e[2]=(u32)1<<24; e[3]=(32u<<10)|(1u<<16)|(11u<<24)|ev_cyc;
+    r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0);
+    chk("a late completion of an older control request is skipped, the real one is taken", r==1&&xh_stale_ev==st0+1&&ev_deq==2);
+    ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096); g_ncmd=0; cur_slot=12; e0_enq=0; e0_cyc=1;
+    r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0);
+    int sp=-1,sd=-1; for(int q=0;q<g_ncmd;q++){ if(g_cmdlog[q][0]==(15u|(1u<<6))&&g_cmdlog[q][1]==12)sp=q; if(g_cmdlog[q][0]==(16u|(1u<<6))&&g_cmdlog[q][1]==12)sd=q; }
+    chk("a timed-out request fails, stops EP0 and moves its dequeue past the dead TD", r==0&&sp>=0&&sd>sp&&g_cmdlog[sd][2]==((R+e0_enq*16)|e0_cyc)&&e0_enq==3);
+    real_xh_ctrl(0x80,6,0x0100,0,18,1,0); real_xh_ctrl(0x80,6,0x0100,0,18,1,0);
+    u32 sk=xh_bo_skips; int nc=g_ncmd; u32 eq=e0_enq; r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0);
+    chk("after 3 timeouts the device is left alone: no TRBs, no commands", r==0&&xh_bo_skips==sk+1&&g_ncmd==nc&&e0_enq==eq);
+    cur_slot=13; e0_enq=0; r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0); chk("another device on the same controller is not held back", xh_bo_skips==sk+1&&e0_enq==3);
+    cur_slot=12; e0_enq=0; u64 gt=g_ticks; g_ticks+=600; ev_deq=0; memset((void*)(u64)XHCI_EVTRING,0,4096);
+    e=(volatile u32*)(u64)(XHCI_EVTRING); e[0]=R+2*16; e[2]=(u32)1<<24; e[3]=(32u<<10)|(1u<<16)|(12u<<24)|ev_cyc;
+    r=real_xh_ctrl(0x80,6,0x0100,0,18,1,0); g_ticks=gt; chk("after the hold time the device is tried again and works", r==1); }
   printf("== 14. gaming dongle that STALLs class requests ==\n");
   xhid_reset(); g_conf=GAMING_DONGLE; g_conflen=sizeof GAMING_DONGLE; g_rd[0]=RD_MOUSE16; g_rdl[0]=sizeof RD_MOUSE16; g_rd[1]=RD_VENDOR; g_rdl[1]=sizeof RD_VENDOR;
   g_stall_class=1; g_halted=0; g_nreq=0; plug(2,1); int n=xhci_hid_enum(2); g_stall_class=0; g_halted=0; int ms=entry_on(2,3);
@@ -213,7 +239,7 @@ static void multi_controller_tests(void){
   xhc_select(1); g_xmem=0x09A50000u; xhci_base=0x20008000; xhci_op=0x20008080; ev_deq=0; ev_cyc=1; cmd_enq=0; cmd_cyc=1; xhci_init_ok=1; xhci_present=1;
   *(u32*)(u64)(xhci_base+0x14)=0x2000; *(u32*)(u64)(xhci_base+0x18)=0x3000; memset((void*)(u64)XHCI_EVTRING,0,4096);
   xhc_select(0); xhci_base=0x20000000; xhci_op=0x20000080; ev_deq=0; ev_cyc=1; memset((void*)(u64)XHCI_EVTRING,0,4096);
-  g_next_slot=1; g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(2,1); int n0=xhci_hid_enum(2);
+  g_next_slot=1; g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[0]=0; g_rdl[0]=0; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(2,1); int n0=xhci_hid_enum(2);
   int kb=-1; for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==0&&xhid_dci[i]==3)kb=i;
   xhc_select(1); g_next_slot=1; g_conf=cfgbuf; mkcfg(sizeof RD_MOUSE16); g_rd[0]=RD_MOUSE16; g_rdl[0]=sizeof RD_MOUSE16; plug(2,1); int n1=xhci_hid_enum(2);
   int ms=-1; for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==1&&xhid_dci[i]==3)ms=i;
@@ -287,7 +313,7 @@ int main(void){
   chk("low-speed bInterval 8 -> 6", xh_interval(2,8)==6);
   chk("high-speed bInterval 4 -> 3 (exponent form)", xh_interval(3,4)==3);
   printf("== 2. Logitech Unifying receiver (keyboard + mouse + pairing channel) ==\n");
-  xhid_reset(); g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(0,1); g_nreq=0; g_ndb=0;
+  xhid_reset(); g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[0]=0; g_rdl[0]=0; g_rd[1]=RD_LOGI; g_rdl[1]=sizeof RD_LOGI; g_rd[2]=RD_VENDOR; g_rdl[2]=sizeof RD_VENDOR; plug(0,1); g_nreq=0; g_ndb=0;
   int n=xhci_hid_enum(0);
   chk("keyboard AND mouse set up (2 interfaces), pairing channel skipped", n==2&&entry_for(3)>=0&&entry_for(5)>=0&&entry_for(7)<0);
   chk("one Configure Endpoint adds both endpoints (add flags slot+DCI3+DCI5)", g_cfg_done&&*(u32*)(g_cfg_snapshot+4)==((1u)|(1u<<3)|(1u<<5)));
@@ -338,7 +364,7 @@ int main(void){
   int kq0=kqn; g_ticks=6000; flush(); chk("a key held at unplug does not keep repeating", kqn==kq0);
   chk("the other receiver's mouse is untouched", xhid_used[ms2]);
   printf("== 8. capacity ==\n");
-  g_conf=UNIFYING; g_conflen=sizeof UNIFYING; int added=0; for(int p=3;p<9;p++){ plug(p,1); added+=xhci_hid_enum(p); }
+  g_conf=UNIFYING; g_conflen=sizeof UNIFYING; g_rd[0]=0; g_rdl[0]=0; int added=0; for(int p=3;p<9;p++){ plug(p,1); added+=xhci_hid_enum(p); }
   int used=0; for(int i=0;i<XHID_MAX;i++)used+=xhid_used[i];
   chk("fills every entry without overflowing", used==XHID_MAX);
   int hi=0; for(int i=0;i<XHID_MAX;i++) if(xhid_used[i]&&XHID_DATABUF(i)+0x1000>0x09AD0000u)hi=1;

@@ -86,7 +86,7 @@ The old `tools/mkboot.py` and `tools/mkiso.py` scripts assemble `boot/mbr.S`, `b
 | File | Purpose |
 |---|---|
 | `tools/check.py` | Automatic checker. `--build` runs `build.sh`, copies `build/kernel64.bin` to `boot/stage/`, runs `make build/boot.bin build/stage2.bin`, then `mkhybrid.py` into `tools/out/check.iso`. Groups: `build`, `static`, `analyze`, `boot`, `usb`, `acpi`, `gpu`, `libc`, `coreutils` (plus Linux-ABI tests). |
-| `tools/splitc.py` | Splits a large C file into numbered pieces in `NAME_parts/` (`python3 tools/splitc.py 300 FILE...`), and `python3 tools/splitc.py expand FILE` prints the file with the pieces put back (section 3.5). |
+| `tools/splitc.py` | Splits a large C file into numbered pieces in `NAME_parts/` (v10.99: existing pieces were moved into named module folders and renamed - see docs/MOVES.md) (`python3 tools/splitc.py 300 FILE...`), and `python3 tools/splitc.py expand FILE` prints the file with the pieces put back (section 3.5). |
 | `tools/nvxsign.py` | Signing key and kernel signatures for signed boot: `newkey`, `pub`, `sign`, `verify`, `info` (section 2.15). |
 | `tools/nvxport.py` | Ports and distro profiles: `list`, `info`, `check`, `new`, `stage` (section 6.29). `build.sh` runs `stage` in step `[distro]`. |
 | `tools/emulate.py` | Boot emulation of an ISO: the BIOS path (builds the real `fat.c`/`config.c`/`string.c` as a 32-bit host program), the UEFI path (El Torito EFI entry, PE check, runs `BOOTX64.EFI` against simulated services) and `uefi_entry`. |
@@ -146,20 +146,20 @@ Twelve files were too long to read and change safely (up to 2,376 lines of dense
 
 | File | Lines before | Pieces | Folder |
 |---|---|---|---|
-| `sys/linux/linux.c` | 2376 | 7 | `sys/linux/linux_parts/` |
-| `shell/commands.c` | 2240 | 6 | `shell/commands_parts/` |
-| `apps/internet/webglue.c` | 1818 | 6 | `apps/internet/webglue_parts/` |
-| `apps/internet/browser.c` | 1301 | 4 | `apps/internet/browser_parts/` |
-| `drivers/usb/xhci.c` | 1231 | 4 | `drivers/usb/xhci_parts/` |
-| `graphics/ui/desktop.c` | 1116 | 4 | `graphics/ui/desktop_parts/` |
-| `drivers/video/nvidia/nvgsp.c` | 1053 | 4 | `drivers/video/nvidia/nvgsp_parts/` |
-| `apps/system/file_explorer.c` | 945 | 3 | `apps/system/file_explorer_parts/` |
-| `core/proc/jobs.c` | 937 | 3 | `core/proc/jobs_parts/` |
-| `apps/system/settings.c` | 783 | 2 | `apps/system/settings_parts/` |
-| `core/init/installer.c` | 766 | 3 | `core/init/installer_parts/` |
-| `fs/pkg/apt.c` | 696 | 2 | `fs/pkg/apt_parts/` |
+| `sys/linux/linux.c` | 2376 | 7 | `sys/linux/syscalls/` |
+| `shell/commands.c` | 2240 | 6 | `shell/commands/` |
+| `apps/internet/browser/glue/webglue.c` | 1818 | 6 | `apps/internet/browser/glue/` |
+| `apps/internet/browser/browser.c` | 1301 | 4 | `apps/internet/browser/` |
+| `drivers/usb/xhci.c` | 1231 | 4 | `drivers/usb/xhci/` |
+| `graphics/ui/desktop.c` | 1116 | 4 | `graphics/ui/desktop/` |
+| `drivers/video/nvidia/nvgsp.c` | 1053 | 4 | `drivers/video/nvidia/gsp/` |
+| `apps/system/file_explorer.c` | 945 | 3 | `apps/system/file_explorer/` |
+| `core/proc/jobs.c` | 937 | 3 | `core/proc/jobs/` |
+| `apps/system/settings.c` | 783 | 2 | `apps/system/settings/` |
+| `core/init/installer.c` | 766 | 3 | `core/init/installer/` |
+| `fs/pkg/apt.c` | 696 | 2 | `fs/pkg/apt/` |
 
-The pieces are not separate units: the file is still one translation unit, so `static` functions and variables work as before, `units.list` is unchanged, and kbuild rebuilds the file when any piece changes (gcc `-MMD` lists the pieces). The compiled objects of all twelve files were byte-identical before and after the split (apart from the build time string). Cuts are made only where a function ends at the top level, or inside a very long command function before an `else if(` branch, so a piece may begin with `else if(`. The largest piece is 667 lines (`shell/commands_parts/04_cmd_ring3.c`, one long run of command branches). `tools/check.py` reads these files through `kexpand()`, so tests that extract functions from `xhci.c` or `nvgsp.c` see the full text.
+The pieces are not separate units: the file is still one translation unit, so `static` functions and variables work as before, `units.list` is unchanged, and kbuild rebuilds the file when any piece changes (gcc `-MMD` lists the pieces). The compiled objects of all twelve files were byte-identical before and after the split (apart from the build time string). Cuts are made only where a function ends at the top level, or inside a very long command function before an `else if(` branch, so a piece may begin with `else if(`. The largest piece is 667 lines (`shell/commands/processes_devices_wifi_bringup.c`, one long run of command branches). `tools/check.py` reads these files through `kexpand()`, so tests that extract functions from `xhci.c` or `nvgsp.c` see the full text.
 
 Next step (not done): turn pieces into real separate units with their own headers, starting with the ones that share little state (for example the USB camera and audio parts of `xhci.c`).
 
@@ -440,7 +440,7 @@ Since v10.10 the build uses Rust in two places. Both are optional: without `carg
 |---|---|---|
 | Layout library | `rust/nvxlayout` (crate), `third_party/taffy` (Taffy 0.15, MIT), `rust/shims/smallvec` | A `no_std` static library linked into the web engine (`build/web_all.o`). It exports `nvx_taffy_grid` (CSS Grid layout through Taffy) and `nvx_rust_version`. `tools/build_rust.sh` builds it with `cargo build --release --offline` and `RUSTFLAGS="-C no-redzone=yes -C relocation-model=static -C code-model=small -C panic=abort"`. |
 | Safety check | `tools/rust_check.py` | Links only the archive members the engine needs (`ld -r -u nvx_taffy_grid`), disassembles them and fails if any instruction uses memory below `%rsp` (the red zone, unsafe in the kernel because interrupts run on the same stack) or if an undefined symbol is not in the allowed list (`memcpy`, `memset`, `memmove`, `memcmp`, `bcmp`, a few `libm` functions and the `nvx_rs_*` callbacks). The precompiled `core`/`alloc` objects from the `x86_64-unknown-linux-gnu` toolchain pass this check today. |
-| Runtime for Rust | `web/layout2.c` | `nvx_rs_alloc`/`nvx_rs_free` (the engine heap, any alignment), `nvx_rs_abort` (a Rust panic becomes `nwe_fail`, so the page stops with an error instead of the kernel), `rust_eh_personality` and `_Unwind_Resume` stubs. `web/rust_stub.c` replaces the library when `cargo` is missing. |
+| Runtime for Rust | `web/layout/layout2.c` | `nvx_rs_alloc`/`nvx_rs_free` (the engine heap, any alignment), `nvx_rs_abort` (a Rust panic becomes `nwe_fail`, so the page stops with an error instead of the kernel), `rust_eh_personality` and `_Unwind_Resume` stubs. `web/core/rust_stub.c` replaces the library when `cargo` is missing. |
 | Rust programs | `rust/rustinfo`, `tools/build_rust_apps.sh` | Normal `std` Rust programs, built for `x86_64-unknown-linux-gnu` with `-C target-feature=+crt-static` (static PIE, no shared libraries needed) and copied to `/usr/bin`. `rustinfo` prints the Rust version, the kernel, the CPU count, runs four threads and checks file input and output. `nvx-mem` (`rust/nvxmem`, since v10.51) shows memory use, tests memory and measures its speed (section 3.17). |
 
 The crates.io registry is not used: Taffy's only dependency for grid layout, `smallvec`, is replaced by a small local crate with the same API on top of `Vec`.

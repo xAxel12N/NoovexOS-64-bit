@@ -59,7 +59,12 @@ static void lxs_enqueue(struct lxsock* s){
     lxs_seg(s,s->nxt,TF_RST|TF_ACK,0,0); s->st=LXS_DEAD; s->parent=-2;
 }
 static void lxs_tcp_in(struct lxsock* s,u8* t,int thl,int dl,u32 seq,u32 ack,u8 fl){
-    if(fl&TF_RST){ if(s->st==LXS_SYNRCVD){ s->st=LXS_DEAD; s->parent=-2; return; } if(s->st==LXS_SYN||s->st==LXS_EST){ s->err=(s->st==LXS_SYN)?111:104; s->st=LXS_DEAD; } return; }
+    if(fl&TF_RST){
+        if(s->st==LXS_SYN){ if((fl&TF_ACK)&&ack==s->iss+1){ s->err=111; s->st=LXS_DEAD; } return; }
+        if(s->st!=LXS_SYNRCVD&&s->st!=LXS_EST)return;
+        if(seq!=s->rcv){ u32 wnd=(u32)(LXS_RXCAP-s->rxn); if(s->st==LXS_EST&&seq-s->rcv<wnd)lxs_ack(s); return; }
+        if(s->st==LXS_SYNRCVD){ s->st=LXS_DEAD; s->parent=-2; return; }
+        s->err=104; s->st=LXS_DEAD; return; }
     if(s->st==LXS_SYNRCVD){
         if((fl&TF_SYN)&&!(fl&TF_ACK)){ lxs_seg(s,s->iss,TF_SYN|TF_ACK,0,0); return; }
         if(!(fl&TF_ACK)||ack!=s->iss+1)return;
@@ -135,6 +140,7 @@ static void lxs_frame(u8* f,int n){
     if(n<34)return; u16 et=rd16(f+12);
     if(et==0x0806){ arp_auto_reply(f,n); return; }
     if(et!=0x0800)return;
+    { extern int dhcp_async_take(const u8*,int); if(dhcp_async_take(f,n))return; }
     u8* ip=f+14; int ihl=(ip[0]&0x0F)*4; if(ihl<20)return; int tot=rd16(ip+2); if(tot<ihl||14+tot>n)return;
     if(rd16(ip+6)&0x3FFF)return;
     u32 sip=rd32(ip+12), dip=rd32(ip+16);
@@ -390,7 +396,7 @@ int lxs_nl_send(int i,const u8* b,int n){
     int off=0;
     while(off+16<=n&&o.n<o.cap-1024){
         const u8* m=b+off; u32 L=(u32)m[0]|((u32)m[1]<<8)|((u32)m[2]<<16)|((u32)m[3]<<24);
-        if(L<16||off+(int)L>n)break;
+        if(L<16||L>(u32)(n-off))break;
         u16 ty=(u16)(m[4]|(m[5]<<8)), fl=(u16)(m[6]|(m[7]<<8)); u32 seq=(u32)m[8]|((u32)m[9]<<8)|((u32)m[10]<<16)|((u32)m[11]<<24);
         int dump=(fl&0x300)==0x300, fam=L>16?m[16]:0, ok=1;
         if(!(fl&1)){ off+=(L+3)&~3u; continue; }

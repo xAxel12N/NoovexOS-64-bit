@@ -1,0 +1,19 @@
+# H2 report: snap / drag-end path (v11.02 tree, read-only)
+
+Verdict: the snap/resize hypothesis is mostly REFUTED. The release frame allocates nothing and does no size-dependent work that could loop.
+
+## What runs on the release frame (graphics/ui/input.c:197)
+`if(drag>=0&&g_snap) apply_snap(...); drag=-1; g_resize=-1; g_snap=0; g_marq=0; changed=1;` then main.c:360 calls compose_present -> compose_build (desktop_clicks.c:263).
+- apply_snap (wm.c:62) only writes x/y/w/h, max=1, focus and z. It does no division by window size and no allocation. All values are bounded by W/H.
+- snap_preview_draw is not called on the release frame (drag is already -1). It clips with `(u32)dx<W`. The overlay holds no state that could loop.
+- gfx_window (drivers/video/fb/gfx.c:240): during a drag, non-live windows are skipped (`moving`, gfx.c:243). At release each window gets one full draw_app plus a full replay (`full=1` because x/y/w/h changed). Layer surfaces are full screen (W x H, allocated once in lay_get, gfx.c:186), so a snap size change re-allocates nothing. The opA/opB buffers and the blur cache (bc) were already allocated on the first frame after the window opened. gfx_app_surf (the only buffer that is re-allocated by size, gfx.c:330) has no callers.
+- No app re-allocates a buffer when its window size changes. I grepped camera, recorder, writer, xdisplay and others: xdisplay.c:159 reallocates only on X mode size, not window size.
+=> Nothing in the release or snap path reaches kmalloc or heap growth. I give the heap theory under 5% on this path.
+
+## Ranked residual findings
+1. (25%) Release is often the FIRST time the new window counts as "exposed". desk_win_exposed (present_and_pump.c:1-6) returns 0 while the launcher is open, while a toast is showing (g_toast_cur>=0||toast_t) and while dragging. So the sequence Start menu -> open app -> drag -> release makes the release the first idle loop in which the fast paths run with exposed=1 (main.c:354: video_fast, browser_media_fast, xdisp_fast). browser_media_fast then enters the web engine (web_call NWE_OP_MEDIA, mouse_and_bookmarks.c:119) on EVERY idle loop where ch==0. That needs the Browser with a page and playing video (wm_fast, wmedia.c:207), and video_fast needs Video Player playback. Both write SCENE plus present_rect (quiet_on -> gfx_sync). Suggested probe: add a klog the first time each fast path runs with exposed=1. Suggested guard: skip the fast paths for 1-2 frames after drag ends (keep a `g_drag_end_t`).
+2. (20%) In GFX mode, release is the first draw_app of a NON-live window at its new position, which may be partly off-screen. The drag clamps allow nx >= 90-w (negative x) and ny <= H-TITLEH (most of the window below the screen) (input.c:200-201). While the drag runs, non-live apps are not drawn, so any app code that indexes SCENE / L->px directly, without clipping, first runs at an off-screen position on the release frame. That could corrupt memory, not show as a page fault, and freeze later. I did not have time to audit every app's direct-pixel writers. Candidates: grep `SCENE[(u64)` / `g_scene[` in apps/* for writers without `(u32)x<W` guards. Live apps (camera, recorder, video and the rest in live_app, gfx.c:189) are drawn every drag frame, so they are not new at release. Cheap mitigation: also clamp at release so that x>=0 and y+TITLEH<=H-86 (or clip in draw_app callers).
+3. (cosmetic, 0% freeze) Max/min flags: drag start (input.c:150) overwrites sx..sh with the current geometry even when max=1. After snap -> drag -> max-button the restore uses the snapped size. A drag also clears max (input.c:202). No min/max combination produces a loop. win_max/apply_snap never divide.
+
+## Not checked (time)
+Per-app direct SCENE writes at negative coordinates (item 2). The xHCI/HID state at button-up (other hunters).

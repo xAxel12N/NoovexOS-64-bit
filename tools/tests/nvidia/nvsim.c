@@ -603,7 +603,7 @@ int main(int argc,char** argv){
       nvgsp_on(m,120); u32 keep=REG[0]; g_tick_live=0; nvgsp_tick(); int alive=!nvgsp_off(); REG[0]=0xFFFFFFFFu; g_tick_live=0; nvgsp_tick(); int gone=nvgsp_off()&&strstr(nvgsp_off_why(),"0xFFFFFFFF"); char m2[120]; int ron=nvgsp_on(m2,120); REG[0]=keep;
       chk("off reason and time in nvgsp status; liveness like Linux: only a 0xFFFFFFFF or wrong BOOT0 read (twice) means the card is gone, and nvgsp on refuses then",st&&age<5&&alive&&gone&&ron==0&&strstr(m2,"does not answer"));
       nvgsp_on(m,120);
-      nv2d_reset(); g_auto_at=0; g_auto_tries=0; sc_off("test: read-back mismatch"); int sched=g_auto_at!=0&&!nvgsp_present_on(); g_last_input_t=g_ticks; g_auto_at=1; nvgsp_tick(); int waited=g_auto_tries==0&&g_auto_at>1&&!nvgsp_present_on(); g_last_input_t=0; g_ticks+=1000; g_auto_at=1; nvgsp_tick(); int back2=nvgsp_present_on()&&g_auto_tries==1&&!nvgsp_off();
+      nv2d_reset(); g_auto_at=0; g_auto_tries=0; sc_off("test: read-back mismatch"); int sched=g_auto_at==0&&!nvgsp_present_on(); /* v11.03: no automatic re-check is scheduled */ g_last_input_t=g_ticks; g_auto_at=1; nvgsp_tick(); int waited=g_auto_tries==0&&g_auto_at>1&&!nvgsp_present_on(); g_last_input_t=0; g_ticks+=1000; g_auto_at=1; nvgsp_tick(); int back2=nvgsp_present_on()&&g_auto_tries==1&&!nvgsp_off();
       g_auto_tries=3; sc_off("test again"); int capped=g_auto_at==0; nvgsp_on(m,120); if(!nvgsp_present_on())nvgsp_present_set(1);
       chk("a GPU timeout or bad read-back schedules one automatic re-check (only while input is idle) that brings the path back",sched&&waited&&back2&&capped); }
     { int a0=disp_alloc; nvl_reset(); int rm=nvgsp_monitors(); const nvgsp_mon_t* ml=0; u32 hh=0,hm=0; int mn=nvgsp_mon_get(&ml,&hh,&hm,0);

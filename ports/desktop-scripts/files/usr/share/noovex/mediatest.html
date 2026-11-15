@@ -1,0 +1,11 @@
+<!DOCTYPE html><meta charset="utf-8"><title>Media test</title>
+<pre id="o">running</pre>
+<script>
+var o=document.getElementById('o'),r=[];
+var T=['video/webm; codecs="vp9"','video/webm; codecs="vp8"','video/mp4; codecs="avc1.4d401e"','video/mp4; codecs="av01.0.05M.08"','audio/webm; codecs="opus"','audio/mp4; codecs="mp4a.40.2"'];
+r.push('MediaSource: '+(typeof MediaSource));
+T.forEach(function(t){r.push(t+'  MSE='+(window.MediaSource&&MediaSource.isTypeSupported(t))+'  canPlay='+document.createElement('video').canPlayType(t))});
+r.push('cores: '+navigator.hardwareConcurrency);
+r.push('UA: '+navigator.userAgent);
+o.textContent=r.join('\n');
+</script>

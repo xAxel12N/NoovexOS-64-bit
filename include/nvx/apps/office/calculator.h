@@ -5,11 +5,12 @@
 
 extern i64 calc_acc , calc_cur;
 extern char calc_op;
-extern int calc_fresh , calc_err;
+extern int calc_fresh , calc_err, calc_dec;
 extern int cb_x[20],cb_y[20],cb_w,cb_h;
 extern const char *CBL[20];
 
 void calc_press(const char*b);
+void calc_key(int c);
 void calc_draw(int i);
 void calc_click(int px,int py);
 

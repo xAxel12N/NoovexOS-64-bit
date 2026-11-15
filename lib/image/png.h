@@ -194,12 +194,14 @@ int png_decode(const unsigned char*png,int len,unsigned char*raw,int rawcap,unsi
         int clen=(png[p]<<24)|(png[p+1]<<16)|(png[p+2]<<8)|png[p+3];
         const unsigned char*type=png+p+4;
         const unsigned char*data=png+p+8;
-        if(clen<0||p+12+clen>len)break;
+        if(clen<0||clen>len-p-12)break;
         if(type[0]=='I'&&type[1]=='H'&&type[2]=='D'&&type[3]=='R'){
+            if(clen<13)return -2;
             w=(data[0]<<24)|(data[1]<<16)|(data[2]<<8)|data[3];
             h=(data[4]<<24)|(data[5]<<16)|(data[6]<<8)|data[7];
             bitdepth=data[8]; color=data[9];
             interlace=data[12];
+            if(w<=0||h<=0||w>16384||h>16384||(long)w*h>(64L<<20))return -2;
             if(bitdepth!=1&&bitdepth!=2&&bitdepth!=4&&bitdepth!=8&&bitdepth!=16)return -2;
             if(color==0)ch=1; else if(color==2)ch=3; else if(color==3)ch=1; else if(color==4)ch=2; else if(color==6)ch=4; else return -3;
         } else if(type[0]=='P'&&type[1]=='L'&&type[2]=='T'&&type[3]=='E'){
@@ -220,9 +222,9 @@ int png_decode(const unsigned char*png,int len,unsigned char*raw,int rawcap,unsi
     int bpp=(bpp_bits+7)/8; if(bpp<1)bpp=1;
     if(interlace==1){
         static const int xo[7]={0,4,0,2,0,1,0}, yo[7]={0,0,4,0,2,0,1}, xs[7]={8,8,4,4,2,2,1}, ys[7]={8,8,8,4,4,2,2};
-        int need=0;
+        long need=0;
         for(int pa=0;pa<7;pa++){ int pw=(w>xo[pa])?((w-xo[pa]+xs[pa]-1)/xs[pa]):0; int ph=(h>yo[pa])?((h-yo[pa]+ys[pa]-1)/ys[pa]):0;
-            if(pw<=0||ph<=0)continue; int ps=(pw*bpp_bits+7)/8; need+=ph*(1+ps); }
+            if(pw<=0||ph<=0)continue; int ps=(pw*bpp_bits+7)/8; need+=(long)ph*(1+ps); }
         if(need>rawcap)return -7;
         int rn=pz_inflate(cz,czlen,raw,rawcap); if(rn<need)return -8;
         int off=0;
@@ -238,7 +240,7 @@ int png_decode(const unsigned char*png,int len,unsigned char*raw,int rawcap,unsi
         }
         *ow=w;*oh=h; return 0;
     }
-    int need=h*(1+stride); if(need>rawcap)return -7;
+    long need=(long)h*(1+stride); if(need>rawcap)return -7;
     int rn=pz_inflate(cz,czlen,raw,rawcap); if(rn<need)return -8;
     for(int y=0;y<h;y++){
         unsigned char*row=raw+y*(1+stride); int ft=row[0]; unsigned char*cur=row+1;

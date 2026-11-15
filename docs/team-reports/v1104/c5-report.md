@@ -1,0 +1,9 @@
+# C5 report (branch w-c5, one commit)
+
+1. `report` (shell/commands/system_disks_packages_gpu.c, after `lag`): runs ver, usbdevs, usbinfo, usbhid, lag, crash with g_capture (8 KB per command, notes truncation), appends last 8 KB of klog_ring(...,1); saves report.txt in Files (fs_save_bin + nvx3_sync_all) and REPORT.TXT on the stick (ufat_write_file, same path as tracelog). Refuses inside a pipe (g_capture set). 5-line coloured summary: version, USB device count, crash report yes/no, size, where saved.
+   `log [N]` / `dmesg [N]`: last N (default 40) kernel log lines from the 16 KB ring.
+2. USB unplug toast in usbdev_gone (storage_fat_and_hubs.c:103): "USB device removed: <name>" (body "Unplugged"); several at once (hub) -> "USB devices removed: N". Gated on usb_seen_init like the connect toast.
+3. graphics/ui/wm.c apply_snap now saves sx/sy/sw/sh when not already max (restore after snap works). input.c Win block: Win+D minimises all windows on the workspace and restores them on the next press; Win+Left/Right snap halves, Win+Up maximise (full if snapped), Win+Down restore if max else minimise. Arrow/D use per-key edge detection so repeated Win+arrow works without releasing Win. Caveat: arrow is still delivered to the app too. X11 windows not handled.
+4. Ctrl+Alt+U (input.c, next to Ctrl+Alt+F) calls xhci_mouse_autoinit() (same as `usb`/`xhci`) and toasts "USB input restarted". `usb restart` prints a restart message (the `usb` command already rescanned). Note: it is a full controller re-init, blocks the loop briefly and may need the USB stick re-mounted - same as the existing `usb` command.
+
+Checks: ccheck on shell/commands.c, drivers/usb/xhci.c, graphics/ui/input.c, graphics/ui/wm.c - no errors. `python3 tools/check.py --only usb`: 12/12 passed. hid_keyboard_mouse.c not touched.

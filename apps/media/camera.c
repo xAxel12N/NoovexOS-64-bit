@@ -10,7 +10,7 @@
 int jpeg_decode(const u8* buf,int len,u8* rgba,int rgbamax,int* ow,int* oh);
 
 extern int mx, my; extern void toast(const char*);
-static int cam_hd=0, cam_mirror=1, cam_auto=1, cam_shots=0, cam_jerr=0;
+static int cam_hd=0, cam_mirror=1, cam_auto=1, cam_shots=0, cam_jerr=0, cam_busy=0, cam_failed=0, cam_req=0;
 static int cbx[6], cby[6], cbw[6], cbh=30, cbn=0;
 static int cam_vx=0, cam_vy=0, cam_vw=0, cam_vh=0;
 
@@ -37,14 +37,16 @@ static void cam_view(int x,int y,int w,int h){
 static void cam_nocam(int x,int y,int w,int h){
     fill_rect(x,y,w,h,rgb(20,22,30)); int cx=x+w/2, cy=y+h/2-70;
     fill_round(cx-40,cy-26,80,52,10,15,rgb(60,66,84)); fill_circle(cx,cy,18,rgb(30,34,46)); fill_circle(cx,cy,10,rgb(90,140,230)); fill_round(cx-14,cy-34,28,10,4,15,rgb(60,66,84));
-    dstr_ctr(cx,cy+48,uvc_found()?"Camera ready - press Start":"No camera found",rgb(230,234,242),2);
+    dstr_ctr(cx,cy+48,!uvc_found()?"No camera found":cam_failed?"The camera did not start":(cam_auto||cam_req)?"Starting camera...":"Camera ready - press Start",rgb(230,234,242),2);
     dstr_ctr(cx,cy+80,uvc_msg[0]?uvc_msg:"Plug in a USB camera or check that the laptop camera is turned on.",rgb(160,168,186),1);
     int yy=cy+108; int n=0; for(int k=0;k<g_usbdev_n;k++) if(g_usbdev[k].used){ char b[96],*p=b; p=scopy(p,g_usbdev[k].kind); p=scopy(p,": "); p=scopy(p,g_usbdev[k].name[0]?g_usbdev[k].name:"(no name)"); p=scopy(p,"  "); p=cam_hex(p,g_usbdev[k].vid); *p++=':'; p=cam_hex(p,g_usbdev[k].pid); *p=0; dstr_ctr(cx,yy,b,rgb(130,138,156),1); yy+=16; n++; if(n>6)break; }
     if(!n) dstr_ctr(cx,yy,"No USB devices were detected.",rgb(130,138,156),1); }
+static void cam_try_start(void){
+    if(cam_busy)return; cam_busy=1; int r=uvc_start(cam_hd); cam_busy=0; cam_failed=r<0; }
 void camera_draw(int i){
     win_frame(i,"Camera"); cbn=0;
-    if(uvc_found()&&cam_auto&&uvc_state==1){ cam_auto=0; uvc_start(cam_hd); }
-    uvc_poll(); if(uvc_kind==1)cam_decode();
+    if(uvc_found()&&cam_auto==1&&uvc_state==1&&!cam_failed&&!cam_busy){ cam_auto=0; cam_req=1; }
+    if(uvc_kind==1)cam_decode();
     int wx=WN[i].x+1, wy=WN[i].y+TITLEH, ww=WN[i].w-2, wh=WN[i].h-TITLEH-1;
     int infow=ww>=900?300:0; int vw=ww-infow-20, vh=wh-62;
     fill_rect(wx,wy,ww,wh,rgb(243,244,248));
@@ -93,12 +95,24 @@ static int cam_photo(void){
     char t[64]; q=t; q=scopy(q,r>=0?"Saved ":"Could not save "); q=scopy(q,nm); *q=0; toast(t); return r; }
 void camera_click(int px,int py){
     for(int k=0;k<cbn;k++){ if(px>=cbx[k]&&px<cbx[k]+cbw[k]&&py>=cby[k]&&py<cby[k]+cbh){
-        if(k==0){ if(uvc_state==2)uvc_stop(); else uvc_start(cam_hd); }
-        else if(k==1){ cam_hd^=1; if(uvc_state==2)uvc_start(cam_hd); }
+        if(k==0){ if(uvc_state==2)uvc_stop(); else cam_req=1; }
+        else if(k==1){ cam_hd^=1; if(uvc_state==2)cam_req=1; }
         else if(k==2) cam_mirror^=1;
         else if(k==3) cam_photo();
-        else if(k==4){ extern int uvc_streams(void), uvc_stream_cur(void), uvc_select_stream(int); int n=uvc_streams(); if(n>1){ int was=uvc_select_stream((uvc_stream_cur()+1)%n); if(was>=0)uvc_start(cam_hd); } }
+        else if(k==4){ extern int uvc_streams(void), uvc_stream_cur(void), uvc_select_stream(int); int n=uvc_streams(); if(n>1){ int was=uvc_select_stream((uvc_stream_cur()+1)%n); if(was>=0)cam_req=1; } }
         return; } } }
-void camera_key(int c){ if(c==' ')cam_photo(); else if(c=='m'||c=='M')cam_mirror^=1; else if(c=='h'||c=='H'){ cam_hd^=1; if(uvc_state==2)uvc_start(cam_hd); } }
-void camera_open(void){ cam_auto=1; open_win(W_CAMERA); }
-void camera_closed(void){ uvc_stop(); cam_auto=1; }
+void camera_key(int c){ if(c==' ')cam_photo(); else if(c=='m'||c=='M')cam_mirror^=1; else if(c=='h'||c=='H'){ cam_hd^=1; if(uvc_state==2)cam_req=1; } }
+void camera_open(void){ if(!WN[W_CAMERA].open){ cam_auto=1; cam_failed=0; cam_req=0; } open_win(W_CAMERA); }
+void camera_closed(void){ uvc_stop(); cam_auto=1; cam_failed=0; cam_req=0; }
+int camera_tick(void){
+    extern int drag, g_resize; static int settle=0;
+    if(!WN[W_CAMERA].open){ cam_req=0; settle=0; return 0; }
+    if(drag>=0||g_resize>=0){ settle=1; return 0; }
+    if(settle){ settle=0; return 0; }
+    if(!cam_req||cam_busy)return 0;
+    cam_req=0; cam_try_start(); return 1; }
+int g_drag_settle=0;
+int app_io_tick(void){
+    extern int drag, g_resize; extern int files_vol_tick(void);
+    if(drag>=0||g_resize>=0)g_drag_settle=2; else if(g_drag_settle)g_drag_settle--;
+    int ch=camera_tick(); if(files_vol_tick())ch=1; { extern int wifi_gui_tick(void); extern int settings_defer_tick(void); if(wifi_gui_tick())ch=1; if(settings_defer_tick())ch=1; } return ch; }

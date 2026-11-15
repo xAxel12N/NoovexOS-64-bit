@@ -3,7 +3,7 @@
 
 #include "include/nvx/base.h"
 
-enum { DK_NONE, DK_IDE, DK_AHCI, DK_NVME, DK_VIRTIO };
+enum { DK_NONE, DK_IDE, DK_AHCI, DK_NVME, DK_VIRTIO, DK_USB };
 
 extern int nvme_ok;
 extern int nvme_bad , nvme_lasterr;
@@ -22,6 +22,8 @@ int gdisk_read(u32 lba,int cnt,u8* buf);
 void bc_invalidate(u32 lba,int cnt);
 int gdisk_read_cached(u32 lba,int cnt,u8* buf);
 int gdisk_flush(void);
+int nvme_shutdown(void);
+void gdisk_shutdown(int poweroff);
 int gdisk_write(u32 lba,const u8* buf);
 int gdisk_writen(u32 lba,int cnt,const u8* buf);
 int gdisk_readn(u32 lba,int cnt,u8* buf);
