@@ -110,7 +110,7 @@ static int lx_streq(const char* a,const char* b){ while(*a&&*a==*b){ a++; b++; }
 #define LX_PTS 115
 #define PTY_MAX 32
 #define PTY_BUF 16384
-struct lx_pty { int used, nm, ns, locked, opened, eof; u8* in; int in_r, in_n; u8* out; int out_r, out_n; u8 line[1024]; int ln; u32 iflag, oflag, cflag, lflag; u8 cc[19]; u16 ws[4]; int pgrp, sid; };
+struct lx_pty { int used, nm, ns, locked, opened, eof; u8* in; int in_r, in_n; u8* out; int out_r, out_n; u8 line[1024]; int ln; u32 iflag, oflag, cflag, lflag; u8 cc[19]; u16 ws[4]; int pgrp, sid; int ou, og; u32 om; };
 static struct lx_pty g_pty[PTY_MAX];
 static void pty_put(u8* b,int* r,int* n,u8 c){ if(*n>=PTY_BUF)return; b[(*r+*n)%PTY_BUF]=c; (*n)++; }
 static int pty_take(u8* b,int* r,int* n,u8* dst,int len){ int c=0; while(c<len&&*n>0){ dst[c++]=b[*r]; *r=(*r+1)%PTY_BUF; (*n)--; } return c; }
@@ -147,13 +147,26 @@ static void pty_defaults(struct lx_pty* t){
     for(int i=0;i<19;i++)t->cc[i]=cc[i]; t->ws[0]=24; t->ws[1]=80; t->ws[2]=0; t->ws[3]=0; }
 static void pty_name(int i,char* o){ const char* z="/dev/pts/"; while(*z)*o++=*z++; if(i>=10)*o++=(char)('0'+i/10); *o++=(char)('0'+i%10); *o=0; }
 static int pty_index(const char* p){ const char* z="/dev/pts/"; int i=0; for(;z[i];i++) if(p[i]!=z[i])return -1; if(!p[i])return -1; int v=0; for(;p[i];i++){ if(p[i]<'0'||p[i]>'9')return -1; v=v*10+(p[i]-'0'); if(v>=PTY_MAX)return -1; } return v; }
+static int pty_chown_path(const char* p,int u,int g){
+    int k=pty_index(p); if(k<0)return 1;
+    struct lx_pty* t=&g_pty[k]; if(!t->used||t->locked)return -LX_ENOENT;
+    if(g_uid!=0&&(g_uid!=t->ou||(u!=-1&&u!=t->ou)||(g!=-1&&g!=g_gid&&g!=t->og)))return -LX_EPERM;
+    if(u!=-1)t->ou=u;
+    if(g!=-1)t->og=g;
+    return 0; }
+static int pty_chmod_path(const char* p,u32 m){
+    int k=pty_index(p); if(k<0)return 1;
+    struct lx_pty* t=&g_pty[k]; if(!t->used||t->locked)return -LX_ENOENT;
+    if(g_uid!=0&&g_uid!=t->ou)return -LX_EPERM;
+    t->om=m&0777u; return 0; }
 static int pty_open_master(int flags){
     int k=-1; for(int i=0;i<PTY_MAX;i++) if(!g_pty[i].used){ k=i; break; } if(k<0)return -LX_ENOSPC;
     struct lx_pty* t=&g_pty[k]; u8* a=(u8*)kmalloc(PTY_BUF); u8* b=(u8*)kmalloc(PTY_BUF); if(!a||!b){ if(a)kfree(a); if(b)kfree(b); return -LX_ENOMEM; }
-    lx_zero((u8*)t,sizeof *t); t->used=1; t->in=a; t->out=b; t->locked=1; pty_defaults(t);
+    lx_zero((u8*)t,sizeof *t); t->used=1; t->in=a; t->out=b; t->locked=1; pty_defaults(t); t->ou=g_uid; t->og=5; t->om=0620u;
     int vi=jc_newvf(LX_PTM,k,(flags&~0x80000)|2); if(vi<0){ kfree(a); kfree(b); t->used=0; return -LX_EMFILE; }
     const char* z="/dev/ptmx"; int q=0; for(;z[q];q++)g_vf[vi].vpath[q]=z[q]; g_vf[vi].vpath[q]=0; t->nm=1;
     int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
+static int pty_may_open(int k){ if(k<0||k>=PTY_MAX||!g_pty[k].used)return -LX_EIO; return g_uid==0||g_uid==g_pty[k].ou?0:-LX_EACCES; }
 static int pty_open_slave(int k,int flags){
     if(k<0||k>=PTY_MAX||!g_pty[k].used||g_pty[k].nm<=0)return -LX_EIO; struct lx_pty* t=&g_pty[k]; if(t->locked)return -LX_EIO;
     int vi=jc_newvf(LX_PTS,k,flags&~0x80000); if(vi<0)return -LX_EMFILE; pty_name(k,g_vf[vi].vpath); t->ns++; t->opened=1;
@@ -191,7 +204,7 @@ static long pty_ioctl(struct vfile* v,int fd,u32 req,u64 arg){
     case 0x5413: return lx_put(arg,t->ws,8);
     case 0x5414: { u16 w[4]; if(lx_get(w,arg,8))return -LX_EFAULT; int ch=w[0]!=t->ws[0]||w[1]!=t->ws[1]; for(int i=0;i<4;i++)t->ws[i]=w[i]; if(ch)pty_sig(t,28); return 0; }
     case 0x80045430: { int n=v->fs_idx; return lx_put(arg,&n,4); }
-    case 0x40045431: { int lk=0; if(lx_get(&lk,arg,4))return -LX_EFAULT; t->locked=lk!=0; return 0; }
+    case 0x40045431: { int lk=0; if(lx_get(&lk,arg,4))return -LX_EFAULT; if(v->dev==LX_PTM&&!lk&&t->locked){ t->ou=g_uid; t->og=5; t->om=0620u; } t->locked=lk!=0; return 0; }
     case 0x80045439: { int lk=t->locked; return lx_put(arg,&lk,4); }
     case 0x5441: { if(v->dev!=LX_PTM)return -LX_EINVAL; int was=t->locked; t->locked=0; int r=pty_open_slave(v->fs_idx,(int)arg|0x100); t->locked=was; return r; }
     case 0x540E: t->sid=l->sid; t->pgrp=l->pgid; return 0;
@@ -207,6 +220,12 @@ static long pty_ioctl(struct vfile* v,int fd,u32 req,u64 arg){
     (void)fd; return -LX_EINVAL; }
 static int asnd_open(const char* p,int flags);
 static int asnd_stat(const char* p,u32* o,u64* rd);
+static int armidi_open(const char* p,int flags);
+static int armidi_stat(const char* p,u32* o,u64* rd);
+static int userial_open(const char* p,int flags); static int userial_stat(const char* p,u32* o,u64* rd);
+static int aev_open(const char* p,int flags); static int aev_stat(const char* p,u32* o,u64* rd);
+static int v4_open(const char* p,int flags);
+static int v4_stat(const char* p,u32* o,u64* rd);
 static int asnd_list(int n,char* name,int* type);
 static int lx_shm_name(const char* p);
 static int lx_shm_stato(const char* p,int st,u32* o);
@@ -220,9 +239,9 @@ static int lx_stat_path(const char* p,u64 ubuf,int follow){
     { u32 m=0; u64 sz=0, rd=0; int r=sx_stat(p,follow,&m,&sz); if(!r&&p[0]=='/'&&p[1]=='d'&&p[2]=='e'&&p[3]=='v'&&p[4]=='/')r=dx_stat(p,&m,&rd,&sz); if(r<0)return -LX_ENOENT;
       if(r>0){ for(int i=0;i<10;i++)o[i]=0; o[0]=m; o[3]=(m&0170000u)==0040000u?2:1; o[4]=(u32)sz; u32 h=2166136261u; for(int q=0;p[q];q++)h=(h^(u8)p[q])*16777619u; o[5]=0x38000000u|(h&0x07FFFFFFu); o[6]=o[7]=o[8]=1760000000u; u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; *(u64*)(st2+48)=sz; return lx_put(ubuf,st2,144); } }
     { int st=lx_shm_name(p); if(st>=0){ if(lx_shm_stato(p,st,o))return -LX_ENOENT; u8 st2[144]; lx_stat_out(st2,o,0); return lx_put(ubuf,st2,144); } }
-    { u64 rd=0; if(asnd_stat(p,o,&rd)){ u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
+    { u64 rd=0; if(asnd_stat(p,o,&rd)||armidi_stat(p,o,&rd)||userial_stat(p,o,&rd)||v4_stat(p,o,&rd)||aev_stat(p,o,&rd)){ u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
     { int pk=pty_index(p); int pm=lx_streq(p,"/dev/ptmx"), pd=lx_streq(p,"/dev/pts"); if(pk>=0||pm||pd){ if(pk>=0&&(!g_pty[pk].used||g_pty[pk].locked))return -LX_ENOENT; for(int i=0;i<10;i++)o[i]=0; o[3]=1; o[6]=o[7]=o[8]=1760000000u;
-        u64 rd=0; if(pd){ o[0]=0040755u; o[3]=2; o[5]=0x36200000u; } else if(pm){ o[0]=0020666u; o[5]=0x36100000u; rd=(5u<<8)|2u; } else { o[0]=0020620u; o[5]=0x36000000u+(u32)pk; o[2]=5; rd=(136u<<8)|(u32)pk; }
+        u64 rd=0; if(pd){ o[0]=0040755u; o[3]=2; o[5]=0x36200000u; } else if(pm){ o[0]=0020666u; o[5]=0x36100000u; rd=(5u<<8)|2u; } else { o[0]=0020000u|(g_pty[pk].om&07777u); o[5]=0x36000000u+(u32)pk; o[1]=(u32)g_pty[pk].ou; o[2]=(u32)g_pty[pk].og; rd=(136u<<8)|(u32)pk; }
         u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
     { int fdn=lx_fdpath(p); if(fdn>=0){ if(fdn>=FDMAX||fdt()[fdn]<0)return -LX_ENOENT; if(follow)return lx_fstat(fdn,ubuf); for(int i=0;i<10;i++)o[i]=0; o[0]=0120700u; o[3]=1; o[4]=64; o[5]=0x32000000u+(u32)fdn; u8 st[144]; lx_stat_out(st,o,0); return lx_put(ubuf,st,144); } }
     { int ix; int k=lx_procdir(p,&ix); if(k){ for(int i=0;i<10;i++)o[i]=0; o[0]=k==3?0040500u:0040555u; o[3]=2; if(k==4){ int tg=g_jp[ix].tg; for(int i=0;i<JMAX;i++) if(g_jp[i].state!=S_FREE&&g_jp[i].state!=S_TDEAD&&g_jp[i].state!=S_ZOMB&&g_jp[i].tg==tg)o[3]++; } else if(k==2)o[3]=4; else if(k==1){ for(int i=0;i<JMAX;i++) if(g_jp[i].state!=S_FREE&&g_jp[i].state!=S_TDEAD&&g_jp[i].tg==i)o[3]++; } o[5]=0x30000000u|(u32)(k<<16)|(u32)((ix<0?0:ix)&0xFFFF); o[6]=o[7]=o[8]=1760000000u; o[9]=1; u8 st[144]; lx_stat_out(st,o,0); return lx_put(ubuf,st,144); } }
@@ -247,8 +266,8 @@ static int lx_fstat(int fd,u64 ubuf){
     else if(v->dev==27){ o[0]=0100444u; o[3]=1; o[5]=0xF0000000u+(u32)v->fs_idx; }
     else if(v->dev==6||v->dev==7){ o[0]=0010600u; o[5]=5000u+(u32)v->fs_idx; }
     else if(v->dev==100&&v->vfs){ o[0]=0100444u; int n=v->vfs->size(v->vpath); o[4]=n>0?(u32)n:0; u32 h=sysroot_ino(v->vpath,1); if(!h){ h=2166136261u; for(int q=0;v->vpath[q];q++)h=(h^(u8)v->vpath[q])*16777619u; } o[5]=0x10000000u|(h&0x0FFFFFFFu); }
-    else if(v->dev==LX_SNDCTL||v->dev==LX_SNDPCM){ u64 rd=0; if(asnd_stat(v->vpath,o,&rd)){ u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
-    else if(v->dev==LX_PTM||v->dev==LX_PTS){ int pk=v->fs_idx; o[6]=o[7]=o[8]=1760000000u; u64 rd; if(v->dev==LX_PTM){ o[0]=0020666u; o[5]=0x36100000u; rd=(5u<<8)|2u; } else { o[0]=0020620u; o[2]=5; o[5]=0x36000000u+(u32)pk; rd=(136u<<8)|(u32)pk; } u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); }
+    else if(v->dev==LX_SNDCTL||v->dev==LX_SNDPCM||v->dev==LX_SNDMIDI||v->dev==124||v->dev==LX_USBSER||v->dev==LX_EVDEV||v->dev==LX_JSDEV){ u64 rd=0; if(asnd_stat(v->vpath,o,&rd)||armidi_stat(v->vpath,o,&rd)||userial_stat(v->vpath,o,&rd)||v4_stat(v->vpath,o,&rd)||aev_stat(v->vpath,o,&rd)){ u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); } }
+    else if(v->dev==LX_PTM||v->dev==LX_PTS){ int pk=v->fs_idx; o[6]=o[7]=o[8]=1760000000u; u64 rd; if(v->dev==LX_PTM){ o[0]=0020666u; o[5]=0x36100000u; rd=(5u<<8)|2u; } else { o[0]=0020000u|(g_pty[pk].om&07777u); o[1]=(u32)g_pty[pk].ou; o[2]=(u32)g_pty[pk].og; o[5]=0x36000000u+(u32)pk; rd=(136u<<8)|(u32)pk; } u8 st2[144]; lx_stat_out(st2,o,0); *(u64*)(st2+40)=rd; return lx_put(ubuf,st2,144); }
     else { o[0]=0020666u; if(v->dev==5)o[0]=0020620u; o[5]=20000u+(u32)v->dev; }
     u8 st[144]; lx_stat_out(st,o,0); return lx_put(ubuf,st,144);
 }
@@ -266,10 +285,10 @@ static int lx_open(int dirfd,u64 up,int flags,int mode){
     { long sr=sx_open(p,flags); if(sr!=-9999)return (int)sr; }
     if(lx_streq(p,"/dev")&&(flags&3)==0){ int vi=jc_newvf(LX_SRDIR,0,flags); if(vi<0)return -LX_EMFILE; const char* z="/dev"; int q=0; for(;z[q];q++)g_vf[vi].vpath[q]=z[q]; g_vf[vi].vpath[q]=0; int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
     if(p[0]=='/'&&p[1]=='d'&&p[2]=='e'&&p[3]=='v'&&p[4]=='/'){ long dr=dx_open(p,flags); if(dr!=-9999)return (int)dr; }
-    { int ar=asnd_open(p,flags); if(ar!=-9999)return ar; }
+    { int ar=asnd_open(p,flags); if(ar!=-9999)return ar; ar=armidi_open(p,flags); if(ar!=-9999)return ar; ar=userial_open(p,flags); if(ar!=-9999)return ar; ar=v4_open(p,flags); if(ar!=-9999)return ar; ar=aev_open(p,flags); if(ar!=-9999)return ar; }
     if(lx_streq(p,"/dev/snd")){ if((flags&3)!=0)return -LX_EISDIR; int vi=jc_newvf(LX_SRDIR,0,flags); if(vi<0)return -LX_EMFILE; const char* z="/dev/snd"; int q=0; for(;z[q];q++)g_vf[vi].vpath[q]=z[q]; g_vf[vi].vpath[q]=0; int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
     if(lx_streq(p,"/dev/ptmx"))return pty_open_master(flags);
-    { int k=pty_index(p); if(k>=0)return pty_open_slave(k,flags); }
+    { int k=pty_index(p); if(k>=0){ int pr=pty_may_open(k); return pr?pr:pty_open_slave(k,flags); } }
     if(lx_streq(p,"/dev/pts")){ if((flags&3)!=0)return -LX_EISDIR; int vi=jc_newvf(LX_SRDIR,0,flags); if(vi<0)return -LX_EMFILE; const char* z="/dev/pts"; int q=0; for(;z[q];q++)g_vf[vi].vpath[q]=z[q]; g_vf[vi].vpath[q]=0; int fd=lx_fd_install(vi,(flags&0x80000)!=0,0); if(fd<0)vf_unref(vi); return fd; }
     { int ix; int k=lx_procdir(p,&ix); if(k==1||k==3||k==4||(k&&(flags&0x10000))){ if((flags&3)!=0)return -LX_EISDIR; int vi=jc_newvf(LX_SRDIR,0,flags); if(vi<0)return -LX_EMFILE;
         char cp[64]; char* o=cp; const char* z="/proc"; while(*z)*o++=*z++; if(k>=2){ *o++='/'; o=lx_utoa(o,(unsigned)g_jp[k==5?g_jp[ix].tg:ix].pid); } if(k==3){ z="/fd"; while(*z)*o++=*z++; } if(k>=4){ z="/task"; while(*z)*o++=*z++; } if(k==5){ *o++='/'; o=lx_utoa(o,(unsigned)g_jp[ix].pid); } *o=0;

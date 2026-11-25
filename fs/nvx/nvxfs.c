@@ -42,7 +42,7 @@ static int nvx_locate(void){
         if(pe[4]&&sz){ anyp=1; if(pe[4]==NVX_PTYPE&&sz>=2048u){ g_nvx_base=st; g_nvx_secs=sz; g_nvx_note="NoovexOS data partition"; return 2; } } }
     if(anyp){ g_nvx_note="Disk belongs to another system - not touched"; return 0; }
     if(!nvx_is_zero(mbr)&&!valid){ g_nvx_note="Unrecognised disk - not touched"; return 0; }
-    g_nvx_base=2048; { u32 tot=g_nvx_generic?g_dksectors:g_disk_sectors; g_nvx_secs=tot>2048u?tot-2048u:0; }
+    g_nvx_base=2048; { u32 tot=g_nvx_generic?(g_dksectors>0xFFFFFFFFULL?0xFFFFFFFFu:(u32)g_dksectors):g_disk_sectors; g_nvx_secs=tot>2048u?tot-2048u:0; }
     u8 d[512]; if(nvx_rd(g_nvx_base,d))return 0;
     if(*(u32*)d==NVX_MAGIC||*(u32*)d==NVX3_MAGIC_K||*(u32*)d==0x3458564Eu){ g_nvx_note="Scratch disk"; return 2; }
     if(nvx_is_zero(d)){ g_nvx_note="Blank scratch disk"; return 1; }
@@ -50,7 +50,7 @@ static int nvx_locate(void){
 }
 int g_root_usb=0;
 int disk_usb_root(void){
-    extern int msd_ok; extern int gdisk_usb_refresh(void); extern int gdisk_read_on(int,u32,int,u8*); extern int gdisk_pick(int);
+    extern int msd_ok; extern int gdisk_usb_refresh(void); extern int gdisk_read_on(int,u64,int,u8*); extern int gdisk_pick(int);
     extern int msd_autoinit_safe(void);
     if(disk_ok||g_rootfs)return 0; if(!msd_ok)msd_autoinit_safe(); if(!msd_ok)return 0;
     int ix=gdisk_usb_refresh(); if(ix<0)return 0;

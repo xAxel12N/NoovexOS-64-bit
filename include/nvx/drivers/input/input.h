@@ -9,6 +9,7 @@ extern volatile int mouse_xback, mouse_xfwd;
 void in_xbtn(int b4,int b5);
 
 void in_rel(int dx,int dy);
+void in_abs(int x,int xr,int y,int yr);
 void in_buttons(int l,int r,int m);
 void in_btn_raw(int l,int r,int m);
 int in_mq_take(int* dx,int* dy,int* b,u64* t);
@@ -19,5 +20,12 @@ void in_mq_rebase(int dx,int dy);
 extern volatile u32 g_mq_lost;
 void in_scroll(int v,int h);
 void in_gesture(int g);
+extern volatile u32 mouse_btnmask; extern volatile u32 mouse_xpress[16]; extern volatile int mouse_scroll_hr, mouse_hscroll_hr;
+void in_btnmask(u32 m);
+void in_scroll_hr(int v120,int h120);
+void gkey_push(int sc,int down);
+void gkey_reset(int who);
+int gkey_pop(int who,int* down);
+int gkey_pending(int who);
 
 #endif

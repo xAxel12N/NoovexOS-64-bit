@@ -23,6 +23,7 @@ int g_locked=0;
 int g_logged_in=0;
 int g_sudo_min=15;
 char g_acct_err[96]="";
+extern volatile u64 g_ticks;
 
 int ux_write_text(const char* path,const char* body,int len,unsigned mode);
 
@@ -193,23 +194,48 @@ static int ac_legacy_hex_ok(const char* pw,const char* hex){
     unsigned h=nvx_pwhash(pw); char t[12]; int n=0; if(!h)t[n++]='0'; while(h){ t[n++]="0123456789abcdef"[h&15]; h>>=4; }
     char r[12]; int o=0; while(n)r[o++]=t[--n]; r[o]=0; return ac_aeq(r,hex);
 }
+#define AC_RL_N 16
+static struct { char name[33]; u32 fails; u64 until, last; } ac_rl[AC_RL_N];
+static int ac_rl_find(const char* name,int make){
+    int old=0; for(int i=0;i<AC_RL_N;i++){ if(ac_rl[i].name[0]&&ac_aeq(ac_rl[i].name,name))return i; if(ac_rl[i].last<ac_rl[old].last)old=i; }
+    if(!make)return -1; ac_acp(ac_rl[old].name,name,33); ac_rl[old].fails=0; ac_rl[old].until=0; ac_rl[old].last=g_ticks; return old;
+}
+u32 acct_fail_delay(u32 fails){ if(fails<3)return 0; u32 d=5u<<(fails-3>6?6:fails-3); return d>300?300:d; }
+int acct_wait_secs(const char* name){ int i=ac_rl_find(name,0); if(i<0||ac_rl[i].until<=g_ticks)return 0; return (int)((ac_rl[i].until-g_ticks+99)/100); }
+u32 acct_fail_count(const char* name){ int i=ac_rl_find(name,0); return i<0?0:ac_rl[i].fails; }
+static void ac_rl_result(const char* name,int ok){
+    int i=ac_rl_find(name,!ok); if(i<0)return;
+    if(ok){ ac_rl[i].name[0]=0; ac_rl[i].fails=0; ac_rl[i].until=0; return; }
+    if(ac_rl[i].fails<1000)ac_rl[i].fails++; ac_rl[i].last=g_ticks; ac_rl[i].until=g_ticks+(u64)acct_fail_delay(ac_rl[i].fails)*100u;
+    if(ac_rl[i].fails>=3){ char b[16],*q=b; q=udec(q,ac_rl[i].fails); *q=0; acct_log("too many failed passwords for ",name,b); }
+}
+static int ac_rehash(int s,const char* pw){
+    char salt[17]; sha512_crypt_salt(salt,16); char st[40]; char* p=st; p=scopy(p,"$6$rounds="); p=udec(p,SHA512_CRYPT_ROUNDS); *p++='$'; p=scopy(p,salt); *p=0;
+    char h[136]; if(sha512_crypt(pw,st,h,136)<0)return -1; ac_acp(ac_AS[s].hash,h,136); for(int i=0;i<136;i++)((volatile char*)h)[i]=0; return 0;
+}
+static int ac_check_hash(const char* name,int s,const char* pw){
+    const char* h=ac_AS[s].hash;
+    if(!h[0])return pw[0]==0;
+    if(h[0]=='$'&&h[1]=='6'&&h[2]=='$'){ if(!sha512_crypt_check(pw,h))return 0;
+        if(sha512_crypt_rounds(h)<SHA512_CRYPT_ROUNDS&&!ac_rehash(s,pw)){ ac_db_save(4); acct_log("password hash upgraded for ",name,0); } return 1; }
+    if(h[0]=='$'&&h[1]=='n'&&h[2]=='v'&&h[3]=='x'&&h[4]=='$'){ if(ac_legacy_hex_ok(pw,h+5)){ acct_set_password(name,pw); return 1; } return 0; }
+    return 0;
+}
 int acct_check(const char* name,const char* pw){
     acct_reload(); int s=ac_fs_(name); if(s<0)return 0;
     const char* h=ac_AS[s].hash;
     if(h[0]=='!'||h[0]=='*')return 0;
-    if(!h[0])return pw[0]==0;
-    if(h[0]=='$'&&h[1]=='6'&&h[2]=='$')return sha512_crypt_check(pw,h);
-    if(h[0]=='$'&&h[1]=='n'&&h[2]=='v'&&h[3]=='x'&&h[4]=='$'){ if(ac_legacy_hex_ok(pw,h+5)){ acct_set_password(name,pw); return 1; } return 0; }
-    return 0;
+    int w=acct_wait_secs(name); if(w>0){ char b[96],*q=b; q=scopy(q,"too many failed attempts - try again in "); q=udec(q,(u32)w); q=scopy(q," s"); *q=0; ac_aerr(b); return 0; }
+    int ok=ac_check_hash(name,s,pw); ac_rl_result(name,ok); return ok;
 }
+void acct_hash_stats(int* strong,int* weak){ acct_reload(); *strong=0; *weak=0; for(int i=0;i<ac_g_ns;i++){ const char* h=ac_AS[i].hash; if(h[0]=='!')h++; if(!h[0]||h[0]=='*'||h[0]=='!')continue; if(h[0]=='$'&&h[1]=='6'&&h[2]=='$'&&sha512_crypt_rounds(h)>=SHA512_CRYPT_ROUNDS)(*strong)++; else (*weak)++; } }
 int acct_has_password(const char* name){ acct_reload(); int s=ac_fs_(name); if(s<0)return 0; const char* h=ac_AS[s].hash; return h[0]&&h[0]!='!'&&h[0]!='*'; }
 
 static int ac_set_hash(const char* name,const char* pw){
     int s=ac_fs_(name);
     if(s<0){ if(ac_g_ns>=ac_AP_N){ ac_aerr("too many accounts"); return -1; } s=ac_g_ns++; ac_acp(ac_AS[s].name,name,33); }
     if(!pw||!pw[0]){ ac_AS[s].hash[0]=0; }
-    else { char salt[17]; sha512_crypt_salt(salt,16); char st[24]; char* p=st; p=scopy(p,"$6$"); p=scopy(p,salt); *p=0;
-        if(sha512_crypt(pw,st,ac_AS[s].hash,136)<0){ ac_aerr("could not hash the password"); return -1; } }
+    else if(ac_rehash(s,pw)){ ac_aerr("could not hash the password"); return -1; }
     ac_rest_now(ac_AS[s].rest); return 0;
 }
 int acct_set_password(const char* name,const char* pw){

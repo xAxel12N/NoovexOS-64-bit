@@ -1,0 +1,15 @@
+NoovexOS SD/MMC host drivers (drivers/mmc/host)
+
+sdhci.c
+  Structure derived from OpenBSD sys/dev/sdmmc/sdhc.c (rev 1.78) and sys/dev/pci/sdhc_pci.c;
+  register layout from the SD Host Controller Simplified Specification.
+  License: ISC
+  Copyright (c) 2006 Uwe Stuehler <uwe@openbsd.org>
+
+rtsx.c
+  Port of OpenBSD sys/dev/ic/rtsx.c (rev 1.22), sys/dev/ic/rtsxreg.h (rev 1.5) and
+  sys/dev/pci/rtsx_pci.c (rev 1.16): Realtek RTS5209/5227/5229/522A/5249/525A, RTL8402/8411/8411B.
+  SPDX-License-Identifier: ISC (verified against the upstream files)
+  Copyright (c) 2006 Uwe Stuehler <uwe@openbsd.org>
+  Copyright (c) 2012 Stefan Sperling <stsp@openbsd.org>
+  The verbatim ISC licence block is kept at the top of rtsx.c.

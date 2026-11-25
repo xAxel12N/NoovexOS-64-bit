@@ -38,7 +38,7 @@ static u8 g_dm_mbr[512]; static int g_dm_msg=0; static const char* g_dm_msgtext=
 #define DM_ROWS 8
 #define DM_NB 9
 static int dm_rowy[DM_ROWS], dm_bx[DM_NB], dm_by[DM_NB], dm_bw[DM_NB];
-typedef struct { int used; u8 type; u32 start, size; int gi; char name[40]; char fs[24]; } dmpart;
+typedef struct { int used; u8 type; u64 start, size; int gi; char name[40]; char fs[24]; } dmpart;
 static dmpart g_dm_p[DM_ROWS]; static int g_dm_np=0, g_dm_gpt=0;
 static u8 g_dm_ghdr[512]; static u8* g_dm_gent=0; static u32 g_dm_gn=0, g_dm_gsz=0, g_dm_gsec=0; static u64 g_dm_gelba=0, g_dm_galt=0;
 

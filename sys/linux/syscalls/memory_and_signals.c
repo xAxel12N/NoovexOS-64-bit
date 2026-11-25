@@ -1,5 +1,6 @@
 extern const vfs_fs_ops SYSROOTFS;
 u64 g_lx_fmaps, g_lx_fmap_pages;
+static u64 lx_ustk(void){ u64 s=jc_lead(&g_jp[g_jcur])->ustk; return s?s:USTK_V; }
 static long lx_mmap(u64 addr,u64 len,int prot,int flags,int fd,u64 off){
     struct jproc* p=&g_jp[g_jcur]; u64 pb=vm_prot_bits(prot&7);
     if(!len||(off&0xFFF))return -LX_EINVAL;
@@ -7,18 +8,23 @@ static long lx_mmap(u64 addr,u64 len,int prot,int flags,int fd,u64 off){
     u64 pages=(len+0xFFFULL)>>12;
     int anon=(flags&0x20)!=0;
     struct vfile* v=0;
-    if(!anon){ v=lx_vf(fd); if(!v)return -LX_EBADF; if(!((v->dev==0&&v->fs_idx>=0)||(v->dev==100&&v->vfs)||v->dev==LX_MFD))return -LX_ENODEV; }
+    if(!anon){ v=lx_vf(fd); if(!v)return -LX_EBADF; if(!((v->dev==0&&v->fs_idx>=0)||(v->dev==100&&v->vfs)||v->dev==LX_MFD||v->dev==LX_V4L))return -LX_ENODEV; }
+    u64* v4f=0; int v4n=0; if(!anon&&v->dev==LX_V4L&&v4_map_frames(off,len,&v4f,&v4n)<0)return -LX_EINVAL;
     if(!anon&&v->dev==LX_MFD&&(g_mfd[v->fs_idx].seals&0x18)&&(flags&3)==1&&(prot&2))return -LX_EPERM;
     int srf=!anon&&v->dev==100&&v->vfs==&SYSROOTFS;
     if(srf&&(flags&3)==1&&(prot&2))return -LX_EACCES;
-    if(!anon&&!srf&&v->dev!=LX_MFD&&pages>pframe_free_count())return -LX_ENOMEM;
+    if(!anon&&!srf&&v->dev!=LX_MFD&&v->dev!=LX_V4L&&pages>pframe_free_count())return -LX_ENOMEM;
     if(anon&&pages<=65536&&(pages>>9)+64>pframe_free_count())return -LX_ENOMEM;
     u64 base;
     if(flags&0x10){ if(addr&0xFFF)return -LX_EINVAL; if(!jc_uok(addr,pages<<12))return -LX_ENOMEM; base=addr;
-        if(base+(pages<<12)>USTK_V-(u64)(JS_STK_PAGES-1)*0x1000ULL&&base<USTK_V+0x1000ULL)return -LX_EINVAL;
+        { u64 st=lx_ustk(); if(base+(pages<<12)>st-(u64)(JS_STK_PAGES-1)*0x1000ULL&&base<st+0x1000ULL)return -LX_EINVAL; }
         lx_unmap_range(base,base+(pages<<12)); }
     else { base=lx_find_gap(p->cr3,pages+1); if(!base||!jc_uok(base,(pages+1)<<12))return -LX_ENOMEM;
         if(base+((pages+1)<<12)>g_mmap_next)g_mmap_next=base+((pages+1)<<12); }
+    if(v4f){ for(u64 i=0;i<pages;i++){ u64 va=base+(i<<12);
+            if((long)i<v4n&&v4f[i]){ u64 f=v4f[i]; pframe_ref(f); if(vm_map(p->cr3,va,f,vm_pflags(0x7ULL|PTE_SHR,pb))){ pframe_free(f); lx_unmap_range(base,va); return -LX_ENOMEM; } }
+            else if(vm_map_lazy_p(p->cr3,va,pb)){ lx_unmap_range(base,va); return -LX_ENOMEM; } }
+        lx_note_map(p->cr3,base,base+(pages<<12),"video0"); return (long)base; }
     if(v&&v->dev==LX_MFD){ struct memfd* m=&g_mfd[v->fs_idx]; u64 pbase=off>>12;
         for(u64 i=0;i<pages;i++){ u64 va=base+(i<<12);
             if((long)(pbase+i)<m->nframes&&m->frames[pbase+i]){ u64 f=m->frames[pbase+i]; pframe_ref(f); if(vm_map(p->cr3,va,f,vm_pflags(((flags&3)==1)?(0x7ULL|PTE_SHR):(0x5ULL|PTE_COW),pb))){ pframe_free(f); lx_unmap_range(base,va); return -LX_ENOMEM; } }
@@ -56,7 +62,7 @@ static long lx_mmap(u64 addr,u64 len,int prot,int flags,int fd,u64 off){
 static long lx_munmap(u64 a,u64 len){
     if((a&0xFFF)||!len)return -LX_EINVAL;
     u64 e=(a+len+0xFFFULL)&~0xFFFULL; if(!jc_uok(a,e-a))return -LX_EINVAL;
-    if(a<USTK_V+0x1000ULL&&e>USTK_V-(u64)(JS_STK_PAGES-1)*0x1000ULL)return -LX_EINVAL;
+    { u64 st=lx_ustk(); if(a<st+0x1000ULL&&e>st-(u64)(JS_STK_PAGES-1)*0x1000ULL)return -LX_EINVAL; }
     lx_unmap_range(a,e); return 0;
 }
 static long lx_brk(u64 want){
@@ -300,10 +306,14 @@ static long lx_wait4(struct sysregs* r,int pid,u64 st,int opts,u64 ru){
 static u64 g_lx_epoch0;
 static u64 lx_now_ns(void){ if(!g_lx_epoch0){ u64 h=hr_ns(); g_lx_epoch0=k_realtime_ms()*1000000ULL-h; if(!g_lx_epoch0)g_lx_epoch0=1; } return g_lx_epoch0+hr_ns(); }
 u64 lx_epoch_ns(void){ lx_now_ns(); return g_lx_epoch0; }
+static u64 g_lx_slept;
+void vdso_resync(void);
+void lx_clock_slept(u64 ns){ if(g_lx_epoch0)g_lx_epoch0+=ns; g_lx_slept+=ns; vdso_resync(); }
 static long lx_clock(int clk,u64 ts){
     u64 ns;
     if(clk==0||clk==5||clk==8||clk==11){ ns=lx_now_ns(); }
-    else if(clk==1||clk==4||clk==6||clk==7||clk==9||clk==2||clk==3)ns=hr_ns();
+    else if(clk==7||clk==9)ns=hr_ns()+g_lx_slept;
+    else if(clk==1||clk==4||clk==6||clk==2||clk==3)ns=hr_ns();
     else return -LX_EINVAL;
     u64 t[2]={ns/1000000000ULL,ns%1000000000ULL}; return lx_put(ts,t,16);
 }
@@ -330,7 +340,7 @@ static long lx_clock_nanosleep(struct sysregs* r,int clk,int fl,u64 req){
 static void lx_cpy(char* d,const char* s,int cap){ int i=0; for(;s[i]&&i<cap-1;i++)d[i]=s[i]; d[i]=0; }
 static long lx_uname(u64 buf){
     char u[390]; lx_zero(u,390);
-    lx_cpy(u,"NoovexOS",65); lx_cpy(u+65,g_hostname,65); lx_cpy(u+130,"11.10",65); lx_cpy(u+195,"NoovexOS 64 v11.10",65); lx_cpy(u+260,"x86_64",65); lx_cpy(u+325,"(none)",65);
+    lx_cpy(u,"NoovexOS",65); lx_cpy(u+65,g_hostname,65); lx_cpy(u+130,"11.22",65); lx_cpy(u+195,"NoovexOS 64 v11.22",65); lx_cpy(u+260,"x86_64",65); lx_cpy(u+325,"(none)",65);
     return lx_put(buf,u,390);
 }
 static long lx_rlimit_of(struct jproc* L,int res,u64 out){

@@ -6,7 +6,8 @@ static char* wtxt(char* d,const char* s); static char* wdec(char* p,int v);
 u32 g_sgen[GQ_MAXS]; u64 g_ophash=1469598103934665603ULL; int g_hash_d=0; u64 g_gq_wait_ns=0; u32 g_gq_submits=0; static u32 cur_ck=0;
 void gq_set_key(u32 k){ cur_ck=k; }
 static void gq_bump_r(int s);
-void gq_bump(int s){ if(s>0&&s<GQ_MAXS){ g_sgen[s]++; gq_bump_r(s); } }
+void (*g_gq_mark_hook)(int s,int x,int y,int w,int h)=0;
+void gq_bump(int s){ if(s>0&&s<GQ_MAXS){ g_sgen[s]++; gq_bump_r(s); if(g_gq_mark_hook)g_gq_mark_hook(s,0,0,-1,-1); } }
 u32 g_gq_ops=0, g_gq_stalls=0, g_gq_syncs=0, g_gq_batches=0, g_gq_fail=0, g_gq_last_us=0, g_gq_frame_ops=0, g_gq_frame_stalls=0, g_gq_frame_syncs=0;
 static u32 f_ops0=0, f_stalls0=0, f_syncs0=0;
 typedef struct { u8 k, d, s, m; int x, y, w, h, sdx, sdy, mdx, mdy; u32 c0, c1, a, inv, key, goff, ck, sg, mg; } gop;
@@ -257,7 +258,7 @@ int gq_srec_end(int* ox,int* oy,int* ow,int* oh){
     if(full){ g_sr_full++; *ox=0; *oy=0; *ow=F.x1; *oh=F.y1; return 0; }
     if(!hasD){ g_sr_none++; *ox=0; *oy=0; *ow=0; *oh=0; return 1; }
     g_sr_part++; *ox=D.x0; *oy=D.y0; *ow=D.x1-D.x0; *oh=D.y1-D.y0; return 1; }
-void gq_ext_mark(int s,int x,int y,int w,int h){ if(s<=0||s>=GQ_MAXS)return; grc r={x,y,x+w,y+h}; if(sr_on)rg_add(&sr_chg[s],r); else rg_add(&sr_ext[s],r); }
+void gq_ext_mark(int s,int x,int y,int w,int h){ if(s<=0||s>=GQ_MAXS)return; grc r={x,y,x+w,y+h}; if(sr_on)rg_add(&sr_chg[s],r); else rg_add(&sr_ext[s],r); if(g_gq_mark_hook)g_gq_mark_hook(s,x,y,w,h); }
 void gq_log_begin(int d){ lg_d=d; lg_n=0; lg_i=0; }
 void gq_log_end(void){ lg_d=0; }
 int gq_log_find(int x,int y,char* out,int max){ int i=lg_n-1; for(;i>=0;i--){ glog* L=&lgb[i]; if(x>=L->x&&y>=L->y&&x<L->x+L->w&&y<L->y+L->h)break; }

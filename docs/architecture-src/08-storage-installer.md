@@ -697,3 +697,13 @@ When `kernel64.old` is the known good kernel (`FAIL`, `OLD`), steps 1-3 are skip
 ### Speed
 
 `vfat` reads and writes runs of up to 128 clusters, and the updater's block functions use `gdisk_readn`/`gdisk_writen`. AHCI, VirtIO and IDE then move up to 64 KB per command. The NVMe driver still sends one command per 512-byte sector, so an update moves about 300,000 commands there (a few seconds on real hardware, about 10 minutes in QEMU without KVM).
+
+## 8.13 SD card DMA: ADMA2 (`drivers/mmc/host/sdhci.c`, `sdhci_adma.h`) (v11.17)
+
+The SDHCI driver can move data with ADMA2 instead of PIO.
+
+- At probe, each slot gets a descriptor table (8 entries, `SHC_NDESC`) and a 128 KiB bounce buffer (`SHC_BB`). Both must be below 4 GiB and aligned. Only then is `adma` set and `MMC_CAP_DMA` added.
+- `sdhci_adma2_fill` builds the 32-bit descriptors for one transfer. The table address goes to register 0x58 and DMA select in Host Control is set to ADMA2.
+- A transfer uses DMA only when the length fits the bounce buffer, is a multiple of 4, and `shc_dma_ok` is true. Otherwise it uses PIO.
+- The feature is guarded by `SYSF_SD_ADMA` (section 11.22). `sdhci_adma_settle` reports the result: the first good DMA transfer marks it working, a DMA error reports a failure and the slot goes back to PIO.
+- `sdhci_dma_info` returns the DMA, PIO and fallback counters for Settings and the status text.

@@ -183,7 +183,7 @@ static void jc_deliver(int i){
         if(h==1)continue;
         if(h==0){ int a=sig_default(s); if(a==0||a==3)continue; if(a==1){ jc_finish(i,s); return; } jc_stop(i,s); return; }
         if(p->state==S_WAIT||p->state==S_SLEEP)p->state=S_RUN;
-        if(jc_push_handler(i,s)){ jc_finish(i,11); }
+        if(jc_push_handler(i,s)){ static u32 nlog; if(nlog<32){ extern void klog(const char*); char b[160],*q=b; nlog++; q=scopy(q,"signal: killed pid "); q=udec(q,(u32)p->pid); q=scopy(q," sig 11: could not write the frame for signal "); q=udec(q,(u32)s); q=scopy(q," at rsp "); q=uhex(q,p->ctx.rsp,12); q=scopy(q,", free "); q=udec(q,pframe_free_count()); q=scopy(q," pages"); *q=0; klog(b); } jc_finish(i,11); }
         return;
     }
 }
@@ -225,7 +225,7 @@ int jc_fork(struct sysregs* r){
     for(int f=0;f<FDMAX;f++){ c->fd[f]=L->fd[f]; c->cloexec[f]=L->cloexec[f]; }
     c->aluid=L->aluid; c->asess=L->asess; c->nofc=L->nofc; c->nofm=L->nofm;
     c->tg=i; c->gexit=0; c->tkill=0; c->ctid=0; c->robust=0; c->fx_wait=0; c->fx_woken=0; c->pgid=L->pgid; c->sid=L->sid;
-    c->pid=g_next_pid++; c->start_tick=g_ticks; c->tgid=c->pid; c->ppid=L->pid; c->cr3=cr3; c->cwd=g_dcwd; c->uid=g_uid; c->gid=g_gid; c->umask=g_umask; c->brk=g_ubrk; c->mmnext=g_mmap_next;
+    c->pid=g_next_pid++; c->start_tick=g_ticks; c->tgid=c->pid; c->ppid=L->pid; c->cr3=cr3; c->cwd=g_dcwd; c->uid=g_uid; c->gid=g_gid; c->umask=g_umask; c->brk=g_ubrk; c->mmnext=g_mmap_next; c->ebase=L->ebase; c->ibase=L->ibase; c->ustk=L->ustk;
     c->sigpend=0; c->rtn=0; c->exitst=0; c->stopnote=0; c->wake=0; c->wdl=0; c->pollwake=0; c->sockwake=0; c->runcpu=0; c->cputicks=0; c->runns=0; c->it_next=0; c->it_int=0;
     for(int f=0;f<FDMAX;f++) if(c->fd[f]>=0)vf_ref(c->fd[f]);
     jc_save_sys(r,&c->ctx); c->ctx.rax=0; c->state=S_RUN;
@@ -261,8 +261,8 @@ void jc_exec(struct sysregs* r,const char* args){
     vm_free_user(p->cr3); p->cr3=cr3;
     for(int f=0;f<FDMAX;f++) if(p->cloexec[f]&&p->fd[f]>=0){ vf_unref(p->fd[f]); p->fd[f]=-1; p->cloexec[f]=0; }
     for(int s=0;s<65;s++){ if(p->sighand[s]>1){ p->sighand[s]=0; p->sigrest[s]=0; p->sigamask[s]=0; } p->saflags[s]=0; }
-    p->fsbase=0; p->gsbase=0; p->lxbrk=0; p->pollwake=0; p->wdl=0; p->susp=0; p->lx=g_elf_pie; p->ss_sp=0; p->ss_size=0; p->ss_flags=2; p->flt_sig=0;
-    g_ubrk=0x40002000000ULL; g_mmap_next=0x40004000000ULL; p->brk=g_ubrk; p->mmnext=g_mmap_next; p->lxbrk=0;
+    p->fsbase=0; p->gsbase=0; p->lxbrk=0; p->pollwake=0; p->wdl=0; p->susp=0; p->lx=g_elf_pie; p->ebase=g_elf_base; p->ibase=g_elf_ibase; p->ustk=g_ustk; p->ss_sp=0; p->ss_size=0; p->ss_flags=2; p->flt_sig=0;
+    g_ubrk=0x40002000000ULL+kaslr_user_brk(); g_mmap_next=0x40004000000ULL+kaslr_user_mmap(); p->brk=g_ubrk; p->mmnext=g_mmap_next; p->lxbrk=0;
     jc_ctx_fresh(&p->ctx,entry,rsp,argc,argv); p->argv_va=argv; p->argc_n=(int)argc; jc_cmdname(p,a); jc_fx_init(p->fx);
     k_longjmp(g_js_kern,1);
 }

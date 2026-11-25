@@ -519,7 +519,7 @@ static long lxm_syslog(int type,u64 buf,int len){
     if((type==2||type==4||type==5)&&g_uid!=0)return -LX_EPERM;
     if(type==9||type==10){ extern int klog_ring(char*,int,int); return type==10?16384:klog_ring(0,0,5); }
     if(type==5){ extern int klog_ring(char*,int,int); klog_ring(0,0,2); return 0; }
-    if(type==2||type==3||type==4){ if(len<0)return -LX_EINVAL; if(!len)return 0; if(!lx_okw(buf,(u64)len))return -LX_EFAULT; extern int klog_ring(char*,int,int); return klog_ring((char*)buf,len,type==4?3:type==2?4:1); }
+    if(type==2||type==3||type==4){ if(len<0)return -LX_EINVAL; if(!len)return 0; if(!lx_okw(buf,(u64)len))return -LX_EFAULT; extern int klog_ring(char*,int,int); extern int kaslr_mask(char*,int); int r=klog_ring((char*)buf,len,type==4?3:type==2?4:1); if(r>0)kaslr_mask((char*)buf,r); return r; }
     return -LX_EINVAL;
 }
 #define FXVMAX 128
@@ -677,6 +677,7 @@ static long lx_more(struct sysregs* r,u64 nr,u64 a1,u64 a2,u64 a3,u64 a4,u64 a5,
     case 171: return g_jp[g_jcur].uid==0?0:-LX_EPERM;
     case 248: case 249: case 250: return -95;
     case 298: return -LX_EACCES;
+    case 321: return lxm_bpf((int)a1,a2,(u32)a3);
     case 330: return -LX_ENOSPC;
     case 329: return (long)(int)a4==-1?lx_mprotect(a1,a2,(int)a3):-LX_EINVAL;
     case 64: return lxm_semget((int)a1,(int)a2,(int)a3);

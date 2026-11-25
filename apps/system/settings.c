@@ -13,6 +13,7 @@
 #include "include/nvx/drivers/bus/pci.h"
 #include "include/nvx/drivers/net/ethernet/nic_names.h"
 #include "include/nvx/drivers/usb/xhci.h"
+#include "include/nvx/drivers/usb/usbreg.h"
 #include "include/nvx/drivers/net/ethernet/nic.h"
 #include "include/nvx/net/http/http.h"
 #include "include/nvx/drivers/input/ps2/ps2.h"
@@ -50,4 +51,6 @@ const char *THN[NWALL]={"Porsche","Crane","Wireframe","Peaks","Earth","Yosemite"
 u32 wall_thumb[NWALL][64*40]; int wall_thumb_ready=0; 
 
 #include "apps/system/settings/storage_and_layout.c"
+#include "apps/system/settings/graphics_nv.c"
+#include "apps/system/settings/logi_pair.c"
 #include "apps/system/settings/pages.c"

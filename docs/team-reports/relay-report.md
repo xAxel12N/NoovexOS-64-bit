@@ -4,11 +4,11 @@ Branch `relay` in /home/claude/wt/relay. Commits: 4ba5415e (tables, converter, f
 No hardware test was possible. The port follows Linux rtw88 (GPL-2.0 OR BSD-3-Clause); the SPDX and copyright lines are kept in every ported file.
 
 ## Files
-- `drivers/net/wifi/rtw88/chips/rtw8822c.c`: defines `const rtw_chip rtw8822c_chip` (RTL8822CE, 10ec:c822) and `rtw8822c_chip_c82f` (10ec:c82f, same ops and data). Linux maps both IDs to one hw_spec. Add both to the core chip list.
-- `drivers/net/wifi/rtw88/chips/rtw8822c.h`: exports, `RTW8822C_TXFF_SIZE`, and the RQPN mapping values.
-- `drivers/net/wifi/rtw88/chips/rtw8822c_tables.c/.h`: generated tables (agc, bb, rf_a, rf_b, array_mp_cal_init).
+- `drivers/net/wifi/realtek/rtw88/chips/rtw8822c.c`: defines `const rtw_chip rtw8822c_chip` (RTL8822CE, 10ec:c822) and `rtw8822c_chip_c82f` (10ec:c82f, same ops and data). Linux maps both IDs to one hw_spec. Add both to the core chip list.
+- `drivers/net/wifi/realtek/rtw88/chips/rtw8822c.h`: exports, `RTW8822C_TXFF_SIZE`, and the RQPN mapping values.
+- `drivers/net/wifi/realtek/rtw88/chips/rtw8822c_tables.c/.h`: generated tables (agc, bb, rf_a, rf_b, array_mp_cal_init).
 - `tools/rtw_table_conv.py`: the converter. It also handles 3-word DPK tables with BIT()/MASK tokens. Regenerate with:
-  `python3 tools/rtw_table_conv.py <linux>/rtw8822c_table.c rtw8822c drivers/net/wifi/rtw88/chips/rtw8822c_tables.c drivers/net/wifi/rtw88/chips/rtw8822c_tables.h agc bb rf_a rf_b array_mp_cal_init`
+  `python3 tools/rtw_table_conv.py <linux>/rtw8822c_table.c rtw8822c drivers/net/wifi/realtek/rtw88/chips/rtw8822c_tables.c drivers/net/wifi/realtek/rtw88/chips/rtw8822c_tables.h agc bb rf_a rf_b array_mp_cal_init`
 - `assets/firmware/rtw8822c_fw.bin`: from linux-firmware. 202600 bytes, signature 0x8822, v9.9.15, sha256 3deecb31…ab03ba. Because the version is 9.9.15 (at least 9.9.13), the OLD_PAGE_NUM quirk is not needed.
 - `build.sh`: an extra `ld -r -b binary` makes `rtw8822c_fw.o`, which is added to BLOBS. The symbols are `_binary_rtw8822c_fw_bin_start/_end`.
 - `units.list`: adds the chip file and the tables file.

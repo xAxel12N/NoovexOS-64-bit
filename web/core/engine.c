@@ -1444,6 +1444,23 @@ static int sel_overlay_click(float x, float y) {
     return 0;
 }
 
+typedef struct { frag* f; int off; } fpos;
+
+static void find_span(box* b, int ql, float* fx, float* fy, float* fw, float* fh, fpos* a, fpos* e) {
+    frag* fa = a->f; frag* fe = e->f;
+    float x0 = fa->x + text_width(fa->st->face, fa->st->fsize, fa->s, a->off, fa->st->lspace);
+    float x1 = fe->x + text_width(fe->st->face, fe->st->fsize, fe->s, e->off, fe->st->lspace);
+    float y0 = fa->y, y1 = fa->y + fa->h;
+    if (fe->y != fa->y) {
+        if (x1 < x0) { float t = x0; x0 = x1; x1 = t; }
+        if (fe->y < y0) y0 = fe->y;
+        if (fe->y + fe->h > y1) y1 = fe->y + fe->h;
+        float ea = fa->x + fa->w; if (ea > x1) x1 = ea;
+    }
+    (void)b; (void)ql;
+    *fx = x0; *fy = y0; *fw = x1 - x0; *fh = y1 - y0;
+}
+
 static int find_text(const char* q, int next) {
     find_on = 0;
     if (!q || !*q || !g_root) return 0;
@@ -1452,28 +1469,57 @@ static int find_text(const char* q, int next) {
     int sp = 0;
     stack[sp++] = g_root;
     float best_y = 1e30f, first_y = 1e30f;
-    frag* best = 0;
-    frag* firstf = 0;
+    fpos best_a = { 0, 0 }, best_e = { 0, 0 }, first_a = { 0, 0 }, first_e = { 0, 0 };
+    box* best_b = 0; box* first_b = 0;
     int count = 0;
     float start = next ? G.scroll + 1 : G.scroll - 1;
+    int cap = 4096;
+    char* buf = malloc((size_t)cap);
+    fpos* map = malloc(sizeof(fpos) * (size_t)cap);
+    if (!buf || !map) { free(buf); free(map); return 0; }
     while (sp > 0) {
         box* b = stack[--sp];
+        int n = 0;
+        frag* prev = 0;
         for (int i = 0; i < b->nfr; i++) {
             frag* f = &b->fr[i];
-            if (f->kind != FK_TEXT) continue;
-            for (int k = 0; k + ql <= f->n; k++) if (ieqn(f->s + k, q, ql)) {
-                count++;
-                if (f->y < first_y) { first_y = f->y; firstf = f; }
-                if (f->y > start && f->y < best_y) { best_y = f->y; best = f; }
-                break;
+            if (f->kind != FK_TEXT || !f->s || f->n <= 0) continue;
+            int need = n + f->n + 2;
+            if (need > cap) {
+                int nc = need * 2;
+                char* nb = malloc((size_t)nc); fpos* nm = malloc(sizeof(fpos) * (size_t)nc);
+                if (!nb || !nm) { free(nb); free(nm); break; }
+                memcpy(nb, buf, (size_t)n); memcpy(nm, map, sizeof(fpos) * (size_t)n);
+                free(buf); free(map); buf = nb; map = nm; cap = nc;
             }
+            if (prev) {
+                int gap = prev->y != f->y;
+                if (!gap) {
+                    float tw = text_width(prev->st->face, prev->st->fsize, prev->s, prev->n, prev->st->lspace);
+                    if (prev->w > tw + 0.5f || f->x > prev->x + prev->w + 0.5f) gap = 1;
+                }
+                if (gap && n > 0 && buf[n - 1] != ' ') { buf[n] = ' '; map[n].f = prev; map[n].off = prev->n; n++; }
+            }
+            for (int k = 0; k < f->n; k++) { buf[n] = f->s[k]; map[n].f = f; map[n].off = k; n++; }
+            prev = f;
+        }
+        for (int k = 0; k + ql <= n; k++) if (ieqn(buf + k, q, ql)) {
+            fpos a = map[k];
+            fpos e = map[k + ql - 1]; e.off++;
+            if (e.f != a.f && e.off > e.f->n) e.off = e.f->n;
+            float y = a.f->y;
+            count++;
+            if (y < first_y) { first_y = y; first_a = a; first_e = e; first_b = b; }
+            if (y > start && y < best_y) { best_y = y; best_a = a; best_e = e; best_b = b; }
         }
         for (box* c = b->first; c; c = c->next) if (sp < 4096) stack[sp++] = c;
     }
-    if (!best) best = firstf;
-    if (best) {
-        find_x = best->x; find_y = best->y; find_w = best->w; find_h = best->h; find_on = 1;
-        eng_scroll_to(best->y - G.vh / 3);
+    free(buf); free(map);
+    if (!best_b) { best_b = first_b; best_a = first_a; best_e = first_e; }
+    if (best_b) {
+        find_span(best_b, ql, &find_x, &find_y, &find_w, &find_h, &best_a, &best_e);
+        find_on = 1;
+        eng_scroll_to(find_y - G.vh / 3);
     }
     G.dirty_paint = 1;
     return count;

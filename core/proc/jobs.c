@@ -10,6 +10,7 @@
 #include "include/nvx/core/proc/sched.h"
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/drivers/video/fb/framebuffer.h"
+#include "include/nvx/core/kaslr.h"
 #include "include/nvx/lib/js/js.h"
 #include "include/nvx/sys/linux/lxsock.h"
 #include "include/nvx/net/http/http.h"
@@ -30,6 +31,7 @@
 #include "include/nvx/shell/commands.h"
 #include "include/nvx/shell/vt.h"
 #include "include/nvx/apps/internet/browser.h"
+#include "include/nvx/sys/bpf/bpf_attach.h"
 
 #include "core/proc/jobs/resume_and_fds.c"
 #include "core/proc/jobs/thread_groups_and_exit.c"

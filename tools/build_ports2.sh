@@ -76,9 +76,20 @@ fi
 
 if ! step dropbear; then
   rm -rf "$W/dropbear"; cp -a "$T/dropbear" "$W/dropbear"; cd "$W/dropbear"
+  sed -i 's/^\tsvr_opts.norootpass = 0;/\tsvr_opts.norootpass = 1;/' src/svr-runopts.c; grep -q '^.svr_opts.norootpass = 1;' src/svr-runopts.c || { echo "dropbear: cannot turn root password login off"; exit 1; }
+  sed -i 's/^\(\t*\)while (nanosleep(&delay, &delay) == -1/\1if (ses.authstate.failcount >= 2) delay.tv_sec += 1 << (ses.authstate.failcount < 6 ? ses.authstate.failcount - 2 : 4);\n\1while (nanosleep(\&delay, \&delay) == -1/' src/svr-auth.c; grep -q 'delay.tv_sec += 1 << (ses.authstate.failcount' src/svr-auth.c || { echo "dropbear: cannot add the growing delay after failed logins"; exit 1; }
+  sed -i 's/^#define MAX_AUTH_TRIES 10$/#define MAX_AUTH_TRIES 6/' src/default_options.h; grep -q '^#define MAX_AUTH_TRIES 6$' src/default_options.h || { echo "dropbear: cannot lower MAX_AUTH_TRIES"; exit 1; }
   CC=$MCC CFLAGS=-O2 ./configure $HB --prefix=/usr --with-zlib="$S/usr" --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx --disable-pututline --disable-pututxline --disable-pam --disable-syslog > conf.log 2>&1
   make -j$J PROGRAMS="dropbear dbclient dropbearkey dropbearconvert scp" MULTI=1 SCPPROGRESS=1 > make.log 2>&1
   done_ dropbear
+fi
+
+if ! step rsync; then
+  rm -rf "$W/rsync"; mkdir -p "$W/rsync"; cd "$W/rsync"
+  printf '#!/bin/sh\nfor a in "$@"; do case "$a" in -c|-S|-E|-M|-MM) exec "%s" "$@";; esac; done\nexec clang --sysroot="$NVX_PSYS" -nostdinc -isystem "$NVX_PSYS/usr/include" -isystem "$NVX_MUSL/include" -isystem "$(clang -print-resource-dir)/include" -fuse-ld=bfd -static -no-pie -nostdlib -Wl,-z,noexecstack -Wno-unused-command-line-argument -L"$NVX_MUSL/lib" "$NVX_MUSL/lib/crt1.o" "$NVX_MUSL/lib/crti.o" "$@" -lc "$(gcc -print-libgcc-file-name)" "$NVX_MUSL/lib/crtn.o"\n' "$MCC" > mcc-static; chmod +x mcc-static
+  CC=$W/rsync/mcc-static CFLAGS=-O2 "$T/rsync/configure" $HB --prefix=/usr --with-rsh=dbclient --with-rsyncd-conf=/etc/rsyncd.conf --disable-openssl --disable-xxhash --disable-zstd --disable-lz4 --disable-iconv --disable-acl-support --disable-xattr-support --enable-ipv6 --disable-md2man --disable-roll-simd --with-included-zlib --with-included-popt > conf.log 2>&1
+  make -j$J rsync > make.log 2>&1
+  done_ rsync
 fi
 
 if ! step tcc; then
@@ -100,6 +111,7 @@ cp -a "$W/root-git/usr/libexec/git-core" "$O/usr/libexec/"
 G=$O/usr/libexec/git-core; for f in git-archimport git-cvsexportcommit git-cvsimport git-cvsserver git-svn git-send-email git-p4 git-instaweb git-daemon git-http-backend git-imap-send git-http-fetch scalar git-shell; do rm -f "$G/$f"; done
 mkdir -p "$O/usr/share/git-core"; cp -a "$W/root-git/usr/share/git-core/templates" "$O/usr/share/git-core/"
 cp "$W/dropbear/dropbearmulti" "$O/usr/bin/"; for l in ssh dbclient scp dropbear dropbearkey dropbearconvert; do ln -sf dropbearmulti "$O/usr/bin/$l"; done
+cp "$W/rsync/rsync" "$O/usr/bin/"; mkdir -p "$O/usr/share/licenses/rsync"; cp "$T/rsync/COPYING" "$O/usr/share/licenses/rsync/COPYING"; cp "$T/rsync/popt/COPYING" "$O/usr/share/licenses/rsync/COPYING.popt"
 cp "$R/lib/crypto/roots/mozilla-cacert.pem" "$O/etc/ssl/certs/ca-certificates.crt"
 printf '/lib\n/usr/local/lib\n/usr/lib\n' > "$O/etc/ld-musl-x86_64.path"
 printf '/bin/sh\n/bin/bash\n/opt/gnu/bin/bash\n' > "$O/etc/shells"

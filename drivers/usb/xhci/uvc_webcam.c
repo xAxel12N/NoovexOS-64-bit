@@ -1,11 +1,12 @@
+#include "include/nvx/drivers/usb/uac.h"
 static int uvc_er_done=0;
 static void uvc_er_init(void){
-    if(uvc_er_done&&uvc_er_done!=g_xcur+1&&uvc_er_done-1<g_xhc_n){ int me=g_xcur; xhc_select(uvc_er_done-1); if(xhci_init_ok){ u64 ro=xhci_base+xhci_rtoff+0x40; XMW(ro+0x00,0); XMW(ro+0x08,0); } xhc_select(me); }
+    if(uvc_er_done&&uvc_er_done!=g_xcur+1&&uvc_er_done-1<g_xhc_n){ int me=g_xcur; xhc_select(uvc_er_done-1); if(xhci_init_ok){ u64 ro=xhci_base+xhci_rtoff+0x20+0x20*(u32)uvc_iri; XMW(ro+0x00,0); XMW(ro+0x08,0); } xhc_select(me); }
     if(uvc_er_done==g_xcur+1){ int n=0; for(int g=0;g<8192;g++){ volatile u32* e=uvc_er+uvc_ev1*4; if((e[3]&1u)!=uvc_ev1c)break; uvc_ev1++; if(uvc_ev1>=4096){ uvc_ev1=0; uvc_ev1c^=1; } n++; }
-        if(n){ u64 rt=xhci_base+xhci_rtoff+0x40; XMW(rt+0x18,((u32)(u64)(uvc_er+uvc_ev1*4))|(1u<<3)); XMW(rt+0x1C,0); } return; }
+        if(n){ u64 rt=xhci_base+xhci_rtoff+0x20+0x20*(u32)uvc_iri; XMW(rt+0x18,((u32)(u64)(uvc_er+uvc_ev1*4))|(1u<<3)); XMW(rt+0x1C,0); } return; }
     uvc_er_done=g_xcur+1;
     for(int i=0;i<4096*4;i++)uvc_er[i]=0; uvc_erst[0]=(u32)(u64)uvc_er; uvc_erst[1]=0; uvc_erst[2]=4096; uvc_erst[3]=0; uvc_ev1=0; uvc_ev1c=1;
-    u64 rt=xhci_base+xhci_rtoff+0x40; XMW(rt+0x00,0); XMW(rt+0x08,1); XMW(rt+0x18,(u32)(u64)uvc_er); XMW(rt+0x1C,0); XMW(rt+0x10,(u32)(u64)uvc_erst); XMW(rt+0x14,0); }
+    u64 rt=xhci_base+xhci_rtoff+0x20+0x20*(u32)uvc_iri; XMW(rt+0x00,0); XMW(rt+0x08,1); XMW(rt+0x18,(u32)(u64)uvc_er); XMW(rt+0x1C,0); XMW(rt+0x10,(u32)(u64)uvc_erst); XMW(rt+0x14,0); }
 static void uvc_ring_init(void){
     u32 n=(u32)cam.ntd; for(u32 i=0;i<(n+1)*4;i++)uvc_ring[i]=0; volatile u32* lk=uvc_ring+n*4; lk[0]=(u32)(u64)uvc_ring; lk[1]=0; lk[2]=0; lk[3]=(6u<<10)|(1u<<1)|1u;
     uvc_enq=0; uvc_deq=0; uvc_cyc=1; uvc_out=0; }
@@ -14,13 +15,15 @@ void uvc_stop(void){
     uvc_state=1; if(cam.isbulk)uvc_req(0x02,0x01,0,(u16)cam.bep,0,0,0); else uvc_req(0x01,0x0B,0,(u16)cam.vs_if,0,0,0);
     if(cam.epon){ uvc_cfg_ep(0,0); } cam.isbulk=0; cam.inpay=0;
     uvc_fps10=0; uvc_m("Camera stopped"); }
+static int uvc_lasthd=0, uvc_inrst=0; static u64 uvc_wd_t=0; static u32 uvc_wd_f=0;
 int uvc_start(int hd){
+    uvc_lasthd=hd; if(!uvc_inrst)uvc_restarts=0;
     if(!cam.ok){ uvc_m("No camera found"); return -1; }
     if(uvc_state==2)uvc_stop();
     if(cam.vs_if<0||!cam.nfr){ uvc_m("The camera has no supported picture format (needs YUY2, UYVY, NV12, I420, YV12, grey or MJPEG)"); return -1; }
     int bulk=!cam.nalt&&cam.bulk&&cam.bep; if(!cam.nalt&&!bulk){ uvc_m("The camera has no video stream endpoint"); return -1; }
-    int sv=g_xcur; xhc_select(cam.ctl); uvc_maxintr=(int)((XMR(xhci_base+0x04)>>8)&0x7FF); xhc_select(sv);
-    if(uvc_maxintr<2){ uvc_m("The USB controller has only one interrupter"); return -1; }
+    int sv=g_xcur; xhc_select(cam.ctl); uvc_maxintr=xhr_max_intrs(XMR(xhci_base+0x04)); xhc_select(sv);
+    if(uvc_maxintr<=uvc_iri){ uvc_m(uvc_iri>1?"The USB controller has too few interrupters for another camera":"The USB controller has only one interrupter"); return -1; }
     u32 mes=0; for(int k=0;k<cam.nalt;k++) if(cam.alt[k].esit>mes)mes=cam.alt[k].esit; if(mes<64)mes=64;
     u32 bsz=(mes+63u)&~63u; int ntd=bsz<=3072u?1000:(bsz<=16384u?256:96); if(bulk){ bsz=16384u; ntd=256; }
     if(!uvc_bufs||(u32)cam.bufsz<bsz||cam.ntd!=ntd){ uvc_bufs=uvc_al(bsz*(u32)ntd,4096); if(!uvc_bufs){ uvc_m("Out of memory for camera buffers"); return -1; } cam.bufsz=(int)bsz; cam.ntd=ntd; }
@@ -28,15 +31,14 @@ int uvc_start(int hd){
     if(!uvc_ermem){ uvc_ermem=uvc_al(65536+256,65536); if(uvc_ermem){ uvc_er=(volatile u32*)uvc_ermem; uvc_erst=(volatile u32*)(uvc_ermem+65536); } }
     if(!uvc_fb){ uvc_fb=uvc_al(1920*1200*2+65536,64); uvc_jpg=uvc_al(1920*1200*2+65536+1024,64); uvc_rgb=(u32*)uvc_al(1920*1200*4,64); }
     if(!uvc_ring||!uvc_ermem||!uvc_fb||!uvc_jpg||!uvc_rgb){ uvc_m("Out of memory for the camera"); return -1; }
-    int order[64], no=0; for(int g=0;g<4;g++){ int idx[64], ni=0; for(int k=0;k<cam.nfr;k++) if(uvc_pref(&cam.fr[k],hd)==g)idx[ni++]=k;
-        for(int a=0;a<ni;a++) for(int b2=a+1;b2<ni;b2++){ u32 aa=(u32)cam.fr[idx[a]].w*cam.fr[idx[a]].h, bb=(u32)cam.fr[idx[b2]].w*cam.fr[idx[b2]].h; int sw=(g>=2)?(bb<aa):(bb>aa); if(sw){ int t=idx[a]; idx[a]=idx[b2]; idx[b2]=t; } }
-        for(int a=0;a<ni&&no<64;a++)order[no++]=idx[a]; }
+    int order[64]; int no=uvx_reorder(order,uvc_order(hd,order));
     if(!no){ uvc_m("No picture size up to 1920x1200"); return -1; }
-    u32 badalt=0; int cfgtries=0, ctlfail=0; u64 t0=hr_ns();
+    u32 badalt=0; if(!bulk){ u32 bwl=uvc_bwleft(); for(int k=0;k<cam.nalt;k++) if(cam.alt[k].esit>bwl)badalt|=1u<<k; if(cam.nalt&&badalt==(cam.nalt>=32?0xFFFFFFFFu:(1u<<cam.nalt)-1u)){ uvc_m("Not enough USB bandwidth left for this camera next to the other camera"); return -1; } }
+    int cfgtries=0, ctlfail=0; u64 t0=hr_ns();
     for(int pass=0;pass<2;pass++)
     for(int tr=0;tr<no&&tr<16;tr++){ uvc_fr_t* f=&cam.fr[order[tr]];
         if(cfgtries>=6||ctlfail>=3||hr_ns()-t0>4000000000ULL){ if(cam.epon)uvc_cfg_ep(0,0); uvc_state=1; if(!uvc_msg[0])uvc_m("Camera did not start"); return -1; }
-        u8 p[48]; for(int k=0;k<48;k++)p[k]=0; p[0]=1; p[2]=f->fi; p[3]=f->ri; p[4]=(u8)f->defint; p[5]=(u8)(f->defint>>8); p[6]=(u8)(f->defint>>16); p[7]=(u8)(f->defint>>24);
+        u8 p[48]; for(int k=0;k<48;k++)p[k]=0; p[0]=1; p[2]=f->fi; p[3]=f->ri; { u32 iv=f->bestint?f->bestint:f->defint; p[4]=(u8)iv; p[5]=(u8)(iv>>8); p[6]=(u8)(iv>>16); p[7]=(u8)(iv>>24); }
         if(!uvc_req(0x21,0x01,0x0100,(u16)cam.vs_if,(u16)cam.plen,0,p)){ ctlfail++; uvc_m("Camera refused the picture size (probe)"); continue; }
         u8 g2[48]; for(int k=0;k<48;k++)g2[k]=p[k];
         if(uvc_req(0xA1,0x81,0x0100,(u16)cam.vs_if,(u16)cam.plen,1,g2)){ for(int k=0;k<48;k++)p[k]=g2[k]; }
@@ -60,14 +62,14 @@ int uvc_start(int hd){
             if(!uvc_cfgcc){ uvc_m("USB controller did not answer the stream setup"); return -1; } continue; }
         if(!bulk&&!uvc_req(0x01,0x0B,a->alt,(u16)cam.vs_if,0,0,0)){ ctlfail++; uvc_cfg_ep(0,0); uvc_m("Camera refused SET_INTERFACE"); continue; }
         uvc_w=f->w; uvc_h=f->h; uvc_kind=f->kind; uvc_fi=f->fi; uvc_ri=f->ri; uvc_altsel=a->alt;
-        uvc_fcap=uvc_kind==1?(1920u*1200u*2u):(u32)uvc_w*(u32)uvc_h*2u+4096u; if(uvc_fcap>1920u*1200u*2u+65536u)uvc_fcap=1920u*1200u*2u+65536u; uvc_fill=0; uvc_fbad=0; uvc_lfid=-1; uvc_jnew=0;
+        uvc_fcap=uvc_kind==1?(1920u*1200u*2u):(u32)uvc_w*(u32)uvc_h*2u+4096u; if(uvc_fcap>1920u*1200u*2u+65536u)uvc_fcap=1920u*1200u*2u+65536u; uvc_fill=0; uvc_fbad=0; uvc_lfid=-1; uvc_jnew=0; cam.bskip=0; uvc_hdrbad=0; uvc_wd_t=hr_ns(); uvc_wd_f=0;
         for(u32 i=0;i<(u32)uvc_w*(u32)uvc_h;i++)uvc_rgb[i]=0x101418;
         uvc_events=0; uvc_tds=0; uvc_tderr=0; uvc_frames=0; uvc_badframes=0; uvc_short=0; uvc_bytes=0; uvc_fps10=0; uvc_ft0=hr_ns(); uvc_fc0=0;
         sv=g_xcur; xhc_select(cam.ctl); while(uvc_out<(u32)cam.ntd-1u)uvc_td(); xh_db(cam.slot,(u32)cam.dci); xhc_select(sv);
         uvc_state=2; { char b[96],*q=b; q=scopy(q,"Streaming "); q=udec(q,(u32)uvc_w); *q++='x'; q=udec(q,(u32)uvc_h); *q++=' '; q=scopy(q,uvc_kind_name(uvc_kind)); if(bulk)q=scopy(q," (bulk)"); *q=0; uvc_m(b); klog(b); }
         return 0; }
     return -1; }
-void uvc_poll(void){
+static void uvc_poll1(void){
     if(!cam.ok||uvc_state!=2)return; int sv=g_xcur; xhc_select(cam.ctl);
     u32 ra=(u32)(u64)uvc_ring; int n=0;
     for(int guard=0;guard<8192;guard++){ volatile u32* e=uvc_er+uvc_ev1*4; if((e[3]&1u)!=uvc_ev1c)break;
@@ -76,12 +78,15 @@ void uvc_poll(void){
         if(ty!=32)continue; uvc_lastcc=(int)cc;
         if(ptr>=ra&&ptr<ra+(u32)cam.ntd*16u&&uvc_out){ u32 idx=(ptr-ra)/16u;
             for(int g=0;g<cam.ntd&&uvc_out;g++){ u32 k=uvc_deq; uvc_deq++; if(uvc_deq>=(u32)cam.ntd)uvc_deq=0; uvc_out--;
-                if(k==idx){ uvc_tds++; if(cc==1||cc==13){ int got=cam.esit-(int)res; if(got<0)got=0; if(cam.isbulk)uvc_bulk_chunk(uvc_bufs+(u64)k*cam.bufsz,got,cam.esit); else uvc_payload(uvc_bufs+(u64)k*cam.bufsz,got); } else uvc_tderr++; break; } } }
+                if(k==idx){ uvc_tds++; if(cc==1||cc==13){ int got=cam.esit-(int)res; if(got<0)got=0; if(cam.isbulk)uvc_bulk_chunk(uvc_bufs+(u64)k*cam.bufsz,got,cam.esit); else uvc_payload(uvc_bufs+(u64)k*cam.bufsz,got); } else { uvc_tderr++; uvc_lost(); } break; } } }
         else if(cc!=1&&cc!=13) uvc_tderr++; }
-    if(n){ u64 rt=xhci_base+xhci_rtoff+0x40; XMW(rt+0x18,((u32)(u64)(uvc_er+uvc_ev1*4))|(1u<<3)); XMW(rt+0x1C,0); }
+    if(n){ u64 rt=xhci_base+xhci_rtoff+0x20+0x20*(u32)uvc_iri; XMW(rt+0x18,((u32)(u64)(uvc_er+uvc_ev1*4))|(1u<<3)); XMW(rt+0x1C,0); }
     int add=0; while(uvc_out<(u32)cam.ntd-1u){ uvc_td(); add=1; } if(add)xh_db(cam.slot,(u32)cam.dci);
     xhc_select(sv);
-    u64 now=hr_ns(); if(now-uvc_ft0>=1000000000ULL){ uvc_fps10=(u32)((u64)(uvc_frames-uvc_fc0)*10000000000ULL/(now-uvc_ft0)); uvc_ft0=now; uvc_fc0=uvc_frames; } }
+    u64 now=hr_ns(); if(now-uvc_ft0>=1000000000ULL){ uvc_fps10=(u32)((u64)(uvc_frames-uvc_fc0)*10000000000ULL/(now-uvc_ft0)); uvc_ft0=now; uvc_fc0=uvc_frames; }
+    if(uvc_frames!=uvc_wd_f){ uvc_wd_f=uvc_frames; uvc_wd_t=now; }
+    else if(now-uvc_wd_t>3000000000ULL&&!uvc_inrst){ uvc_wd_t=now; if(uvc_restarts<3){ uvc_restarts++; klog("camera: no picture for 3 s, restarting the stream"); uvc_inrst=1; uvc_stop(); int r=uvc_start(uvc_lasthd); uvc_inrst=0; if(r==0)uvc_m("Camera stream stalled - restarted"); }
+        else if(uvc_restarts==3){ uvc_restarts++; uvc_m("Camera sends no pictures (restarted 3 times)"); klog("camera: still no picture after 3 restarts"); } } }
 const u8 uvc_std_dht[]={0xFF,0xC4,0x01,0xA2,
 0x00,0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,
 0x10,0,2,1,3,3,2,4,3,5,5,4,4,0,0,1,0x7d,
@@ -98,14 +103,15 @@ const u8 uvc_std_dht[]={0xFF,0xC4,0x01,0xA2,
 0x88,0x89,0x8a,0x92,0x93,0x94,0x95,0x96,0x97,0x98,0x99,0x9a,0xa2,0xa3,0xa4,0xa5,0xa6,0xa7,0xa8,0xa9,0xaa,0xb2,0xb3,0xb4,0xb5,0xb6,0xb7,0xb8,0xb9,0xba,0xc2,0xc3,
 0xc4,0xc5,0xc6,0xc7,0xc8,0xc9,0xca,0xd2,0xd3,0xd4,0xd5,0xd6,0xd7,0xd8,0xd9,0xda,0xe2,0xe3,0xe4,0xe5,0xe6,0xe7,0xe8,0xe9,0xea,0xf2,0xf3,0xf4,0xf5,0xf6,0xf7,0xf8,0xf9,0xfa};
 const int uvc_std_dht_len=(int)sizeof(uvc_std_dht);
-static void uvc_reset(void){ cam.ok=0; uvc_state=0; uvc_reg_hold=-1; uvc_er_done=0; }
-static void uvc_unplug(int port){ if(cam.ok&&cam.ctl==g_xcur&&cam.root==port){ uvc_gone(); uvc_reg_hold=-1; } }
+static void uvc_reset(void){ int sv=uvc_selected(); for(int i=0;i<UVC_NCAM;i++){ uvc_select(i); cam.ok=0; uvc_state=0; uvc_reg_hold=-1; uvc_er_done=0; } uvc_select(sv); }
+static void uvc_unplug(int port){ int sv=uvc_selected(); for(int i=0;i<UVC_NCAM;i++){ uvc_select(i); if(cam.ok&&cam.ctl==g_xcur&&cam.root==port){ uvc_gone(); uvc_reg_hold=-1; } } uvc_select(sv); }
 typedef struct { u8 ifn, alt, ep, intv, ch, sub, bits, nrate, cont, v2; u16 mps; u32 rate[8]; } uac_alt_t;
 static struct { int ok, ctl, reg, slot, speed, root, ac_if, nalt, nfu, pb, cp, pbon, cpon, need_sync, v2, clk, incam, depth; u32 e0_enq, e0_cyc, route; uac_alt_t alt[16]; u8 fu[8]; } aud;
+static int uvx_aud_fix(u16 vid,u16 pid,uac_alt_t* a,int n);
 static void uvc_aud_share(int from_cam){ if(!cam.ok||!aud.ok||cam.ctl!=aud.ctl||cam.reg!=aud.reg)return; if(from_cam){ aud.e0_enq=cam.e0_enq; aud.e0_cyc=cam.e0_cyc; } else { cam.e0_enq=aud.e0_enq; cam.e0_cyc=aud.e0_cyc; } }
 int aud_state=0; u32 aud_pb_rate=0, aud_cp_rate=0, aud_events=0, aud_underrun=0, aud_cperr=0, aud_pberr=0; char aud_name[48]="", aud_msg[96]=""; int aud_pb_ch=0, aud_cp_ch=0;
 typedef struct { volatile u32* ring; u8* bufs; u32 enq, deq, cyc, out, ntd, bsz, dci, mps, ivus, rate, ch, acc, dirin, bs, bcap; } aud_ep_t;
-static aud_ep_t apb, acp;
+static aud_ep_t apb, acp, afb; static int afbon=0;
 static u8* aud_ermem=0; static volatile u32 *aud_er=0, *aud_erst=0; static u32 aud_ev=0, aud_evc=1; static int aud_er_done=0;
 #define APB_N 16384u
 #define ACP_N 32768u
@@ -118,7 +124,7 @@ static int aud_req(u8 rt,u8 req,u16 val,u16 idx,u16 len,int in,u8* data){
     if(!in&&len&&data){ volatile u8* db=(volatile u8*)(u64)cur_dbuf; for(int i=0;i<len;i++)db[i]=data[i]; }
     int r=xh_ctrl(rt,req,val,idx,len,in,in?data:0);
     aud.e0_enq=e0_enq; aud.e0_cyc=e0_cyc; uvc_aud_share(0); cur_ep0=s0; cur_dbuf=s1; e0_enq=s2; e0_cyc=s3; cur_slot=s4; xhc_select(sv); return r; }
-static int aud_has_audio(const u8* c,int n){ for(int i=0;i+7<n;){ int bl=c[i]; if(bl<2)break; if(c[i+1]==4&&bl>=9&&c[i+5]==1&&(c[i+6]==1||c[i+6]==2))return 1; i+=bl; } return 0; }
+static int aud_has_audio(const u8* c,int n){ for(int i=0;i+7<n;){ int bl=c[i]; if(bl<2)break; if(c[i+1]==4&&bl>=9&&c[i+5]==1&&c[i+6]==2)return 1; i+=bl; } return 0; }
 static void aud_mark_sync(void){ aud.need_sync=1; }
 static void aud_sync_e0(void){ if(aud.ok&&aud.need_sync&&aud.ctl==g_xcur){ aud.e0_enq=e0_enq; aud.e0_cyc=e0_cyc; aud.need_sync=0; } }
 static void aud_parse(const u8* c,int n){
@@ -185,6 +191,7 @@ static void aud_queue(aud_ep_t* e,u32 len){
     e->out++; }
 static u32 aud_fill_pb(u8* d){
     u32 num=apb.rate*apb.ivus+apb.acc; u32 fr=num/1000000u; apb.acc=num%1000000u;
+    if(uac_out_fb_live())fr=uac_out_frames(apb.ivus);
     u32 bs=apb.bs>=2&&apb.bs<=4?apb.bs:2u, fsz=apb.ch*bs; u32 maxfr=apb.mps/fsz; if(fr>maxfr)fr=maxfr;
     int g=aud_vol*aud_vol; short* o=(short*)d;
     for(u32 k=0;k<fr;k++){ u32 v=0; if(aud_pbr!=aud_pbw)v=aud_pbq[aud_pbr%APB_N]; else if(k==0)aud_underrun++;
@@ -204,27 +211,36 @@ static void aud_service(void){
         u32 ty=(e[3]>>10)&0x3F, cc=(e[2]>>24)&0xFF, res=e[2]&0xFFFFFF, ptr=e[0];
         aud_ev++; if(aud_ev>=4096){ aud_ev=0; aud_evc^=1; } n++; aud_events++;
         if(ty!=32)continue;
-        aud_ep_t* ep=0; if(aud.pbon&&ptr>=(u32)(u64)apb.ring&&ptr<(u32)(u64)apb.ring+apb.ntd*16u)ep=&apb; else if(aud.cpon&&ptr>=(u32)(u64)acp.ring&&ptr<(u32)(u64)acp.ring+acp.ntd*16u)ep=&acp;
+        aud_ep_t* ep=0; if(aud.pbon&&ptr>=(u32)(u64)apb.ring&&ptr<(u32)(u64)apb.ring+apb.ntd*16u)ep=&apb; else if(afbon&&ptr>=(u32)(u64)afb.ring&&ptr<(u32)(u64)afb.ring+afb.ntd*16u)ep=&afb; else if(aud.cpon&&ptr>=(u32)(u64)acp.ring&&ptr<(u32)(u64)acp.ring+acp.ntd*16u)ep=&acp;
         if(!ep||!ep->out)continue; u32 idx=(ptr-(u32)(u64)ep->ring)/16u;
         for(u32 g=0;g<ep->ntd&&ep->out;g++){ u32 k=ep->deq; ep->deq++; if(ep->deq>=ep->ntd)ep->deq=0; ep->out--;
-            if(k==idx){ if(ep==&acp){ if(cc==1||cc==13){ u32 want=(u32)ep->ring[k*4+2]&0x1FFFF; u32 got=want>res?want-res:0; aud_take_cp(ep->bufs+(u64)k*ep->bsz,got); } else aud_cperr++; }
+            if(k==idx){ if(ep==&afb){ if(cc==1||cc==13){ u32 want=(u32)ep->ring[k*4+2]&0x1FFFF; uac_out_fb_data(ep->bufs+(u64)k*ep->bsz,(int)(want>res?want-res:0)); } } else if(ep==&acp){ if(cc==1||cc==13){ u32 want=(u32)ep->ring[k*4+2]&0x1FFFF; u32 got=want>res?want-res:0; aud_take_cp(ep->bufs+(u64)k*ep->bsz,got); } else aud_cperr++; }
                 else if(cc!=1&&cc!=13)aud_pberr++;
                 break; } } }
     if(n){ u64 rt=xhci_base+xhci_rtoff+0x60; XMW(rt+0x18,((u32)(u64)(aud_er+aud_ev*4))|(1u<<3)); XMW(rt+0x1C,0); }
     if(aud.pbon){ int add=0; while(apb.out<apb.ntd-2u&&apb.out<96u){ u32 len=aud_fill_pb(apb.bufs+(u64)apb.enq*apb.bsz); aud_queue(&apb,len); add=1; } if(add)xh_db(aud.slot,apb.dci); }
+    if(aud.pbon&&afbon){ int add=0; while(afb.out<afb.ntd-2u&&afb.out<16u){ aud_queue(&afb,afb.mps); add=1; } if(add)xh_db(aud.slot,afb.dci); }
     if(aud.cpon){ int add=0; while(acp.out<acp.ntd-2u&&acp.out<64u){ aud_queue(&acp,acp.mps); add=1; } if(add)xh_db(aud.slot,acp.dci); }
     xhc_select(sv); }
+static void aud_fb_setup(const uac_alt_t* a,u32 rate){
+    afbon=0; u8 fe=0, fi=0; u16 fm=0; if(!uac_out_fb(a->ifn,a->alt,&fe,&fm,&fi))return;
+    uac_alt_t f=*a; f.ep=fe; f.mps=fm; f.intv=fi; afb.dirin=1; afb.dci=(u32)((fe&0x0F)*2+1); afb.mps=(u32)(fm&0x7FF); afb.ntd=64; afb.bsz=64; afb.ivus=(u32)aud_ivus(&f);
+    if(!afb.ring)afb.ring=(volatile u32*)aud_al(4096,4096); if(!afb.bufs){ afb.bufs=aud_al(4096,4096); afb.bcap=afb.bufs?4096u:0u; }
+    if(!afb.ring||!afb.bufs||afb.mps>afb.bsz){ uac_out_fb_start(rate,aud.speed>=3); uac_out_fb_stop(); return; }
+    int sv=g_xcur; xhc_select(aud.ctl); aud_ring_init(&afb); xhc_select(sv);
+    uac_out_fb_start(rate,aud.speed>=3); if(aud_cfg_ep(&afb,&f,1))afbon=1; else uac_out_fb_stop(); }
 static int aud_setup_ep(aud_ep_t* e,int k,int in){
-    uac_alt_t* a=&aud.alt[k]; e->dirin=(u32)in; e->dci=(u32)((a->ep&0x0F)*2+(in?1:0)); e->mps=(u32)(a->mps&0x7FF); e->ch=a->ch; e->bs=a->sub; e->rate=aud_pick_rate(a); if(e->rate<8000||e->rate>192000)e->rate=48000; e->ivus=(u32)aud_ivus(a);
+    uac_alt_t* a=&aud.alt[k]; e->dirin=(u32)in; e->dci=(u32)((a->ep&0x0F)*2+(in?1:0)); e->mps=(u32)(a->mps&0x7FF); e->ch=a->ch; e->bs=a->sub; e->rate=aud_pick_rate(a); if(!in&&!a->v2)e->rate=uac_out_rate(a->rate,a->nrate,a->cont,e->rate); if(e->rate<8000||e->rate>192000)e->rate=48000; e->ivus=(u32)aud_ivus(a);
     e->ntd=256; e->bsz=64; while(e->bsz<e->mps)e->bsz<<=1;
     if(!e->ring)e->ring=(volatile u32*)aud_al(4096*2,4096); { u32 need=e->bsz*e->ntd>65536u?e->bsz*e->ntd:65536u; if(!e->bufs||e->bcap<need){ e->bufs=aud_al(need,4096); e->bcap=e->bufs?need:0; } }
     if(!e->ring||!e->bufs){ aud_m("Out of memory for the headset"); return 0; }
     if(!aud_req(0x01,0x0B,a->alt,a->ifn,0,0,0)){ aud_m("Headset refused SET_INTERFACE"); return 0; }
-    if(a->v2&&aud.clk>=0&&aud.ac_if>=0){ u8 f[4]={(u8)e->rate,(u8)(e->rate>>8),(u8)(e->rate>>16),0}; u16 ix=(u16)((aud.clk<<8)|aud.ac_if); aud_req(0x21,0x01,0x0100,ix,4,0,f);
+    if(a->v2&&aud.clk>=0&&aud.ac_if>=0){ u8 f[4]={(u8)e->rate,(u8)(e->rate>>8),(u8)(e->rate>>16),0}; u16 ix=(u16)(((in?aud.clk:uac_out_clock(aud.clk))<<8)|aud.ac_if); if(!in){ u8 rg[98]={0}; if(aud_req(0xA1,0x02,0x0100,ix,sizeof(rg),1,rg)){ e->rate=uac_out_rate2(rg,(int)sizeof(rg),e->rate); f[0]=(u8)e->rate; f[1]=(u8)(e->rate>>8); f[2]=(u8)(e->rate>>16); } } aud_req(0x21,0x01,0x0100,ix,4,0,f);
         u8 g[4]={0,0,0,0}; if(aud_req(0xA1,0x01,0x0100,ix,4,1,g)){ u32 r=(u32)(g[0]|(g[1]<<8)|(g[2]<<16)|((u32)g[3]<<24)); if(r>=8000&&r<=192000)e->rate=r; } }
     else if(a->cont||a->nrate>1){ u8 f[3]={(u8)e->rate,(u8)(e->rate>>8),(u8)(e->rate>>16)}; aud_req(0x22,0x01,0x0100,a->ep,3,0,f); }
     int sv=g_xcur; xhc_select(aud.ctl); aud_ring_init(e); aud_er_init(); xhc_select(sv);
     if(!aud_cfg_ep(e,a,1)){ aud_req(0x01,0x0B,0,a->ifn,0,0,0); aud_m("USB controller refused the audio stream"); return 0; }
+    if(!in){ aud_fb_setup(a,e->rate); uac_out_stream(e->rate,a->bits,(int)a->ch); }
     return 1; }
 static u64 aud_pbfail=0, aud_cpfail=0; static int aud_pbfails=0, aud_cpfails=0;
 static int aud_backoff(u64 t,int n){ if(!n)return 0; if(n>=4)return 1; return hr_ns()-t<5000000000ULL; }
@@ -241,7 +257,8 @@ int ausnd_write(const u8* pcm,int len){
     aud_service(); return n*4; }
 void ausnd_poll(void){ aud_service(); }
 void ausnd_stop(void){ }
-void ausnd_volume(int p){ if(p<0)p=0; if(p>100)p=100; aud_vol=p; }
+void ausnd_volume(int p){ if(p<0)p=0; if(p>100)p=100; aud_vol=uac_out_volume(p)?100:p; }
+void ausnd_out_restart(void){ if(!aud.ok||!aud.pbon)return; aud.pbon=0; if(afbon){ afbon=0; aud_cfg_ep(&afb,0,0); uac_out_fb_stop(); } aud_cfg_ep(&apb,0,0); aud_req(0x01,0x0B,0,aud.alt[aud.pb].ifn,0,0,0); }
 int ausnd_rec_start(void){ if(!aud.ok||aud.cp<0)return 0; if(aud.cpon)return 1; if(aud_backoff(aud_cpfail,aud_cpfails))return 0; if(!aud_setup_ep(&acp,aud.cp,1)){ aud_cpfail=hr_ns(); aud_cpfails++; return 0; } aud_cpfails=0; aud_cpw=aud_cpr=0; aud.cpon=1; aud_cp_rate=acp.rate; aud_cp_ch=(int)acp.ch; aud_service(); return 1; }
 int ausnd_rec_read(u8* d,int len){ aud_service(); int fr=len/4, n=0; u32* o=(u32*)d; while(n<fr&&aud_cpr!=aud_cpw){ o[n++]=aud_cpq[aud_cpr%ACP_N]; aud_cpr++; } return n*4; }
 void ausnd_rec_stop(void){ if(!aud.cpon)return; aud.cpon=0; aud_cfg_ep(&acp,0,0); aud_req(0x01,0x0B,0,aud.alt[aud.cp].ifn,0,0,0); }
@@ -256,9 +273,9 @@ static int aud_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,
     for(int k=0;k<(int)sizeof(aud);k++)((u8*)&aud)[k]=0; aud.incam=aud_incam_next;
     aud.ctl=g_xcur; aud.reg=d; aud.slot=cur_slot; aud.speed=L->speed; aud.root=L->root; aud.route=L->route; aud.depth=L->depth;
     int q=0; const char* src=(nm&&nm[0])?nm:"USB headset"; for(;src[q]&&q<47;q++)aud_name[q]=src[q]; aud_name[q]=0;
-    aud_parse(full,wtot); aud.pb=aud_pick(0); aud.cp=aud_pick(1);
+    aud_parse(full,wtot); uvx_aud_fix(vid,pid,aud.alt,aud.nalt); aud.pb=aud_pick(0); aud.cp=aud_pick(1);
     if(aud.pb<0&&aud.cp<0){ aud_m("USB audio device without a 16-bit PCM stream"); return 0; }
-    int sv=g_xcur; xhc_select(aud.ctl); { u32 mi=(XMR(xhci_base+0x04)>>8)&0x7FF; xhc_select(sv); if(mi<3){ aud_m("The USB controller has too few interrupters for audio"); return 0; } }
+    int sv=g_xcur; xhc_select(aud.ctl); { u32 mi=(u32)xhr_max_intrs(XMR(xhci_base+0x04)); xhc_select(sv); if(mi<3){ aud_m("The USB controller has too few interrupters for audio"); return 0; } }
     if(!xh_ctrl(0x00,9,cfgval,0,0,0,0)){ aud_m("headset: SET_CONFIGURATION failed"); return 0; }
     aud.e0_enq=e0_enq; aud.e0_cyc=e0_cyc; aud.ok=1;
     if(!aud_pbq)aud_pbq=(u32*)kmalloc(APB_N*4); if(!aud_cpq)aud_cpq=(u32*)kmalloc(ACP_N*4); if(!aud_ermem){ aud_ermem=aud_al(65536+256,65536); if(aud_ermem){ aud_er=(volatile u32*)aud_ermem; aud_erst=(volatile u32*)(aud_ermem+65536); } }
@@ -266,24 +283,26 @@ static int aud_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,
     aud_pbw=aud_pbr=aud_cpw=aud_cpr=0;
     if(aud.ac_if>=0) for(int f=0;f<aud.nfu;f++){ u8 z=0; aud_req(0x21,0x01,0x0100,(u16)((aud.fu[f]<<8)|aud.ac_if),1,0,&z); }
     if(aud.cp>=0){ char* p=aud_rname; p=scopy(p,aud_name); p=scopy(p," microphone"); *p=0; }
+    if(aud.pb>=0)uac_out_attach(full,wtot,aud.speed>=3,aud_req);
     aud_state=1;
     { extern void snd_usb_arrived(const char*,const char*); snd_usb_arrived(aud_name,aud.cp>=0?aud_rname:0); }
     { char b[120],*p=b; p=scopy(p,"usb audio: "); p=scopy(p,aud_name); if(aud.pb>=0){ p=scopy(p,", speakers "); p=udec(p,aud_pick_rate(&aud.alt[aud.pb])); p=scopy(p," Hz "); p=udec(p,aud.alt[aud.pb].ch); p=scopy(p," ch"); } if(aud.cp>=0){ p=scopy(p,", microphone "); p=udec(p,aud_pick_rate(&aud.alt[aud.cp])); p=scopy(p," Hz "); p=udec(p,aud.alt[aud.cp].ch); p=scopy(p," ch"); } *p=0; klog(b); }
     { extern void toast(const char*); char b[96],*p=b; p=scopy(p,aud.incam?"Camera microphone ready: ":aud.pb<0?"Microphone connected: ":"Headset connected: "); p=scopy(p,aud_name); *p=0; toast(b); }
     aud_m(aud.incam?"Camera microphone ready":aud.pb<0?"Microphone ready":"Headset ready"); return 1; }
-static void aud_gone(void){ if(!aud.ok)return; aud.ok=0; aud.pbon=0; aud.cpon=0; aud_state=0; aud_reg_hold=-1; aud_m("Headset disconnected"); { extern void snd_usb_detach(void); snd_usb_detach(); } { extern void toast(const char*); toast("Headset disconnected - sound goes to the speakers again"); } }
+static void aud_gone(void){ if(!aud.ok)return; afbon=0; uac_out_detach(); aud.ok=0; aud.pbon=0; aud.cpon=0; aud_state=0; aud_reg_hold=-1; aud_m("Headset disconnected"); { extern void snd_usb_detach(void); snd_usb_detach(); } { extern void toast(const char*); toast("Headset disconnected - sound goes to the speakers again"); } }
 static void aud_unplug(int port){ if(aud.ok&&aud.ctl==g_xcur&&aud.root==port)aud_gone(); }
 static int uvc_slot_hid(int sl){ for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==g_xcur&&xhid_slot[i]==sl)return 1; return 0; }
-static void uvc_aud_remove_below(int root,u32 R,int dR){ int cs=-1, as=-1;
-    if(cam.ok&&cam.ctl==g_xcur&&cam.root==root&&xh_under(cam.route,cam.depth,R,dR)){ cs=cam.slot; uvc_gone(); uvc_reg_hold=-1; }
+static void uvc_aud_remove_below(int root,u32 R,int dR){ int cs=-1, as=-1, sv=uvc_selected();
+    for(int i=0;i<UVC_NCAM;i++){ uvc_select(i); if(cam.ok&&cam.ctl==g_xcur&&cam.root==root&&xh_under(cam.route,cam.depth,R,dR)){ if(cs>0&&!uvc_slot_hid(cs))xh_disable_slot(cs); cs=cam.slot; uvc_gone(); uvc_reg_hold=-1; } } uvc_select(sv);
     if(aud.ok&&aud.ctl==g_xcur&&aud.root==root&&xh_under(aud.route,aud.depth,R,dR)){ as=aud.slot; aud_gone(); }
     if(cs>0&&!uvc_slot_hid(cs))xh_disable_slot(cs); if(as>0&&as!=cs&&!uvc_slot_hid(as))xh_disable_slot(as); }
-static void aud_reset(void){ if(aud.ok){ aud.ok=0; aud.pbon=0; aud.cpon=0; extern void snd_usb_detach(void); snd_usb_detach(); } aud_state=0; aud_reg_hold=-1; aud_er_done=0; }
+static void aud_reset(void){ afbon=0; uac_out_detach(); if(aud.ok){ aud.ok=0; aud.pbon=0; aud.cpon=0; extern void snd_usb_detach(void); snd_usb_detach(); } aud_state=0; aud_reg_hold=-1; aud_er_done=0; }
 const char* aud_status(void){ return aud_msg[0]?aud_msg:"No USB headset"; }
 static void uvc_add_mic(const usbloc_t* L,int d,const u8* big,int tw,u8 cfgval,u16 vid,u16 pid,const char* nm){
     if(aud.ok){ klog("camera: another audio device is already in use, the camera microphone is not used"); return; }
     e0_enq=cam.e0_enq; e0_cyc=cam.e0_cyc; aud_incam_next=1; int ak=aud_attach(L,d,big,tw,cfgval,vid,pid,nm); aud_incam_next=0;
     if(ak){ cam.e0_enq=aud.e0_enq; cam.e0_cyc=aud.e0_cyc; aud_reg_hold=d; klog("camera: the camera's microphone is ready too"); } }
+static char* uvc_sdec(char* p,int v){ if(v<0){ *p++='-'; return udec(p,(u32)(-(long)v)); } return udec(p,(u32)v); }
 int camera_info_text(char* o,int cap){
     char* p=o; char* e=o+cap-200;
     if(!cam.ok){ p=scopy(p,"State=No camera found\n"); if(uvc_msg[0]){ p=scopy(p,"Message="); p=scopy(p,uvc_msg); *p++='\n'; } *p=0; return (int)(p-o); }
@@ -294,9 +313,13 @@ int camera_info_text(char* o,int cap){
     p=scopy(p,"\nTransfer="); p=scopy(p,cam.nalt?"isochronous":cam.bulk?"bulk":"none");
     p=scopy(p,"\nState="); p=scopy(p,uvc_state==2?"Streaming":"Ready");
     if(uvc_state==2){ p=scopy(p,"\nPicture="); p=udec(p,(u32)uvc_w); *p++='x'; p=udec(p,(u32)uvc_h); *p++=' '; p=scopy(p,uvc_kind_name(uvc_kind)); p=scopy(p,"\nFps="); p=udec(p,uvc_fps10/10); *p++='.'; p=udec(p,uvc_fps10%10); }
+    if(uvc_state==2){ p=scopy(p,"\nFrameInterval="); p=udec(p,uvc_interval); p=scopy(p,"\nBadHeaders="); p=udec(p,uvc_hdrbad); p=scopy(p,"\nRestarts="); p=udec(p,uvc_restarts); }
     p=scopy(p,"\nMicrophone="); p=scopy(p,aud.ok&&aud.incam?"yes (built into the camera)":"no");
     p=scopy(p,"\n\nSizes\n");
     for(int k=0;k<cam.nfr&&p<e;k++){ p=scopy(p,"  "); p=scopy(p,uvc_kind_name(cam.fr[k].kind)); *p++=' '; p=udec(p,cam.fr[k].w); *p++='x'; p=udec(p,cam.fr[k].h); if(cam.fr[k].defint){ p=scopy(p,"  "); p=udec(p,10000000u/cam.fr[k].defint); p=scopy(p," fps"); } *p++='\n'; }
+    p=scopy(p,"\nControls\n"); int nc=0;
+    for(int k=0;k<UVC_C_N&&p<e;k++){ int mn,mx,df,v; if(!uvc_ctrl_range(k,&mn,&mx,&df)||!uvc_ctrl_get(k,&v))continue; nc++; p=scopy(p,"  "); p=scopy(p,uvc_ctrl_name(k)); *p++='='; p=uvc_sdec(p,v); p=scopy(p,"  ("); p=uvc_sdec(p,mn); p=scopy(p,".."); p=uvc_sdec(p,mx); p=scopy(p,", default "); p=uvc_sdec(p,df); p=scopy(p,")\n"); }
+    if(!nc)p=scopy(p,"  none\n");
     *p=0; return (int)(p-o); }
 int mic_info_text(char* o,int cap){
     char* p=o; (void)cap; extern struct nvx_snd g_snd; extern int g_snd_state;

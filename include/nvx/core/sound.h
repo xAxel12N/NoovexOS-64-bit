@@ -7,6 +7,9 @@ extern struct nvx_snd g_snd;
 extern int g_snd_state , g_snd_vol;
 
 int snd_init(void);
+void snd_set_volume(int v);
+void snd_apply_volume(int v);
+int snd_resume(void);
 void snd_poll(void);
 int snd_dev_write(const char* buf,int len);
 int snd_dev_read(char* buf,int len);

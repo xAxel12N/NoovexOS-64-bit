@@ -80,6 +80,8 @@ int sha512_crypt_check(const char* key,const char* hash){
     return d==0;
 }
 
+u32 sha512_crypt_rounds(const char* hash){ const char* S; int sl; u32 R; int c; return sc_parse(hash,&S,&sl,&R,&c)<0?0:R; }
+
 void sha512_crypt_salt(char* out,int n){
     u8 r[16]; if(n>16)n=16; csprng_bytes(r,n);
     for(int i=0;i<n;i++)out[i]=SC_B64[r[i]&63];

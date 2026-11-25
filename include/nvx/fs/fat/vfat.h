@@ -18,6 +18,8 @@ long vf_write(const char* path,const char* buf,long len);
 int vf_mkdir(const char* path);
 int vf_delete(const char* path);
 int vf_ls(const char* path,nvxntfs_lscb cb,void* ctx);
+int vf_rename(const char* from,const char* to);
+int vf_dirty(int set);
 int vf_reclaim(void);
 void vf_swap_out(struct nvx_g_vfat_t* save);
 void vf_swap_in(const struct nvx_g_vfat_t* save);

@@ -4,7 +4,7 @@ Branch `p-hwops`, commit 0647276b, worktree /home/claude/wt/hwops.
 
 ## What I did
 - Added a small Wi-Fi hardware ops table: `include/nvx/net/wifi/wifi_hw.h` and `net/wifi/wifi_hw.c` (added to units.list).
-- rtw88 (`drivers/net/wifi/rtw88/rtw8821ce.c`) now registers through it as a **native** driver (`WIFI_HW_NATIVE`). Native means wifi_mgr keeps using its existing inline rtw path, so nothing changes for the owner's RTL8821CE. The generic path runs only when `rtw_find_mmio()==0`, which used to mean "No Wi-Fi adapter", and only if a non-native driver has registered.
+- rtw88 (`drivers/net/wifi/realtek/rtw88/rtw8821ce.c`) now registers through it as a **native** driver (`WIFI_HW_NATIVE`). Native means wifi_mgr keeps using its existing inline rtw path, so nothing changes for the owner's RTL8821CE. The generic path runs only when `rtw_find_mmio()==0`, which used to mean "No Wi-Fi adapter", and only if a non-native driver has registered.
 - I split `rtw_scan_frame` into a descriptor wrapper plus a generic `wifi_scan_parse(fr,flen,ch,rssi,onch)`. The logic is the same; the scan host test now pulls in the new function.
 - I split the per-frame data/CCMP code in `wnd_rx_eth` into `wnd_rx_frame(fr,len,hwhint,out,max)`. The rtw ring loop calls it with the same hw-decrypt hint taken from the descriptor.
 - In `wnd_tx_eth`, a generic driver gets the finished 802.11 frame (CCMP done in software) through `ops->tx`. Management frames sent from netdev (ADDBA decline) go to rtw or the generic driver.

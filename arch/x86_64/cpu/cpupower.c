@@ -41,6 +41,7 @@ void cpupower_init(int bsp){
     if(bsp){ static const char* const M[5]={"firmware","Intel HWP (Speed Shift)","AMD CPPC","Intel SpeedStep (NoovexOS chooses the speed)","AMD P-states (NoovexOS chooses the speed)"};
         char b[160],*p=b; const char* s="cpu power: speed control "; while(*s)*p++=*s++; s=M[g_cp_mode]; while(*s)*p++=*s++; s=g_mwait_hint>=0?", deep idle with MWAIT C":", idle with HLT"; while(*s)*p++=*s++; if(g_mwait_hint>=0)*p++=(char)('0'+g_cp_cstate); *p=0; klog(b); } }
 void cpupower_idle_add(u64 cyc){ g_cp_idle[cpu_id()&63]+=cyc; }
+u64 cpupower_idle_cycles(int c){ return g_cp_idle[c&63]; }
 void cpupower_tick(void){
     int c=cpu_id()&63;
     if((g_cp_mode==1||g_cp_mode==2)&&g_cp_epp_seen[c]!=g_cp_epp_gen){ g_cp_epp_seen[c]=g_cp_epp_gen; cp_hwp_req(); }

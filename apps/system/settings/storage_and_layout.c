@@ -33,9 +33,9 @@ int g_wifi_scanning=0; char g_wifi_status[96]={'r','e','a','d','y',0};
 
 static const char *SC_LBL[9]={"System","Personalization","Network","Display","Battery","Storage","Terminal","About","Devices"};
 static const char *SC_SUB[9]={"Clock, power and build integrity","Wallpaper, accent colour and pointer","Ethernet and Wi-Fi","Refresh rate, panel and pointer speed","Charge level and power source","Disks, data partition and install","Theme, font and cursor for nsh","Version and hardware","Mice, keyboards, touchpad, printer, cameras and laptop keys"};
-static int st_hx[64],st_hy[64],st_hw[64],st_hh[64],st_hid[64],st_hn=0, st_x0,st_w0;
+static int st_hx[128],st_hy[128],st_hw[128],st_hh[128],st_hid[128],st_hn=0, st_x0,st_w0;
 static int st_blx, st_blw=1, st_mlx, st_mlw=1;
-static void st_hit(int x,int y,int w,int h,int id){ if(st_hn<64){ st_hx[st_hn]=x; st_hy[st_hn]=y; st_hw[st_hn]=w; st_hh[st_hn]=h; st_hid[st_hn]=id; st_hn++; } }
+static void st_hit(int x,int y,int w,int h,int id){ if(y<g_clip_y0){ h-=g_clip_y0-y; y=g_clip_y0; } if(y+h>g_clip_y1)h=g_clip_y1-y; if(h<=0||w<=0)return; if(st_hn<128){ st_hx[st_hn]=x; st_hy[st_hn]=y; st_hw[st_hn]=w; st_hh[st_hn]=h; st_hid[st_hn]=id; st_hn++; } }
 static void st_ring(int cx,int cy,int r,int t,u32 c,u32 bg){ fill_circle(cx,cy,r,c); fill_circle(cx,cy,r-t,bg); }
 static void st_glyph(int x,int y,int k,u32 w,u32 c){
     switch(k){
@@ -83,29 +83,39 @@ static int st_card(int y,int h,const char* title){ if(!g_gm_ready)gmetrics();
     if(ST_CL){ int gy=title?y+8:y; if(h>0){ int H2=h+(title?18:0); fill_rect(st_x0,gy,st_w0,1,rgb(128,128,128)); fill_rect(st_x0,gy+1,st_w0,1,rgb(255,255,255)); fill_rect(st_x0,gy,1,H2,rgb(128,128,128)); fill_rect(st_x0+1,gy+1,1,H2-1,rgb(255,255,255)); fill_rect(st_x0+st_w0-2,gy,1,H2,rgb(128,128,128)); fill_rect(st_x0+st_w0-1,gy,1,H2+1,rgb(255,255,255)); fill_rect(st_x0,gy+H2-1,st_w0,1,rgb(128,128,128)); fill_rect(st_x0,gy+H2,st_w0,1,rgb(255,255,255)); }
         if(title){ int l=pw_str(title,1); fill_rect(st_x0+8,y,l+8,16,ST_FACE); pdstr(st_x0+12,y+1,title,ST_FG,1); return y+26; } return y; } if(title){ st_bold(st_x0+2,y+2,title,ST_FG); y+=26; }
     if(h>0){ fill_round(st_x0,y,st_w0,h,12,15,ST_LINE); fill_round(st_x0+1,y+1,st_w0-2,h-2,11,15,rgb(255,255,255)); } return y; }
-static void st_rowtext(int y,const char* t,const char* d){ if(!g_gm_ready)gmetrics(); pdstr(st_x0+20,d?y+14:y+25,t,ST_FG,1); if(d)pdstr(st_x0+20,y+35,d,ST_DIM,1); }
+static int st_wrap(const char* d,int w,char ln[][128],int maxl){ int nl=0; if(w<80)w=80;
+    while(*d&&nl<maxl){ int n=0, cut=0, px=0; while(d[n]&&n<126){ int a=gadv(d[n],1); if(px+a>w)break; px+=a; if(d[n]==' ')cut=n; n++; } if(d[n]&&cut>0)n=cut;
+        if(nl==maxl-1&&d[n]){ n=0; px=pw_str("...",1); while(d[n]&&n<123){ int a=gadv(d[n],1); if(px+a>w)break; px+=a; n++; } while(n&&d[n-1]==' ')n--; for(int k=0;k<n;k++)ln[nl][k]=d[k]; ln[nl][n]=ln[nl][n+1]=ln[nl][n+2]='.'; ln[nl][n+3]=0; return nl+1; }
+        for(int k=0;k<n;k++){ ln[nl][k]=d[k]; } ln[nl][n]=0; nl++; d+=n; while(*d==' ')d++; }
+    return nl; }
+static void st_rowtext_w(int y,const char* t,const char* d,int w){ if(!g_gm_ready)gmetrics(); if(!d){ pdstr(st_x0+20,y+25,t,ST_FG,1); return; }
+    if(pw_str(d,1)<=w){ pdstr(st_x0+20,y+14,t,ST_FG,1); pdstr(st_x0+20,y+35,d,ST_DIM,1); return; }
+    char ln[2][128]; int n=st_wrap(d,w,ln,2); pdstr(st_x0+20,y+7,t,ST_FG,1); for(int k=0;k<n;k++)pdstr(st_x0+20,y+26+k*17,ln[k],ST_DIM,1); }
+static void st_rowtext(int y,const char* t,const char* d){ st_rowtext_w(y,t,d,st_w0-190); }
+static void st_fit(char* s,int w){ if(w<40)w=40; if(pw_str(s,1)<=w)return; int px=pw_str("...",1), n=0; while(s[n]){ int a=gadv(s[n],1); if(px+a>w)break; px+=a; n++; } while(n&&s[n-1]==' ')n--; s[n]=s[n+1]=s[n+2]='.'; s[n+3]=0; }
 static void st_sep(int y){ if(ST_CL){ fill_rect(st_x0+10,y,st_w0-20,1,rgb(128,128,128)); fill_rect(st_x0+10,y+1,st_w0-20,1,rgb(255,255,255)); return; } fill_rect(st_x0+1,y,st_w0-2,1,ST_SEPC); }
 static char* st_mb(char* p,u64 bytes){ u64 mb=bytes/1048576ULL; if(mb>=1024){ p=udec(p,(u32)(mb/1024)); *p++='.'; p=udec(p,(u32)((mb%1024)*10/1024)); return scopy(p," GB"); } p=udec(p,(u32)mb); return scopy(p," MB"); }
 static int st_part=0, st_notabs=0;
-enum { P_DISPLAY=20, P_GRAPHICS, P_GFXADV, P_SOUND, P_POWER, P_STORAGE, P_ABOUT, P_NVIDIA, P_SCREENS, P_SERVICES, P_BACKGROUND=30, P_COLOURS, P_TERMINAL, P_WALLFX, P_WIFI=40, P_NETINFO, P_DEV0=50, P_MOUSE=57, P_APPS=60, P_ACCOUNT=70, P_TIME=80, P_LANG, P_SECURITY=90, P_RECOVERY=100, P_UPDATE=110, P_FOCUS=120 };
+enum { P_DISPLAY=20, P_GRAPHICS, P_GFXADV, P_SOUND, P_POWER, P_STORAGE, P_ABOUT, P_NVIDIA, P_SCREENS, P_SERVICES, P_BACKGROUND=30, P_COLOURS, P_TERMINAL, P_WALLFX, P_WIFI=40, P_NETINFO, P_WIFIADV, P_DEV0=50, P_MOUSE=57, P_BT, P_APPS=60, P_ACCOUNT=70, P_TIME=80, P_LANG, P_SECURITY=90, P_RECOVERY=100, P_UPDATE=110, P_FOCUS=120, P_UXHUB=129, P_UXSVC, P_UXSSH, P_UXCRON, P_UXDISK, P_UXMIDI, P_UXVT, P_UXPAD, P_UXSEC, P_UXPRN };
 int g_stpg=0;
 static const char* CATN[9]={"System","Personalization","Network & internet","Bluetooth & devices","Apps","Accounts","Time & language","Privacy & security","Update & recovery"};
 static const char* CATD[9]={"Display, sound, power, storage","Background, colours, terminal","Wi-Fi, Ethernet, addresses","Input, USB, printers, laptop","Installed apps","Your account","Clock and region","Build integrity","Updates, previous version, recovery"};
 static const int CATI[9]={0,1,2,8,14,11,13,12,9};
 typedef struct { int pg, icon; const char* t; const char* d; } stile;
-static const stile T_SYS[8]={{P_FOCUS,12,"Focus","Do not disturb, sleep, work, gaming"},{P_DISPLAY,3,"Display","Refresh rate, brightness, panel, graphics"},{P_SOUND,10,"Sound","Volume and output device"},{P_POWER,4,"Power & battery","Charge level, battery health"},{P_STORAGE,5,"Storage","Disks, data partition"},{P_GRAPHICS,15,"Graphics","GPU drawing, effects, wallpaper effects"},{P_ABOUT,7,"About","Device specifications, version"},{P_SERVICES,12,"Background services","Web requests, downloads, clock sync, power"}};
+static const stile T_SYS[9]={{P_UXHUB,12,"Advanced system","Services, remote login, scheduled tasks, consoles"},{P_FOCUS,12,"Focus","Do not disturb, sleep, work, gaming"},{P_DISPLAY,3,"Display","Refresh rate, brightness, panel, graphics"},{P_SOUND,10,"Sound","Volume and output device"},{P_POWER,4,"Power & battery","Charge level, battery health"},{P_STORAGE,5,"Storage","Disks, data partition"},{P_GRAPHICS,15,"Graphics","GPU drawing, effects, wallpaper effects"},{P_ABOUT,7,"About","Device specifications, version"},{P_SERVICES,12,"Background services","Web requests, downloads, clock sync, power"}};
 static const stile T_PER[4]={{P_BACKGROUND,1,"Background","Wallpaper picture"},{P_COLOURS,1,"Colours","Accent colour and pointer"},{P_WALLFX,1,"Wallpaper effects","Smooth colours, glow, light"},{P_TERMINAL,6,"Terminal","Theme, font, cursor, transparency"}};
-static const stile T_NET[2]={{P_WIFI,2,"Wi-Fi & Ethernet","Connect to a network"},{P_NETINFO,2,"Network details","Addresses, adapters, gateway"}};
-static const stile T_DEV[8]={{P_DEV0+0,8,"Input","Keyboard, touchpad, mice"},{P_MOUSE,8,"Mouse & pointer","Pointer speed and style"},{P_DEV0+1,8,"USB","Controllers and devices"},{P_DEV0+2,5,"Storage devices","Disks and controllers"},{P_DEV0+3,2,"Network adapters","Ethernet and Wi-Fi cards"},{P_DEV0+4,6,"Media","Graphics, display, sound, camera"},{P_DEV0+5,0,"Printers","Network printing"},{P_DEV0+6,4,"Laptop","Keyboard light, charge limit"}};
+static const stile T_NET[3]={{P_WIFI,2,"Wi-Fi & Ethernet","Connect to a network"},{P_NETINFO,2,"Network details","Addresses, adapters, gateway"},{P_WIFIADV,2,"Wi-Fi advanced","Channel width, power saving, roaming, country, status"}};
+static const stile T_DEV[9]={{P_BT,8,"Bluetooth","Pair keyboards and mice"},{P_DEV0+0,8,"Input","Keyboard, touchpad, mice"},{P_MOUSE,8,"Mouse & pointer","Pointer speed and style"},{P_DEV0+1,8,"USB","Controllers and devices"},{P_DEV0+2,5,"Storage devices","Disks and controllers"},{P_DEV0+3,2,"Network adapters","Ethernet and Wi-Fi cards"},{P_DEV0+4,6,"Media","Graphics, display, sound, camera"},{P_DEV0+5,0,"Printers","Network printing"},{P_DEV0+6,4,"Laptop","Keyboard light, charge limit"}};
 static const stile T_APP[1]={{P_APPS,14,"Installed apps","Open or find apps"}};
 static const stile T_ACC[1]={{P_ACCOUNT,11,"Accounts","Your info, other users, guest, lock and sign-out"}};
 static const stile T_TIM[2]={{P_TIME,13,"Date & time","Clock, seconds"},{P_LANG,2,"Language & region","Display language, keyboard"}};
-static const stile T_PRV[1]={{P_SECURITY,12,"Device security","Build integrity check"}};
+static const stile T_PRV[2]={{P_SECURITY,12,"Device security","Build integrity check"},{P_UXSEC,12,"Security features","Address randomisation, counters, eBPF"}};
 static const stile T_UPD[3]={{P_UPDATE,9,"NoovexOS Update","Check for updates, install them, go back"},{P_RECOVERY,16,"Recovery","Restart, install, crash test"},{P_ABOUT,7,"Version","NoovexOS version and build"}};
-static const stile* cat_tiles(int c,int* n){ switch(c){ case 0:*n=8;return T_SYS; case 1:*n=4;return T_PER; case 2:*n=2;return T_NET; case 3:*n=8;return T_DEV; case 4:*n=1;return T_APP; case 5:*n=1;return T_ACC; case 6:*n=2;return T_TIM; case 7:*n=1;return T_PRV; default:*n=3;return T_UPD; } }
-static int pg_parent(int p){ if(p<9)return -1; if(p==P_SERVICES||p==P_FOCUS)return 0; if(p==P_GFXADV||p==P_NVIDIA)return P_GRAPHICS; if(p==P_SCREENS)return P_DISPLAY; if(p==P_GRAPHICS)return P_DISPLAY; if(p>=P_DISPLAY&&p<=P_ABOUT)return 0; if(p>=P_BACKGROUND&&p<=P_WALLFX)return 1; if(p>=P_WIFI&&p<=P_NETINFO)return 2; if(p>=P_DEV0&&p<=P_MOUSE)return 3; if(p==P_APPS)return 4; if(p==P_ACCOUNT)return 5; if(p==P_TIME||p==P_LANG)return 6; if(p==P_SECURITY)return 7; return 8; }
+static const stile* cat_tiles(int c,int* n){ switch(c){ case 0:*n=9;return T_SYS; case 1:*n=4;return T_PER; case 2:*n=3;return T_NET; case 3:*n=9;return T_DEV; case 4:*n=1;return T_APP; case 5:*n=1;return T_ACC; case 6:*n=2;return T_TIM; case 7:*n=2;return T_PRV; default:*n=3;return T_UPD; } }
+static int pg_parent(int p){ if(p<9)return -1; if(p==P_UXSEC)return 7; if(p==P_UXHUB)return 0; if((p>P_UXHUB&&p<P_UXSEC)||p==P_UXPRN)return P_UXHUB; if(p==P_SERVICES||p==P_FOCUS)return 0; if(p==P_GFXADV||p==P_NVIDIA)return P_GRAPHICS; if(p==P_SCREENS)return P_DISPLAY; if(p==P_GRAPHICS)return P_DISPLAY; if(p>=P_DISPLAY&&p<=P_ABOUT)return 0; if(p>=P_BACKGROUND&&p<=P_WALLFX)return 1; if(p==P_WIFIADV)return P_WIFI; if(p>=P_WIFI&&p<=P_NETINFO)return 2; if(p>=P_DEV0&&p<=P_BT)return 3; if(p==P_APPS)return 4; if(p==P_ACCOUNT)return 5; if(p==P_TIME||p==P_LANG)return 6; if(p==P_SECURITY)return 7; return 8; }
 static int pg_cat(int p){ while(p>=9)p=pg_parent(p); return p<0?0:p; }
-static const char* pg_title(int p){ if(p<9)return CATN[p]; switch(p){ case P_GFXADV:return "Advanced graphics"; case P_NVIDIA:return "NVIDIA graphics"; case P_SCREENS:return "Screen and monitors"; case P_MOUSE:return "Mouse & pointer"; case P_SERVICES:return "Background services"; default:break; }
+static const char* st_ux_title(int p);
+static const char* pg_title(int p){ if(p<9)return CATN[p]; switch(p){ case P_GFXADV:return "Advanced graphics"; case P_NVIDIA:return "NVIDIA graphics"; case P_SCREENS:return "Screen and monitors"; case P_MOUSE:return "Mouse & pointer"; case P_SERVICES:return "Background services"; default:{ const char* t=st_ux_title(p); if(t)return t; } break; }
     for(int c=0;c<9;c++){ int n; const stile* t=cat_tiles(c,&n); for(int k=0;k<n;k++) if(t[k].pg==p)return t[k].t; } return "Settings"; }
 static void st_tiles(int* cy,const stile* t,int n){ if(!g_gm_ready)gmetrics(); if(n<=0)return;
     int RH=56, y0=*cy; st_card(y0,n*RH,0);
@@ -158,11 +168,14 @@ static int st_upd_hero(int cy,int full){
 static int st_sys_hero(int cy){
     int h=112; int y=st_card(cy,h,0); int X1=st_x0+st_w0-24; char b[96],*q;
     fill_round(st_x0+22,y+24,84,56,8,15,rgb(40,46,66)); fill_round(st_x0+26,y+28,76,46,5,15,mix(ACC,rgb(20,30,60),90)); fill_round(st_x0+30,y+32,30,10,4,15,mix(ACC,rgb(255,255,255),120)); fill_rect(st_x0+58,y+80,12,6,rgb(40,46,66)); fill_round(st_x0+46,y+86,36,5,2,15,rgb(40,46,66));
-    st_bold(st_x0+126,y+30,"NoovexOS 64",ST_FG);
-    q=b; q=scopy(q,"Version "); q=scopy(q,(char*)g_buildsig.version); q=scopy(q,"  -  "); q=udec(q,g_ram_mb); q=scopy(q," MB memory"); *q=0; pdstr(st_x0+126,y+58,b,rgb(110,118,138),1);
-    { int n=0; while(g_brand[n]&&n<60){ b[n]=g_brand[n]; n++; } b[n]=0; while(n&&b[n-1]==' ')b[--n]=0; const char* bb=b; while(*bb==' ')bb++; pdstr(st_x0+126,y+78,*bb?bb:"x86-64 processor",rgb(110,118,138),1); }
-    { const char* ct; u32 cb, cf; if(g_upd.checked==1&&g_upd.avail){ ct="Update available"; cb=mix(ACC,rgb(255,255,255),210); cf=ACC2; } else if(g_upd.checked==1){ ct="Up to date"; cb=rgb(226,246,233); cf=rgb(40,140,80); } else { ct="NoovexOS Update"; cb=rgb(238,241,246); cf=rgb(90,98,118); }
-      int w=pw_str(ct,1)+24; st_chip(X1,y+h/2-12,ct,cb,cf); st_hit(X1-w,y+h/2-12,w,24,1000+P_UPDATE); }
+    if(!g_gm_ready)gmetrics();
+    const char* ct; u32 cb, cf; if(g_upd.checked==1&&g_upd.avail){ ct="Update available"; cb=mix(ACC,rgb(255,255,255),210); cf=ACC2; } else if(g_upd.checked==1){ ct="Up to date"; cb=rgb(226,246,233); cf=rgb(40,140,80); } else { ct="NoovexOS Update"; cb=rgb(238,241,246); cf=rgb(90,98,118); }
+    int cw=pw_str(ct,1)+24, tx=st_x0+126, tw=X1-cw-16-tx;
+    st_bold(tx,y+30,"NoovexOS 64",ST_FG);
+    q=b; q=scopy(q,"Version "); q=scopy(q,(char*)g_buildsig.version); *q=0; { char* m=q; q=scopy(q,"  -  "); q=udec(q,g_ram_mb); q=scopy(q," MB memory"); *q=0; if(pw_str(b,1)>tw)*m=0; }
+    st_fit(b,tw); pdstr(tx,y+58,b,rgb(110,118,138),1);
+    { int n=0; while(g_brand[n]&&n<60){ b[n]=g_brand[n]; n++; } b[n]=0; while(n&&b[n-1]==' ')b[--n]=0; const char* bb=b; while(*bb==' ')bb++; if(!*bb)bb="x86-64 processor"; char c[64]; scopy(c,bb)[0]=0; st_fit(c,tw); pdstr(tx,y+78,c,rgb(110,118,138),1); }
+    st_chip(X1,y+h/2-12,ct,cb,cf); st_hit(X1-cw,y+h/2-12,cw,24,1000+P_UPDATE);
     return y+h+20; }
 static void st_upd_page(int cy){
     int X1=st_x0+st_w0-24; char b[200],*q;
@@ -264,6 +277,10 @@ int settings_focus_key(int c){ if(g_stpg!=P_FOCUS||!g_fedit)return 0;
     if(c==27){ g_fedit=0; g_focus_newmode=0; return 1; } if(c=='\n'){ fe_commit(); return 1; }
     if(c=='\b'){ if(g_fbuf_n>0)g_fbuf[--g_fbuf_n]=0; return 1; }
     if(c>=32&&c<127){ int cap=g_fedit==3?22:g_fedit==1?22:94; if(g_fbuf_n<cap){ g_fbuf[g_fbuf_n++]=(char)c; g_fbuf[g_fbuf_n]=0; } return 1; } return 1; }
+#include "apps/system/settings/bluetooth.c"
+static int st_gfx_nv(int cy); static int st_gfx_screens(int cy); static int st_gfx_intel(int cy); static int st_gfx_amd(int cy);
+#include "apps/system/settings/wifi_adv.c"
+#include "apps/system/settings/unixsys.c"
 static void st_page(int p,int cy){
     int X1=st_x0+st_w0-24; char b[96],*q;
     { static int lp=-1; if(p!=lp){ if(lp==P_WIFI&&g_wifi_entry&&g_wifi_sel!=-2){ extern void wifi_entry_cancel(void); if(!g_wifipop)wifi_entry_cancel(); } if(lp==P_FOCUS&&g_fedit){ if(g_fedit==1)g_fedit=0; else fe_commit(); } lp=p; } }
@@ -272,7 +289,7 @@ static void st_page(int p,int cy){
     if(p==P_FOCUS){ st_focus_page(cy); return; }
     switch(p){
     case P_DISPLAY: { stile g={P_GRAPHICS,3,"Graphics","GPU drawing, NVIDIA, effects, screen copies"}; st_tiles(&cy,&g,1); cy+=10; old_leaf(3,cy); } break;
-    case P_SCREENS: { extern volatile u64 g_ticks; if(g_scr_n==-2||g_ticks-g_scr_at>200){ g_scr_at=g_ticks; g_scr_n=nvm_screens(g_scr_t,4); }
+    case P_SCREENS: { cy=st_gfx_screens(cy); extern volatile u64 g_ticks; if(g_scr_n==-2||g_ticks-g_scr_at>200){ g_scr_at=g_ticks; g_scr_n=nvm_screens(g_scr_t,4); }
         const char* a[3]={"Screen mode","Refresh rate","Set by"}; char v[3][80]; q=v[0]; q=udec(q,W); q=scopy(q," x "); q=udec(q,H); *q=0; q=v[1]; { extern int mon_cur_mhz(u32,u32); int cm=mon_cur_mhz(W,H); if(cm){ q=udec(q,(u32)(cm+500)/1000); q=scopy(q," Hz (reported by the monitor)"); } else q=scopy(q,"not reported"); q=scopy(q,"; desktop redraws at "); q=udec(q,(u32)(g_refresh_hz>0?g_refresh_hz:60)); q=scopy(q," Hz"); } *q=0; q=v[2]; q=scopy(q,"the firmware at boot (UEFI GOP or VESA)"); *q=0; st_infocard(&cy,"Current screen",a,v,3);
         { const nvgsp_mon_t* ml=0; int mn=nvgsp_mon_get(&ml,0,0,0); nvgsp_info_t ni; nvgsp_info(&ni);
           if(ni.state>=7){ int rows=0; for(int i=0;i<mn;i++)rows++; if(rows<1)rows=1; if(rows>4)rows=4; int y=st_card(cy,rows*38+8+44,"Monitors (read through GSP-RM, like Linux)"); int r=0;
@@ -284,7 +301,8 @@ static void st_page(int p,int cy){
             int by=y+4+r*38+4; st_btn(X1-130,by,130,"Read again",335,1); { nvgsp_mode_t mi; int on=nvgsp_mode_info(&mi)>0; st_btn(X1-130-190,by,180,on?"Second screen off":"Second screen on",on?337:336,1); } cy=by+40+20; } }
         if(g_scr_n>=0){ int n=g_scr_n?g_scr_n:1; int y=st_card(cy,n*38+8,"Current mode on the card (display engine, read only)"); for(int r=0;r<n;r++){ int ry=y+4+r*38; if(r)fill_rect(st_x0+20,ry,st_w0-40,1,rgb(238,240,245)); pdstr(st_x0+24,ry+11,g_scr_n?g_scr_t[r]:"No head is scanning out",INK,1); } cy=y+n*38+8+20; }
         { extern u16 g_nv_dev; nvgsp_info_t n2; nvgsp_info(&n2); if(n2.state>0||g_nv_dev){ int y=st_card(cy,116,"Second screen"); st_para(st_x0+24,y+14,st_w0-48,NV_NOTE_MODE,rgb(110,118,136)); cy=y+116+20; } } } break;
-    case P_NVIDIA: { nvgsp_info_t ni; nvgsp_info(&ni); extern int g_nvd_auto; char d[96];
+    case P_NVIDIA: { cy=st_gfx_nv(cy); nvgsp_info_t ni; nvgsp_info(&ni); extern int g_nvd_auto; char d[96]; extern int nvset_no_card(void);
+        if(nvset_no_card()&&!ni.state){ int y=st_card(cy,64,"NVIDIA GeForce"); st_rowtext_w(y,"No NVIDIA graphics card","This computer has no NVIDIA card. The switches above are kept for when one is added.",st_w0-40); break; }
         int y=st_card(cy,64*4,"NVIDIA GeForce");
         if(ni.state<7){ q=d; q=scopy(q,ni.state?ni.state_name:"Not started"); q=scopy(q," - start takes about 10 s"); *q=0; st_rowtext(y,"NVIDIA driver (GSP-RM)",d); st_btn(X1-130,y+16,130,"Start now",334,1); }
         else if(ni.off){ q=d; q=scopy(q,"Off "); q=udec(q,(u32)ni.off_age_s); q=scopy(q," s ago: "); { int n=0; const char* w=ni.off_why; while(w[n]&&n<60){ *q++=w[n]; n++; } } *q=0; st_rowtext(y,"NVIDIA drawing",d); st_toggle(X1-44,y+20,0,333); }
@@ -295,7 +313,13 @@ static void st_page(int p,int cy){
         q=d; if(ni.compute){ q=scopy(q,"Compute shaders work, last batch "); q=udec(q,ni.cp_last_us); q=scopy(q," us"); } else if(ni.cp_why&&ni.cp_why[0]){ int n=0; while(ni.cp_why[n]&&n<70){ *q++=ni.cp_why[n]; n++; } } else q=scopy(q,"Compute shaders not ready"); *q=0;
         st_rowtext(y+192,"GPU draws the desktop",d); if(ni.compute)st_toggle(X1-44,y+212,ni.drawing,332); cy=y+256+24;
         y=st_card(cy,124,"Where the desktop images live"); int yy=st_para(st_x0+24,y+12,st_w0-48,NV_NOTE_MEM,rgb(110,118,136));
-        q=d; q=scopy(q,"Already on the card: "); q=udec(q,ni.vram_surfaces); q=scopy(q," GPU-only work buffers ("); q=udec(q,(u32)(ni.vram_surface_bytes>>20)); q=scopy(q," MB)"); *q=0; pdstr(st_x0+24,yy+6,d,INK,1); } break;
+        q=d; q=scopy(q,"Already on the card: "); q=udec(q,ni.vram_surfaces); q=scopy(q," GPU-only work buffers ("); q=udec(q,(u32)(ni.vram_surface_bytes>>20)); q=scopy(q," MB)"); *q=0; pdstr(st_x0+24,yy+6,d,INK,1); cy=y+124+24;
+        { nvgsp_sens_t ns; int su=nvgsp_sensors(&ns); const char* a[4]={"PCIe link","Aux power state","Host clock slowdown","Temperature, clocks, fan, power"}; char v[4][80];
+          for(int i=0;i<3;i++){ q=v[i]; q=scopy(q,su?"Refused by GSP-RM":ns.why); *q=0; }
+          if(su&&ns.link){ q=v[0]; q=scopy(q,"Gen "); q=scopy(q,nvgsp_sens_gen(ns.link_gen)); q=scopy(q," x"); q=udec(q,ns.link_width); q=scopy(q," of gen "); q=udec(q,ns.max_gen); q=scopy(q," x"); q=udec(q,ns.max_width); *q=0; }
+          if(su&&ns.pst){ q=v[1]; *q++='P'; q=udec(q,ns.aux_pstate); *q=0; }
+          if(su&&ns.hcs){ q=v[2]; q=scopy(q,ns.hostclk_slow_off?"Disabled":"Allowed"); *q=0; }
+          q=v[3]; q=scopy(q,"Not offered by the 535.113.01 GSP-RM interface"); *q=0; st_infocard(&cy,"GPU info",a,v,4); } } break;
     case P_GRAPHICS: { extern int g_gfx, g_gfx_fx, g_gfx_srec, g_wall_fx, g_wall_light;
         int y=st_card(cy,64*5,"GPU"); { extern int g_nvd_on; st_rowtext(y,"GPU drawing",g_gfx==1&&g_nvd_on?"The NVIDIA GPU draws the desktop (compute shaders)":g_gfx==1?"The Intel GPU draws the desktop":g_gfx==2?"Emulated on the CPU (test mode)":"The CPU draws the desktop"); } st_toggle(X1-44,y+20,g_gfx!=0,300); st_sep(y+64);
         st_rowtext(y+64,"Visual effects","Shadows, rounded corners, glass, animations"); st_toggle(X1-44,y+84,g_gfx_fx,301); st_sep(y+128);
@@ -304,21 +328,24 @@ static void st_page(int p,int cy){
         st_rowtext(y+256,"Drifting light","A soft light moves across the wallpaper"); st_toggle(X1-44,y+276,g_wall_light,304); cy=y+320+24;
         { extern u16 g_nv_dev; stile a[2]={{P_GFXADV,3,"Advanced graphics","GPU details, screen copy, frame check"},{P_NVIDIA,3,"NVIDIA graphics","Driver status, switches, where the desktop images live"}}; st_tiles(&cy,a,g_nv_dev?2:1); } } break;
     case P_GFXADV: { extern int igpu_info(const char**,u32*,u32*,u32*,u32*,u32*,u32*,u32*); extern int g_pres_eng; extern char g_fc_msg[]; extern u32 g_gfx_frame_us;
-        const char* nm; u32 did=0,ss=0,eu=0,mhz=0,mxz=0,stl=0,tf=0; int hg=igpu_info(&nm,&did,&ss,&eu,&mhz,&mxz,&stl,&tf);
+        cy=st_gfx_intel(cy); cy=st_gfx_amd(cy); const char* nm; u32 did=0,ss=0,eu=0,mhz=0,mxz=0,stl=0,tf=0; int hg=igpu_info(&nm,&did,&ss,&eu,&mhz,&mxz,&stl,&tf);
         const char* a[5]={"Graphics","Clock","Execution units","Graphics memory","Last frame"}; char v[5][80];
         q=v[0]; if(hg)q=scopy(q,nm); else { extern int gpu_list(void*,int); extern const char* gpu_name(u16,u16); struct { u16 ven, dev; u8 bus, slot; const char* vendor; const char* name; const char* driver; int accel; } gl[2]; if(gpu_list(gl,2))q=scopy(q,gl[0].name); else q=scopy(q,"No graphics card found"); } *q=0; q=v[1]; q=udec(q,mhz); q=scopy(q," of "); q=udec(q,mxz); q=scopy(q," MHz"); *q=0;
         q=v[2]; q=udec(q,ss*eu); *q=0; q=v[3]; q=udec(q,stl); q=scopy(q," MB"); *q=0; q=v[4]; q=udec(q,g_gfx_frame_us/1000); *q++='.'; q=udec(q,(g_gfx_frame_us/100)%10); q=scopy(q," ms"); *q=0;
-        st_infocard(&cy,"GPU",a,v,5);
+        { int keep[5]={1,mxz>0,ss*eu>0,stl>0,g_gfx_frame_us>0}, n=0; for(int i=0;i<5;i++) if(keep[i]){ a[n]=a[i]; if(n!=i){ int k=0; for(;v[i][k];k++)v[n][k]=v[i][k]; v[n][k]=0; } n++; } st_infocard(&cy,"GPU",a,v,n); }
         static const char* PE[2]={"Blitter","Shader"}; int y=st_card(cy,128,"Screen"); st_rowtext(y,"Screen copy engine","Which GPU engine copies the picture to the screen"); { int w=st_segw(PE,2); st_seg(X1-w,y+17,PE,2,g_pres_eng,310); } st_sep(y+64);
         st_rowtext(y+64,"Tear-free","Double buffering, no tearing"); st_toggle(X1-44,y+84,(int)tf,312); cy=y+128+24;
         y=st_card(cy,64,"Frame check"); { char m[72]; int n=0, mxc=(st_w0-220)/8; if(mxc>70)mxc=70; while(g_fc_msg[n]&&n<mxc){ m[n]=g_fc_msg[n]; n++; } m[n]=0; pdstr(st_x0+24,y+24,m[0]?m:"Compare one GPU frame with the CPU",rgb(110,118,136),1); } st_btn(X1-130,y+15,130,"Run check",313,1); } break;
-    case P_SOUND: { int y=st_card(cy,128,"Output"); st_rowtext(y,"Output device",g_snd_state&&g_snd.name?g_snd.name:"No sound driver running");
+    case P_SOUND: { int y=st_card(cy,128,"Output"); st_rowtext(y,"Output device",g_snd_state&&g_snd.name?g_snd.name:"No sound driver running"); st_bt_audio_out(X1,y);
         st_sep(y+64); q=b; q=udec(q,(u32)g_snd_vol); *q++='%'; *q=0; st_rowtext(y+64,"Volume",b);
         int bw=st_w0-320; if(bw<140)bw=140; int bx=X1-bw-10; int fw=g_snd_vol*bw/100; fill_round(bx,y+92,bw,8,4,15,rgb(226,229,236)); if(fw>0)fill_round(bx,y+92,fw,8,4,15,ACC); fill_circle(bx+fw,y+96,10,rgb(255,255,255)); fill_circle(bx+fw,y+96,4,ACC);
         st_blx=bx; st_blw=bw; st_hit(bx-12,y+78,bw+24,36,320); cy=y+128+24;
         y=st_card(cy,64,0); st_rowtext(y,"Mute","Silence all sound"); st_toggle(X1-44,y+20,g_snd_vol==0,321); cy=y+64+24;
+        { extern int snd_usb_avail(void); extern int snd_usb_routed(void); extern const char* snd_usb_name(void); extern const char* uac_out_desc(void); extern u32 uac_out_rate_pref(void);
+          if(snd_usb_avail()){ static const char* UR[3]={"44.1 kHz","48 kHz","96 kHz"}; u32 rp=uac_out_rate_pref(); y=st_card(cy,128,"USB audio"); st_rowtext(y,snd_usb_name(),snd_usb_routed()?uac_out_desc():"Connected - sound and microphone stay on the computer"); st_toggle(X1-44,y+20,snd_usb_routed(),3774); st_sep(y+64);
+            st_rowtext(y+64,"Sample rate","Used when the device supports it"); { int w=st_segw(UR,3); st_seg(X1-w,y+81,UR,3,rp==44100?0:rp==96000?2:1,3775); } cy=y+128+24; } }
         { extern const char* snd_rec_name(void); extern int snd_rec_avail(void); extern int g_mic_gain, g_cap_on, g_cap_peak;
-          y=st_card(cy,192,"Input"); st_rowtext(y,"Microphone",snd_rec_name()); st_sep(y+64);
+          y=st_card(cy,192,"Input"); st_rowtext(y,"Microphone",snd_rec_name()); { extern int hfp_mic_avail(void); extern int hfp_mic_selected(void); if(hfp_mic_avail())st_btn(X1-190,y+16,190,hfp_mic_selected()?"Use built-in microphone":"Use headset microphone",2808,0); } st_sep(y+64);
           q=b; q=udec(q,(u32)g_mic_gain); *q++='%'; *q=0; st_rowtext(y+64,"Microphone volume",b);
           int bw2=st_w0-320; if(bw2<140)bw2=140; int bx2=X1-bw2-10; int fw2=g_mic_gain*bw2/100; fill_round(bx2,y+92,bw2,8,4,15,rgb(226,229,236)); if(fw2>0)fill_round(bx2,y+92,fw2,8,4,15,ACC); fill_circle(bx2+fw2,y+96,10,rgb(255,255,255)); fill_circle(bx2+fw2,y+96,4,ACC);
           st_mlx=bx2; st_mlw=bw2; st_hit(bx2-12,y+78,bw2+24,36,322); st_sep(y+128);
@@ -337,6 +364,8 @@ static void st_page(int p,int cy){
         st_rowtext(y+64,"Drifting light","Drawn by the GPU every frame - uses a little power"); st_toggle(X1-44,y+84,g_wall_light,304); cy=y+128+24;
         if(g_wall_fx_us){ y=st_card(cy,64,0); q=b; q=scopy(q,"Made in "); q=udec(q,g_wall_fx_us/1000); q=scopy(q," ms when the wallpaper was set"); *q=0; st_rowtext(y,"Last update",b); } } break;
     case P_WIFI: old_leaf(2,cy); break;
+    case P_BT: st_bt_page(cy); break;
+    case P_WIFIADV: st_wa_page(cy); break;
     case P_NETINFO: { const char* a[5]={"Wired adapter","Wired status","Wi-Fi","IPv4 address","MAC address"}; char v[5][80]; if(!pci_n)pci_scan(); int ek=nic_index();
         q=v[0]; q=scopy(q,nic_active_name()?nic_active_name():ek>=0?nic_name(pci_ven[ek],pci_dev[ek]):"None"); *q=0; q=v[1]; q=scopy(q,net_ok?"Connected":"Not connected"); *q=0; q=v[2]; q=scopy(q,g_wifi_conn[0]?g_wifi_conn:"Not connected"); *q=0;
         q=v[3]; if(net_ok||g_wifi_conn[0]){ q=udec(q,my_ip>>24);*q++='.';q=udec(q,(my_ip>>16)&255);*q++='.';q=udec(q,(my_ip>>8)&255);*q++='.';q=udec(q,my_ip&255); } else q=scopy(q,"-"); *q=0;
@@ -377,9 +406,14 @@ static void st_page(int p,int cy){
         { int ry=y+(shown?shown:1)*rh; if(admin)st_btn(X1-150,ry+11,150,"Add account",602,1); pdstr(st_x0+20,ry+20,admin?(n>3?"More accounts: use the Terminal (useradd, userdel)":"New accounts get a home folder in /home"):"Only an administrator can change other accounts",ST_DIM,1); }
         cy=y+h+20;
         extern int lg_installed(void); extern int live_lock_on(void); int llk=lg_installed()?-1:live_lock_on();
-        y=st_card(cy,rh*(llk>=0?5:4),"Sign-in options");
-        { extern int fid_has(const char*); int hf=fid_has(g_user); st_rowtext(y,"Face ID",hf?"Set up - sign in by looking at the camera":"Sign in by looking at the camera instead of typing");
+        y=st_card(cy,rh*(llk>=0?6:5),"Sign-in options");
+        { extern int fid_has(const char*); extern const char* fir_camera_text(void); int hf=fid_has(g_user); char ft[160],*fq=ft; fq=scopy(fq,hf?"Set up - ":"Sign in by looking at the camera - "); fq=scopy(fq,fir_camera_text()); *fq=0; st_rowtext(y,"Face ID",ft);
           if(hf){ st_btn(X1-90,y+11,90,"Remove",681,2); st_btn(X1-216,y+11,116,"Scan again",680,0); } else st_btn(X1-110,y+11,110,"Set up",680,1); st_sep(y+rh); y+=rh; }
+        { extern int fprint_ui_state(void); extern int fprint_enrol_progress(char*,int); static char fpm[96]; int fs=fprint_ui_state(), fpp=fprint_enrol_progress(fpm,(int)sizeof fpm);
+          if(fs&16){ char t[128],*q=t; q=scopy(q,fpm); q=scopy(q," - "); q=udec(q,(u32)(fpp<0?0:fpp)); q=scopy(q,"% done"); *q=0; st_rowtext(y,"Fingerprint",t); st_btn(X1-110,y+11,110,"Cancel",694,2); } else {
+          st_rowtext(y,"Fingerprint",fpm[0]&&!(fs&4)?fpm:!(fs&1)?"No supported fingerprint reader found":!(fs&4)?(fs&2?"Enrol a finger; it is matched on the reader":"Enrol a finger; sign-in with it is optional"):(fs&8)?"Enrolled - sign in with your finger or your password":"Enrolled - fingerprint sign-in is off");
+          if(fs&4){ st_toggle(X1-44,y+16,(fs&8)?1:0,693); st_btn(X1-140,y+11,86,"Remove",692,2); st_btn(X1-220,y+11,70,"Test",691,0); } else if(fs&1)st_btn(X1-110,y+11,110,"Enrol",690,1); }
+          st_sep(y+rh); y+=rh; }
         st_rowtext(y,"Guest account","Lets someone sign in without a password; their files are removed at sign out"); st_toggle(X1-44,y+16,g_guest_on,603); st_sep(y+rh);
         { static const char* LM[4]={"5 min","15 min","30 min","Never"}; int sel=g_lock_min==5?0:g_lock_min==15?1:g_lock_min==30?2:g_lock_min<=0?3:1; st_rowtext(y+rh,"Lock the screen after","When idle, on lid close, and with Win+L"); { int w=st_segw(LM,4); st_seg(X1-w,y+rh+13,LM,4,sel,610); } st_sep(y+rh*2); }
         st_rowtext(y+rh*2,"Lock or sign out",0); st_btn(X1-110,y+rh*2+11,110,"Sign out",605,0); st_btn(X1-230,y+rh*2+11,110,"Switch user",606,0); st_btn(X1-340,y+rh*2+11,100,"Lock",604,0);
@@ -397,4 +431,4 @@ static void st_page(int p,int cy){
     case P_RECOVERY: { int y=st_card(cy,192,"Recovery"); st_rowtext(y,"Restart","Restart the computer now"); st_btn(X1-110,y+16,110,"Restart",2,1); st_sep(y+64);
         st_rowtext(y+64,"Install NoovexOS","Put this system on a disk"); st_btn(X1-120,y+80,120,"Open Setup",95,1); st_sep(y+128);
         st_rowtext(y+128,"Crash test","Shows the kernel panic screen (for testing)"); st_btn(X1-110,y+144,110,"Crash",3,2); } break;
-    default: if(p>=P_DEV0&&p<P_DEV0+7){ g_devtab=p-P_DEV0; st_notabs=1; old_leaf(8,cy); st_notabs=0; } break; } }
+    default: if(p>=P_UXHUB&&p<=P_UXPRN){ st_ux_page(p,cy); break; } if(p>=P_DEV0&&p<P_DEV0+7){ g_devtab=p-P_DEV0; st_notabs=1; old_leaf(8,cy); st_notabs=0; } break; } }

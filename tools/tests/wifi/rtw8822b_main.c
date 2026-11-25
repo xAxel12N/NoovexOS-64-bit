@@ -1,4 +1,4 @@
-/* Host test of drivers/net/wifi/rtw88/chips/rtw8822b.c against a simulated register file and RF.
+/* Host test of drivers/net/wifi/realtek/rtw88/chips/rtw8822b.c against a simulated register file and RF.
    Build: see tools/tests/wifi/rtw8822b_test.sh. The chip file is included directly so its statics are reachable.
    The core contract functions (rtw_r8..rtw_w32, rtw_rf_read/write, rtw_h2c_pkt_send, rtw_apply_cond) are
    provided here with rtw88 semantics; rtw_apply_cond walks the tables like rtw_parse_tbl_phy_cond and
@@ -6,8 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "drivers/net/wifi/rtw88/chips/rtw8822b.c"
-#include "drivers/net/wifi/rtw88/chips/rtw8822b_tables.c"
+#include "drivers/net/wifi/realtek/rtw88/chips/rtw8822b.c"
+#include "drivers/net/wifi/realtek/rtw88/chips/rtw8822b_tables.c"
 #include "rtw8822b_expect.h"
 
 const unsigned char _binary_rtw8822b_fw_bin_start[4]={0x22,0x88,0,0}, _binary_rtw8822b_fw_bin_end[1]={0};

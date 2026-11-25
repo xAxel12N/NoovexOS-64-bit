@@ -4,9 +4,11 @@
 #include "include/nvx/drivers/usb/uvc.h"
 #include "include/nvx/fs/vfs/ramfs.h"
 #include "include/nvx/fs/vfs/unixfs.h"
+#include "include/nvx/fs/vfs/dirtree.h"
 #include "include/nvx/core/proc/jobs.h"
 #include "include/nvx/core/klog.h"
 #include "include/nvx/core/auth/faceid.h"
+#include "include/nvx/core/auth/faceid_ir.h"
 #include "include/nvx/arch/x86_64/interrupts/interrupts.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
 
@@ -18,7 +20,10 @@ int jpeg_decode(const u8* buf,int len,u8* rgba,int rgbamax,int* ow,int* oh);
 #define FMAXW 640
 #define FMAXH 640
 enum { C_VERIFY=1, C_ADD=2, C_SAVE=3, C_RESET=4 };
-enum { S_NOFACE=0, S_FACE=1, S_MATCH=2, S_NOMATCH=3, S_ADDED=4, S_SAVED=5, S_NOFILE=6, S_ERROR=7, S_SMALL=8, S_MANY=9 };
+enum { S_NOFACE=0, S_FACE=1, S_MATCH=2, S_NOMATCH=3, S_ADDED=4, S_SAVED=5, S_NOFILE=6, S_ERROR=7, S_SMALL=8, S_MANY=9, S_TURN=10, S_LIVE=11, S_SPOOF=12 };
+#define FID_VERIFY_CAP 2000
+#define FID_ENROLL_CAP 12000
+#define FID_ADMIN_FILE "/etc/noovex/faceid/.admin"
 
 typedef struct { u32 magic, seq, cmd, w, h; char user[32]; u32 pad[3]; } fid_req;
 typedef struct { u32 magic, seq, status; int dist, x, y, w, h, pts[10], count, faces; } fid_res;
@@ -41,6 +46,13 @@ static int fid_name_ok(const char* u){ if(!u||!u[0])return 0; for(int i=0;u[i];i
 
 int fid_has(const char* user){ if(!fid_name_ok(user))return 0; char p[80]; fid_path(user,p); int d=0; return ux_lookup(p,&d,1)>=0&&!d; }
 int fid_delete(const char* user){ if(!fid_name_ok(user))return -1; char p[80]; fid_path(user,p); if(!fid_has(user))return 0; return ux_unlink(p)<0?-1:0; }
+static int fid_adm=-1;
+int fid_admin_on(void){ if(fid_adm<0){ int isd=0,k=ux_lookup(FID_ADMIN_FILE,&isd,1); fid_adm=k>=0&&!isd&&FS[k].len>=2&&FS[k].uid==0&&!(FS[k].mode&077)&&((const char*)fsd(k))[0]=='o'&&((const char*)fsd(k))[1]=='n'; } return fid_adm; }
+int fid_admin_set(int on){ fid_adm=-1;
+    dt_init(); int e=dt_child(0,"etc"); if(e<0)return -1; int n=dt_child(e,"noovex"); if(n<0){ n=dt_mkdir_at(e,"noovex"); if(n<0)return -1; }
+    int d=dt_child(n,"faceid"); if(d<0){ d=dt_mkdir_at(n,"faceid"); if(d<0)return -1; DT[d].mode=0040700u; DT[d].uid=0; DT[d].gid=0; }
+    int r=ux_write_text(FID_ADMIN_FILE,on?"on\n":"off\n",on?3:4,0100600u); fid_adm=-1; return r<0?-1:0; }
+int fid_may_unlock(int purpose){ return purpose==FID_FOR_LOGIN?1:purpose==FID_FOR_ADMIN?fid_admin_on():0; }
 int fid_camera_present(void){ return fid_feed!=0||uvc_found(); }
 int fid_active(void){ return g_fid_mode!=0; }
 
@@ -61,6 +73,7 @@ static void fid_stop_all(void){
     if(fid_pid>0&&fid_alive()){ jc_kill(fid_pid,9,0); fid_oldpid=fid_pid; }
     fid_pid=-1;
     if(fid_cam_ours&&uvc_state==2)uvc_stop();
+    fir_stop();
     fid_cam_ours=0; fid_inflight=0; fid_ready=0; fid_off=0; fid_rn=0; fid_saving=0; }
 
 void fid_end(void){ fid_stop_all(); g_fid_mode=0; g_fid_hint=0; fid_free_later=1; }
@@ -71,11 +84,15 @@ int fid_begin(int mode,const char* user){
     fid_stop_all();
     g_fid_mode=0; g_fid_count=0; g_fid_dist=-1; g_fid_seen=0; g_fid_hint=0; fid_matches=0; g_fid_face[2]=0; g_fid_msg[0]=0;
     if(!fid_name_ok(user)){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"This account name cannot use Face ID"); return -1; }
-    if(mode==FID_VERIFY&&!fid_has(user)){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"Face ID is not set up for this account"); return -1; }
+    if(mode==FID_VERIFY_ADMIN&&!fid_may_unlock(FID_FOR_ADMIN)){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"Face ID cannot approve admin actions - type your password"); return -1; }
+    if(mode!=FID_ENROLL&&mode!=FID_VERIFY&&mode!=FID_VERIFY_ADMIN){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"Unknown Face ID request"); return -1; }
+    if(mode!=FID_ENROLL&&g_fid_fails>=FID_MAX_FAILS){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"Face ID is locked after too many tries - use your password"); return -1; }
+    if(mode!=FID_ENROLL&&!fid_has(user)){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"Face ID is not set up for this account"); return -1; }
     if(!fid_camera_present()){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"No camera found"); return -1; }
     fid_free_later=0;
     if(!fid_buf){ fid_buf=(u8*)kmalloc(sizeof(fid_req)+FMAXW*FMAXH*3); if(!fid_buf){ g_fid_state=FID_ERROR; scopy(g_fid_msg,"Not enough memory for Face ID"); return -1; } }
     fid_scpy(fid_user,user,32);
+    if(!fid_feed&&uvc_state!=2&&fir_start())fid_cam_ours=1;
     if(!fid_feed&&uvc_state!=2){ if(uvc_start(0)<0&&uvc_state!=2){ g_fid_state=FID_ERROR; fid_scpy(g_fid_msg,uvc_msg[0]?uvc_msg:"The camera did not start",96); return -1; } fid_cam_ours=1; }
     if(fid_spawn()<0){ fid_stop_all(); g_fid_state=FID_ERROR; scopy(g_fid_msg,"The face engine is missing"); return -1; }
     g_fid_mode=mode; g_fid_state=FID_STARTING; fid_t0=g_ticks; fid_tready=0; fid_last_frame=0xFFFFFFFFu; fid_nsent=0;
@@ -110,12 +127,13 @@ static void fid_result(const fid_res* r){
     if(!fid_tready){ char b[80],*p=b; p=scopy(p,"faceid: first answer after "); p=udec(p,(u32)(fid_tframe/100)); p=scopy(p," s"); *p=0; klog(b); }
     if(!fid_tready){ fid_tready=g_ticks; if(g_fid_state==FID_STARTING)g_fid_state=FID_RUNNING; }
     if(r->status!=S_NOFACE&&r->w>0){ g_fid_face[0]=r->x; g_fid_face[1]=r->y; g_fid_face[2]=r->w; g_fid_face[3]=r->h; g_fid_seen=1; } else g_fid_face[2]=0;
-    { const char* h=r->status==S_MANY?"Only one face in view, please":r->status==S_SMALL?"Move a little closer":0; if(h&&h!=g_fid_hint)klog2("faceid: hint: ",h); g_fid_hint=h; }
+    { const char* h=r->status==S_MANY?"Only one face in view, please":r->status==S_SMALL?"Move a little closer":r->status==S_TURN?"Turn your head slowly left and right":r->status==S_LIVE?"Blink or turn your head a little":0; if(h&&h!=g_fid_hint)klog2("faceid: hint: ",h); g_fid_hint=h; }
     if(r->status==S_ERROR){ fid_finish(FID_ERROR,"The face engine reported an error"); return; }
-    if(g_fid_mode==FID_VERIFY){
+    if(g_fid_mode!=FID_ENROLL){
         g_fid_dist=r->dist;
+        if(r->status==S_SPOOF){ g_fid_fails++; klog2("faceid: refused a still picture for ",fid_user); fid_finish(FID_FAILED,"This looks like a photo - Face ID needs a live face"); return; }
         if(r->status==S_NOFILE){ fid_finish(FID_ERROR,"Face ID is not set up for this account"); return; }
-        if(r->status==S_MATCH){ if(++fid_matches>=2){ klog2("faceid: recognized ",fid_user); fid_finish(FID_SUCCESS,"Recognized with Face ID"); } return; }
+        if(r->status==S_MATCH){ if(++fid_matches>=1){ klog2("faceid: recognized ",fid_user); fid_finish(FID_SUCCESS,"Recognized with Face ID"); } return; }
         fid_matches=0; return; }
     if(r->status==S_SAVED){ g_fid_count=r->count; klog2("faceid: set up saved for ",fid_user); fid_finish(FID_SUCCESS,"Face ID is set up"); return; }
     if(fid_saving){ fid_finish(FID_ERROR,"Face ID could not be saved"); return; }
@@ -125,16 +143,16 @@ static void fid_result(const fid_res* r){
 int fid_tick(void){
     if(!g_fid_mode){ if(fid_free_later&&!fid_pid_alive(fid_oldpid)){ fid_free_later=0; fid_oldpid=-1; if(fid_buf){ kfree(fid_buf); fid_buf=0; } } return 0; }
     static u64 fid_lastdraw; int ch=0; if(g_ticks-fid_lastdraw>=25){ fid_lastdraw=g_ticks; ch=1; }
-    if(!fid_feed&&uvc_state==2){ uvc_poll(); if(uvc_kind==1&&uvc_jnew&&uvc_jpg&&uvc_rgb){ int w=0,h=0; int r=jpeg_decode(uvc_jpg,(int)uvc_jlen,(u8*)uvc_rgb,1920*1200*4,&w,&h);
+    if(!fid_feed&&uvc_state==2){ uvc_poll(); fir_tick(); if(uvc_kind==1&&uvc_jnew&&uvc_jpg&&uvc_rgb){ int w=0,h=0; int r=jpeg_decode(uvc_jpg,(int)uvc_jlen,(u8*)uvc_rgb,1920*1200*4,&w,&h);
         if(r==0&&w==uvc_w&&h==uvc_h){ u8* b=(u8*)uvc_rgb; u32 n=(u32)w*(u32)h; for(u32 i=0;i<n;i++){ u8* p=b+i*4; uvc_rgb[i]=((u32)p[0]<<16)|((u32)p[1]<<8)|(u32)p[2]; } uvc_seq++; } uvc_jnew=0; } }
     if(g_fid_state!=FID_STARTING&&g_fid_state!=FID_RUNNING)return ch;
     if(!fid_alive()){ fid_finish(FID_ERROR,"The face engine stopped"); return 1; }
     u64 now=g_ticks;
     if(g_fid_state==FID_STARTING&&now-fid_t0>18000){ fid_finish(FID_ERROR,"The face engine did not start"); return 1; }
     if(g_fid_state==FID_RUNNING){
-        u64 lim=g_fid_mode==FID_ENROLL?6000+12*fid_tframe:800+3*fid_tframe;
+        u64 lim=g_fid_mode==FID_ENROLL?6000+12*fid_tframe:800+3*fid_tframe; u64 cap=g_fid_mode==FID_ENROLL?FID_ENROLL_CAP:FID_VERIFY_CAP; if(lim>cap)lim=cap;
         if(now-fid_tready>lim){
-            if(g_fid_mode==FID_VERIFY){ g_fid_fails++; klog2("faceid: not recognized: ",fid_user); fid_finish(FID_FAILED,g_fid_hint?g_fid_hint:g_fid_seen?"Face not recognized":"No face seen - look at the camera"); }
+            if(g_fid_mode!=FID_ENROLL){ g_fid_fails++; klog2("faceid: not recognized: ",fid_user); fid_finish(FID_FAILED,g_fid_hint?g_fid_hint:g_fid_seen?"Face not recognized":"No face seen - look at the camera"); }
             else fid_finish(FID_FAILED,g_fid_hint?g_fid_hint:"Could not see your face clearly - try again with more light");
             return 1; } }
     if(!fid_ready&&!fid_inflight&&!fid_saving)fid_send_frame();

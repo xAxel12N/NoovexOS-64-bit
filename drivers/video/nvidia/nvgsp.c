@@ -8,7 +8,9 @@
 #include "include/nvx/fs/vfs/ramfs.h"
 #include "include/nvx/drivers/video/nvidia/nvgpu.h"
 #include "include/nvx/drivers/video/nvidia/nvgsp.h"
+#include "include/nvx/drivers/video/nvidia/nvgsp_gen.h"
 #include "include/nvx/drivers/video/fb/damage.h"
+#include "include/nvx/drivers/video/nvidia/nvflip.h"
 
 #ifndef NV_BOOTINFO
 #define NV_BOOTINFO 0x5000ULL
@@ -18,5 +20,13 @@
 #include "drivers/video/nvidia/gsp/boot.c"
 #include "drivers/video/nvidia/gsp/framebuffer_present.c"
 #include "drivers/video/nvidia/gsp/tick_on_off.c"
+#include "drivers/video/nvidia/gsp/flip_emit.c"
+#include "drivers/video/nvidia/gsp/vram_layers.c"
 #include "drivers/video/nvidia/gsp/display_modes.c"
+#include "include/nvx/drivers/video/fb/deskscale.h"
+#include "drivers/video/nvidia/gsp/disp_events.c"
+#include "drivers/video/nvidia/gsp/flip.c"
 #include "drivers/video/nvidia/gsp/accel_3d.c"
+#include "drivers/video/nvidia/gsp/sensors.c"
+#include "drivers/video/nvidia/gsp/dp_sst.c"
+#include "drivers/video/nvidia/gsp/dp_train.c"

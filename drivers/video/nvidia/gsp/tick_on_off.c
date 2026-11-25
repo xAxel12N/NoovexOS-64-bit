@@ -1,14 +1,29 @@
+static void rc_off(const char* w){ nvgsp_all_off(w); int n=0; while(w[n]&&n<95){ g_off_why[n]=w[n]; n++; } g_off_why[n]=0; if(!g_off_t)g_off_t=hr_ns(); }
+static void nv_rc(int k){
+    int was=!g_nv_disabled; g_rc_n++; g_rc_last=k;
+    nvl_s("[rc] GSP-RM reported a channel error on channel "); if(k>=0)nvl_d(g_ch[k].chid); else nvl_s("(not named - both)"); nvl_s(" (error "); nvl_d(g_rc_n); nvl_s(" of at most "); nvl_d(NV_RC_MAX); nvl_s(" this GPU start)"); nvl_nl();
+    if(g_rc_n>NV_RC_MAX){ g_rc_dead=1; rc_off("too many GPU channel errors - the CPU draws until nvgsp unload, then nvgsp all"); return; }
+    if(was)nvgsp_all_off("GSP-RM reported a channel error on our channel (robust channel recovery)");
+    g_rc_dead=1; int ok=1;
+    for(int i=0;i<2&&ok;i++) if(k<0||k==i){ ok=chan_rebuild(i); if(i==0){ g_gr_busy=0; g_gpn=0; g_2d_init=0; g_2d_ok=0; g_cpn=0; g_cpi=0; } }
+    if(!ok){ g_rc_failed++; rc_off("a GPU channel could not be made again after an error - the CPU draws until nvgsp unload, then nvgsp all"); nvl_s("  making the channel again failed - NVIDIA drawing stays off"); nvl_nl(); return; }
+    g_rc_dead=0; g_rc_fixed++; nvl_s("  channel recovered - the other channel and the screen kept their state"); nvl_nl();
+    klog("nvgsp: a faulted GPU channel was freed and made again, NVIDIA drawing continues");
+    if(was){ char m[120]; nvgsp_on(m,120); } }
+void nvdp_service(void);
+void nvev_hpd_tick(void);
 void nvgsp_tick(void){
     if(g_run_on||G.state<3||!G.shm)return;
     for(int k=0;k<16;k++){ u32 fn=0,nn=0; int r=msg_one(&fn,g_evbuf,sizeof(g_evbuf),&nn,0); if(r<=0)break; ev_handle(fn,g_evbuf,nn); nvl_nl();
         if(fn==0x1004&&nn>=8){ u32 ch=*(u32*)(g_evbuf+4); if(ch!=g_ch[0].chid&&ch!=g_ch[1].chid){ g_rc_other++; continue; } }
-        if(fn==0x1004)g_rc_dead=1;
-        if((fn==0x1004||fn==0x1005)&&G.state>=7&&!g_nv_disabled){ g_tick_err++; nvgsp_all_off(fn==0x1004?"GSP-RM reported a channel error on our channel (robust channel recovery)":"GSP-RM reported a GPU page fault"); save_log(0,"(running)"); } }
+        if(fn==0x1005){ g_pf_n++; nvl_s("[rc] GSP-RM queued a GPU page fault (logged like nouveau; the channel error that follows is handled)"); nvl_nl(); }
+        if(fn==0x1004&&G.state>=7){ int k=nn>=8?(*(u32*)(g_evbuf+4)==g_ch[0].chid?0:1):-1; if(!g_nv_disabled)g_tick_err++; nv_rc(k); save_log(0,"(running)"); } }
     if(g_auto_at&&hr_ns()>=g_auto_at&&G.state>=7){ extern u64 g_last_input_t; extern volatile u64 g_ticks; if(g_ticks-g_last_input_t<200){ g_auto_at=hr_ns()+1000000000ULL; return; } g_auto_at=0; g_auto_tries++; char m[120];
         if(!g_nv_disabled){ nvl_s("automatic re-check (once per boot, while the mouse and keyboard are idle) after: "); nvl_s(g_auto_why); nvl_nl(); nvgsp_all_off("automatic re-check after a GPU timeout"); }
         nvgsp_on(m,120); klog(m); }
     if(G.state>=7&&!g_nv_disabled&&hr_ns()-g_tick_live>1000000000ULL){ g_tick_live=hr_ns(); u32 b=0;
-        if(nv_gone(g_nv_boot0,&b)){ g_tick_err++; nvgsp_all_off("the card stopped answering register reads (0xFFFFFFFF or a wrong BOOT0, twice in a row)"); save_log(0,"(running)"); } } }
+        if(nv_gone(g_nv_boot0,&b)){ g_tick_err++; nvgsp_all_off("the card stopped answering register reads (0xFFFFFFFF or a wrong BOOT0, twice in a row)"); save_log(0,"(running)"); } }
+    if(G.state>=7&&!g_nv_disabled){ nvdp_service(); nvev_hpd_tick(); } }
 int nvgsp_off(void){ return g_nv_disabled; }
 u64 nvgsp_off_age_s(void){ return g_nv_disabled&&g_off_t?(hr_ns()-g_off_t)/1000000000ULL:0; }
 int nvgsp_on(char* msg,int max){
@@ -24,7 +39,7 @@ int nvgsp_on(char* msg,int max){
     klog("nvgsp: NVIDIA drawing turned back on - checking the copy engine, 2D engine and compute shaders again");
     if(g_sc.ok){ g_sc.on=1; g_sc.fails=0; g_sc.why[0]=0; g_sc.frames=0; }
     if(g_2d_obj)twod();
-    if(g_cp_ready){ u32 us=0; extern int nvd_selftest(char*,int,u32*); g_cp_ok=1; if(!nvd_selftest(why,80,&us)){ g_cp_ok=0; cp_why(why); } }
+    if(g_cp_ready){ u32 us=0; g_cp_ok=1; why[0]=0; if(!cp_selftest(why,&us)){ g_cp_ok=0; cp_why(why); } }
     if(g_cp_ok){ extern void nvd_request(void); nvd_request(); }
     char* q=msg; char* e=msg+max-1; const char* parts[6]={"NVIDIA on: screen copy ",g_sc.on?"on":"off",", 2D engine ",g_2d_ok?"working":"off",", GPU drawing ",g_cp_ok?"starting":"off"};
     for(int k=0;k<6;k++) for(const char* t=parts[k];*t&&q<e;t++)*q++=*t; *q=0; klog(msg); return 1; }

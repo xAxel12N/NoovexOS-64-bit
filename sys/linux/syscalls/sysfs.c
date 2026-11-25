@@ -1,6 +1,7 @@
 #include "include/nvx/fs/vfs/volumes.h"
 #include "include/nvx/drivers/storage/nvme.h"
 #include "include/nvx/drivers/usb/xhci.h"
+#include "include/nvx/drivers/usb/usbreg.h"
 #include "include/nvx/drivers/acpi/acpi_dev.h"
 #include "include/nvx/core/sound.h"
 #define SX_MAX 200
@@ -11,6 +12,7 @@ static char* sx_s(char* o,const char* s){ while(*s)*o++=*s++; *o=0; return o; }
 static char* sx_u(char* o,u64 v){ char b[24]; int n=0; do{ b[n++]=(char)('0'+v%10); v/=10; }while(v); while(n)*o++=b[--n]; *o=0; return o; }
 static char* sx_i(char* o,long v){ if(v<0){ *o++='-'; v=-v; } return sx_u(o,(u64)v); }
 static char* sx_x(char* o,u32 v,int dg){ static const char H[]="0123456789abcdef"; for(int i=dg-1;i>=0;i--)*o++=H[(v>>(4*i))&15]; *o=0; return o; }
+static char* sx_xs(char* o,u32 v){ int dg=1; while(dg<8&&(v>>(4*dg)))dg++; return sx_x(o,v,dg); }
 static int sx_eq(const char* a,const char* b){ while(*a&&*a==*b){ a++; b++; } return *a==*b; }
 static int sx_pre(const char* s,const char* p){ while(*p){ if(*s!=*p)return 0; s++; p++; } return 1; }
 static int sx_len(const char* s){ int n=0; while(s[n])n++; return n; }
@@ -20,8 +22,8 @@ static sxd* sx_add(int kind,const char* name,const char* sub,int major,int minor
     d->kind=kind; sx_cpy(d->name,name,24); sx_cpy(d->sub,sub,16); d->major=major; d->minor=minor; d->idx=-1; d->blkdisk=-1; return d; }
 static void sx_simple(int kind,const char* sub,const char* dir,const char* name,int maj,int min,const char* devname){
     sxd* d=sx_add(kind,name,sub,maj,min); if(!d)return; char* o=sx_s(d->dpath,dir); o=sx_s(o,name); sx_cpy(d->devname,devname?devname:name,32); }
-extern int gdisk_count(void); extern u32 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_kind_of(int);
-extern int gdisk_read_on(int i,u32 lba,int cnt,u8* buf); extern int usb_msd_read(u32 lba,int cnt,u8* out);
+extern int gdisk_count(void); extern u64 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_kind_of(int);
+extern int gdisk_read_on(int i,u64 lba,int cnt,u8* buf); extern int usb_msd_read(u32 lba,int cnt,u8* out);
 extern int msd_ok; extern u32 msd_lastlba; extern int msd_port;
 extern int g_ct_ok, g_ct_temp, g_ct_pkg;
 extern int lxs_ifinfo(int idx,char* name,u32* ip,u32* mask,u8* mac,u32* flags,int* mtu);
@@ -46,6 +48,7 @@ static void sx_scan(void){
     sx_simple(SXK_TTY,"tty","/devices/virtual/tty/","tty",5,0,0); sx_simple(SXK_TTY,"tty","/devices/virtual/tty/","console",5,1,0); sx_simple(SXK_TTY,"tty","/devices/virtual/tty/","ptmx",5,2,0);
     sx_simple(SXK_FB,"graphics","/devices/platform/nvx-fb/graphics/","fb0",29,0,0);
     sx_simple(SXK_MICE,"input","/devices/virtual/input/","mice",13,63,"input/mice");
+    sx_simple(SXK_MICE,"input","/devices/virtual/input/","event0",13,64,"input/event0");
     { extern void vol_scan(int); vol_scan(0); }
     int nsd=0, nvd=0, nnv=0, nvmin=0;
     int nd=gdisk_count(); for(int i=0;i<nd;i++){ int k=gdisk_kind_of(i); char nm[24],*o; int maj, min, nv=0;
@@ -56,10 +59,11 @@ static void sx_scan(void){
         sx_cpy(d->devname,nm,32); sx_cpy(d->devtype,"disk",16); d->idx=i; d->blkdisk=i; d->size=gdisk_size_of(i); sxd copy=*d; sx_parts(i,&copy,maj,&nvmin,nv); }
     if(msd_ok){ char nm[24],*o=sx_s(nm,"sd"); *o++=(char)('a'+nsd); *o=0; sxd* d=sx_add(SXK_DISK,nm,"block",8,16*nsd); nsd++;
         if(d){ o=sx_s(d->dpath,"/devices/platform/nvx-usb/usb1/1-"); o=sx_u(o,((u64)msd_port+1)); o=sx_s(o,"/block/"); sx_s(o,nm); sx_cpy(d->devname,nm,32); sx_cpy(d->devtype,"disk",16); d->idx=-1; d->blkdisk=-2; d->size=(u64)msd_lastlba+1; d->part=-1; sxd copy=*d; sx_parts(-1,&copy,8,&nvmin,0); } }
-    for(int k=0;k<g_usbdev_n&&k<USBDEV_MAX;k++){ usbdev_t* u=&g_usbdev[k]; if(!u->used)continue; int bus=u->ctl+1, dn=k+2; char nm[24],*o=sx_u(nm,(u64)bus); *o++='-'; sx_u(o,((u64)u->port+1));
-        sxd* d=sx_add(SXK_USB,nm,"usb",189,(bus-1)*128+dn-1); if(!d)break; o=sx_s(d->dpath,"/devices/platform/nvx-usb/usb"); o=sx_u(o,(u64)bus); *o++='/'; sx_s(o,nm);
-        o=sx_s(d->devname,"bus/usb/"); o=sx_x(o,0,0); { char t[8],*q=t; u32 b=(u32)bus; *q++=(char)('0'+b/100%10); *q++=(char)('0'+b/10%10); *q++=(char)('0'+b%10); *q++='/'; *q++=(char)('0'+dn/100%10); *q++=(char)('0'+dn/10%10); *q++=(char)('0'+dn%10); *q=0; sx_s(o,t); }
-        sx_cpy(d->devtype,"usb_device",16); d->idx=k; d->sig=((u64)u->vid<<16)|u->pid; }
+    for(int k=0;k<USBREG_MAX;k++){ usbreg_t* u=&g_usbreg[k]; if(!u->used)continue; int bus=u->ctl+1, dn=u->devnum; char nm[24]; usbreg_bus_name(u,nm,24); char* o;
+        sxd* d=sx_add(SXK_USB,nm,"usb",189,(bus-1)*128+dn-1); if(!d)break; o=sx_s(d->dpath,"/devices/platform/nvx-usb/usb"); o=sx_u(o,(u64)bus);
+        for(int t=0;t<=u->depth&&o-d->dpath<86;t++){ char pn[24]; usbreg_t c=*u; c.depth=(u8)t; usbreg_bus_name(&c,pn,24); *o++='/'; o=sx_s(o,pn); }
+        o=sx_s(d->devname,"bus/usb/"); { char t[8],*q=t; u32 b=(u32)bus; *q++=(char)('0'+b/100%10); *q++=(char)('0'+b/10%10); *q++=(char)('0'+b%10); *q++='/'; *q++=(char)('0'+dn/100%10); *q++=(char)('0'+dn/10%10); *q++=(char)('0'+dn%10); *q=0; sx_s(o,t); }
+        sx_cpy(d->devtype,"usb_device",16); d->idx=k; d->sig=((u64)u->vid<<16)|u->pid|((u64)dn<<32); }
     for(int ix=1;ix<=2;ix++){ char nm[16]; u32 ip,mk,f; u8 mac[6]; int mtu; if(lxs_ifinfo(ix,nm,&ip,&mk,mac,&f,&mtu))continue;
         sxd* d=sx_add(SXK_NET,nm,"net",0,0); if(!d)break; char* o=sx_s(d->dpath,ix==1?"/devices/virtual/net/":"/devices/platform/nvx-net/net/"); sx_s(o,nm); d->idx=ix; d->major=-1; d->sig=f&0x10041u; }
     if(g_acad||g_acb_n>0){ sxd* d=sx_add(SXK_AC,"AC","power_supply",-1,0); if(d){ sx_s(d->dpath,"/devices/platform/nvx-acpi/power_supply/AC"); d->sig=((u64)g_ac_online+1); } }
@@ -83,7 +87,7 @@ static int sx_props(const sxd* d,const char* act,char* o0,int cap,char sep){
     if(d->major>=0&&(d->major||d->minor)){ o=sx_s(o,"MAJOR="); o=sx_u(o,(u64)d->major); *o++=sep; o=sx_s(o,"MINOR="); o=sx_u(o,(u64)d->minor); *o++=sep; o=sx_s(o,"DEVNAME="); o=sx_s(o,d->devname); *o++=sep; }
     if(d->devtype[0]){ o=sx_s(o,"DEVTYPE="); o=sx_s(o,d->devtype); *o++=sep; }
     if(d->kind==SXK_PART){ o=sx_s(o,"PARTN="); o=sx_u(o,(u64)d->part); *o++=sep; }
-    if(d->kind==SXK_USB){ usbdev_t* u=&g_usbdev[d->idx]; o=sx_s(o,"PRODUCT="); o=sx_x(o,u->vid,4); *o++='/'; o=sx_x(o,u->pid,4); o=sx_s(o,"/0"); *o++=sep; o=sx_s(o,"BUSNUM=00"); o=sx_u(o,((u64)u->ctl+1)); *o++=sep; o=sx_s(o,"DEVNUM="); { int dn=d->idx+2; *o++=(char)('0'+dn/100%10); *o++=(char)('0'+dn/10%10); *o++=(char)('0'+dn%10); } *o++=sep; }
+    if(d->kind==SXK_USB){ usbreg_t* u=&g_usbreg[d->idx]; o=sx_s(o,"PRODUCT="); o=sx_xs(o,u->vid); *o++='/'; o=sx_xs(o,u->pid); *o++='/'; o=sx_xs(o,u->bcd); *o++=sep; o=sx_s(o,"TYPE="); o=sx_u(o,u->dd[4]); *o++='/'; o=sx_u(o,u->dd[5]); *o++='/'; o=sx_u(o,u->dd[6]); *o++=sep; o=sx_s(o,"BUSNUM=00"); o=sx_u(o,((u64)u->ctl+1)); *o++=sep; o=sx_s(o,"DEVNUM="); { int dn=u->devnum; *o++=(char)('0'+dn/100%10); *o++=(char)('0'+dn/10%10); *o++=(char)('0'+dn%10); } *o++=sep; }
     if(d->kind==SXK_PCI){ u32 bdf=(u32)d->idx, id=sx_pcr(bdf,0), cl=sx_pcr(bdf,8), ss=sx_pcr(bdf,0x2C); o=sx_s(o,"PCI_CLASS="); o=sx_x(o,cl>>8,6); *o++=sep; o=sx_s(o,"PCI_ID="); o=sx_x(o,id&0xFFFF,4); *o++=':'; o=sx_x(o,id>>16,4); *o++=sep; o=sx_s(o,"PCI_SUBSYS_ID="); o=sx_x(o,ss&0xFFFF,4); *o++=':'; o=sx_x(o,ss>>16,4); *o++=sep; o=sx_s(o,"PCI_SLOT_NAME="); o=sx_s(o,d->name); *o++=sep; }
     if(d->kind==SXK_NET){ o=sx_s(o,"INTERFACE="); o=sx_s(o,d->name); *o++=sep; o=sx_s(o,"IFINDEX="); o=sx_u(o,(u64)d->idx); *o++=sep; }
     if(d->kind==SXK_AC||d->kind==SXK_BAT){ o=sx_s(o,"POWER_SUPPLY_NAME="); o=sx_s(o,d->name); *o++=sep; o=sx_s(o,"POWER_SUPPLY_TYPE="); o=sx_s(o,d->kind==SXK_AC?"Mains":"Battery"); *o++=sep;
@@ -94,7 +98,7 @@ static int sx_props(const sxd* d,const char* act,char* o0,int cap,char sep){
 
 static const char* const SX_ATTR_DISK[]={"uevent","dev","subsystem","size","ro","removable","range","ext_range","capability","queue","device",0};
 static const char* const SX_ATTR_PART[]={"uevent","dev","subsystem","size","ro","start","partition",0};
-static const char* const SX_ATTR_USB[]={"uevent","dev","subsystem","idVendor","idProduct","product","manufacturer","busnum","devnum","speed","bDeviceClass","bNumConfigurations","version","devpath","descriptors",0};
+static const char* const SX_ATTR_USB[]={"uevent","dev","subsystem","idVendor","idProduct","bcdDevice","product","manufacturer","serial","busnum","devnum","speed","bDeviceClass","bDeviceSubClass","bDeviceProtocol","bMaxPacketSize0","bNumConfigurations","bConfigurationValue","bNumInterfaces","bmAttributes","bMaxPower","maxchild","version","devpath","descriptors",0};
 static const char* const SX_ATTR_NET[]={"uevent","subsystem","address","broadcast","operstate","carrier","mtu","type","ifindex","flags","addr_len","tx_queue_len",0};
 static const char* const SX_ATTR_AC[]={"uevent","subsystem","type","online",0};
 static const char* const SX_ATTR_BAT[]={"uevent","subsystem","type","status","present","capacity","capacity_level","technology","energy_full_design","energy_full","energy_now","power_now","voltage_now","cycle_count","model_name","manufacturer","serial_number",0};
@@ -132,19 +136,32 @@ static int sx_attr_read(const sxd* d,const char* a,char* out,int cap){
         if(sx_eq(a,"device/rev")){ o=sx_s(o,"1.0\n"); return (int)(o-out); }
         if(sx_eq(a,"device/state")){ o=sx_s(o,"running\n"); return (int)(o-out); }
         return -1; }
-    if(d->kind==SXK_USB){ usbdev_t* u=&g_usbdev[d->idx];
-        if(sx_eq(a,"idVendor")){ o=sx_x(o,u->vid,4); *o++='\n'; return (int)(o-out); }
-        if(sx_eq(a,"idProduct")){ o=sx_x(o,u->pid,4); *o++='\n'; return (int)(o-out); }
-        if(sx_eq(a,"product")){ o=sx_s(o,u->name[0]?u->name:u->kind); *o++='\n'; return (int)(o-out); }
-        if(sx_eq(a,"manufacturer")){ o=sx_s(o,"Unknown\n"); return (int)(o-out); }
-        if(sx_eq(a,"busnum")){ o=sx_u(o,((u64)u->ctl+1)); *o++='\n'; return (int)(o-out); }
-        if(sx_eq(a,"devnum")){ o=sx_u(o,(u64)d->idx+2); *o++='\n'; return (int)(o-out); }
-        if(sx_eq(a,"speed")){ o=sx_s(o,"480\n"); return (int)(o-out); }
-        if(sx_eq(a,"bDeviceClass")){ o=sx_s(o,"00\n"); return (int)(o-out); }
-        if(sx_eq(a,"bNumConfigurations")){ o=sx_s(o,"1\n"); return (int)(o-out); }
-        if(sx_eq(a,"version")){ o=sx_s(o," 2.00\n"); return (int)(o-out); }
-        if(sx_eq(a,"devpath")){ o=sx_u(o,((u64)u->port+1)); *o++='\n'; return (int)(o-out); }
-        if(sx_eq(a,"descriptors")){ if(cap<18)return -1; u8 dd[18]={18,1,0x00,0x02,0,0,0,64,(u8)u->vid,(u8)(u->vid>>8),(u8)u->pid,(u8)(u->pid>>8),0,1,0,0,0,1}; for(int i=0;i<18;i++)out[i]=(char)dd[i]; return 18; }
+    if(d->kind==SXK_USB){ usbreg_t* u=&g_usbreg[d->idx]; if(!u->used)return -1;
+        #define SXR(S) do{ o=(S); *o++='\n'; *o=0; return (int)(o-out); }while(0)
+        if(sx_eq(a,"idVendor"))SXR(sx_x(o,u->vid,4));
+        if(sx_eq(a,"idProduct"))SXR(sx_x(o,u->pid,4));
+        if(sx_eq(a,"bcdDevice"))SXR(sx_x(o,u->bcd,4));
+        if(sx_eq(a,"product")){ if(!u->prod[0])return -1; SXR(sx_s(o,u->prod)); }
+        if(sx_eq(a,"manufacturer")){ if(!u->mfr[0])return -1; SXR(sx_s(o,u->mfr)); }
+        if(sx_eq(a,"serial")){ if(!u->ser[0])return -1; SXR(sx_s(o,u->ser)); }
+        if(sx_eq(a,"busnum"))SXR(sx_u(o,((u64)u->ctl+1)));
+        if(sx_eq(a,"devnum"))SXR(sx_u(o,(u64)u->devnum));
+        if(sx_eq(a,"speed"))SXR(u->speed==2?sx_s(o,"1.5"):sx_u(o,(u64)usbreg_speed_mbps(u->speed)));
+        if(sx_eq(a,"bDeviceClass"))SXR(sx_x(o,u->dd[4],2));
+        if(sx_eq(a,"bDeviceSubClass"))SXR(sx_x(o,u->dd[5],2));
+        if(sx_eq(a,"bDeviceProtocol"))SXR(sx_x(o,u->dd[6],2));
+        if(sx_eq(a,"bMaxPacketSize0"))SXR(sx_u(o,u->dd[7]));
+        if(sx_eq(a,"bNumConfigurations"))SXR(sx_u(o,u->dd[17]));
+        if(sx_eq(a,"bConfigurationValue"))SXR(sx_u(o,u->cfgval));
+        if(sx_eq(a,"bNumInterfaces")){ *o++=' '; SXR(sx_u(o,u->cfgn>4?u->cfg[4]:0)); }
+        if(sx_eq(a,"bmAttributes"))SXR(sx_x(o,u->cfgn>7?u->cfg[7]:0x80,2));
+        if(sx_eq(a,"bMaxPower")){ o=sx_u(o,u->ma); SXR(sx_s(o,"mA")); }
+        if(sx_eq(a,"maxchild")){ int n=0; for(int k=0;k<USBREG_MAX;k++){ usbreg_t* c=&g_usbreg[k]; if(c->used&&usbreg_parent(k)==d->idx)n++; } SXR(sx_u(o,(u64)(u->cls==9?(n>4?n:4):0))); }
+        if(sx_eq(a,"version")){ *o++=' '; o=sx_x(o,u->bcdusb>>8,1); *o++='.'; SXR(sx_x(o,u->bcdusb&0xFF,2)); }
+        if(sx_eq(a,"devpath")){ char bn[24]; usbreg_bus_name(u,bn,24); const char* q=bn; while(*q&&*q!='-')q++; if(*q)q++; SXR(sx_s(o,q)); }
+        if(sx_eq(a,"driver")){ SXR(sx_s(o,usbreg_driver(u))); }
+        if(sx_eq(a,"descriptors")){ int n=18+u->cfgn; if(cap<n)n=cap; for(int i=0;i<n;i++)out[i]=(char)(i<18?u->dd[i]:u->cfg[i-18]); return n; }
+        #undef SXR
         return -1; }
     if(d->kind==SXK_NET){ char nm[16]; u32 ip,mk,f; u8 mac[6]; int mtu; if(lxs_ifinfo(d->idx,nm,&ip,&mk,mac,&f,&mtu))return -1;
         if(sx_eq(a,"address"))return sx_mac(out,mac);
@@ -322,7 +339,7 @@ int sx_read(const char* p,char* out,int cap){
     char cp[200]; if(!sx_canon(p,cp,1))return -1; sxd* d; const char* a; int k=sx_node(cp,&d,&a); if(k!=8)return -1; const char* rel=cp+5; char* o=out;
     if(d&&a)return sx_attr_read(d,a,out,cap);
     if(sx_eq(rel,"kernel/ostype")){ o=sx_s(o,"NoovexOS\n"); return (int)(o-out); }
-    if(sx_eq(rel,"kernel/osrelease")){ o=sx_s(o,"11.10\n"); return (int)(o-out); }
+    if(sx_eq(rel,"kernel/osrelease")){ o=sx_s(o,"11.22\n"); return (int)(o-out); }
     if(sx_eq(rel,"kernel/hostname")){ o=sx_s(o,g_hostname); *o++='\n'; *o=0; return (int)(o-out); }
     if(sx_eq(rel,"kernel/arch")){ o=sx_s(o,"x86_64\n"); return (int)(o-out); }
     if(sx_eq(rel,"power/state")){ o=sx_s(o,"freeze\n"); return (int)(o-out); }
@@ -356,11 +373,11 @@ static sxd* dx_find(const char* p){ if(!sx_pre(p,"/dev/"))return 0; const char* 
 int dx_list(const char* dir,int idx,char* name,int* type){
     sx_fresh(); int c=0;
 #define DXE(nm,tp) do{ if(c==idx){ sx_cpy(name,nm,64); *type=tp; return 1; } c++; }while(0)
-    if(sx_eq(dir,"/dev")){ for(int i=0;i<g_sxn;i++){ sxd* d=&g_sx[i]; if(d->kind==SXK_DISK||d->kind==SXK_PART)DXE(d->devname,6); } for(int i=0;i<g_sxn;i++) if(g_sx[i].kind==SXK_USB){ DXE("bus",4); break; } DXE("input",4); DXE("pts",4); DXE("shm",4); if(g_snd_state==1)DXE("snd",4); DXE("ptmx",2); return 0; }
+    if(sx_eq(dir,"/dev")){ for(int i=0;i<g_sxn;i++){ sxd* d=&g_sx[i]; if(d->kind==SXK_DISK||d->kind==SXK_PART)DXE(d->devname,6); } for(int i=0;i<g_sxn;i++) if(g_sx[i].kind==SXK_USB){ DXE("bus",4); break; } DXE("input",4); DXE("pts",4); DXE("shm",4); { extern int umidi_present(void); if(g_snd_state==1||umidi_present())DXE("snd",4); } DXE("ptmx",2); return 0; }
     if(sx_eq(dir,"/dev/bus")){ DXE("usb",4); return 0; }
-    if(sx_eq(dir,"/dev/bus/usb")){ int seen=0; for(int i=0;i<g_sxn;i++){ sxd* d=&g_sx[i]; if(d->kind!=SXK_USB)continue; int b=g_usbdev[d->idx].ctl+1; if(seen&(1<<b))continue; seen|=1<<b; char nm[8]; nm[0]=(char)('0'+b/100%10); nm[1]=(char)('0'+b/10%10); nm[2]=(char)('0'+b%10); nm[3]=0; DXE(nm,4); } return 0; }
+    if(sx_eq(dir,"/dev/bus/usb")){ int seen=0; for(int i=0;i<g_sxn;i++){ sxd* d=&g_sx[i]; if(d->kind!=SXK_USB)continue; int b=g_usbreg[d->idx].ctl+1; if(seen&(1<<b))continue; seen|=1<<b; char nm[8]; nm[0]=(char)('0'+b/100%10); nm[1]=(char)('0'+b/10%10); nm[2]=(char)('0'+b%10); nm[3]=0; DXE(nm,4); } return 0; }
     if(sx_pre(dir,"/dev/bus/usb/")&&sx_len(dir)==16){ for(int i=0;i<g_sxn;i++){ sxd* d=&g_sx[i]; if(d->kind!=SXK_USB||!sx_pre(d->devname+8,dir+13))continue; DXE(d->devname+12,2); } return 0; }
-    if(sx_eq(dir,"/dev/input")){ DXE("mice",2); return 0; }
+    if(sx_eq(dir,"/dev/input")){ DXE("mice",2); DXE("event0",2); return 0; }
     return 0;
 #undef DXE
 }
@@ -376,7 +393,7 @@ long dx_open(const char* p,int flags){
     sxd* d=dx_find(p); if(!d)return -9999;
     if(g_uid!=0)return -LX_EACCES;
     if((flags&3)!=0)return -30;
-    if(d->kind==SXK_USB){ static char b[64]; int n=sx_attr_read(d,"descriptors",b,64); if(n<0)return -LX_ENODEV; return lx_text_fd(b,(u64)n,flags&~3); }
+    if(d->kind==SXK_USB){ static char b[18+USBREG_CFG]; int n=sx_attr_read(d,"descriptors",b,(int)sizeof b); if(n<0)return -LX_ENODEV; return lx_text_fd(b,(u64)n,flags&~3); }
     int k=-1; for(int i=0;i<DXF_MAX;i++) if(!g_dxf[i].used){ k=i; break; } if(k<0)return -LX_EMFILE;
     g_dxf[k].used=1; g_dxf[k].off=0; g_dxf[k].d=*d;
     int vi=jc_newvf(LX_BLKD,k,flags&~0x80000); if(vi<0){ g_dxf[k].used=0; return -LX_EMFILE; }

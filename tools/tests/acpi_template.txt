@@ -10,7 +10,7 @@ static u16 g_pm1a=0; static int g_sci_en=0; struct w { char t; u32 port; u32 v; 
 static void rec(char t,u32 p,u32 v){ if(g_nw<64){ g_w[g_nw].t=t; g_w[g_nw].port=p; g_w[g_nw].v=v; g_nw++; } }
 static void outb(u16 p,u8 v){ rec('b',p,v); if(p==0xB2&&v==0xA0)g_sci_en=1; }
 static void outw(u16 p,u16 v){ rec('w',p,v); }
-static int g_flushes=0; static int gdisk_flush(void){ g_flushes++; return 0; }
+static int g_flushes=0; static int gdisk_flush(void){ g_flushes++; return 0; } static void gdisk_shutdown(int p){ (void)p; }
 static u16 inw(u16 p){ if(p==0x404||p==0x1004)return (u16)(g_sci_en?1:0); return 0; }
 static u8 inb(u16 p){ (void)p; return 0; }
 static void io_wait(void){}

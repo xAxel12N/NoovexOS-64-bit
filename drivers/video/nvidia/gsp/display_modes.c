@@ -1,4 +1,6 @@
+#include "include/nvx/drivers/video/nvidia/nvsettings.h"
 typedef struct { u32 khz; u16 hact, hfp, hsw, hbp, vact, vfp, vsw, vbp; u8 nhs, nvs; } kmode;
+static struct { int on; u64 fbv; u32 pitch, w, h; } kd_src;
 typedef struct { u32* pb; u32 cur, put, user, cls, inst, chid; int ok; } kchan;
 #define KD_HSYNC 0xF0000000u
 #define KD_HVRAM 0xF0000001u
@@ -13,6 +15,11 @@ static struct {
     u32 sets, timeouts; char why[112];
 } KD;
 
+static int nvdp_head_link(int h,int or,nvgsp_mon_t* m,const kmode* md,int byfw);
+int nvk_edid_pick(const u8* e,int n,u32 maxkhz,u64 budget,kmode* out);
+static u64 nvk_vram_budget(void);
+static void nvdp_head_gone(int h);
+static int kd_dp_ok(const nvgsp_mon_t* m){ return (m->proto==8||m->proto==9)&&nvset_allowed(NVSET_DPTRAIN); }
 static int kd_fail(const char* w){ char* q=KD.why; q=scopy(q,w); *q=0; nvl_s("  "); nvl_s(w); nvl_nl(); return 0; }
 int nvk_edid_mode(const u8* e,int n,kmode* m){
     if(n<128)return 0;
@@ -79,6 +86,7 @@ static u16 kd_fp16(u16 f){ int e=0, m=0; if(f){ while(--e&&!(f&0x8000u))f=(u16)(
 static int kd_objs(int chid,int fb){
     u64 a=kd_obj(0x00000045u,KD.sync,KD.sync+0xFFF), b=kd_obj(0x00000045u,0,KD.vtop-1), c=fb?kd_obj(0x00000005u,0,KD.vtop-1):1; if(!a||!b||!c)return 0;
     return kd_ht_add(chid,KD_HSYNC,a)&&kd_ht_add(chid,KD_HVRAM,b)&&(!fb||kd_ht_add(chid,KD_HFB,c)); }
+static const char* kd_cls_msg(const char* w,u32 cls){ static char b[96]; char* q=scopy(b,w); q=scopy(q," (class "); for(int k=12;k>=0;k-=4)*q++="0123456789ABCDEF"[(cls>>k)&15u]; *q++=')'; *q=0; return b; }
 static int kd_bail(const char* w){ if(KD.sync)nvv_free(KD.sync); if(KD.lut)nvv_free(KD.lut); if(KD.ilut)nvv_free(KD.ilut); KD.sync=0; KD.lut=0; KD.ilut=0; rm_free(HC(2),HC(2)); g_kd_live=0; return kd_fail(w); }
 static int kd_init(void){
     if(KD.up&&KD.gen==g_gsp_boots)return 1;
@@ -95,12 +103,12 @@ static int kd_init(void){
     { u8 s[28]; for(int i=0;i<28;i++)s[i]=0; if(rm_ctrl(G.hclient,G.hsubdev,0x20800A01u,s,28)==0)KD.wmask=*(u32*)(s+4); if(!KD.wmask)KD.wmask=0xFF; }
     { static u8 bl[4104]; for(u32 i=0;i<sizeof(bl);i++)bl[i]=0; *(u32*)bl=0x56u; rm_ctrl(G.hclient,G.hsubdev,0x20800AC6u,bl,sizeof(bl)); }
     { u32 z=0; rm_ctrl(HC(2),KD.hd,0x731365u,&z,4); }
-    if(rm_alloc(HC(2),HDEV,KD_ROOT,0xC570,0,0)){ return kd_bail("GSP-RM refused the display object (class C570)"); }
+    if(rm_alloc(HC(2),HDEV,KD_ROOT,nvgsp_cls_cur()->disp,0,0)){ return kd_bail(kd_cls_msg("GSP-RM refused the display object",nvgsp_cls_cur()->disp)); }
     KD.sync=nvv_alloc(0x1000,0x1000); KD.lut=nvv_alloc(0x3000,0x1000); KD.ilut=nvv_alloc(0x3000,0x1000);
     if(!KD.sync||!KD.lut||!KD.ilut){ return kd_bail("no VRAM for the display notifier and colour tables"); }
     for(u32 i=0;i<1025;i++){ u32 k=i<1024?i:1023; u32 v=k<<6; u64 a=KD.lut+0x20+(u64)i*8; nvp_wr32(a,v|(v<<16)); nvp_wr32(a+4,v); u32 f=kd_fp16((u16)v); a=KD.ilut+0x20+(u64)i*8; nvp_wr32(a,f|(f<<16)); nvp_wr32(a+4,f); }
     KD.vtop=g_nvl.fb_size?g_nvl.fb_size:nv_vram_size();
-    if(!kc_new(&KD.core,0xC57D,0,0x680000u,0)){ return kd_bail("GSP-RM refused the core display channel (class C57D)"); }
+    if(!kc_new(&KD.core,nvgsp_cls_cur()->core,0,0x680000u,0)){ return kd_bail(kd_cls_msg("GSP-RM refused the core display channel",nvgsp_cls_cur()->core)); }
     if(!kd_objs(0,0)){ return kd_bail("display instance memory is full"); }
     kchan* c=&KD.core; k1(c,0x0208,KD_HSYNC);
     kc_kick(c);
@@ -109,7 +117,7 @@ static int kd_init(void){
 
 static int kd_win(int w){
     kchan* c=&KD.win[w]; if(c->ok)return 1;
-    if(!kc_new(c,0xC57E,(u32)w,0x690000u+(u32)w*0x1000u,(u32)(1+w)))return 0;
+    if(!kc_new(c,nvgsp_cls_cur()->wndw,(u32)w,0x690000u+(u32)w*0x1000u,(u32)(1+w)))return 0;
     if(!kd_objs(1+w,1)){ c->ok=0; return 0; } return 1; }
 static void kd_avi(int head,const kmode* m){
     u8 f[17]; for(int i=0;i<17;i++)f[i]=0; f[0]=0x82; f[1]=0x02; f[2]=0x0D;
@@ -135,33 +143,26 @@ static int kd_own(int h,int w){
     if(!c->ok||!kd_commit(0))return 0; KD.owned|=1u<<w; return 1; }
 static int kd_head_on(int h,nvgsp_mon_t* mon,const kmode* m,int hdmi,int link,u32 excl,int byfw){
     int w=h*2; if(!(KD.wmask&(1u<<w)))return kd_fail("the card has no window for this head");
-    u64 fbpa=*(volatile u64*)(NV_BOOTINFO); u32 pitch=*(volatile u32*)(NV_BOOTINFO+8); u32 fw=*(volatile u16*)(NV_BOOTINFO+12), fh=*(volatile u16*)(NV_BOOTINFO+14);
-    if(!G.bar1||fbpa<G.bar1||fbpa>=G.bar1+G.bar1_len)return kd_fail("the desktop picture is not in NVIDIA video memory (another GPU drives the first screen)");
-    u64 fbv=fbpa-G.bar1; if((pitch&63u)||(fbv&0xFFu)||!fw||!fh||fw>8192||fh>8192||pitch<fw*4)return kd_fail("the desktop picture has a line length the display engine cannot scan out directly");
+    u64 fbpa=*(volatile u64*)(NV_BOOTINFO); u32 pitch=*(volatile u32*)(NV_BOOTINFO+8); u32 fw=*(volatile u16*)(NV_BOOTINFO+12), fh=*(volatile u16*)(NV_BOOTINFO+14); u64 fbv=0;
+    if(kd_src.on){ fbv=kd_src.fbv; pitch=kd_src.pitch; fw=kd_src.w; fh=kd_src.h; }
+    else { if(!G.bar1||fbpa<G.bar1||fbpa>=G.bar1+G.bar1_len)return kd_fail("the desktop picture is not in NVIDIA video memory (another GPU drives the first screen)");
+        fbv=fbpa-G.bar1; }
+    if((pitch&63u)||(fbv&0xFFu)||!fw||!fh||fw>8192||fh>8192||pitch<fw*4)return kd_fail("the desktop picture has a line length the display engine cannot scan out directly");
     u8 a[80]; for(int i=0;i<80;i++)a[i]=0; *(u32*)(a+4)=mon->id; a[8]=(u8)excl;
     if(rm_ctrl(HC(2),KD.hd,0x731152u,a,80))return kd_fail("GSP-RM did not assign an output (ASSIGN_SOR)");
     int or=-1; for(int i=0;i<4;i++) if(*(u32*)(a+40+i*8)&mon->id){ or=i; break; }
     if(or<0)return kd_fail("GSP-RM returned no output for this monitor");
-    if(!kd_win(w))return kd_fail("GSP-RM refused the window channel (class C57E)");
+    if(!kd_win(w))return kd_fail(kd_cls_msg("GSP-RM refused the window channel",nvgsp_cls_cur()->wndw));
     if(!kd_own(h,w))return kd_fail("the display engine did not take the window assignment for this head");
+    int dp=mon->proto==8||mon->proto==9; if(dp){ hdmi=0; if(!nvdp_head_link(h,or,mon,m,byfw))return 0; }
     if(hdmi){ u8 e[12]; for(int i=0;i<12;i++)e[i]=0; *(u32*)(e+4)=mon->id; e[8]=1; if(rm_ctrl(HC(2),KD.hd,0x730273u,e,12))hdmi=0; else { u8 sc[12]; for(int i=0;i<12;i++)sc[i]=0; *(u32*)(sc+4)=mon->id; rm_ctrl(HC(2),KD.hd,0x730293u,sc,12); } }
-    u32 ow, oh; nvk_fit(fw,fh,m->hact,m->vact,&ow,&oh); u32 r[4]; nvk_mode_regs(m,r); u32 ho=(u32)h*0x400u;
+    u32 ow, oh; nvk_fit(fw,fh,m->hact,m->vact,&ow,&oh);
     kchan* c=&KD.core; if(!kc_room(c,64))return kd_fail("the core display channel is stuck"); u32 c0=c->cur;
-    k1(c,0x204C+ho,fw|(fh<<16)); k1(c,0x2058+ho,ow|(oh<<16));
-    km(c,0x2064+ho,4); kv(c,r[0]); kv(c,r[1]); kv(c,r[2]); kv(c,r[3]);
-    k1(c,0x2074+ho,0x00000001u); k1(c,0x2008+ho,0);
-    k1(c,0x200C+ho,m->khz*1000u); k1(c,0x2028+ho,m->khz*1000u);
-    k1(c,0x2030+ho,0x00000004u|(1u<<4)|(1u<<8)|(1u<<12));
-    km(c,0x2280+ho,4); kv(c,0x00000001u|(2u<<2)|(1029u<<8)); kv(c,0xFFFFFFFFu); kv(c,KD_HVRAM); kv(c,(u32)(KD.lut>>8));
-    k1(c,0x2000+ho,0); k1(c,0x2018+ho,0);
-    k1(c,0x2004+ho,((u32)m->nhs<<2)|((u32)m->nvs<<3)|(4u<<4)|(0x3Fu<<26));
-    k1(c,0x2020+ho,mon->id);
-    k1(c,0x0300+(u32)or*0x20,(1u<<h)|((u32)(link==2?2:1)<<8));
+    { u32 n=nvflip_emit_head(c->pb+c->cur,KD_PBMAX-c->cur,h,or,mon->id,(const nvflip_mode_t*)m,fw,fh,(u32)(KD.lut>>8),link); if(!n)c->ok=0; else c->cur+=n; }
     if(!c->ok)return kd_fail("display command buffer overflow");
     kchan* q=&KD.win[w]; if(!kc_room(q,48)){ if(c->put<=c0)c->cur=c0; return kd_fail("the window channel is stuck"); }
     k1(q,0x0308,0x00000001u);
-    km(q,0x0224,4); kv(q,fw|(fh<<16)); kv(q,0x00000010u); kv(q,0x000000CFu); kv(q,pitch>>6);
-    km(q,0x0240,1); kv(q,KD_HFB); k1(q,0x0260,(u32)(fbv>>8)); k1(q,0x0290,0); k1(q,0x0298,fw|(fh<<16)); k1(q,0x02A4,fw|(fh<<16));
+    { u32 n=nvflip_emit_image(q->pb+q->cur,KD_PBMAX-q->cur,fw,fh,pitch,KD_HFB,(u32)(fbv>>8)); if(!n)q->ok=0; else q->cur+=n; }
     km(q,0x02EC,7); kv(q,255u<<4); kv(q,255u); kv(q,2u|(2u<<4)|(4u<<8)|(4u<<12)); kv(q,0xFFFF0000u); kv(q,0xFFFF0000u); kv(q,0xFFFF0000u); kv(q,0xFFFF0000u);
     km(q,0x0400,12); for(int i=0;i<12;i++)kv(q,(i==0||i==5||i==10)?0x00010000u:0);
     km(q,0x0440,3); kv(q,(2u<<2)|(1029u<<8)); kv(q,KD_HVRAM); kv(q,(u32)(KD.ilut>>8));
@@ -173,7 +174,7 @@ static int kd_head_on(int h,nvgsp_mon_t* mon,const kmode* m,int hdmi,int link,u3
     if(!kd_commit(1u<<w))return kd_fail("the display engine did not finish the mode set within 3 s");
     KD.head[h].pend=0; KD.sets++;
     mon->head=h; mon->act_w=m->hact; mon->act_h=m->vact; mon->lit=2;
-    nvl_s("  head "); nvl_d((u64)h); nvl_s(" -> output "); nvl_x(mon->id); nvl_s(" (SOR "); nvl_d((u64)or); nvl_s(hdmi?", HDMI": ", DVI signalling"); nvl_s("): "); nvl_d(m->hact); nvl_s("x"); nvl_d(m->vact); nvl_s(", pixel clock "); nvl_d(m->khz); nvl_s(" kHz, desktop "); nvl_d(fw); nvl_s("x"); nvl_d(fh); nvl_s(" shown as "); nvl_d(ow); nvl_s("x"); nvl_d(oh); nvl_nl();
+    nvl_s("  head "); nvl_d((u64)h); nvl_s(" -> output "); nvl_x(mon->id); nvl_s(" (SOR "); nvl_d((u64)or); nvl_s(dp?", DisplayPort":hdmi?", HDMI": ", DVI signalling"); nvl_s("): "); nvl_d(m->hact); nvl_s("x"); nvl_d(m->vact); nvl_s(", pixel clock "); nvl_d(m->khz); nvl_s(" kHz, desktop "); nvl_d(fw); nvl_s("x"); nvl_d(fh); nvl_s(" shown as "); nvl_d(ow); nvl_s("x"); nvl_d(oh); nvl_nl();
     return 1; }
 static int kd_head_off(int h){
     if(KD.head[h].or<0||KD.head[h].win<0)return 1; int w=KD.head[h].win; u32 ho=(u32)h*0x400u;
@@ -183,7 +184,7 @@ static int kd_head_off(int h){
     int ok=kd_commit(il); if(!ok)return 0;
     if(KD.head[h].hdmi)nvm32(0x6F0000u+ho,1,0);
     KD.sors&=~(1u<<KD.head[h].or); for(int i=0;i<g_mon_n&&i<8;i++) if(g_mon[i].head==h&&g_mon[i].lit==2){ g_mon[i].head=-1; g_mon[i].lit=0; }
-    KD.head[h].or=-1; KD.head[h].win=-1; KD.head[h].id=0; KD.head[h].pend=0; KD.head[h].fw=0; return ok; }
+    nvdp_head_gone(h); KD.head[h].or=-1; KD.head[h].win=-1; KD.head[h].id=0; KD.head[h].pend=0; KD.head[h].fw=0; return ok; }
 
 int nvgsp_mode(int all){
     nvl_s("[20] second screen through GSP-RM: display object, core and window channels, native mode from EDID, the desktop picture mirrored"); nvl_nl();
@@ -204,10 +205,10 @@ int nvgsp_mode(int all){
     int done=0, tried=0, con=0;
     for(int i=0;i<g_mon_n&&i<8;i++){ nvgsp_mon_t* m=&g_mon[i]; if(!m->connected)continue; con++;
         if(m->lit==2)continue; if(m->lit==1&&!all)continue;
-        if(m->or_type!=2||!(m->proto==1||m->proto==2)){ nvl_s("  output "); nvl_x(m->id); nvl_s(": "); nvl_s(nvgsp_mon_sig(m)); nvl_s(" is not driven yet (only HDMI and single-link DVI are)"); nvl_nl(); continue; }
+        int dp=kd_dp_ok(m); if(m->or_type!=2||!(m->proto==1||m->proto==2||dp)){ nvl_s("  output "); nvl_x(m->id); nvl_s(": "); nvl_s(nvgsp_mon_sig(m)); nvl_s((m->proto==8||m->proto==9)?" is not driven (DisplayPort link training is off)":" is not driven yet (only HDMI, single-link DVI and DisplayPort are)"); nvl_nl(); continue; }
         kmode md; if(!m->edid_ok||!nvk_edid_mode(g_mon_edid[i],m->edid_len>256?256:m->edid_len,&md)){ nvl_s("  output "); nvl_x(m->id); nvl_s(": no usable native mode in the EDID"); nvl_nl(); continue; }
         int hdmi=nvk_edid_hdmi(g_mon_edid[i],m->edid_len>256?256:m->edid_len);
-        if(md.khz>(hdmi?340000u:165000u)){ nvl_s("  output "); nvl_x(m->id); nvl_s(": native mode needs a "); nvl_d(md.khz/1000); nvl_s(" MHz pixel clock, above what this link type carries"); nvl_nl(); continue; }
+        { kmode pm; if(!nvk_edid_pick(g_mon_edid[i],m->edid_len>256?256:m->edid_len,dp?0:(hdmi?340000u:165000u),nvk_vram_budget(),&pm)){ nvl_s("  output "); nvl_x(m->id); nvl_s(": native mode needs a "); nvl_d(md.khz/1000); nvl_s(" MHz pixel clock or more video memory than is free, and no other EDID mode fits"); nvl_nl(); continue; } md=pm; }
         int h=-1; if(m->lit==1)h=m->head; else for(int k=0;k<4;k++) if((hmask&(1u<<k))&&!act[k]){ h=k; break; }
         if(h<0){ nvl_s("  output "); nvl_x(m->id); nvl_s(": no free display head"); nvl_nl(); continue; }
         u32 excl=(KD.sors|fwsors)&0xFu; if(m->lit==1&&mor[i]>=0)excl&=~(1u<<mor[i]);

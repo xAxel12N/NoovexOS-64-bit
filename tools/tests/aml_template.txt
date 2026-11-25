@@ -63,6 +63,7 @@ void hk_push(int id){ (void)id; }
 void klog_key(u32 v){ (void)v; }
 void osd_show(int kind,int val,const char* txt){ (void)kind; (void)val; (void)txt; }
 int laptop_notify(anode* n,u32 v){ (void)n; (void)v; return 0; }
+int acpi_hotkeys_notify(anode* n,u32 v){ (void)n; (void)v; return 0; }
 void pm_sleep_button(void){}
 void pm_battery_tick(void){}
 void pm_power_button(void){}
@@ -237,7 +238,7 @@ static void edge_tests(const unsigned char* dsdt,unsigned dl){
     g_clk+=6000000000ULL; ec.stuck=0; int ok2=aec_read(0x10,&b)==0&&b==5; chk("EC retried after 5 s and works again", ok2);
     ec.stuck=1; for(int i=0;i<40;i++)aec_read(0x10,&b); g_clk+=6000000000ULL; w0=g_iow; for(int i=0;i<40;i++)aec_read(0x10,&b); long d2=g_iow-w0;
     g_clk+=6000000000ULL; w0=g_iow; for(int i=0;i<40;i++)aec_read(0x10,&b); long d3=g_iow-w0;
-    chk("EC that stays stuck backs off: short probe after 5 s, then 10 s of silence", g_aec.trips==3&&d2<3*2000+100&&d3==0);
+    chk("EC that stays stuck backs off: one full try and one short probe after 5 s, then 10 s of silence", g_aec.trips==3&&d2<20000+2000+100&&d3==0);
     g_clk+=5000000000ULL; ec.stuck=0; ok2=aec_read(0x10,&b)==0&&b==5; w0=g_iow; ec.stuck=1; aec_read(0x10,&b); long d4=g_iow-w0; ec.stuck=0;
     chk("EC answering again resets the back-off (full wait restored)", ok2&&d4>=20000&&d4<20000+100);
     g_mm_on=0; int w1=acpi_wr(0,0x5000,4,1,0), w2=acpi_wr(0,0x55000000,4,1,0), w3=acpi_wr(0,0x20000040,1,0x77,0);

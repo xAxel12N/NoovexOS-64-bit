@@ -1,6 +1,6 @@
 # s4: Realtek rtw88/rtw89 data tables
 
-## What we already have (drivers/net/wifi/rtw88, tools/wifi-tables)
+## What we already have (drivers/net/wifi/realtek/rtw88, tools/wifi-tables)
 - 8821C: MAC/BB/AGC/AGC_btg_type2/RF_A (rtw_cmac/cbb/cagc/cagc_btg2/crf in rtw_tables_cond.h); power-on/off sequences; efuse parse (logical 512, rfe_option, xtal, MAC).
 - 8822B: mac/agc/bb/rf_a/rf_b (chips/rtw8822b_tables.c). 8822C: agc/bb/rf_a/rf_b/mp_cal_init.
 - PCI IDs: B821, C821, B822, C822, C82F.

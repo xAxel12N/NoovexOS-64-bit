@@ -30,6 +30,7 @@ void h_fpu_save(void* p){ (void)p; } void h_fpu_restore(const void* p){ (void)p;
 int nvxntfs_mount(void* a,void* b,unsigned long long c,unsigned long long d,int e){ (void)a;(void)b;(void)c;(void)d;(void)e; return -1; }
 void nvxntfs_set_logger(void* f){ (void)f; }
 void h_fatal(const char* m){ fprintf(stderr,"FATAL %s\n",m); _exit(90); }
+int g_osd_kind;
 
 static u8* g_disk; static u64 g_secs; static long g_budget=-1; static int g_cut; static unsigned long g_wsec;
 int virtio_blk_probe(u64* n){ *n=g_secs; return 1; }
@@ -303,11 +304,33 @@ static void t_batch(void){
     rec(errs==0&&wb==0,"apt unpack batch: 3000 files written with no disk writes until the commit",d1);
     boot(0); char det[256]=""; int bad=m_verify(det);
     rec(!bad,"apt unpack batch: all 3000 files are intact after a restart",det); }
+int fk_fx_clip(const char*,int); int fk_fx_paste(const char*); int fk_fx_clip_has(void); void fk_fx_clear_clip(void); int fk_fx_delete(const char*); void fk_fx_confirm(int); int fk_fx_restore(const char*); int fk_fx_new_prompt(void);
+static int isdir(const char* p){ u32 st[16]; return fk_stat(p,st)==0; }
+static void t_explorer(void){
+    disk_new(256*2048); boot(1); static const u8 F[]="folder copy payload", G[]="second file";
+    fk_mkdir("/home/qa"); fk_mkdir("/home/qa/sub"); putfile("/home/qa/sub/f.txt",F,sizeof F-1); putfile("/home/qa/g.txt",G,sizeof G-1); fk_mkdir("/home/dst");
+    fk_fx_clear_clip(); rec(!fk_fx_clip_has(),"Files: the clipboard reports empty before anything is copied",0);
+    int c=fk_fx_clip("/home/qa",0); rec(c==0&&fk_fx_clip_has(),"Files: a folder can be copied to the clipboard",0);
+    int p=fk_fx_paste("/home/dst");
+    rec(p==0&&same("/home/dst/qa/sub/f.txt",F,sizeof F-1)&&same("/home/dst/qa/g.txt",G,sizeof G-1)&&same("/home/qa/g.txt",G,sizeof G-1),"Files: pasting a copied folder copies the whole tree and keeps the original",0);
+    fk_fx_paste("/home/dst"); rec(same("/home/dst/qa (2)/g.txt",G,sizeof G-1)&&same("/home/dst/qa (2)/sub/f.txt",F,sizeof F-1),"Files: pasting the same folder again makes a numbered copy",0);
+    fk_fx_clip("/home/qa",0); fk_fx_paste("/home/qa/sub"); rec(!isdir("/home/qa/sub/qa"),"Files: a folder cannot be pasted into itself",0);
+    fk_fx_clip("/home/dst/qa",1); fk_fx_paste("/home"); rec(isdir("/home/dst/qa")&&same("/home/qa/g.txt",G,sizeof G-1),"Files: a cut folder is not moved over a folder with the same name",0);
+    fk_fx_clip("/home/dst/qa",1); fk_fx_paste("/home/dst/qa (2)"); rec(!isdir("/home/dst/qa")&&same("/home/dst/qa (2)/qa/sub/f.txt",F,sizeof F-1)&&!fk_fx_clip_has(),"Files: a cut folder is moved with its contents and the clipboard is cleared",0);
+    fk_sync(); boot(0); rec(same("/home/dst/qa (2)/qa/sub/f.txt",F,sizeof F-1)&&!isdir("/home/dst/qa")&&same("/home/qa/sub/f.txt",F,sizeof F-1),"Files: the folder copy and move survive a restart",0);
+    int d=fk_fx_delete("/home/qa"); rec(d==2&&isdir("/home/qa"),"Files: Delete on a non-empty folder asks before moving it to the Trash",0);
+    fk_fx_confirm(0); rec(isdir("/home/qa"),"Files: Cancel keeps the folder",0);
+    fk_fx_delete("/home/qa"); fk_fx_confirm(1); rec(!isdir("/home/qa")&&same("/.trash/qa/g.txt",G,sizeof G-1),"Files: confirming moves the folder to /.trash",0);
+    fk_fx_restore("qa"); rec(same("/home/qa/g.txt",G,sizeof G-1)&&!isdir("/.trash/qa"),"Files: Restore puts the folder back where it was",0);
+    fk_fx_delete("/home/qa"); fk_fx_confirm(1); int d2=fk_fx_delete("/.trash/qa"); rec(d2==1&&isdir("/.trash/qa"),"Files: Delete inside the Trash asks before deleting permanently",0);
+    fk_fx_confirm(1); rec(!isdir("/.trash/qa"),"Files: confirming in the Trash deletes the folder for good",0);
+    rec(fk_fx_new_prompt(),"Files: the New folder prompt starts with the default name selected",0);
+}
 int main(void){
     setvbuf(stdout,0,_IOLBF,0);
     if(mmap((void*)0x40000000ULL,0x40000000ULL,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE|MAP_NORESERVE,-1,0)!=(void*)0x40000000ULL){ printf("heap mmap failed\n"); return 2; }
     fk_heap();
-    t_format(); t_basic(); t_many(); t_big(); t_full(); t_unix(); t_metacopy(); t_crash(); t_batch(); t_migrate3(); t_migrate2(); t_foreign(); t_step();
+    t_format(); t_basic(); t_many(); t_big(); t_full(); t_unix(); t_metacopy(); t_crash(); t_batch(); t_migrate3(); t_migrate2(); t_foreign(); t_step(); t_explorer();
     printf("  (%lu sectors written)\n",g_wsec);
     printf("%s\n",g_fail?"FAILURES":"ALL PASS");
     return g_fail?1:0;

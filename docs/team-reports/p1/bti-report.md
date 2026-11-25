@@ -4,7 +4,7 @@ Branch p-bti, commit 16e5652c (worktree /home/claude/wt/bti).
 
 ## What was done
 - Ported FreeBSD usr.sbin/bluetooth/iwmbtfw. I fetched the real files and checked SPDX: BSD-2-Clause, Chadd/Kondratyev/Future Crew.
-  New files: drivers/bluetooth/intelbt_fw.c and intelbt_fw.h. The full BSD-2 header is kept, and NOTICE has a new entry listing the deliberate differences from FreeBSD.
+  New files: drivers/bluetooth/firmware/intelbt_fw.c and intelbt_fw.h. The full BSD-2 header is kept, and NOTICE has a new entry listing the deliberate differences from FreeBSD.
   - 7260/7265 path (`ibt-hw-*.bseq`): manufacturer mode, then replay of HCI commands with an event check, then exit with warm/no reset. Includes the fallback name.
   - 8260/8265/9260/9560 legacy path (Read Version 0xfc05 + Boot Params 0xfc0d, `ibt-<var>-<rev>[-<fwrev>].sfi`).
   - TLV path for AX200/AX201/AX210/AX211 (0xfc05 0xff, intel_version_tlv parse, `ibt-%04x-%04x.sfi` from packed CNVi/CNVr top).

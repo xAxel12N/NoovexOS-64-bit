@@ -18,7 +18,7 @@ Branch p-iwxi, commit 11d7f41c, worktree /home/claude/wt/iwxi. I committed only 
    - `iwx status` and `iwx up` sit next to `wifi`. The dispatch is in processes_devices_wifi_bringup.c and `iwx_cmd()` is in system_disks_packages_gpu.c.
    - `iwx up` = probe, start, register, then print the status. This lets the owner retry after copying firmware to /lib/firmware.
    - Both commands are listed in the Terminal Finder (apps/system/logs.c).
-5. **NOTICE.** drivers/net/wifi/iwx/NOTICE now covers every iwx file (iwx_pnvm.c too): the OpenBSD ISC licence, the Intel code under its BSD-3-Clause branch, and the fact that no firmware blob is committed.
+5. **NOTICE.** drivers/net/wifi/intel/iwx/NOTICE now covers every iwx file (iwx_pnvm.c too): the OpenBSD ISC licence, the Intel code under its BSD-3-Clause branch, and the fact that no firmware blob is committed.
 6. **Tests.**
    - tools/check.py `wifi` group now builds and runs tools/tests/iwx/iwx_host.c with ASan and UBSan.
    - It also syntax-checks iwx_pcie.c, which enforces new `_Static_assert`s in iwx.h:

@@ -1,7 +1,7 @@
 #!/bin/sh
 OUT=$1; R=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$OUT/root/usr/bin" "$OUT/root/usr/share/noovex/faceid"
-H=$(cat "$R/tools/faceid/nvx-faceid.cpp" "$0" | sha256sum | cut -c1-16)
+H=$(cat "$R/tools/faceid/nvx-faceid.cpp" "$R/tools/faceid/fid_policy.h" "$0" | sha256sum | cut -c1-16)
 if [ ! -x "$OUT/nvx-faceid" ] || [ "$(cat "$OUT/hash" 2>/dev/null)" != "$H" ]; then
   [ -f "$OUT/source.o" ] && [ "$(cat "$OUT/objflags" 2>/dev/null)" = pie ] || g++ -c -O2 -fPIE -msse4.2 -std=c++17 -I"$R/third_party/dlib" -DDLIB_NO_GUI_SUPPORT -DNDEBUG -DDLIB_DISABLE_ASSERTS "$R/third_party/dlib/dlib/all/source.cpp" -o "$OUT/source.o" && echo pie > "$OUT/objflags" || exit 1
   g++ -O2 -fPIE -msse4.2 -std=c++17 -I"$R/third_party/dlib" -DDLIB_NO_GUI_SUPPORT -DNDEBUG -DDLIB_DISABLE_ASSERTS "$R/tools/faceid/nvx-faceid.cpp" "$OUT/source.o" -fPIE -static-pie -pthread -o "$OUT/nvx-faceid" || exit 1

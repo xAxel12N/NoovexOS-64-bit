@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
@@ -17,22 +18,23 @@ typedef uint64_t u64; typedef uint32_t u32;
 #define PFB 0x0C000000ULL
 #define PFT 0x0E000000ULL
 #define WIN 0x40000000000ULL
-#define NPG (1u<<22)
+#define NPG (1u<<27)
+#define NCH (NPG>>9)
 #define ADDR 0x000FFFFFFFFFF000ULL
 
 u64 hk_setup(void); int hk_spawn(const char*); int hk_step(void); int hk_state(int); int hk_exitst(int); int hk_pid(int); void hk_reap(int);
 const char* hk_cap(int*); void hk_cap_reset(void); void hk_fault(void*); u64 hk_fsbase(void); u32 hk_free_frames(void); int hk_free_vfiles(void); int hk_free_pipes(void); int hk_used_files(void);
 void hk_setenv(const char*,const char*); int hk_pf(u64,int); int hk_pf2(u64,u64); int hk_readfile(const char*,char*,int); int hk_exists(const char*); int hk_addfile(const char*,const char*,const unsigned char*,int); void hk_delfile(int);
-int hk_shm_clear(void); void linux_syscall(void*); void syscall_dispatch(void*); int hk_dns_build(const char*,unsigned char*,int); void hk_udp_big(void);
+int hk_shm_clear(void); void hk_rng_seed(u64); void linux_syscall(void*); void syscall_dispatch(void*); int hk_dns_build(const char*,unsigned char*,int); void hk_udp_big(void);
 
-static int g_memfd; static u64 g_kpml4, g_cur; static u32 g_map[NPG]; static u32 g_maxidx;
+static int g_memfd; static u64 g_kpml4, g_cur; static u32* g_mc[NCH]; static u32 g_cl[NCH], g_ncl;
 static u64 g_host_fs; static ucontext_t* g_uc; static const void* g_pending_fx;
-static unsigned long g_syscalls, g_syncs, g_pfaults; static u64 g_last[7]; static u64 g_ring[16]; static int g_rn;
+static unsigned long g_syscalls, g_syncs, g_pfaults; static u64 g_last[7]; static u64 g_ring[16]; static int g_rn; static u64 g_seed;
 
 static long raw5(long n,long a,long b){ long r; __asm__ volatile("syscall":"=a"(r):"a"(n),"D"(a),"S"(b):"rcx","r11","memory"); return r; }
 static void set_fs(u64 v){ raw5(SYS_arch_prctl,ARCH_SET_FS,(long)v); }
 
-void h_fatal(const char* m){ set_fs(g_host_fs); fprintf(stderr,"HARNESS FATAL: %s\n",m); fflush(stderr); _exit(90); }
+void h_fatal(const char* m){ set_fs(g_host_fs); fprintf(stderr,"HARNESS FATAL: %s (HH_ASLR_SEED=%llu)\n",m,(unsigned long long)g_seed); fflush(stderr); _exit(90); }
 static u64* pte_of(u64 cr3,u64 va){
     u64* l4=(u64*)(cr3&ADDR); u64 e=l4[(va>>39)&511]; if(!(e&1))return 0;
     u64* l3=(u64*)(e&ADDR); e=l3[(va>>30)&511]; if(!(e&1)||(e&0x80))return 0;
@@ -43,23 +45,24 @@ static u64* pte_of(u64 cr3,u64 va){
 #define H_PNO 0x0020000000000000ULL
 #define H_NX  0x8000000000000000ULL
 static void map_one(u64 va,u64 pte){
-    if(va<WIN)return; u64 idx=(va-WIN)>>12; if(idx>=NPG)h_fatal("guest page outside the 16 GB test window");
+    if(va<WIN)return; u64 idx=(va-WIN)>>12; if(idx>=NPG)h_fatal("guest page outside the 512 GB user window");
     u32 want=0;
     if(pte&1){ u64 fr=pte&ADDR; if(fr<PFB||fr>=PFT)h_fatal("PTE points outside the frame pool"); want=(u32)((fr-PFB)>>12)+1;
         if(!(pte&2)||(pte&H_PRO))want|=0x80000000u;
         if(pte&H_NX)want|=0x40000000u;
         if((pte&H_PNO)||!(pte&4))want|=0x20000000u; }
-    if(g_map[idx]==want)return;
+    u32* ch=g_mc[idx>>9]; if((ch?ch[idx&511]:0)==want)return;
+    if(!ch){ ch=g_mc[idx>>9]=calloc(512,4); if(!ch)h_fatal("map chunk"); g_cl[g_ncl++]=(u32)(idx>>9); }
     if(want){ int prot;
         if(want&0x20000000u)prot=PROT_NONE;
         else { prot=PROT_READ|((want&0x80000000u)?0:PROT_WRITE)|((want&0x40000000u)?0:PROT_EXEC); }
-        if(mmap((void*)va,4096,prot,MAP_SHARED|MAP_FIXED,g_memfd,(off_t)((want&0x0FFFFFFFu)-1)*4096)==MAP_FAILED)h_fatal("mmap"); if(idx+1>g_maxidx)g_maxidx=(u32)idx+1; }
+        if(mmap((void*)va,4096,prot,MAP_SHARED|MAP_FIXED,g_memfd,(off_t)((want&0x0FFFFFFFu)-1)*4096)==MAP_FAILED)h_fatal("mmap"); }
     else munmap((void*)va,4096);
-    g_map[idx]=want;
+    ch[idx&511]=want;
 }
 static void sync_all(u64 cr3){
     g_syncs++;
-    for(u32 i=0;i<g_maxidx;i++) if(g_map[i]){ u64 va=WIN+((u64)i<<12); u64* p=pte_of(cr3,va); map_one(va,p?*p:0); }
+    for(u32 k=0;k<g_ncl;k++){ u32* ch=g_mc[g_cl[k]]; for(u32 j=0;j<512;j++) if(ch[j]){ u64 va=WIN+((((u64)g_cl[k]<<9)|j)<<12); u64* p=pte_of(cr3,va); map_one(va,p?*p:0); } }
     u64* l4=(u64*)(cr3&ADDR); u64 e4=l4[8]; if(!(e4&1))return;
     u64* l3=(u64*)(e4&ADDR);
     for(int a=0;a<512;a++){ if(!(l3[a]&1))continue; u64* l2=(u64*)(l3[a]&ADDR);
@@ -115,7 +118,7 @@ static void on_fault(int sig,siginfo_t* si,void* ucv){
     g_uc=uc; hk_fault(r);
     h_fatal("jc_fault returned");
 }
-static void on_alarm(int s){ (void)s; set_fs(g_host_fs); fprintf(stderr,"HARNESS TIMEOUT\n"); _exit(92); }
+static void on_alarm(int s){ (void)s; set_fs(g_host_fs); fprintf(stderr,"HARNESS TIMEOUT (HH_ASLR_SEED=%llu)\n",(unsigned long long)g_seed); _exit(92); }
 
 static int g_fail, g_pass;
 static void rec(int ok,const char* name,const char* det){ if(ok)g_pass++; else g_fail++; printf("  %-64s %s%s%s\n",name,ok?"ok":"FAIL",(!ok&&det)?"   ":"",(!ok&&det)?det:""); fflush(stdout); }
@@ -141,6 +144,7 @@ int main(int argc,char** argv){
     sa.sa_sigaction=on_sys; sigaction(SIGSYS,&sa,0);
     sa.sa_sigaction=on_fault; sigaction(SIGSEGV,&sa,0); sigaction(SIGBUS,&sa,0); sigaction(SIGILL,&sa,0); sigaction(SIGFPE,&sa,0); sigaction(SIGTRAP,&sa,0);
     g_kpml4=hk_setup(); g_cur=g_kpml4; if(!g_kpml4)h_fatal("setup");
+    { const char* e=getenv("HH_ASLR_SEED"); if(e)g_seed=strtoull(e,0,0); else { FILE* r=fopen("/dev/urandom","rb"); if(!r||fread(&g_seed,8,1,r)!=1)g_seed=(u64)time(0)^((u64)getpid()<<32); if(r)fclose(r); } hk_rng_seed(g_seed|1); }
     struct sock_filter f[]={
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS,12),
         BPF_JUMP(BPF_JMP|BPF_JGE|BPF_K,0x400,0,2),
@@ -234,7 +238,7 @@ int main(int argc,char** argv){
     { int nshm=hk_shm_clear(); char sd[64]; snprintf(sd,sizeof sd,"%u frames missing after removing %d SysV segments",fr0-hk_free_frames(),nshm); rec(hk_free_frames()==fr0,"no page frames leaked after all programs exit",hk_free_frames()==fr0?0:sd); }
     rec(hk_free_vfiles()==vf0-1||hk_free_vfiles()==vf0,"no open-file slots leaked",0);
     rec(hk_free_pipes()==pp0,"no pipes leaked",0);
-    printf("  (%lu Linux system calls handled, %lu address-space switches, %lu page faults resolved)\n",g_syscalls,g_syncs,g_pfaults);
+    printf("  (%lu Linux system calls handled, %lu address-space switches, %lu page faults resolved, HH_ASLR_SEED=%llu)\n",g_syscalls,g_syncs,g_pfaults,(unsigned long long)g_seed);
     printf("%s\n",g_fail?"FAILURES":"ALL PASS");
     return g_fail?1:0;
 }

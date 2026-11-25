@@ -2,11 +2,13 @@
 #include "include/nvx/mem/heap.h"
 #include "include/nvx/mem/pmm_vmm.h"
 #include "include/nvx/fs/vfs/sysroot.h"
+#include "include/nvx/core/kaslr.h"
 /* ---- heap allocator (foundation for large ports: Lua/NetSurf/Quake): first-fit free-list + bump ---- */
 
 hblk* heap_head=0; unsigned long long heap_cur=0, heap_top=0, heap_base=0;
   
 int g_heap_mapped=0;
+static void heap_slide(void){ u64 sl=kaslr_rand(4096)<<12; if(sl&&heap_top>heap_base+sl+0x8000000ULL){ heap_base+=sl; g_kaslr_heap=sl; } }
 void heap_init(int ram_mb){
     unsigned long long ram=(unsigned long long)(ram_mb>0?ram_mb:64)*1048576ULL;
     unsigned long long lo=0x18000000ULL, cap=0xFC000000ULL, sb=sysroot_slot_base(), se=sysroot_slot_end();
@@ -14,11 +16,11 @@ void heap_init(int ram_mb){
     heap_base=lo;
     heap_top=(ram>heap_base+0x8000000ULL)?(ram-0x100000ULL):(heap_base+0x8000000ULL);
     if(heap_top>cap)heap_top=cap;
-    if(mm_known()){ u64 cs=0,ce=0; if(mm_clean_region(lo,cap,&cs,&ce)&&ce-cs>=0x8000000ULL){ heap_base=cs; heap_top=ce-0x100000ULL; g_heap_mapped=2; heap_cur=heap_base; heap_head=0; return; }
+    if(mm_known()){ u64 cs=0,ce=0; if(mm_clean_region(lo,cap,&cs,&ce)&&ce-cs>=0x8000000ULL){ heap_base=cs; heap_top=ce-0x100000ULL; g_heap_mapped=2; heap_slide(); heap_cur=heap_base; heap_head=0; return; }
         unsigned long long ue=mm_usable_end(heap_base); if(ue>cap)ue=cap;
         if(ue>=heap_base+0x4000000ULL){ heap_top=ue-0x100000ULL; g_heap_mapped=1; }
         else { for(unsigned long long c=lo;c+0x8000000ULL<=cap;c+=0x100000ULL){ unsigned long long e=mm_usable_end(c); if(e>cap)e=cap; if(e>=c+0x8000000ULL){ heap_base=c; heap_top=e-0x100000ULL; g_heap_mapped=1; break; } if(e>c)c=(e&~0xFFFFFULL); } } }
-    heap_cur=heap_base; heap_head=0;
+    heap_slide(); heap_cur=heap_base; heap_head=0;
 }
 /* ---- extra heap arenas carved from identity-mapped RAM above 4 GB ----
    kmalloc normally serves the low arena (heap_base..heap_top). When that is

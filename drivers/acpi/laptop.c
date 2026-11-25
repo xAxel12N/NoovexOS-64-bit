@@ -5,9 +5,12 @@
 #include "include/nvx/core/sound.h"
 #include "include/nvx/drivers/acpi/aml.h"
 #include "include/nvx/drivers/acpi/acpi_dev.h"
+#include "include/nvx/drivers/platform/hkact.h"
 
 extern u64 g_aml_hard_deadline;
 extern void toast(const char* m);
+int thinkpad_hkey(u32 c);
+int asus_wmi_key(u32 c);
 int g_lap_kind=0, g_lap_kbd=-1, g_lap_kbdmax=0, g_lap_chg=0, g_lap_chg_ok=0, g_lap_tp_off=0; u32 g_lap_events=0, g_lap_last=0;
 const char* g_lap_name="none";
 static anode* g_lap_dev;
@@ -30,11 +33,7 @@ static int asus_wmnb(u32 method,u32 a0,u32 a1,u64* ret){
 #define ASUS_INIT 0x54494E49u
 static int lap_uid_is(anode* d,const char* s){ anode* u=aml_child(d,"_UID"); if(!u)return 0; aobj o; lz(&o); u64 dl=g_aml_hard_deadline; g_aml_hard_deadline=0; int r=aml_eval(u,0,0,&o); g_aml_hard_deadline=dl;
     int ok=0; if(!r&&o.type==AT_STR&&o.p){ ok=1; for(int k=0;s[k];k++) if((u32)k>=o.len||o.p[k]!=(u8)s[k])ok=0; } aobj_free(&o); return ok; }
-static void vol_step(int d){ int v=g_snd_vol+d*6; if(d==-10)v=g_snd_vol?0:60; if(v<0)v=0; if(v>100)v=100; g_snd_vol=v; extern void snd_apply_volume(int); snd_apply_volume(v); extern void osd_show(int,int,const char*); osd_show(1,v,v?"Volume":"Muted"); }
-static void bl(int d){ bl_step(d); extern int bl_cur_pct(void); extern void osd_show(int,int,const char*); int b=bl_cur_pct(); osd_show(2,b<0?0:b,"Brightness"); }
 void laptop_kbd_set(int lvl);
-static void kbd_step(int d){ if(g_lap_kbdmax<=0)return; int l=g_lap_kbd<0?0:g_lap_kbd; l+=d; if(l<0)l=0; if(l>g_lap_kbdmax)l=d>0?0:g_lap_kbdmax; laptop_kbd_set(l); toast(l==0?"Keyboard light off":"Keyboard light on"); }
-static void tp_toggle(void){ extern void hk_do(int); hk_do(19); }
 
 void laptop_init(void){
     if(!g_aml_ok||!g_aroot)return; anode* out[8]; int n;
@@ -58,6 +57,7 @@ void laptop_kbd_set(int lvl){
     if(g_lap_kind==1)lap_m1("MLCS",(u64)lvl,0);
     else if(g_lap_kind==2)lap_m0(lvl?"SALS":"HALS",0);
     else if(g_lap_kind==3)asus_wmnb(ASUS_DEVS,0x00050021u,0x80u|(u32)lvl,0);
+    else if(!g_lap_kind){ extern int hkact_kbd_set_cb(int); hkact_kbd_set_cb(lvl); }
     g_lap_kbd=lvl; }
 void laptop_charge_set(int on){
     if(!g_lap_chg_ok)return;
@@ -72,9 +72,8 @@ static int vpc_rd(u32 cmd,u64* out){
     return -1; }
 static void lap_key(u32 c){
     g_lap_events++; g_lap_last=c;
-    if(g_lap_kind==1){ switch(c){ case 0x1010: bl(1); break; case 0x1011: bl(-1); break; case 0x1015: vol_step(1); break; case 0x1016: vol_step(-1); break; case 0x1017: vol_step(-10); break; case 0x1012: kbd_step(1); break; case 0x1008: case 0x1009: tp_toggle(); break; } return; }
-    if(c>=0x10&&c<=0x1F){ bl(1); return; } if(c>=0x20&&c<=0x2E){ bl(-1); return; }
-    switch(c){ case 0x30: vol_step(1); break; case 0x31: vol_step(-1); break; case 0x32: vol_step(-10); break; case 0xC4: kbd_step(1); break; case 0xC5: kbd_step(-1); break; case 0xC7: kbd_step(1); break; case 0x6B: tp_toggle(); break; } }
+    if(g_lap_kind==1){ if(thinkpad_hkey(c)||c!=0x1012||g_lap_kbdmax<=0)return; u64 v=0; if(!lap_m1("MLCG",0,&v))hkact_kbd_report((int)(v&3)); return; }
+    asus_wmi_key(c); }
 int laptop_notify(anode* n,u32 v){
     if(!g_lap_kind||n!=g_lap_dev)return 0;
     if(g_lap_kind==1){ if(v!=0x80)return 1; for(int k=0;k<16;k++){ u64 c=0; if(lap_m0("MHKP",&c)||!c)break; lap_key((u32)c); } return 1; }

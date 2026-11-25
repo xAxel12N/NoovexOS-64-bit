@@ -3,6 +3,7 @@
 #include "include/nvx/arch/x86_64/user/ring3.h"
 #include "include/nvx/arch/x86_64/smp/smp.h"
 #include "include/nvx/core/klog.h"
+#include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/arch/x86_64/interrupts/interrupts.h"
 #include "include/nvx/graphics/ui/wm.h"
 #include "include/nvx/fs/vfs/ramfs.h"
@@ -14,6 +15,7 @@
 #include "include/nvx/fs/nvx/nvx4.h"
 #include "include/nvx/fs/vfs/unixfs.h"
 #include "include/nvx/arch/x86_64/cpu/cpu_init.h"
+#include "include/nvx/core/perf.h"
   
 
 static volatile int g_smp_sched=0;
@@ -54,7 +56,7 @@ void smp_nmi_cpu(int cpu){
 
 void smp_ipi(regs_t* r,int user){
     struct pcpu* c=PCPU; c->ipis++;
-    u64 v=r->vector; lapic_eoi();
+    u64 v=r->vector; lapic_eoi(); perf_cpu_drain();
     if(v==IPI_TLB){ c->tlb_pending=0; cpu_set_pt(cpu_get_pt()); return; }
     if(v==IPI_HALT){ c->parked=1; for(;;)cpu_stop(); }
     if(v==IPI_RESCHED&&user&&c->js_running&&c->jcur>=0){ bkl_lock(); jc_preempt(r); }
@@ -62,7 +64,7 @@ void smp_ipi(regs_t* r,int user){
 void ap_timer(regs_t* r,int user){
     struct pcpu* c=PCPU; c->ticks++;
     if(user)c->user_ticks++; else if(!c->js_running&&!bkl_held())c->idle_ticks++;
-    lapic_eoi();
+    lapic_eoi(); perf_cpu_drain();
     { extern void nmiwd_check(void); nmiwd_check(); }
     if(user&&c->js_running&&c->jcur>=0&&c->ticks-c->js_slice>=2){ bkl_lock(); jc_preempt(r); }
 }
@@ -110,7 +112,7 @@ void ap_entry_c(int id){
     { extern void cpupower_init(int); cpupower_init(0); }
     { u64 b=cpu_rdmsr(0x1B); if(g_lapic_x2&&!(b&(1ULL<<10)))cpu_wrmsr(0x1B,b|(1ULL<<10)|(1ULL<<11)); else if(!(b&(1ULL<<11)))cpu_wrmsr(0x1B,b|(1ULL<<11)); }
     lapic_wr(0x80,0); lapic_wr(0xF0,0x1FF); lapic_wr(0x350,0x10000); lapic_wr(0x360,0x10000);
-    us_init();
+    { extern void us_cpu_reload(void); if(c->us_ready)us_cpu_reload(); else us_init(); }
     { u64 cnt=g_hr.lapic_hz/100ULL; if(cnt>0&&cnt<=0xFFFFFFFFULL){ lapic_wr(0x3E0,0x3); lapic_wr(0x320,HR_LAPIC_VEC|(1u<<17)); lapic_wr(0x380,(u32)cnt); } }
     c->online=1; __sync_fetch_and_add(&g_cores_online,1);
     cpu_irq_on();
@@ -134,9 +136,12 @@ int smp_disable(void){
     for(int i=1;i<g_ncpu;i++) if(g_cpu[i].online)g_cpu[i].stop=1;
     ipi_others(IPI_RESCHED);
     int left=0;
-    for(int t=0;t<400;t++){ left=0; for(int i=1;i<g_ncpu;i++) if(g_cpu[i].online&&!g_cpu[i].parked)left++; if(!left)break;
+    for(int t=0;t<2000;t++){ left=0; for(int i=1;i<g_ncpu;i++) if(g_cpu[i].online&&!g_cpu[i].parked)left++; if(!left)break;
+        if(t&&!(t%400))ipi_others(IPI_RESCHED);
         int d=bkl_drop(); hr_delay_us(5000); bkl_take(d); }
-    if(left)return -1;
+    if(left){ char b[160],*q=b; q=scopy(q,"smp: cores did not stop in 10 s:");
+        for(int i=1;i<g_ncpu&&q<b+120;i++) if(g_cpu[i].online&&!g_cpu[i].parked){ q=scopy(q," cpu"); q=udec(q,(u32)i); q=scopy(q,g_cpu[i].js_running?" (program":" (kernel"); if(g_cpu[i].jcur>=0){ q=scopy(q," job "); q=udec(q,(u32)g_cpu[i].jcur); } if(g_cpu[i].bkl_wait)q=scopy(q,", waits for the kernel lock"); *q++=')'; }
+        *q=0; klog(b); return -1; }
     g_smp_on=0; klog("smp: secondary cores parked");
     return 0;
 }

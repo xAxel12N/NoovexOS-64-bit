@@ -1,1 +1,1 @@
-NVIDIA GSP driver pieces included by drivers/video/nvidia/nvgsp.c: firmware unpack, boot, framebuffer present, tick/on/off, display modes, 3D.
+NVIDIA GSP driver pieces included by drivers/video/nvidia/nvgsp.c: firmware unpack, boot, framebuffer present, tick/on/off, display modes, main-screen page flips (flip.c, flip_emit.c; see NOTICE), 3D.

@@ -3,7 +3,7 @@
 
 #include "include/nvx/base.h"
 
-/* rtw88 multi-chip contract (v11.10). One rtw_chip per supported chip in drivers/net/wifi/rtw88/chips/.
+/* rtw88 multi-chip contract (v11.22). One rtw_chip per supported chip in drivers/net/wifi/realtek/rtw88/chips/.
    The core (bring-up, firmware download, MAC/TRX init, rings, scan, join, keys) is shared and calls the
    chip only through this table. Register access always goes through rtw_r8..rtw_w32, which use the active
    bus (PCIe MMIO today, USB vendor requests later), so chip code never touches the bus directly.
@@ -22,7 +22,13 @@
    OR-ed into 0x0003 before the firmware download (0 = 0xD8). fw_rxff_size: firmware RX FIFO size (information).
    pcie_phy: PCIe PHY (MDIO) parameters, run by wifi init before power_on; 0 = written, <0 = failed, 1 or no op =
    nothing to write for this chip/cut. efuse_phy/log/prot: eFuse physical, logical and protected sizes (0 = the
-   8821C 512/512/96; the maps hold up to 1024/768). */
+   8821C 512/512/96; the maps hold up to 1024/768). trx_init: replaces the core TRX/page setup (8051 chips: legacy
+   RQPN/LLT); tx_desc_sz is the TX packet descriptor size every TX path uses (rtw_txd_sz). rx_p0_pwdb: 1 = PHY status
+   page 0 (CCK) RSSI is PWDB - 97 (8723D) instead of the LNA/VGA tables. rf_read: full 20-bit RF read for chips
+   that read RF through the LSSI read-back (8723D); rtw_rf_read and masked rtw_rf_write use it.
+   pwr_track: thermal power tracking, called about every 2 s while connected and awake (8723D: RF 0x42 trigger, read on
+   the next call). iqk_regs: save (put=0, before calibrate) / restore (put=1, the IQK guard undo) the IQK result
+   registers. lte_base: LTE-coex indirect register block (ctrl, wdata, rdata); 0 = 0x1700 (8821C), 8723D 0x7C0. */
 
 enum { RTW_BUS_PCIE = 0, RTW_BUS_USB = 1 };
 enum { RTW_WCPU_3081 = 0, RTW_WCPU_8051 = 1 };
@@ -94,12 +100,19 @@ typedef struct rtw_chip {
     u32 fw_rxff_size;
     int  (*pcie_phy)(u32 m);
     u16 efuse_phy, efuse_log, efuse_prot;
+    int  (*trx_init)(u32 m);
+    u8  rx_p0_pwdb;
+    u32 (*rf_read)(u32 m, int path, u32 addr);
+    void (*pwr_track)(u32 m);
+    void (*iqk_regs)(u32 m, int put);
+    u16 lte_base;
 } rtw_chip;
 
 extern const rtw_chip* g_rtw_chip;
 extern const rtw_bus* g_rtw_bus;
 extern const rtw_bus rtw_bus_pcie;
 extern rtw_efuse_info g_rtw_efuse;
+static inline u32 rtw_txd_sz(void){ return g_rtw_chip&&g_rtw_chip->tx_desc_sz?g_rtw_chip->tx_desc_sz:48u; }
 
 const rtw_chip* rtw_chip_find(u16 vendor, u16 device, int bus);
 int  rtw_chip_count(void);
@@ -125,8 +138,9 @@ int  rtw_h2c_ring_setup(u32 m);
 int  rtw_rf_paths(u32 m);
 void rtw_h2c_ring_off(void);
 extern u32 g_rtw_h2c_sent, g_rtw_h2c_fail;
-extern int g_rtw_iqk_en, g_rtw_iqk_last, g_rtw_iqk_dead;
+extern int g_rtw_iqk_en, g_rtw_iqk_last, g_rtw_iqk_dead, g_rtw_iqk_reload, g_rtw_iqk_undone, g_rtw_iqk_runs;
 void rtw_chip_calibrate(u32 m);
+void rtw_iqk_guard(u32 m, int beacons, u32 bcn_int, u64 now);
 void rtw_chmark(const char* t);
 
 #endif

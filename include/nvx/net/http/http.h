@@ -27,6 +27,12 @@ extern volatile unsigned char kdown[128];
 
 int parse_ip(const char*s,u32*out);
 int http_fetch_to(const char*host,const char*path,u8*buf,int cap);
+int http_split_port(const char* host0,char* hn,int cap,u16 def,u16* port);
+void http_pump_begin(void);
+void http_text_dump(const char* b,int n,int limit);
+void http_pump_end(void);
+extern int g_http_cmd_busy;
+extern void (*g_wait_pump)(void);
 int http_fetch(const char*host,const char*path);
 void entropy_get(u8* out,int n);
 void secure_zero(void*p,int n);

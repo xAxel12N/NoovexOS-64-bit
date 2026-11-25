@@ -18,7 +18,7 @@ int proc_create(const u8* elf,u32 len){
     int pi=-1; for(int i=0;i<MAXPROC;i++) if(!g_proc[i].used){pi=i;break;} if(pi<0)return -1;
     u64 entry; u64 cr3=elf_build_space(elf,len,&entry); if(!cr3)return -1;
     u64* s=(u64*)(g_pstack[pi]+16384);
-    *(--s)=0x23; *(--s)=USTK_V+0x1000ULL; *(--s)=0x202; *(--s)=0x1B; *(--s)=entry;  /* iret frame */
+    *(--s)=0x23; *(--s)=g_ustk+0x1000ULL; *(--s)=0x202; *(--s)=0x1B; *(--s)=entry;  /* iret frame */
     *(--s)=(u64)user_trampoline;                                                     /* sched_swap ret target */
     for(int k=0;k<6;k++)*(--s)=0;                                                    /* callee-saved */
     g_proc[pi].ksp=(u64)s; g_proc[pi].cr3=cr3; g_proc[pi].used=1; g_proc[pi].alive=1; g_proc[pi].ppid=g_curproc;
@@ -54,7 +54,7 @@ static int proc_create_pt(const u8* elf,u32 len,char id){
     u64 entry; u64 cr3=elf_build_space(elf,len,&entry); if(!cr3)return -1;
     u64 f=pframe_alloc(); if(!f)return -1; if(vm_map(cr3,0x40000050000ULL,f,0x7ULL))return -1; *(volatile char*)f=id;   /* id byte at a fixed user vaddr */
     regs_pt* c=&g_proc[pi].ctx; for(int i=0;i<(int)(sizeof(*c)/8);i++)((u64*)c)[i]=0;
-    c->rip=entry; c->cs=0x1B; c->rflags=0x202; c->rsp=USTK_V+0x1000ULL; c->ss=0x23;
+    c->rip=entry; c->cs=0x1B; c->rflags=0x202; c->rsp=g_ustk+0x1000ULL; c->ss=0x23;
     g_proc[pi].cr3=cr3; g_proc[pi].used=1; g_proc[pi].alive=1; g_proc[pi].started=1; g_proc[pi].ppid=g_curproc;
     return pi;
 }

@@ -499,3 +499,9 @@ void p256_modn_add(const u8 a[32],const u8 b[32],u8 out[32]){ ec_curve* c=&g_p25
 void p256_modn(u8 a[32]){ ec_curve* c=&g_p256; ec_setup(c); u32 x[12]; bn_from_be(x,8,a,32); while(bn_cmp(x,c->mn.n,8)>=0)bn_sub(x,x,c->mn.n,8); bn_to_be(a,32,x,8); }
 void p256_prime(u8 out[32]){ hex2b(g_p256.p,out,32); }
 void p256_order(u8 out[32]){ hex2b(g_p256.n,out,32); }
+void p256_fp(int op,const u8 a[32],const u8 b[32],u8 out[32]){ ec_curve* c=&g_p256; ec_setup(c); u32 x[12],y[12],r[12],xm[12],ym[12];
+    bn_from_be(x,8,a,32); while(bn_cmp(x,c->mp.n,8)>=0)bn_sub(x,x,c->mp.n,8);
+    if(op==3){ mont_pow(&c->mp,r,x,b,32); bn_to_be(out,32,r,8); return; }
+    bn_from_be(y,8,b,32); while(bn_cmp(y,c->mp.n,8)>=0)bn_sub(y,y,c->mp.n,8);
+    if(op==0)fe_add(c,r,x,y); else if(op==1)fe_sub(c,r,x,y); else { mont_to(&c->mp,xm,x); mont_to(&c->mp,ym,y); fe_mul(c,r,xm,ym); mont_from(&c->mp,r,r); }
+    bn_to_be(out,32,r,8); }

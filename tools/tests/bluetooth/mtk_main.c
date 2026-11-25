@@ -41,7 +41,7 @@ static int btusb_vctrl(u8 rt,u8 req,u16 val,u16 idx,u8* buf,u16 len){
     if(rt==0x5E&&req==2&&len==4){ dev.eprst++; dev.eprst_v=(u32)buf[0]|((u32)buf[1]<<8)|((u32)buf[2]<<16)|((u32)buf[3]<<24); if(reg!=0x74011890)return 0; return 1; }
     return 0;
 }
-#include "drivers/bluetooth/mtkbt_fw.c"
+#include "drivers/bluetooth/firmware/mtkbt_fw.c"
 static int fails, checks;
 #define CHECK(c,msg) do{ checks++; if(c)printf("  %-64s ok\n",msg); else { fails++; printf("  %-64s FAIL (line %d)\n",msg,__LINE__); } }while(0)
 static void p32(u8* p,u32 v){ p[0]=(u8)v; p[1]=(u8)(v>>8); p[2]=(u8)(v>>16); p[3]=(u8)(v>>24); }

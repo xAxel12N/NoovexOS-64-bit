@@ -10,6 +10,8 @@
 #include "include/nvx/sys/native/syscall.h"
 #include "include/nvx/core/proc/jobs.h"
 #include "include/nvx/core/secboot.h"
+#include "include/nvx/core/kaslr.h"
+#include "include/nvx/lib/crypto/nvxcrypto2.h"
 /* ================= STAGE 6: ELF loader for user programs =================
    Parse an ELF64, map its PT_LOAD segments into a fresh user address space at
    their virtual addresses (user-accessible), set up a user stack, run in ring 3. */
@@ -28,7 +30,7 @@ char g_exec_args[2048]={0}; u64 g_arg_rsp=0,g_arg_argv=0; int g_arg_argc=0;
 char g_xa_buf[XA_CAP]; int g_xa_off[XA_MAX], g_xa_n=0, g_xa_set=0;
 char g_xe_buf[XA_CAP]; int g_xe_off[XA_MAX], g_xe_n=0, g_xe_set=0;
 #define STKIMG 0x50000
-static u8 g_stkimg[STKIMG]; int g_elf_pie=0;
+static u8 g_stkimg[STKIMG]; int g_elf_pie=0; u64 g_elf_base, g_elf_ibase, g_ustk=USTK_V;
 
 static void elf_args_from_string(const char* a){
     int used=0; g_xa_n=0;
@@ -63,6 +65,8 @@ static int elf_map_segs(u64 sp,const u8* elf,u64 phoff,u16 phentsz,u16 phnum,u64
             for(u64 a=lo;a<hi;a++) dst[a-v]=(a<va+filesz)?elf[off+(a-va)]:0; } }
     return 0;
 }
+static u64 elf_load_align(const u8* e,u64 phoff,u16 phentsz,u16 phnum){ u64 a=0x1000; for(int i=0;i<phnum;i++){ const u8* ph=e+phoff+(u64)i*phentsz; if(*(const u32*)ph!=1)continue; u64 al=*(const u64*)(ph+48); if(al>a&&!(al&(al-1)))a=al; } return a>0x200000ULL?0x200000ULL:a; }
+u64 elf_interp_base(const u8* ie,u64 phoff,u16 phentsz,u16 phnum){ if(!g_kaslr_on)return ELF_INTERP_BASE; return KASLR_INTERP_LO+kaslr_interp_slide(KASLR_INTERP_WIN,kaslr_align_shift(elf_load_align(ie,phoff,phentsz,phnum))); }
 static u64 elf_load_interp(u64 sp,const char* path,u64* ient){
     u32 il=0; const u8* ie=jc_find_lib(path,&il); if(!ie||il<64)return 0;
     if(ie[0]!=0x7F||ie[1]!='E'||ie[2]!='L'||ie[3]!='F'||ie[4]!=2||ie[5]!=1)return 0;
@@ -72,9 +76,10 @@ static u64 elf_load_interp(u64 sp,const char* path,u64* ient){
     for(int i=0;i<phnum;i++){ const u8* ph=ie+phoff+(u64)i*phentsz; if(*(const u32*)ph!=1)continue;
         u64 off=*(const u64*)(ph+8), va=*(const u64*)(ph+16), filesz=*(const u64*)(ph+32), memsz=*(const u64*)(ph+40);
         if(filesz>memsz||off>il||filesz>il-off||va>0x100000000ULL||memsz>0x100000000ULL)return 0; }
-    if(elf_map_segs(sp,ie,phoff,phentsz,phnum,ELF_INTERP_BASE,sysroot_pc_handle_ptr?sysroot_pc_handle_ptr(ie,il):-1))return 0;
-    *ient=ELF_INTERP_BASE+*(const u64*)(ie+24);
-    return ELF_INTERP_BASE;
+    u64 ib=elf_interp_base(ie,phoff,phentsz,phnum);
+    if(elf_map_segs(sp,ie,phoff,phentsz,phnum,ib,sysroot_pc_handle_ptr?sysroot_pc_handle_ptr(ie,il):-1))return 0;
+    *ient=ib+*(const u64*)(ie+24);
+    return ib;
 }
 u64 elf_build_space(const u8* elf,u32 len,u64* entry){
     if(len<64||elf[0]!=0x7F||elf[1]!='E'||elf[2]!='L'||elf[3]!='F'||elf[4]!=2||elf[5]!=1)return 0;
@@ -86,7 +91,11 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
     u64 base=(etype==3)?ELF_PIE_BASE:0; g_elf_pie=(etype==3);
     u64 lim_lo=ELF_IMG_LO, lim_hi=ELF_IMG_TOP;
     if(etype==3){ u64 span=0; for(int i=0;i<phnum;i++){ const u8* ph=elf+phoff+(u64)i*phentsz; if(*(const u32*)ph!=1)continue; u64 va=*(const u64*)(ph+16), memsz=*(const u64*)(ph+40); if(va+memsz>span)span=va+memsz; }
-        if(span>ELF_IMG_TOP-ELF_PIE_BASE){ if(span>ELF_BIG_MAX)return 0; base=ELF_BIG_BASE; lim_lo=ELF_BIG_BASE; lim_hi=ELF_BIG_BASE+ELF_BIG_MAX; } }
+        int ash=kaslr_align_shift(elf_load_align(elf,phoff,phentsz,phnum)); if(ash<16&&span<=ELF_IMG_TOP-ELF_PIE_BASE)ash=12;
+        if(span>ELF_IMG_TOP-ELF_PIE_BASE){ if(span>ELF_BIG_MAX)return 0; base=ELF_BIG_BASE; lim_lo=ELF_BIG_BASE; lim_hi=ELF_BIG_BASE+ELF_BIG_MAX; base+=kaslr_pie_slide(ELF_BIG_MAX-span,ash,1ULL<<24); }
+        else base+=kaslr_pie_slide(ELF_IMG_TOP-ELF_PIE_BASE-span,ash,1ULL<<20); }
+    g_elf_base=base;
+    u64 stk=kaslr_user_stack(USTK_V,(u64)JS_STK_PAGES<<12), slo=stk==USTK_V?ELF_STK_LO:stk-((u64)JS_STK_PAGES<<12); g_ustk=stk;
     u64 phdr_va=0, first_off0=0; int have_off0=0, nload=0, entok=0; char interp[128]; interp[0]=0;
     for(int i=0;i<phnum;i++){ const u8* ph=elf+phoff+(u64)i*phentsz; u32 t=*(const u32*)ph;
         u64 off=*(const u64*)(ph+8), va=*(const u64*)(ph+16)+base, filesz=*(const u64*)(ph+32), memsz=*(const u64*)(ph+40);
@@ -95,7 +104,7 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
         if(t!=1)continue;
         if(filesz>memsz||off>len||filesz>len-off)return 0;
         if(va<lim_lo||memsz>lim_hi||va>lim_hi-memsz)return 0;
-        if(va<USTK_V+0x1000ULL&&va+memsz>ELF_STK_LO)return 0;
+        if(va<stk+0x1000ULL&&va+memsz>slo)return 0;
         if(off==0&&!have_off0){ have_off0=1; first_off0=va; }
         if(ent+base>=va&&ent+base<va+memsz&&(*(const u32*)(ph+4)&1))entok=1;
         nload++; }
@@ -106,16 +115,17 @@ u64 elf_build_space(const u8* elf,u32 len,u64* entry){
     if(elf_map_segs(sp,elf,phoff,phentsz,phnum,base,sysroot_pc_handle_ptr?sysroot_pc_handle_ptr(elf,len):-1)){ vm_free_user(sp); return 0; }
     u64 ibase=0, ient=0;
     if(interp[0]){ ibase=elf_load_interp(sp,interp,&ient); if(!ibase){ vm_free_user(sp); return 0; } }
+    g_elf_ibase=ibase;
     if(!g_xa_set)elf_args_from_string(g_exec_args);
     if(!g_xe_set)g_xe_n=env_pack(g_xe_buf,XA_CAP,g_xe_off,XA_MAX);
     g_xa_set=0; g_xe_set=0;
     {
-        u8* S=g_stkimg; const int SZ=STKIMG; u64 SB=USTK_V+0x1000ULL-(u64)SZ;
+        u8* S=g_stkimg; const int SZ=STKIMG; u64 SB=stk+0x1000ULL-(u64)SZ;
         for(int i=0;i<SZ;i++)S[i]=0;
         int top=SZ-16;
-        u64 x=cpu_tsc()^0x9E3779B97F4A7C15ULL; for(int i=0;i<16;i++){ x^=x<<13; x^=x>>7; x^=x<<17; S[top+i]=(u8)(x>>24); }
-        u64 rnd=SB+(u64)top;
-        static u64 uargv[XA_MAX], uenv[XA_MAX]; { long need=64+16+(long)(g_xa_n+g_xe_n+4)*8+256; for(int i=0;i<g_xe_n;i++){ const char* z=g_xe_buf+g_xe_off[i]; while(*z++)need++; need++; } for(int i=0;i<g_xa_n;i++){ const char* z=g_xa_buf+g_xa_off[i]; while(*z++)need++; need++; } if(need>SZ-4096){ vm_free_user(sp); return 0; } }
+        csprng_bytes(S+top,16);
+        u64 rnd=SB+(u64)top; int so;
+        static u64 uargv[XA_MAX], uenv[XA_MAX]; { long need=64+16+(long)(g_xa_n+g_xe_n+4)*8+256; for(int i=0;i<g_xe_n;i++){ const char* z=g_xe_buf+g_xe_off[i]; while(*z++)need++; need++; } for(int i=0;i<g_xa_n;i++){ const char* z=g_xa_buf+g_xa_off[i]; while(*z++)need++; need++; } if(need>SZ-4096){ vm_free_user(sp); return 0; } so=(int)kaslr_stack_room((u64)(SZ-4096-need)); } top-=so;
         for(int i=g_xe_n-1;i>=0;i--){ const char* z=g_xe_buf+g_xe_off[i]; int L=0; while(z[L])L++; top-=L+1; for(int k=0;k<=L;k++)S[top+k]=(u8)z[k]; uenv[i]=SB+(u64)top; }
         for(int i=g_xa_n-1;i>=0;i--){ const char* z=g_xa_buf+g_xa_off[i]; int L=0; while(z[L])L++; top-=L+1; for(int k=0;k<=L;k++)S[top+k]=(u8)z[k]; uargv[i]=SB+(u64)top; }
         u64 execfn=g_xa_n?uargv[0]:0;
@@ -234,7 +244,7 @@ int elf_load_run(const u8* elf,u32 len){
     if(!pf_ready) return 1; us_init(); u64 entry; u64 sp=elf_build_space(elf,len,&entry); if(!sp) return 2;
     g_r3out_n=0; g_r3out[0]=0; g_sched_active=0;
     u64 kcr3; kcr3=cpu_get_pt();
-    if(k_setjmp(g_kjmp)==0){ cpu_set_pt(sp); enter_ring3_args(entry, g_arg_rsp?g_arg_rsp:USTK_V+0x1000ULL, (u64)g_arg_argc, g_arg_argv); }
+    if(k_setjmp(g_kjmp)==0){ cpu_set_pt(sp); enter_ring3_args(entry, g_arg_rsp?g_arg_rsp:g_ustk+0x1000ULL, (u64)g_arg_argc, g_arg_argv); }
     cpu_set_pt(kcr3);
     return 0;
 }

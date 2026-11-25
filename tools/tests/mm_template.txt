@@ -3,6 +3,9 @@
 #include <sys/mman.h>
 #include <stdint.h>
 typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
+static u64 g_kaslr_heap; static u64 kaslr_rand(u64 n){ (void)n; return 0; }
+static u64 cpu_irq_save(void){ return 0; } static void cpu_irq_restore(u64 f){ (void)f; }
+u64 hp_alloc_run_nz(u32 pages){ (void)pages; return 0; }
 static u64 hp_alloc_run(u32 pages){ (void)pages; return 0; }
 #define SR_SLOT 0x20000000ULL
 static u64 g_test_slot_end;

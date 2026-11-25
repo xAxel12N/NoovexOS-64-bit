@@ -1,3 +1,4 @@
+#include "include/nvx/core/sysfeat.h"
 #include "include/nvx/base.h"
 #include "include/nvx/core/klog.h"
 #include "include/nvx/lib/base/fmt.h"
@@ -38,6 +39,7 @@ static int wc_map(u64 va,u64 len){
         if(*e2&0x80){ *e2=(*e2&~(0x10ULL|0x1000ULL))|0x08ULL; n++; }
         else { u64* pt=(u64*)(*e2&PTE_ADDR); for(int k=0;k<512;k++){ u64 q=p+(u64)k*4096; if(q<(va&~0xFFFULL)||q>=va+len)continue; if(pt[k]&1){ pt[k]=(pt[k]&~(0x10ULL|0x80ULL))|0x08ULL; } } n++; } }
     cpu_cache_flush(); cpu_set_pt(cpu_get_pt()); smp_tlb_shootdown(); return n; }
+int igpu_wc_map(u64 va,u64 len){ return wc_map(va,len); }
 void igpu_early(void){ pat_cpu_init(); u64 len=(u64)PITCHB*H; g_wc_pages=wc_map((u64)FBB,len); g_fb_wc=g_wc_pages>0; }
 static const char* igpu_name(u16 did,int* gen){
     u8 hi=(u8)(did>>8);
@@ -126,7 +128,7 @@ static geng EB, ER;
 int g_blt_ok=0, g_blt_present=0, g_rcs_ok=0, g_sh_ok=0; static int b_flush=0, b_snoop=0, b_ready=0, b_swapped=0;
 static u64 b_gtt_next; static u64* b_pd; static u64 b_pd_p; static u64* b_ptv[512];
 static u32 b_cpu_us=0,b_gpu_us=0,b_frames=0,b_fail=0,b_ppat_lo=0,b_ppat_hi=0,b_ppat_lo2=0,b_ppat_hi2=0;
-static u32* b_scr; static u64 b_scr_g; static int b_fw=0;
+static u32* b_scr; static u64 b_scr_g; static int b_fw=0, b_g12=0; static u64 *b_pml4,*b_pdpt; static u64 b_pml4_p;
 static u32* b_gs; static u64 b_gs_g, b_old_g, b_gs_pa, b_old_pa; static int rt_res[3][2]; static u32 rt_got[3][2];
 static u32* s_st; static u64 s_st_g; static u32 *s_a, *s_b; static u64 s_a_g, s_b_g; static int s_step=0, s_hung=0; static char s_why[64];
 static u32 s_fill_us=0, s_copy_us=0, s_scr_us=0, s_groups=0; static u32 b_rpcs=0, b_ss=0, b_eu=0;
@@ -137,7 +139,7 @@ u64 kva_to_pa(u64 va){ u64* pml4=(u64*)(cpu_get_pt()&~0xFFFULL); u64 e=pml4[(va>
     u64* pt=(u64*)(e&PTE_ADDR); e=pt[(va>>12)&511]; if(!(e&1))return 0; return (e&PTE_ADDR)|(va&0xFFFULL); }
 static void clf(const void* p,u64 n){ u64 a=(u64)p&~63ULL; for(;a<(u64)p+n;a+=64)cpu_clflush(a); cpu_mb(); }
 static int fw_get(u32 req,u32 ack){ ww(req,0x00010001u); u64 t0=hr_ns(); while(!(rr(ack)&1)){ if(hr_ns()-t0>50000000ULL)return -1; } return 0; }
-static void fw_put(void){ if(!b_fw)return; ww(0xA278,0x00010000u); ww(0xA188,0x00010000u); ww(0xA270,0x00010000u); b_fw=0; }
+static void fw_put(void){ if(!b_fw)return; ww(0xA278,0x00010000u); ww(0xA188,0x00010000u); if(!b_g12)ww(0xA270,0x00010000u); b_fw=0; }
 static void efail(geng* e,int step,const char* why){ e->step=step; wcpy(e->why,why,64); e->ok=0; if(e==&EB){ g_blt_ok=0; g_blt_present=0; } else { g_rcs_ok=0; g_sh_ok=0; } }
 static int ppg_map(u64 ga,u64 pa,u64 fl){ if(ga>=(1ULL<<30)||!pa)return -1; u32 pdi=(u32)((ga>>21)&511);
     if(!b_ptv[pdi]){ u64* n=(u64*)dma_alloc_pages(1); if(!n)return -1; for(int i=0;i<512;i++)n[i]=0; b_ptv[pdi]=n; b_pd[pdi]=(kva_to_pa((u64)n)&PTE_ADDR)|3ULL; }
@@ -151,7 +153,21 @@ static u64 gobj(u32 pages,u32** cpu,int heap){ u8* p;
     if(heap){ u8* raw=(u8*)kmalloc((unsigned long)pages*4096UL+4096UL); if(!raw)return 0; p=(u8*)(((u64)raw+4095ULL)&~4095ULL); } else { p=(u8*)dma_alloc_pages(pages); if(!p)return 0; }
     for(u64 i=0;i<(u64)pages*4096;i++)p[i]=0; clf(p,(u64)pages*4096); u64 g=gmap(p,(u64)pages*4096); if(!g)return 0; *cpu=(u32*)p; return g; }
 static void creg(u32* st,int i,u32 reg,u32 val){ st[i]=reg; st[i+1]=val; }
+static void g12_ctx_regs(u32* st,u32 B,u32 ring_g,u32 rpages,u64 pml4){ static const u16 o[13]={0x244,0x34,0x30,0x38,0x3C,0x168,0x140,0x110,0x1C0,0x1C4,0x1C8,0x180,0x2B4};
+    st[1]=(0x22u<<23)|(1u<<19)|(1u<<12)|(2*13-1); for(int k=0;k<13;k++)creg(st,2+k*2,B+o[k],0);
+    st[3]=0x00090009u; st[9]=ring_g; st[0x0B]=((rpages*4096u-4096u)&0x1FF000u)|1u; st[0x11]=0x20;
+    st[0x21]=(0x22u<<23)|(1u<<19)|(1u<<12)|(2*9-1); creg(st,0x22,B+0x3A8,0);
+    for(int n=3;n>=0;n--){ int i=0x24+(3-n)*4; creg(st,i,B+0x270+(u32)n*8+4,n?0:(u32)(pml4>>32)); creg(st,i+2,B+0x270+(u32)n*8,n?0:(u32)pml4); } }
+static u64 g12_desc(u64 ctx_g){ return (ctx_g&0xFFFFF000ULL)|1ULL|(3ULL<<3)|(1ULL<<8)|((u64)((1u<<5)|(3u<<29))<<32); }
+static int g12_csb_idle(u32 lo){ return ((lo>>15)&0x7FFu)==0x7FFu; }
+static u32 blt12_fill(u32* r,u32 i,u64 dst,u32 pitch,int x1,int y1,int x2,int y2,u32 color){
+    r[i++]=(2u<<29)|(0x44u<<22)|(2u<<19)|(11u-2u); r[i++]=pitch-1u; r[i++]=((u32)y1<<16)|(u32)x1; r[i++]=((u32)y2<<16)|(u32)x2;
+    r[i++]=(u32)dst; r[i++]=(u32)(dst>>32); r[i++]=1u<<31; r[i++]=color; r[i++]=0; r[i++]=0; r[i++]=0; return i; }
+static u32 blt12_copy(u32* r,u32 i,u64 dst,u32 dpitch,int dx,int dy,int w,int h,u64 src,u32 spitch,int sx,int sy){
+    r[i++]=(2u<<29)|(0x42u<<22)|(10u-2u); r[i++]=(3u<<24)|dpitch; r[i++]=((u32)dy<<16)|(u32)dx; r[i++]=((u32)(dy+h)<<16)|(u32)(dx+w);
+    r[i++]=(u32)dst; r[i++]=(u32)(dst>>32); r[i++]=((u32)sy<<16)|(u32)sx; r[i++]=spitch; r[i++]=(u32)src; r[i++]=(u32)(src>>32); return i; }
 static void ctx_fill(geng* e){ u32* st=e->ctx+1024; u32 B=e->base; for(u32 i=0;i<(e->ctxp-1)*1024;i++)st[i]=0;
+    if(b_g12&&!e->render){ g12_ctx_regs(st,B,(u32)e->ring_g,e->rpages,b_pml4_p); clf(e->ctx,(u64)e->ctxp*4096); return; }
     st[1]=(0x22u<<23)|(2*(e->render?14:11)-1)|(1u<<12);
     creg(st,0x02,B+0x244,0x00090009u); creg(st,0x04,B+0x34,0); creg(st,0x06,B+0x30,0); creg(st,0x08,B+0x38,(u32)e->ring_g); creg(st,0x0A,B+0x3C,((e->rpages*4096u-4096u)&0x1FF000u)|1u);
     creg(st,0x0C,B+0x168,0); creg(st,0x0E,B+0x140,0); creg(st,0x10,B+0x110,0x20); creg(st,0x12,B+0x11C,0); creg(st,0x14,B+0x114,0); creg(st,0x16,B+0x118,0);
@@ -160,22 +176,24 @@ static void ctx_fill(geng* e){ u32* st=e->ctx+1024; u32 B=e->base; for(u32 i=0;i
     for(int n=3;n>=0;n--){ int i=0x24+(3-n)*4; creg(st,i,B+0x270+(u32)n*8+4,(u32)(b_pd_p>>32)); creg(st,i+2,B+0x270+(u32)n*8,(u32)b_pd_p); }
     if(e->render){ st[0x41]=(0x22u<<23)|1u; creg(st,0x42,0x20C8,b_rpcs); }
     clf(e->ctx,(u64)e->ctxp*4096); }
-static int csb_idle(geng* e){ u32 wp=rr(e->base+0x3A0)&7u; int idle=0; if(wp>5)return 0; int g=0; while(e->csb!=wp&&g<8){ e->csb=(e->csb+1)%6; u32 st=rr(e->base+0x370+e->csb*8); if(st&((1u<<3)|(1u<<4)))idle=1; g++; } ww(e->base+0x3A0,(0x0700u<<16)|(e->csb<<8)); return idle; }
+static int csb_idle12(geng* e){ u32 wp=rr(e->base+0x3A0)&0xFu; int idle=0; if(wp>11)return 0; int g=0; while(e->csb!=wp&&g<14){ e->csb=(e->csb+1)%12; u32 lo=rr(e->base+(e->csb<6?0x370+e->csb*8:0x3C0+(e->csb-6)*8)); if(g12_csb_idle(lo))idle=1; g++; } ww(e->base+0x3A0,(0x0F00u<<16)|(e->csb<<8)); return idle; }
+static int csb_idle(geng* e){ if(b_g12&&!e->render)return csb_idle12(e); u32 wp=rr(e->base+0x3A0)&7u; int idle=0; if(wp>5)return 0; int g=0; while(e->csb!=wp&&g<8){ e->csb=(e->csb+1)%6; u32 st=rr(e->base+0x370+e->csb*8); if(st&((1u<<3)|(1u<<4)))idle=1; g++; } ww(e->base+0x3A0,(0x0700u<<16)|(e->csb<<8)); return idle; }
 static u64 e_tmo=50000000ULL;
 static int eng_run(geng* e,u32 n){
     u32* R0=e->ring; while(n&1)R0[n++]=0; clf(R0,(u64)n*4);
     u32* st=e->ctx+1024; clf(st,256); st[0x05]=0; st[0x07]=n*4; if(e->ran)st[0x03]=0x00090008u; clf(st,256);
     u32 want=e->seq; csb_idle(e);
-    u64 d=e->ctx_g|1ULL|(1ULL<<3)|(1ULL<<8); u32 sp=e->base+0x230; ww(sp,0); ww(sp,0); ww(sp,e->render?2u:1u); ww(sp,(u32)d);
+    if(b_g12&&!e->render){ u64 d=g12_desc(e->ctx_g); ww(e->base+0x510,(u32)d); ww(e->base+0x514,(u32)(d>>32)); ww(e->base+0x550,1u); }
+    else { u64 d=e->ctx_g|1ULL|(1ULL<<3)|(1ULL<<8); u32 sp=e->base+0x230; ww(sp,0); ww(sp,0); ww(sp,e->render?2u:1u); ww(sp,(u32)d); }
     u64 t0=hr_ns(); for(;;){ clf(e->hwsp+0x30,4); if(e->hwsp[0x30]==want)break; if(hr_ns()-t0>e_tmo)return -1; cpu_pause(); }
     t0=hr_ns(); int idle=0; while(hr_ns()-t0<10000000ULL){ if(csb_idle(e)){ idle=1; break; } cpu_pause(); } if(!idle)hr_delay_us(500);
     e->ran=1; return 0; }
 static u32 put_flush(geng* e,u32 i){ u32* r=e->ring; e->seq++;
     if(e->render){ r[i++]=0x7A000004u; r[i++]=(1u<<24)|(1u<<20)|(1u<<14)|(1u<<12)|(1u<<5); r[i++]=(u32)(e->hwsp_g+0x30*4); r[i++]=0; r[i++]=e->seq; r[i++]=0; return i; }
     r[i++]=(0x26u<<23)|2u|(1u<<14); r[i++]=(u32)(e->hwsp_g+0x30*4)|(1u<<2); r[i++]=0; r[i++]=e->seq; return i; }
-static u32 bput_fill(u32 i,u64 dst,u32 pitch,int x1,int y1,int x2,int y2,u32 color){ u32* r=EB.ring;
+static u32 bput_fill(u32 i,u64 dst,u32 pitch,int x1,int y1,int x2,int y2,u32 color){ u32* r=EB.ring; if(b_g12)return blt12_fill(r,i,dst,pitch,x1,y1,x2,y2,color);
     r[i++]=(2u<<29)|(0x50u<<22)|(3u<<20)|5u; r[i++]=(3u<<24)|(0xF0u<<16)|pitch; r[i++]=((u32)y1<<16)|(u32)x1; r[i++]=((u32)y2<<16)|(u32)x2; r[i++]=(u32)dst; r[i++]=(u32)(dst>>32); r[i++]=color; return i; }
-static u32 bput_copy(u32 i,u64 dst,u32 dpitch,int dx,int dy,int w,int h,u64 src,u32 spitch,int sx,int sy){ u32* r=EB.ring;
+static u32 bput_copy(u32 i,u64 dst,u32 dpitch,int dx,int dy,int w,int h,u64 src,u32 spitch,int sx,int sy){ u32* r=EB.ring; if(b_g12)return blt12_copy(r,i,dst,dpitch,dx,dy,w,h,src,spitch,sx,sy);
     r[i++]=(2u<<29)|(0x53u<<22)|(3u<<20)|8u; r[i++]=(3u<<24)|(0xCCu<<16)|dpitch; r[i++]=((u32)dy<<16)|(u32)dx; r[i++]=((u32)(dy+h)<<16)|(u32)(dx+w);
     r[i++]=(u32)dst; r[i++]=(u32)(dst>>32); r[i++]=((u32)sy<<16)|(u32)sx; r[i++]=spitch; r[i++]=(u32)src; r[i++]=(u32)(src>>32); return i; }
 static int eng_setup(geng* e,u32 base,int render,u32 ctxp){
@@ -185,8 +203,8 @@ static int eng_setup(geng* e,u32 base,int render,u32 ctxp){
     ppg_flush(); ww(0x101008,1); (void)rr(0x101008);
     e->step=6; ctx_fill(e); clf(e->hwsp,4096);
     ww(base+0xA8,0xFFFFFFFFu); ww(base+0x98,0xFFFFFFFFu); ww(base+0x80,(u32)e->hwsp_g); (void)rr(base+0x80);
-    ww(base+0x9C,0x01000000u); ww(base+0x29C,0x80008000u); (void)rr(base+0x29C);
-    { u32 wp=rr(base+0x3A0)&7u; e->csb=(wp>5)?5u:wp; ww(base+0x3A0,(0x0700u<<16)|(e->csb<<8)); }
+    ww(base+0x9C,0x01000000u); ww(base+0x29C,(b_g12&&!render)?0x00080008u:0x80008000u); (void)rr(base+0x29C);
+    if(b_g12&&!render){ u32 wp=rr(base+0x3A0)&0xFu; e->csb=(wp>11)?11u:wp; ww(base+0x3A0,(0x0F00u<<16)|(e->csb<<8)); } else { u32 wp=rr(base+0x3A0)&7u; e->csb=(wp>5)?5u:wp; ww(base+0x3A0,(0x0700u<<16)|(e->csb<<8)); }
     return 0; }
 static u64 cpu_copy_us(u8* dst){ u64 t0=hr_ns(); for(int k=0;k<5;k++) for(u32 y=0;y<H;y++){ u32* s=SCENE+(u64)y*SW; u32* d=(u32*)(dst+(u64)y*PITCHB); for(u32 x=0;x<W;x++)d[x]=s[x]; } return (hr_ns()-t0)/5000ULL; }
 int igpu_shader_present(void); static int igpu_blt_present2(void);
@@ -350,20 +368,26 @@ static void blt_bench(void){
 void igpu_blt_init(void){
     for(int b=0;b<3;b++)rt_res[b][0]=rt_res[b][1]=-2;
     blt_init_inner();
-    if(b_ready&&g_igpu_flip){ if(ER.step==0)rcs_init(); if(!s_hung)scene_swap(); blt_bench(); q_start(); }
+    if(b_ready&&g_igpu_flip){ if(ER.step==0&&!b_g12)rcs_init(); if(!s_hung)scene_swap(); blt_bench(); q_start(); }
+    if(b_g12){ if(EB.ok)sysfeat_ok(SYSF_INTEL_BLT); else sysfeat_fail(SYSF_INTEL_BLT,"blitter did not start"); }
     if(!EB.ok&&!ER.ok)fw_put(); }
 static void blt_init_inner(void){
-    for(int i=0;i<512;i++)b_ptv[i]=0; EB.step=1; ER.step=0;
+    for(int i=0;i<512;i++)b_ptv[i]=0; EB.step=1; ER.step=0; b_g12=0;
     if(G.found!=1){ efail(&EB,1,"no Intel graphics"); return; }
-    if(G.gen!=9){ efail(&EB,1,"only gen 9 (Skylake to Comet Lake, Apollo/Gemini Lake) so far"); return; }
+    if(G.gen==12&&(G.did>>8)!=0x7D){ if(!sysfeat_begin(SYSF_INTEL_BLT)){ efail(&EB,1,"Gen 12 blitter switched off (Settings)"); return; } b_g12=1; }
+    if(G.gen!=9&&!b_g12){ efail(&EB,1,"only gen 9 and gen 12 (Tiger/Alder/Raptor Lake) so far"); return; }
     if(!g_igpu_flip){ efail(&EB,1,"needs tear-free double buffering"); return; }
-    EB.step=2; if(fw_get(0xA278,0x0D84)||fw_get(0xA188,0x130044)||fw_get(0xA270,0x0D88)){ ww(0xA278,0x00010000u); ww(0xA188,0x00010000u); ww(0xA270,0x00010000u); efail(&EB,2,"GPU did not wake up (forcewake)"); return; } b_fw=1;
-    EB.step=3; b_ppat_lo=rr(0x40E0); b_ppat_hi=rr(0x40E4); int lp=((G.did>>8)==0x31||(G.did>>8)==0x5A);
-    if(lp){ ww(0x40E0,0x00000040u); ww(0x40E4,0x40404040u); } b_ppat_lo2=rr(0x40E0); b_ppat_hi2=rr(0x40E4);
+    if(b_g12)wcpy(ER.why,"render engine is gen 9 only so far",64);
+    EB.step=2; if(fw_get(0xA278,0x0D84)||fw_get(0xA188,0x130044)||(!b_g12&&fw_get(0xA270,0x0D88))){ ww(0xA278,0x00010000u); ww(0xA188,0x00010000u); if(!b_g12)ww(0xA270,0x00010000u); efail(&EB,2,"GPU did not wake up (forcewake)"); return; } b_fw=1;
+    EB.step=3; if(b_g12){ b_ppat_lo=rr(0x4800); b_ppat_hi=rr(0x480C); static const u32 pat[8]={3,1,2,0,3,3,3,3}; for(int k=0;k<8;k++)ww(0x4800+(u32)k*4,pat[k]); b_ppat_lo2=rr(0x4800); b_ppat_hi2=rr(0x480C); }
+    else { b_ppat_lo=rr(0x40E0); b_ppat_hi=rr(0x40E4); } int lp=((G.did>>8)==0x31||(G.did>>8)==0x5A);
+    if(lp){ ww(0x40E0,0x00000040u); ww(0x40E4,0x40404040u); } if(!b_g12){ b_ppat_lo2=rr(0x40E0); b_ppat_hi2=rr(0x40E4); }
     if(lp){ u32 f2=rr(0x9120), ed=rr(0x9134); u32 ssm=(~(f2>>20))&7u; b_ss=0; b_eu=0; for(int k=0;k<3;k++) if(ssm&(1u<<k)){ b_ss++; u32 n=0; u32 bm=(ed>>(k*8))&0xFFu, z=0; while(bm){ z+=bm&1u; bm>>=1; } n=8u-z; if(n>b_eu)b_eu=n; }
         if(b_ss>=1&&b_ss<=3&&b_eu>=1&&b_eu<=8)b_rpcs=(1u<<31)|(1u<<11)|(b_ss<<8)|(b_eu<<4)|b_eu; }
     EB.step=4; b_gtt_next=(g_bback0>g_bfront0?g_bback0:g_bfront0)+(((u64)PITCHB*H+0x3FFFFULL)&~0x3FFFFULL); b_gtt_next=(b_gtt_next+0xFFFFULL)&~0xFFFFULL; if(b_gtt_next+0x3000000ULL>(256ULL<<20)){ efail(&EB,4,"no room in the graphics address space"); return; }
     b_pd=(u64*)dma_alloc_pages(1); if(!b_pd){ efail(&EB,4,"out of memory for GPU page tables"); return; } for(int i=0;i<512;i++)b_pd[i]=0; b_pd_p=kva_to_pa((u64)b_pd)&PTE_ADDR;
+    if(b_g12){ b_pml4=(u64*)dma_alloc_pages(1); b_pdpt=(u64*)dma_alloc_pages(1); if(!b_pml4||!b_pdpt){ efail(&EB,4,"out of memory for GPU page tables"); return; } for(int i=0;i<512;i++){ b_pml4[i]=0; b_pdpt[i]=0; }
+        b_pdpt[0]=b_pd_p|3ULL; b_pml4[0]=(kva_to_pa((u64)b_pdpt)&PTE_ADDR)|3ULL; b_pml4_p=kva_to_pa((u64)b_pml4)&PTE_ADDR; clf(b_pdpt,4096); clf(b_pml4,4096); }
     { u32* sc; b_scr_g=gobj(16,&sc,0); b_scr=sc; } if(!b_scr_g){ efail(&EB,4,"out of memory for GPU objects"); return; }
     { u32 pg=(u32)(((u64)MAXW*MAXH*4+4095)>>12); u32* gs=0; b_gs_g=gobj(pg,&gs,1); b_gs=b_gs_g?gs:0; if(b_gs){ b_gs_pa=kva_to_pa((u64)b_gs); } }
     b_old_pa=kva_to_pa((u64)SCENE_STATIC); b_old_g=gmap((u8*)SCENE_STATIC,(u64)SW*H*4);
@@ -393,7 +417,7 @@ void igpu_blt_info(void){ char b[220],*p=b;
     p=scopy(p,"2D blitter: "); if(g_blt_ok&&EB.step>=11){ p=scopy(p,"ready  screen copy CPU "); tms(&p,b_cpu_us); p=scopy(p,", GPU "); tms(&p,b_gpu_us); p=scopy(p,b_flush?" (needs cache flush)":" (snooped)"); p=scopy(p,"  presents by "); p=scopy(p,g_blt_present?"GPU":"CPU"); p=scopy(p,"  GPU frames "); p=udec(p,b_frames); p=scopy(p,"  failed "); p=udec(p,b_fail); }
     else { p=scopy(p,"off at step "); p=udec(p,(u32)EB.step); p=scopy(p," - "); p=scopy(p,EB.why[0]?EB.why:"not started"); }
     *p=0; gl(b);
-    if(G.found==1&&G.gen==9){
+    if(G.found==1&&(G.gen==9||b_g12)){
         p=b; p=scopy(p,"  Screen buffer: "); if(b_swapped){ p=scopy(p,"GPU-shared memory at "); p=phys(p,b_gs_pa); } else p=scopy(p,"kernel buffer (not moved)"); p=scopy(p,"  old kernel buffer at "); p=phys(p,b_old_pa);
         p=scopy(p,b_old_pa!=(u64)SCENE_STATIC?" (moved at boot)":" (not moved)"); *p=0; gl(b);
         p=b; p=scopy(p,"  GPU reads, flushed/unflushed: test "); p=rtw(p,rt_res[0][0],rt_got[0][0]); *p++='/'; p=rtw(p,rt_res[0][1],rt_got[0][1]);

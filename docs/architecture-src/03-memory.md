@@ -251,7 +251,7 @@ The arena is a bump allocator over 16 MiB of identity-mapped memory below 4 GiB,
 
 | Caller | Purpose |
 |---|---|
-| `drivers/net/wifi/rtw88/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
+| `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `net/wifi/*.c` | Wi-Fi TX/beacon packet buffers |
 | `shell/commands.c` (`RXNUM`/`BENUM` rings) | Wi-Fi RX and beacon rings |
 | `drivers/usb/xhci.c` | xHCI scratchpad buffers when a controller needs more than 32 |
 | `drivers/video/nvidia/nvdisp.c` | display push buffer |
@@ -610,3 +610,25 @@ Interfaces. `madvise(MADV_PAGEOUT)` swaps a range now; `swapoff /dev/zram0` brin
 Page cache. Files of the system image live compressed in blocks; a decompressed block stays in `bcache`. Each block now has a last-use tick and a pinned flag: blocks whose address was handed out by `sysroot_get` (programs that keep the pointer) are pinned, blocks used only by `read()` and by the page cache for `mmap` (`sr_read`, `sysroot_pc_page`) can be dropped. When the blocks pass a quarter of the kernel heap, or a heap allocation fails, `sysroot_bc_evict` frees unpinned blocks, oldest first (unused for 60 s, then 10 s, then 1 s, never in the tick they were used). Pinned blocks do not count against the budget.
 
 Tests. `swaptest` (QEMU group of `tools/check.py`): 32 MB of mixed pages through `MADV_PAGEOUT`, read back, fork, `PROT_READ`, `MADV_DONTNEED`, `munmap`, the `/proc` files, and a pressure step that writes more than the free memory. The memory group builds the store and the codec from `mem/swap.c` on the host with ASan/UBSan (100000 round trips with corrupted input, 20000 pages stored, shared and freed).
+
+## 3.20 Address randomisation (`core/kaslr.c`, `include/nvx/core/kaslr.h`) (v11.15)
+
+KASLR and ASLR share one small file. All random numbers come from `kaslr_rand(n)`, which reads the kernel CSPRNG (`csprng_bytes`). When `g_kaslr_on` is 0, every function returns 0 or the fixed address, so the old layout comes back. The switch is `kaslr on|off` (root) and the Security features page in Settings.
+
+What is randomised:
+
+| Area | Function | Range |
+|---|---|---|
+| Kernel heap base | `heap_slide` in `mem/heap.c`, stored in `g_kaslr_heap` | up to 4096 pages |
+| Kernel stacks | `kaslr_kstk_off` | 0 to 1008 bytes, 16-byte steps |
+| Page frame search start | `mem/pmm_vmm.c` (`g_kaslr_pf_seed` set to 1 when done) | random start hint for 4 KiB and 2 MiB frames |
+| Program break | `kaslr_user_brk` | 1024 pages |
+| Next mmap address | `kaslr_user_mmap` | 2^20 pages (`KASLR_MMNEXT_BITS`) |
+| mmap gap hint | `kaslr_gap_hint` | 2^26 pages (`KASLR_MMAP_BITS`) |
+| PIE load address | `kaslr_pie_slide` | up to the room left, aligned to the largest segment alignment (`kaslr_align_shift`, 4 KiB to 2 MiB) |
+| ld.so base | `kaslr_interp_slide` | inside `KASLR_INTERP_LO` + `KASLR_INTERP_WIN` |
+| User stack | `kaslr_user_stack` | `KASLR_STK_LO` + 2^22 pages, then `kaslr_stack_room` adds up to 64 KiB in 16-byte steps |
+
+The kernel image itself stays at its fixed, identity-mapped address. `g_kaslr_text_slide` is always 0.
+
+Address hiding: `kaslr_hide_addr()` is true for every user except root. `kaslr_mask(s,n)` replaces long hex numbers in a text line with zeros. The dmesg and syslog paths call it, so other users do not see kernel addresses. The `crash` command shows reports to root only. `kaslr_report` prints the last values for the `kaslr` command. Host test: `tools/tests/kaslr/aslr_t.c`.

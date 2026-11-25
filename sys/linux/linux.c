@@ -1,5 +1,6 @@
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/core/klog.h"
+#include "include/nvx/core/perf.h"
 #include "include/nvx/fs/vfs/sysroot.h"
 #include "include/nvx/base.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
@@ -18,6 +19,7 @@
 #include "include/nvx/fs/vfs/ramfs.h"
 #include "include/nvx/fs/vfs/vfs.h"
 #include "include/nvx/shell/terminal.h"
+#include "include/nvx/core/kaslr.h"
 #include "include/nvx/fs/nvx/nvxfs.h"
 #include "include/nvx/fs/vfs/dirtree.h"
 #include "include/nvx/sys/native/syscall.h"
@@ -30,6 +32,7 @@
 #include "include/nvx/fs/nvx/nvx4.h"
 #include "include/nvx/fs/vfs/unixfs.h"
 #include "include/nvx/sys/linux/linux.h"
+#include "include/nvx/sys/bpf/bpf_attach.h"
 #include "include/nvx/apps/system/files_classic.h"
 #define LX_EPERM 1
 #define LX_ENOENT 2
@@ -63,6 +66,10 @@
 #define LX_SNDPCM 117
 #define LX_BLKD 118
 #define LX_SYSW 119
+#define LX_SNDMIDI 123
+#define LX_EVDEV 131
+#define LX_JSDEV 132
+#define LX_USBSER 133
 #define LX_ENOTEMPTY 39
 #define LX_ENOTSUP 95
 #define LX_AT_FDCWD (-100)
@@ -73,10 +80,15 @@
 
 #include "sys/linux/syscalls/fifos_and_names.c"
 #include "sys/linux/syscalls/timers_and_handles.c"
+#include "sys/linux/syscalls/rawmidi.c"
+#include "sys/linux/syscalls/usbserial.c"
+#include "sys/linux/syscalls/evdev.c"
+#include "sys/linux/syscalls/v4l2.c"
 #include "sys/linux/syscalls/inotify.c"
 #include "sys/linux/syscalls/poll_epoll.c"
 #include "sys/linux/syscalls/memory_and_signals.c"
 #include "sys/linux/syscalls/files_dirs.c"
+#include "sys/linux/syscalls/bpf_sys.c"
 #include "sys/linux/syscalls/more_syscalls.c"
 #include "sys/linux/syscalls/namespaces_containers.c"
 #include "sys/linux/syscalls/proc_extra.c"

@@ -29,6 +29,8 @@ static int usb_key_code(u8 u,int shift){
     int c=hid2ascii(u,shift); if(kcaps&&c>='a'&&c<='z')c-=32; else if(kcaps&&c>='A'&&c<='Z'&&shift)c+=32;
     return c;
 }
+int usb_hid_key(u8 u,int shift){ return usb_key_code(u,shift); }
+u8 usb_hid_sc(u8 u){ return hid2scan(u); }
 static void usbk_mods_sync(void){
     u8 m=0; for(int i=0;i<xhid_n&&i<XHID_MAX;i++) if(xhid_used[i]){ m|=xhid_kprev[i][0]; for(int z=0;z<HIDLAY_MAX-1;z++)m|=xhid_kprevx[i][z][0]; }
     kdown[0x1D]=(m&0x11)?1:0; kdown[0x2A]=(m&0x22)?1:0; kdown[0x38]=(m&0x44)?1:0; kdown[0x5B]=(m&0x88)?1:0;
@@ -48,12 +50,28 @@ static void kbd_report(int e,u8* prev,volatile u8* d){
         if(!still){ u8 sc=hid2scan(k); if(sc)kdown[sc]=0; if(usbk_rep_dev==e&&usbk_rep_usage==k){ usbk_rep_code=0; usbk_rep_dev=-1; } } }
     prev[0]=mod; for(int i=1;i<8;i++) prev[i]=d[i];
 }
+static void kbd_nkro(int e,int lq,u8* prev,u8 mod,const u8* bm){
+    static u8 pbm[XHID_MAX][HIDLAY_MAX][32]; if(e<0||e>=XHID_MAX||lq<0||lq>=HIDLAY_MAX)return; u8* o=pbm[e][lq];
+    int live=0; if(bm[0]&0x0E)return;
+    mod|=bm[28]; for(int j=2;j<8;j++) if(prev[j])live=1;
+    if(!live) for(int u=4;u<0xE0;u++) if((o[u>>3]>>(u&7))&1){ u8 sc=hid2scan((u8)u); if(sc)kdown[sc]=0; o[u>>3]&=(u8)~(1u<<(u&7)); }
+    u8 d[8]; for(int j=0;j<8;j++)d[j]=prev[j]; d[0]=mod; kbd_report(e,prev,d);
+    for(int u=4;u<0xE0;u++){ int was=(o[u>>3]>>(u&7))&1, now=(bm[u>>3]>>(u&7))&1; if(!was||now)continue; int s=-1; for(int j=2;j<8;j++) if(prev[j]==u)s=j;
+        if(s>=0){ for(int j=0;j<8;j++)d[j]=prev[j]; d[s]=0; kbd_report(e,prev,d); }
+        else { u8 sc=hid2scan((u8)u); if(sc)kdown[sc]=0; if(usbk_rep_dev==e&&usbk_rep_usage==u){ usbk_rep_code=0; usbk_rep_dev=-1; } }
+        o[u>>3]&=(u8)~(1u<<(u&7)); }
+    for(int u=4;u<0xE0;u++){ int was=(o[u>>3]>>(u&7))&1, now=(bm[u>>3]>>(u&7))&1; if(was||!now)continue; int s=-1; u8 ev=0; for(int j=2;j<8&&s<0;j++) if(!prev[j])s=j;
+        for(int j=0;j<8;j++)d[j]=prev[j];
+        if(s<0){ s=7; ev=prev[7]; } d[s]=(u8)u; kbd_report(e,prev,d); if(ev){ u8 sc=hid2scan(ev); if(sc)kdown[sc]=1; }
+        o[u>>3]|=(u8)(1u<<(u&7)); }
+    for(int u=4;u<0xE0;u++) if((o[u>>3]>>(u&7))&1){ int in=0, fr=-1; for(int j=2;j<8;j++){ if(prev[j]==u)in=1; if(!prev[j]&&fr<0)fr=j; } if(!in&&fr>=0)prev[fr]=(u8)u; }
+}
 static void usb_kbd_repeat(void){
     if(!usbk_rep_code)return;
     extern int g_krep_delay, g_krep_rate, g_krep_flag;
     if(g_ticks-usbk_rep_t0>=(u64)g_krep_delay&&g_ticks-usbk_rep_last>=(u64)g_krep_rate){ g_krep_flag=1; kpush(usbk_rep_code); g_krep_flag=0; usbk_rep_last=g_ticks; }
 }
-static int cc_hk(int u){ switch(u){ case 0xE9: return 1; case 0xEA: return 2; case 0xE2: return 3; case 0xCD: return 4; case 0xB5: return 5; case 0xB6: return 6; case 0xB7: return 7; case 0x6F: return 13; case 0x70: return 14; } return 0; }
+static int cc_hk(int u){ switch(u){ case 0xE9: return 1; case 0xEA: return 2; case 0xE2: return 3; case 0xCD: return 4; case 0xB5: return 5; case 0xB6: return 6; case 0xB7: return 7; case 0x6F: return 13; case 0x70: return 14; case 0x8081: case 0x30: return 32; case 0x8082: return 12; case 0x32: return 12; } return 0; }
 static void hid_report_decode(int e,const u8* b,int len){
     int id=0; const u8* p=b; int pl=len; if(xhid_hasid[e]){ if(len<1)return; id=b[0]; p=b+1; pl=len-1; }
     int bb=0;
@@ -70,30 +88,36 @@ static void hid_report_decode(int e,const u8* b,int len){
         bb|=boot; break; }
     if(bb){ int btn=b[0], dx=(int)(signed char)b[1], dy=(int)(signed char)b[2], wz=len>=4?(int)(signed char)b[3]:0;
         if(dx||dy)in_rel(dx,dy);
-        in_btn_raw(btn&1,(btn>>1)&1,(btn>>2)&1); in_xbtn((btn>>3)&1,(btn>>4)&1); if(btn)mouse_evt=1; if(wz)in_scroll(wz,0);
+        in_btn_raw(btn&1,(btn>>1)&1,(btn>>2)&1); in_xbtn((btn>>3)&1,(btn>>4)&1); in_btnmask((u32)btn&0xFF); if(btn)mouse_evt=1; if(wz)in_scroll(wz,0);
         return; }
     for(int q=0;q<xhid_nlay[e];q++){ hidlay_t* L=&xhid_lay[e][q]; if(L->id!=id)continue;
         if(L->kind==3){ u16 now[16]; int nn=0;
-            for(int i=0;i<L->cc_cnt&&nn<16;i++){ int u=hid_bits(p,pl,L->cc_off+i*L->cc_sz,L->cc_sz,0)+L->cc_base; if(u>0)now[nn++]=(u16)u; }
+            for(int i=0;i<L->cc_cnt&&nn<16;i++){ int r=hid_bits(p,pl,L->cc_off+i*L->cc_sz,L->cc_sz,0), u; if(L->cl_n>0){ int x=r-L->cl_lmin; u=(x>=0&&x<L->cl_n)?L->cl_us[x]:0; } else u=r+L->cc_base; if(u>0)now[nn++]=(u16)u; }
             for(int i=0;i<L->cv_cnt&&nn<16;i++) if(hid_bits(p,pl,L->cv_off[i],1,0))now[nn++]=L->cv_us[i];
             for(int i=0;i<nn;i++){ int was=0; for(int j=0;j<xhid_ccn[e];j++) if(xhid_ccp[e][j]==now[i])was=1; if(was)continue;
                 int h=cc_hk(now[i]); if(h){ extern void hk_push(int); hk_push(h); } }
             xhid_ccn[e]=nn; for(int i=0;i<nn;i++)xhid_ccp[e][i]=now[i]; continue; }
-        if(L->kind==2){ int btn=0; for(int i=0;i<L->btn_cnt&&i<8;i++) if(hid_bits(p,pl,L->btn_off+i,1,0))btn|=1<<i;
-            int dx=hid_bits(p,pl,L->x_off,L->x_sz,1), dy=hid_bits(p,pl,L->y_off,L->y_sz,1), wz=L->w_off>=0?hid_bits(p,pl,L->w_off,L->w_sz,1):0;
-            if(dx||dy)in_rel(dx,dy);
-            in_btn_raw(btn&1,(btn>>1)&1,(btn>>2)&1); in_xbtn((btn>>3)&1,(btn>>4)&1); if(btn)mouse_evt=1; if(wz)in_scroll(wz,0); }
+        if(L->kind==2){ int btn=0; for(int i=0;i<L->btn_cnt&&i<16;i++) if(hid_bits(p,pl,L->btn_off+i,1,0))btn|=1<<i;
+            if(L->tip_off>=0&&hid_bits(p,pl,L->tip_off,1,0))btn|=1; if(L->bar_off>=0&&hid_bits(p,pl,L->bar_off,1,0))btn|=2;
+            int wz=L->w_off>=0?hid_bits(p,pl,L->w_off,L->w_sz,1):0, hz=L->h_off>=0?hid_bits(p,pl,L->h_off,L->h_sz,1):0;
+            if(L->abs){ int ax=hid_bits(p,pl,L->x_off,L->x_sz,L->x_lo<0), ay=hid_bits(p,pl,L->y_off,L->y_sz,L->y_lo<0);
+                if((L->rng_off<0||hid_bits(p,pl,L->rng_off,1,0))&&ax>=L->x_lo&&ax<=L->x_hi&&ay>=L->y_lo&&ay<=L->y_hi)in_abs(ax-L->x_lo,L->x_hi-L->x_lo,ay-L->y_lo,L->y_hi-L->y_lo); }
+            else { int dx=hid_bits(p,pl,L->x_off,L->x_sz,1), dy=hid_bits(p,pl,L->y_off,L->y_sz,1); if(dx||dy)in_rel(dx,dy); }
+            int hr=L->rm_on&&L->rm_mul>1; if(hr){ int m=L->rm_mul, a=L->w_acc+wz*120, h=L->h_acc+hz*120; wz=a/m; hz=h/m; L->w_acc=(short)(a-wz*m); L->h_acc=(short)(h-hz*m); }
+            in_btn_raw(btn&1,(btn>>1)&1,(btn>>2)&1); in_xbtn((btn>>3)&1,(btn>>4)&1); in_btnmask((u32)btn); if(btn)mouse_evt=1; if(hr){ if(wz||hz)in_scroll_hr(wz,hz); } else { wz=hpp_wheel(e,wz); if(wz||hz)in_scroll(wz,hz); } }
         else { u8 r[8]={0,0,0,0,0,0,0,0}; if(L->mod_off>=0) for(int i=0;i<8;i++) if(hid_bits(p,pl,L->mod_off+i,1,0))r[0]|=(u8)(1<<i);
             int n=2;
             if(L->arr_cnt>0) for(int i=0;i<L->arr_cnt&&n<8;i++){ int k=hid_bits(p,pl,L->arr_off+i*8,8,0); if(k)r[n++]=(u8)k; }
-            else for(int i=0;i<L->bm_cnt&&n<8;i++) if(hid_bits(p,pl,L->bm_off+i,1,0)){ int u=L->bm_min+i; if(u>=4)r[n++]=(u8)u; }
             int kq=0; for(int z=0;z<q;z++) if(xhid_lay[e][z].kind==1)kq++;
-            kbd_report(e,kq?xhid_kprevx[e][kq-1<HIDLAY_MAX-1?kq-1:HIDLAY_MAX-2]:xhid_kprev[e],r); }
+            u8* pv=kq?xhid_kprevx[e][kq-1<HIDLAY_MAX-1?kq-1:HIDLAY_MAX-2]:xhid_kprev[e];
+            if(L->arr_cnt<=0&&L->bm_cnt>0){ u8 bm[32]; for(int i=0;i<32;i++)bm[i]=0; for(int i=0;i<L->bm_cnt;i++){ int u=L->bm_min+i; if(u<0||u>255)break; if(hid_bits(p,pl,L->bm_off+i,1,0))bm[u>>3]|=(u8)(1u<<(u&7)); }
+                kbd_nkro(e,kq<HIDLAY_MAX?kq:HIDLAY_MAX-1,pv,r[0],bm); }
+            else kbd_report(e,pv,r); }
         return; }
 }
 static void hid_xfer(u8 sl,int epid,u8 cc,u32 res,u32 ptr){
     static u8 xhid_errn[XHID_MAX];
-    if(usn_xfer(sl,epid,cc,res,ptr)||btu_xfer(sl,epid,cc,res,ptr))return;
+    if(usn_xfer(sl,epid,cc,res,ptr)||um_xfer(sl,epid,cc,res,ptr)||btu_xfer(sl,epid,cc,res,ptr)||us_xfer(sl,epid,cc,res,ptr)||gpu_xfer(sl,epid,cc,res,ptr))return;
     int d=-1; for(int i=0;i<xhid_n;i++) if(xhid_used[i]&&xhid_ctl[i]==g_xcur&&xhid_slot[i]==sl&&xhid_dci[i]==epid){d=i;break;} if(d<0)return;
     if(cc==1||cc==13){
         u32 ba=xhid_dbuf[d]; if(ptr>=xhid_epin[d]&&ptr<xhid_epin[d]+255*16&&!(ptr&15)){ u32 b2=((volatile u32*)(u64)ptr)[0]; if(b2>=xhid_dbuf[d]&&b2<xhid_dbuf[d]+XHID_INFLIGHT*64u&&!((b2-xhid_dbuf[d])&63))ba=b2; }
@@ -102,16 +126,18 @@ static void hid_xfer(u8 sl,int epid,u8 cc,u32 res,u32 ptr){
         xhid_cnt[d]++; { int nn=got<16?got:16; for(int q=0;q<nn;q++)xhid_last[d][q]=db[q]; xhid_lastn[d]=nn; }
         if(d==xhid_sim_e&&got>3)got=3; /* DEBUG usbsim biltema: QEMU report -> 3-byte boot packet */
         int odx=mouse_dx, ody=mouse_dy;
-        if(xhid_rep[d]) hid_report_decode(d,(const u8*)db,got);
+        if(xhid_rep[d]&&dg_xfer(d,(const u8*)db,got)){}
+        else if(xhid_rep[d]&&hpp_xfer(d,(const u8*)db,got)){}
+        else if(xhid_rep[d]) hid_report_decode(d,(const u8*)db,got);
         else if(xhid_iskbd[d]){ u8 kb[8]={0,0,0,0,0,0,0,0}; for(int q=0;q<got&&q<8;q++)kb[q]=db[q]; if(got>=3)kbd_report(d,xhid_kprev[d],kb); }
         else if(got>=3){ u8 btn=db[0]; int dx=(int)(int8_t)db[1]; int dy=(int)(int8_t)db[2];
             if(dx||dy)in_rel(dx,dy);
-            in_btn_raw(btn&1,(btn>>1)&1,(btn>>2)&1); in_xbtn((btn>>3)&1,(btn>>4)&1); if(btn)mouse_evt=1;
+            in_btn_raw(btn&1,(btn>>1)&1,(btn>>2)&1); in_xbtn((btn>>3)&1,(btn>>4)&1); in_btnmask(btn); if(btn)mouse_evt=1;
             if(got>=4){ int wz=(int)(int8_t)db[3]; if(wz)in_scroll(wz,0); } }
         xhid_diag_rx(d,db,got,mouse_dx-odx,ody-mouse_dy);
     } else if(usbk_rep_dev==d){ usbk_rep_code=0; usbk_rep_dev=-1; }
     if(cc==1||cc==13)xhid_errn[d]=0; else if(xhid_errn[d]<255)xhid_errn[d]++;
-    if(cc==3||cc==4||cc==6||xhid_errn[d]>=32){ xhid_errn[d]=0; xhid_recover(d); return; }
+    if(xhr_halts(cc)||xhid_errn[d]>=32){ xrc_hid_note(d,cc); xhid_errn[d]=0; xhid_recover(d); return; }
     if(cc==26||cc==27)return;
     xhid_arm(d);
 }
@@ -123,12 +149,12 @@ static void xhci_poll_one(void){
         u32 type=(e[3]>>10)&0x3F; u8 sl=(u8)((e[3]>>24)&0xFF); u8 cc=(u8)((e[2]>>24)&0xFF); int epid=(int)((e[3]>>16)&0x1F); u32 res=e[2]&0xFFFFFF;
         ev_deq++; if(ev_deq>=256){ev_deq=0;ev_cyc^=1;}
         u64 rt=xhci_base+xhci_rtoff+0x20; XMW(rt+0x18,(XHCI_EVTRING+ev_deq*16)|(1u<<3)); XMW(rt+0x1C,0);
-        if(type==32)hid_xfer(sl,epid,cc,res,e[0]);
+        if(type==32)hid_xfer(sl,epid,cc,res,e[0]); else if(type==37)xhr_event_note(type,cc);
     }
 }
 static void xhci_mouse_poll_in(void){
     usb_kbd_repeat();
-    for(int c=0;c<g_xhc_n;c++){ xhc_select(c); if(xhci_init_ok){ xhci_poll_one(); xhid_proto_poll(); } }
+    for(int c=0;c<g_xhc_n;c++){ xhc_select(c); if(xhci_init_ok){ xhci_poll_one(); xhid_proto_poll(); hppx_poll(); } }
     for(int c=0;c<g_xhc_n&&xhid_rbudget;c++){ xhc_select(c); if(!xhci_init_ok)continue; for(int i=0;i<xhid_n&&xhid_rbudget;i++) if(xhid_recpend[i]&&xhid_used[i]&&xhid_ctl[i]==g_xcur)xhid_recover(i); }
     static u32 wd=0; if((++wd&255)!=0)return;
     for(int c=0;c<g_xhc_n&&xhid_rbudget;c++){ xhc_select(c); if(!xhci_init_ok)continue;
@@ -138,7 +164,7 @@ static void xhci_mouse_poll_in(void){
             if(st==2||st==4||(st==3&&!xh_wdepth))xhid_recover(i); } }
 }
 void xhci_mouse_poll(void){
-    if(!xhid_n&&!usn_active()&&!btu_active())return;
+    if(!xhid_n&&!usn_active()&&!um_active()&&!btu_active()&&!us_active()&&!gpu_active())return;
     if(__sync_lock_test_and_set(&xh_poll_busy,1)){
         return; }
     xh_poll_t0=g_ticks;
@@ -150,7 +176,7 @@ void xhci_mouse_poll(void){
 static void xhub_remove_below(int root,u32 R,int dR);
 static void xhid_remove_port(int port){ xhub_remove_below(port,0,0); }
 static void ufat_flush(void);
-void xhci_mouse_autoinit(void){ ufat_flush();
+void xhci_mouse_autoinit(void){ ufat_flush(); hidpp_service();
     xhci_init(); xhid_reset();
     for(int c=0;c<g_xhc_n;c++){ xhc_select(c); if(!xhci_present||!xhci_init_ok)continue;
         for(int p=0;p<xhci_ports;p++){ if(!xhci_port_conn[p]) continue; if(xhid_free_region(-1,-1)<0)break; xhci_hid_enum(p); } }
@@ -165,7 +191,7 @@ void xhci_mouse_autoinit(void){ ufat_flush();
 #define MSD_CBW      DMW(0xD5000u)
 #define MSD_CSW      DMW(0xD5100u)
 #define MSD_DATABUF  DMW(0xD6000u)
-int msd_ok=0, msd_slot=0, msd_in_dci=0, msd_out_dci=0;
+int msd_ok=0, msd_slot=0, msd_in_dci=0, msd_out_dci=0; u32 msd_gen=0;
 static u32 msd_in_enq=0, msd_in_cyc=1, msd_out_enq=0, msd_out_cyc=1, msd_tag=1;
 u32 msd_lastlba=0, msd_bsize=512;
 static void ring_init(u32 ring){ volatile u32* r=(volatile u32*)(u64)ring; for(int i=0;i<256*4;i++)r[i]=0;
@@ -184,10 +210,10 @@ static int msd_bot(const u8* cb,int cblen,u32 dbuf,int dlen,int dir_in){
     *(volatile u32*)(u64)MSD_CBW=0x43425355u; *(volatile u32*)(u64)(MSD_CBW+4)=msd_tag++;
     *(volatile u32*)(u64)(MSD_CBW+8)=(u32)dlen; w[12]=dir_in?0x80:0x00; w[13]=0; w[14]=(u8)cblen;
     for(int i=0;i<cblen&&i<16;i++)w[15+i]=cb[i];
-    if(xh_bulk(msd_out_dci,MSD_OUTRING,&msd_out_enq,&msd_out_cyc,MSD_CBW,31)<0) return -1;
-    if(dlen){ int cc=xh_bulk(dir_in?msd_in_dci:msd_out_dci, dir_in?MSD_INRING:MSD_OUTRING,
-                             dir_in?&msd_in_enq:&msd_out_enq, dir_in?&msd_in_cyc:&msd_out_cyc, dbuf, dlen); if(cc<0)return -1; }
-    if(xh_bulk(msd_in_dci,MSD_INRING,&msd_in_enq,&msd_in_cyc,MSD_CSW,13)<0) return -1;
+    if(xrc_msd_bulk(msd_out_dci,MSD_OUTRING,&msd_out_enq,&msd_out_cyc,MSD_CBW,31,0)<0) return -1;
+    if(dlen){ int cc=xrc_msd_bulk(dir_in?msd_in_dci:msd_out_dci, dir_in?MSD_INRING:MSD_OUTRING,
+                             dir_in?&msd_in_enq:&msd_out_enq, dir_in?&msd_in_cyc:&msd_out_cyc, dbuf, dlen, 1); if(cc<0)return -1; }
+    if(xrc_msd_bulk(msd_in_dci,MSD_INRING,&msd_in_enq,&msd_in_cyc,MSD_CSW,13,2)<0) return -1;
     if(*(volatile u32*)(u64)MSD_CSW != 0x53425355u) return -1;   /* 'USBS' */
     return *(volatile u8*)(u64)(MSD_CSW+12);                      /* bCSWStatus */
 }
@@ -208,6 +234,12 @@ static int scsi_write10(u32 lba,u16 cnt,u32 buf){
 }
 /* enumerate a mass-storage device on `port` (separate slot from HID) */
 static u32 msd_route=0; static int msd_depth=0;
+static void msd_cfg_eps(const u8* f,int n,int* ie,int* im,int* oe,int* om){
+    int isMSD=0;
+    for(int i=0;i+2<=n;){ int bl=f[i]; if(bl<2||i+bl>n)break; int bt=f[i+1];
+        if(bt==4&&bl>=9)isMSD=(f[i+5]==0x08);
+        else if(bt==5&&bl>=7&&isMSD&&(f[i+2]&0x0F)&&(f[i+3]&3)==2){ int a=f[i+2], m=(f[i+4]|(f[i+5]<<8))&0x7FF; if(!m)m=512; if(a&0x80){ *ie=a; *im=m; } else { *oe=a; *om=m; } }
+        i+=bl; } }
 static int xhci_msd_enum_loc(const usbloc_t* L);
 static int xhci_msd_enum(int port){
     msd_ok=0; xhci_failstep[0]=0; xhci_failcc=0;
@@ -233,12 +265,8 @@ static int xhci_msd_enum_loc(const usbloc_t* L){
     int wtot=c9[2]|(c9[3]<<8); if(wtot>256)wtot=256; u8 cfgval=c9[5];
     if(!xh_ctrl(0x80,6,0x0200,0,(u16)wtot,1,0)) MFAIL("GET config(full)");
     u8 full[256]; { volatile u8* db=(volatile u8*)(u64)cur_dbuf; for(int i=0;i<wtot;i++)full[i]=db[i]; }
-    int isMSD=0, in_ep=0,in_mps=512,out_ep=0,out_mps=512;
-    for(int i=0;i+2<wtot;){ int blen=full[i],bt=full[i+1]; if(blen<2)break;
-        if(bt==4){ isMSD=(full[i+5]==0x08); }                                  /* interface class 8 = mass storage */
-        else if(bt==5 && isMSD){ int a=full[i+2]; int mps=full[i+4]|(full[i+5]<<8); if((full[i+3]&3)==2){ /* bulk */
-            if(a&0x80){ in_ep=a; in_mps=mps; } else { out_ep=a; out_mps=mps; } } }
-        i+=blen; }
+    usbreg_probe(L,full,wtot);
+    int in_ep=0,in_mps=512,out_ep=0,out_mps=512; msd_cfg_eps(full,wtot,&in_ep,&in_mps,&out_ep,&out_mps);
     if(!in_ep||!out_ep) MFAIL("no bulk endpoints");
     if(!xh_ctrl(0x00,9,cfgval,0,0,0,0)) MFAIL("SET_CONFIGURATION");
     int in_n=in_ep&0x0F, out_n=out_ep&0x0F; msd_in_dci=in_n*2+1; msd_out_dci=out_n*2;   /* IN=2n+1, OUT=2n */
@@ -254,7 +282,7 @@ static int xhci_msd_enum_loc(const usbloc_t* L){
     if(!xh_cmd_s(MSD_INPUTCTX,0,0,12,(u32)msd_slot,&cc,&sl)){xhci_failcc=cc; MFAIL("Configure Endpoint");}
     for(int t=0;t<8;t++){ if(scsi_tur()==0)break; for(volatile int dl=0;dl<40000;dl++)io_wait(); }   /* wait ready */
     if(scsi_capacity()!=0) MFAIL("READ CAPACITY");
-    msd_route=L->route; msd_depth=L->depth; msd_ok=1; return 1;
+    msd_route=L->route; msd_depth=L->depth; msd_gen++; xrc_msd_note(); msd_ok=1; return 1;
     #undef MFAIL
 }
 static void xhci_port_refresh(void){ if(!xhci_op)return; for(int p=0;p<xhci_ports;p++){ u32 v=XMR(xhci_op+0x400+(u32)p*0x10); if((v&1)&&!xhci_port_conn[p]){ xhci_port_conn[p]=1; xhci_port_speed[p]=(u8)((v>>10)&0xF); } } }
@@ -358,7 +386,7 @@ static int ufat_dirent_scan(const char* n83,int findfree,u32* olba,int* ooff){ u
                 else { if(d[0]==0x00)return 0; if(d[0]==0xE5||(d[0x0B]&0x0F)==0x0F)continue; int m=1; for(int k=0;k<11;k++)if(d[k]!=(u8)n83[k]){m=0;break;} if(m){ *olba=lba; *ooff=e*32; return 1; } } } }
         clus=ufat_next(clus); } return 0; }
 int ufat_write_file(const char* name,const char* data,int len){
-    if(!ufat_ok||!msd_ok)return -1; char n83[11]; ufat_make83(name,n83); u32 elba; int eoff; u8 sec[512];
+    extern int volfs_usb_yield(void); if(!ufat_ok||!msd_ok||volfs_usb_yield())return -1; char n83[11]; ufat_make83(name,n83); u32 elba; int eoff; u8 sec[512];
     int exists=ufat_dirent_scan(n83,0,&elba,&eoff);
     u32 oc=0; if(exists){ if(umsd_read(elba,1,sec)<0)return -1; u8* d=sec+eoff; oc=(d[0x1A]|(d[0x1B]<<8))|((u32)(d[0x14]|(d[0x15]<<8))<<16); }
     else { if(!ufat_dirent_scan(n83,1,&elba,&eoff))return -1; }

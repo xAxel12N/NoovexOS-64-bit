@@ -22,12 +22,16 @@
 #include "include/nvx/apps/media/videoplayer.h"
 #include "include/nvx/core/init/installer.h"
 #include "include/nvx/fs/vfs/volumes.h"
+#include "fs/ext4/ext4.h"
+#include "include/nvx/fs/vfs/volfs.h"
+int ext4k_mounted(void);
 /* =========================================================================
-   File Explorer (v11.10) - browses the real Unix directory tree (DT + FS)
+   File Explorer (v11.22) - browses the real Unix directory tree (DT + FS)
    ========================================================================= */
 #define FX_MAXROWS 96
 #define FX_MAXB    72
 
 #include "apps/system/file_explorer/trash_and_sort.c"
 #include "apps/system/file_explorer/open_and_draw.c"
+#include "apps/system/file_explorer/volume_view.c"
 #include "apps/system/file_explorer/clicks_and_drops.c"

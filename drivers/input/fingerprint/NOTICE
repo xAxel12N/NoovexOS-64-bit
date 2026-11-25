@@ -1,0 +1,19 @@
+elan_fp.c is a port of libfprint/drivers/elan.c and elan.h
+(https://gitlab.freedesktop.org/libfprint/libfprint), Copyright (C) 2017 Igor Filatov,
+licensed LGPL-2.1-or-later (verified from the file headers, master branch, 2026-11-15).
+Used under GPL-3.0-or-later as LGPL-2.1 section 3 permits. Ported: device ID table and quirks,
+command codes, activate (firmware version, sensor size), calibration loop, capture loop,
+frame orientation, background subtraction and the linear / three-level normalisation.
+Not ported: libfprint's assembling.c; fp_assemble() is NoovexOS code.
+fp_usb.c and fp_xhci.c are NoovexOS code (GPL-3.0-or-later).
+syna_moc.c is a port of libfprint/drivers/synaptics (synaptics.c, bmkt_message.c, bmkt.h,
+bmkt_response.h), Copyright (C) 2019 Synaptics Inc, licensed LGPL-2.1-or-later (verified from
+the file headers, master branch, 2026-11-19). Ported: device ID table, ACE command / async-read
+transport, BMKT message framing, sequence numbers, completion and failure response IDs, FPS_INIT,
+ENROLL_USER, VERIFY_USER, DEL_USER_FP and their result codes.
+goodix_moc.c is a port of libfprint/drivers/goodixmoc (goodix.c, goodix_proto.c, goodix_proto.h),
+Copyright (C) 2019 Shenzhen Goodix Technology Co., Ltd., licensed LGPL-2.1-or-later (verified
+from the file headers, master branch, 2026-11-19). Ported: device ID table, package header with
+CRC-8 and CRC-32, ACK + data exchange, sensor config, version, enroll (init, capture, update,
+finger-up, duplicate check, commit with template id), identify, delete.
+Both used under GPL-3.0-or-later as LGPL-2.1 section 3 permits.

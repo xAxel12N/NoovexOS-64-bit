@@ -12,6 +12,14 @@ static void segv_rec(regs_t* r,u64 va){
         for(int i=96-7;i>=0&&!g_segv_msg[0];i--){ if((c[i]==0x48||c[i]==0x4C)&&c[i+1]==0x8D&&(c[i+2]&0xC7)==0x05){ int d=*(const int*)(c+i+3); u64 t=r->rip-96+(u64)i+7+(u64)(long)d; segv_str(t,g_segv_msg,128); } } }
     for(int i=0;i<96;i++){ u64 a=r->rsp+(u64)i*8; if(!jc_umapped(a,8))break; g_segv_stk[i]=*(const u64*)a; g_segv_nstk=i+1; }
     lx_sc_snap(); }
+u32 g_oom_kills;
+static void jc_oom_log(int j){
+    extern void klog(const char*); struct jproc* p=&g_jp[j]; g_oom_kills++; static u32 nlog; if(nlog>=64)return; nlog++;
+    int w=g_vm_oom_why; u64 tk=0, uk=0; if(swap_stats)swap_stats(&tk,&uk,0,0);
+    char b[256],*q=b; q=scopy(q,"oom: killed pid "); q=udec(q,(u32)p->pid); q=scopy(q," ("); { int k=0; while(k<47&&p->cmd[k]){ char c=p->cmd[k++]; *q++=(c<32||c>126)?'?':c; } } q=scopy(q,") sig 9: ");
+    q=scopy(q,w==2?"swap-in failed":w==3?"no memory for a file page":"no free page after reclaim"); q=scopy(q," cpu "); q=udec(q,(u32)cpu_id());
+    q=scopy(q," free "); q=udec(q,pframe_free_count()); q=scopy(q," pages, rounds "); q=udec(q,g_vm_frame_rounds); q=scopy(q,", zram "); q=udec(q,(u32)(uk/1024)); *q++='/'; q=udec(q,(u32)(tk/1024));
+    q=scopy(q," MB, reserve "); q=udec(q,swap_reserve_level?(u32)swap_reserve_level():0u); q=scopy(q,", kills "); q=udec(q,g_oom_kills); *q=0; klog(b); }
 int vm_user_pf(regs_t* r){
     if(!g_js_running||g_jcur<0)return 0;
     u64 va=cpu_cr2(); { struct jproc* fp=&g_jp[g_jcur]; fp->flt_addr=va; fp->flt_code=(r->errcode&1)?2:1; fp->flt_err=(u32)r->errcode; }
@@ -23,7 +31,7 @@ int vm_user_pf(regs_t* r){
     if(rc==-1){ extern int lx_res_fault(u64,u64); if(lx_res_fault(cpu_get_pt(),va)==0)rc=vm_fault_user(cpu_get_pt(),va,(int)((r->errcode>>1)&1)); }
     if(rc==0)return 1;
     if(rc==-1)segv_rec(r,va);
-    if(rc==-2){ jc_finish(g_jcur,9); jc_leave(); }
+    if(rc==-2){ jc_oom_log(g_jcur); jc_finish(g_jcur,9); jc_leave(); }
     return 0;
 }
 void jc_fault(regs_t* rr){
@@ -99,8 +107,9 @@ void jc_enter(int i){
     us_init();
     volatile int kd=g_dcwd, ku=g_uid, kg=g_gid, km=g_umask; volatile u64 kb=g_ubrk, kmm=g_mmap_next;
     { struct jproc* l=jc_lead(p); g_dcwd=l->cwd; g_uid=p->uid; g_gid=p->gid; g_umask=l->umask; g_ubrk=l->brk; g_mmap_next=l->mmnext; }
-    g_jcur=i; g_tss.rsp0=(u64)(g_jkstack+sizeof(g_jkstack)); lsys_kstack=g_tss.rsp0; lsys_fsbase=p->fsbase; cpu_wrmsr(0xC0000102u,p->gsbase); g_js_slice=jc_now();
+    g_jcur=i; g_tss.rsp0=(u64)(g_jkstack+sizeof(g_jkstack))-kaslr_kstk_off(); lsys_kstack=g_tss.rsp0; lsys_fsbase=p->fsbase; cpu_wrmsr(0xC0000102u,p->gsbase); g_js_slice=jc_now();
     p->runcpu=cpu_id()+1; p->lastcpu=cpu_id(); PCPU->switches++;
+    if(g_bpf_tp_any)bpf_tp_sched_switch_hit(i);
     volatile u64 t0=jc_now(); volatile u64 n0=hr_ns();
     cpu_irq_off();
     volatile int bd=0;

@@ -22,6 +22,7 @@ void cal_open(void);
 void cal_key(int c);
 void calendar_draw(int i);
 void snake_reset(void);
+void snake_start(void);
 void snake_step(void);
 void snake_key(int c);
 void snake_draw(int i);
@@ -33,6 +34,7 @@ void flappy_draw(int i);
 void neofetch_draw(int i);
 void paint_clear(void);
 void paint_at(int px,int py);
+void paint_end(void);
 void paint_draw(int i);
 
 #endif

@@ -745,7 +745,7 @@ State is remembered in `nvgsp-mode.cfg`; with NVIDIA autostart on, the second sc
 
 Limits. Not tested on a real card. DisplayPort monitors (link training) and dual-link DVI are not driven. The second screen mirrors the first; an extended desktop needs window-manager work. The desktop must be in NVIDIA video memory with a line length that is a multiple of 64 bytes. A monitor smaller than the desktop relies on the head's 2-tap scaler for shrinking. An update that times out leaves the head marked unfinished; the next `nvgsp mode` first turns it off.
 
-A review by a separate agent against nouveau and NVIDIA's headers confirmed every method number, bit field and RM structure offset, and found, fixed before release: the window owner changed inside a window-interlocked update (nouveau warns that the hardware rejects this), no input colour table on the window (nouveau always programs one on this class), usage bounds written for the firmware's windows, one DMA object shared by several channels, half-set state after a timeout, missing SET_HDMI_SINK_CAPS, and the page-size flag of the DMA objects (found while writing the review brief).
+A check against nouveau and NVIDIA's headers confirmed every method number, bit field and RM structure offset, and found, fixed before release: the window owner changed inside a window-interlocked update (nouveau warns that the hardware rejects this), no input colour table on the window (nouveau always programs one on this class), usage bounds written for the firmware's windows, one DMA object shared by several channels, half-set state after a timeout, missing SET_HDMI_SINK_CAPS, and the page-size flag of the DMA objects (found while writing the review brief).
 
 ### 10.10.10 NVIDIA 3D engine (`gsp/accel_3d.c`) (v10.81)
 
@@ -765,7 +765,7 @@ Gears (`apps/graphics/gpu3d.cpp`, `apps/graphics/r3d/r3d.cpp`). The renderer has
 
 Limits. Not tested on a real card; the first try there may fail in ways the simulator cannot show (the simulator treats block-linear memory as rows and takes the instruction encoding from the same source). No textures, no blending, no anti-aliasing, no indexed draws.
 
-A review by a separate agent against NVK, NAK, gallium and the class headers confirmed the instruction encodings, both program headers apart from one bit, the register counts, the state table and the per-frame methods, and found, fixed before release: the missing position-W bit in the pixel shader's header (both references say the hardware traps without it), compression left enabled on plain memory, no texture cache invalidate before the 2D engine reads the target, no check that the card was not restarted in the middle of a frame, VRAM leaks on failed set-up, and state that differed from NVK without need (depth clip, zcull region, anti-alias enable, EXIT scheduling).
+A check against NVK, NAK, gallium and the class headers confirmed the instruction encodings, both program headers apart from one bit, the register counts, the state table and the per-frame methods, and found, fixed before release: the missing position-W bit in the pixel shader's header (both references say the hardware traps without it), compression left enabled on plain memory, no texture cache invalidate before the 2D engine reads the target, no check that the card was not restarted in the middle of a frame, VRAM leaks on failed set-up, and state that differed from NVK without need (depth clip, zcull region, anti-alias enable, EXIT scheduling).
 
 Tests (`tools/check.py --only nvidia`, now built with ASan and UBSan). The simulator has a display engine model (channels, a hardware-style hash table lookup, armed state, notifier, the rule about window owners) and a 3D engine model that runs the two shaders from their binary form and rasterises with depth. 78 checks, among them: second screen on, off, HDMI, both screens, 70 off/on rounds, a missing notifier, 1500 rounds with random bytes and refusals in GSP-RM's replies, 300000 random EDID blocks, the 3D self-test, a card without a working depth test, 20000 triangles in one frame. A host test rasterises the triangles of all four Gears scenes and compares them with the CPU picture.
 
@@ -805,3 +805,121 @@ The controller is the ACPI device AMDI0030, AMDI0031 or AMD0030 with a memory re
 | AC'97 / HDA | codec ready; CRST and stream reset; verb | 200 ms; 10 ms; 200 ms |
 | `/dev/dsp` | ring full | 2000x1 ms |
 | NVIDIA DDC | SCL stretch | 2200 us per bit |
+
+## 10.13 USB MIDI and the built-in synth (v11.15)
+
+| File | Content |
+|---|---|
+| `drivers/usb/xhci/usb_midi.c` | USB Audio class MIDI streaming driver |
+| `drivers/usb/xhci/usbmidi_codec.h` | 4-byte USB-MIDI event packets to and from MIDI bytes |
+| `drivers/sound/midisynth.c`, `midisynth_core.h` | Small software synth mixed into the audio output |
+| `sys/linux/syscalls/rawmidi.c`, `sys/linux/rawmidi_abi.h` | `/dev/midiN` and ALSA `/dev/snd/midiC0DN` |
+
+- Up to 4 devices (`UM_MAX`) and 16 cables (`UM_PORTS`). Each device has 8 receive buffers of 512 bytes and 32 send buffers. Bad descriptors are rejected.
+- An interface that also has audio streaming (for example a webcam microphone) is not claimed. Enumeration does not reset other USB devices.
+- A stalled endpoint is cleared and re-armed (`um_unhalt`, `um_recover`). A device that goes away frees its ports.
+- The rawmidi layer supports open, read, write, poll and the ALSA info and status ioctls, for both the OSS-style and ALSA names.
+- The synth (`msynth_event`, `msynth_mix`) plays notes from incoming MIDI. It pauses while other audio is playing.
+- Guarded by `SYSF_MIDI` (section 11.22). Commands: `midi list|monitor|play`. Settings > Advanced system > MIDI shows devices and has a test note. Host tests: `tools/tests/midi/`.
+
+## 10.14 NVIDIA additions (v11.16 and v11.17)
+
+### Feature switches (`drivers/video/nvidia/nvsettings.c`)
+
+Each NVIDIA feature has an entry in `nvsettings.h`:
+
+| Name | Feature |
+|---|---|
+| `bootstart` | Start the GPU during the boot splash |
+| `modeset` | Native mode and tear-free page flips |
+| `cursor` | Hardware mouse cursor |
+| `extend` | Extended desktop on the second screen |
+| `cardmem` | Window layers in video memory |
+| `2d` | 2D engine fills and copies |
+| `dptrain` | DisplayPort link training during mode set |
+| `ampere` | RTX 30 (Ampere) GSP start |
+| `ada` | RTX 40 (Ada) GSP start |
+
+All are on by default. The state of each is kept in `nvset-<name>.cfg`: on, tried, fail count and auto-off.
+- Before a risky step a driver calls `nvset_try_begin`, which writes "tried". `nvset_try_end(feat,ok,err)` clears it and counts a failure.
+- If a boot stops while "tried" is set, `nvset_load` turns the feature off at the next boot and records "the last try did not finish".
+- 3 failures (`NVSET_MAX_FAILS`) turn the feature off. `nvset_reset` or switching it on in Settings gives it another try.
+- `nvset_state` returns off, waiting, active, fallback, auto-off or no hardware. `nvset_no_card` checks the PCI bus for an NVIDIA display device.
+- Shell: `gpu feature on|off <name>` (`nvset_cmd`).
+
+### Native mode and page flips (`gsp/flip.c`, `gsp/flip_emit.c`, `nvflip.h`)
+
+`nvflip_on` sets up two scan-out buffers (`NVFLIP_NBUF`) on the main head through the core and window channels. `nvflip_present` copies the changed area into the back buffer and queues a flip. The display engine shows it at the next vertical blank and writes a notifier (not begun, begun, finished) that `nf_wait_ntfy` polls with a time limit. On any error `nvflip_off(why)` returns to the boot framebuffer and the reason is shown by `nvflip_why`.
+
+### Vertical blank events (`gsp/disp_events.c`)
+
+GSP-RM display events are read through an event buffer (`nvev_*`). `nvvb_wait` waits for the next vertical blank with a time limit. This file also picks the mode from the EDID (`nvk_edid_pick`) and checks the VRAM budget for the chosen mode (`nvk_vram_budget`).
+
+### Hardware cursor (`nvcursor.c`, `graphics/ui/hwcursor.c`, `graphics/ui/curshape.c`)
+
+`nvcur_chan_init` opens a cursor channel per head and uploads the cursor image (32 to 256 pixels wide, `nvcur_layout`). `nvcur_move` writes the position. `nvcur_gen_ok` checks the chip generation. `hwcursor.c` renders the current pointer shape (`curshape.c`) into the cursor image. The software cursor is still drawn as well until the hardware cursor is confirmed on screen.
+
+### Extended desktop (`graphics/ui/outputs.c`, `outputs_present.c`)
+
+`outputs.c` keeps the layout of up to two screens: desktop size, which screen a point is on, mouse and drag clamping, window placement and snapping across the shared edge. `display extend|mirror` switches modes. The second screen mirrors until it can show app contents.
+
+### Window layers in VRAM (`gsp/vram_layers.c`, `nvvram.h`)
+
+Window surfaces can live in video memory. `nvl_mark` records changed tiles of 64x16 pixels, and only those are uploaded when the frame ends (`nvl_batch_end`). When memory is short the least used surface is evicted (`vl_evict_one`).
+
+### 2D engine and glyphs (`nv2dq.c`, `nvdraw.c`, `drivers/video/fb/gtext.c`)
+
+`nv2q_fill` and `nv2q_copy` build 2D engine methods for fills and copies. Each operation falls back to the CPU on its own if it cannot be queued. Text is drawn from a glyph atlas in video memory (`nv2qa_get`): `gtext.c` stages glyph runs per frame (`gt_stage`, `gt_run`).
+
+### DisplayPort (`drivers/video/dp_link.c`, `gsp/dp_train.c`, `gsp/dp_sst.c`)
+
+`dp_link.c` is a shared link-training state machine (clock recovery, then channel equalisation) on top of DPCD reads and writes. It is meant to be reused by the Intel and AMD drivers. `dp_train.c` connects it to GSP-RM AUX access (`nvdp_aux`) and the lane drive settings. `dp_sst.c` computes single-stream transfer unit values. Training waits until it can run without blanking the screen.
+
+### RTX 30 and RTX 40 (`nvgen.c`, `nvada.c`, `nvgsp_gen.h`)
+
+`nvgen.c` holds the per-generation steps for Ampere (GA102 class): engine reset, falcon load and boot, fuse-based signature selection for the booter and FWSEC images, and the RISC-V GSP start. `nvada.c` does the same for Ada: it parses the booter and the FWSEC image from the VBIOS, patches the FRTS command, signs and runs the booter. If the start does not finish, the normal framebuffer stays in use. The Ampere GSP-RM image is not built in and must be copied into Files.
+
+### Compute shaders (`shaders/gqk_sm86.cubin`, `gqk_sm89.cubin`, `nvqmd.h`)
+
+Prebuilt compute kernels for SM 8.6 and SM 8.9 are embedded through `gqk_cubin_sm8x.h`. `nvqmd.h` fills the queue meta data for a launch and picks a QMD version known to work for the SM version. `tools/nvsass_port.py` produces the embedded tables.
+
+### Sensors (`gsp/sensors.c`)
+
+`gpu sensors` shows PCIe link speed and width, power state and clock slowdown reasons, read from GSP-RM. Temperature, clocks and fan are not available.
+
+## 10.15 AMD display flips, PSR and SDMA (`drivers/video/amd/`) (v11.17)
+
+- **Tear-free flips** (`dc/amd_flip.c`, `dc/dcn_so.c`): two buffers in VRAM, flipped at vertical blank through the DCN hub surface address registers (`dso_flip`, `dso_pending`, `dso_wait`). `dso_gen` picks register offsets per DCN version. On failure it returns to the UEFI framebuffer. Guard: `SYSF_AMD_FLIP`.
+- **Panel self refresh:** `afl_psr` checks the PSR state through the DMUB firmware before flips start, so flips do not fight PSR on laptop panels. DMUB is also used for backlight (`amd_dmub_backlight`).
+- **SDMA copy engine** (`sdma/sdma_core.c`, `sdma/amd_sdma.c`): loads the SDMA firmware, starts one ring and builds copy, fill and fence packets (`asd_pk_*`). `amdsdma_copy` and `amdsdma_fill` are used for screen copies. Each operation falls back to the CPU if it fails. Guard: `SYSF_AMD_SDMA`.
+- Settings > Display > Advanced graphics shows both with their state.
+
+## 10.16 Intel Gen 12 blitter (`drivers/video/intel/igpu.c`) (v11.16)
+
+Tiger Lake, Alder Lake and Raptor Lake use the blitter engine for fills and copies, like the Gen 9 path. Meteor Lake (device IDs 0x7Dxx) is excluded. The start is guarded by `SYSF_INTEL_BLT` with one allowed failure. If the engine does not start, drawing stays on the CPU.
+
+## 10.17 Bluetooth: pairing, audio and reconnect (`net/bluetooth/`)
+
+- **Pairing** (`sec.c`, `smp.c`): Secure Simple Pairing and LE pairing with numeric comparison and passkey entry. A notification asks the user to confirm the code or to type the passkey. Settings > Bluetooth shows a "Pairing request" card. A keyboard that offers no passkey is refused.
+- **A2DP audio** (`profiles/a2dp.c`, `sbc/sbc_enc.c`): the AVDTP signalling finds an SBC sink, picks 44.1 or 48 kHz, opens the media channel and streams SBC frames encoded by the built-in encoder. Audio from the mixer goes to a ring buffer. Guard: `feat-btaudio.cfg`.
+- **AVRCP buttons:** play, pause and play/pause pass-through commands from the headphones pause and resume the stream.
+- **Reconnect** (`bt_mgr.c`): `btm_autoconnect` reconnects saved devices at boot and reports how many came back. Guard: `feat-btreconn.cfg`.
+
+## 10.18 Fingerprint readers (`drivers/input/fingerprint/`, `lib/fprint/`)
+
+- `fp_usb.c` maps USB IDs to a driver kind, using the libfprint ID lists as facts.
+- Match-on-chip readers: Synaptics (`syna_moc.c`) and Goodix (`goodix_moc.c`). Enrolment and matching happen in the sensor. Goodix models use 8, 12 or 17 enrolment stages depending on the ID.
+- Image readers (Elan, `elan_fp.c`) send images. `lib/fprint/fprint.c` extracts minutiae and matches them on the host (`fp_match`), with a score that does not depend on argument order.
+- `lib/fprint/fpstore.c` keeps templates per user and gives Settings > Accounts > Sign-in options its enrol, test, remove and sign-in toggle (`fprint_ui`). Guests cannot enrol.
+
+## 10.19 Hotkeys (`graphics/ui/hotkeys.c`, `drivers/platform/x86/acpi_hotkeys.c`)
+
+Volume, mute, media, brightness, microphone, camera, airplane mode, touchpad and display keys all end up as small IDs in one queue (`hk_push`, `g_hk_q` in `drivers/input/ps2/ps2.c`). Sources are PS/2 scan codes, USB HID consumer keys, vendor drivers (`asus_wmi.c`, `thinkpad.c`) and ACPI devices found by `acpi_hotkeys.c` (Intel HID, virtual buttons, radio switch, ASUS and Dell). `hk_poll` runs `hk_do` in the desktop loop and `osd_draw` shows an on-screen indicator.
+
+## 10.20 Sleep (`core/sleepsm.c`, `core/sleepdev.c`) (v11.17)
+
+`sleepsm.c` is a small state machine (idle, check, suspend, asleep, resume, blocked, failed) over a list of devices. Each device has `present`, `block`, `suspend` and `resume` callbacks. `slp_enter` asks every device whether it can sleep, then suspends them in order. `slp_leave` resumes them in reverse order.
+
+`sleepdev.c` registers the system disk (flush), audio, Bluetooth, Wi-Fi, USB and the display. `slp_pick` chooses the mode: S3 when it is allowed, otherwise s2idle when the firmware has an LPS0 device, otherwise ACPI S1 on machines without hardware-reduced ACPI. S3 is not used yet: `sleep_mode` always passes `s3_ok` as 0.
+
+Sleep has its own `featguard`. If the computer does not wake up properly, sleep turns off and closing the lid only turns off the screen. Settings > Power shows `sleep_status_text`.

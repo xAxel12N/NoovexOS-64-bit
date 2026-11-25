@@ -68,6 +68,8 @@ static u64 apcm_avail(struct lx_apcm* a){ if(a->stream==0)return a->bsize-apcm_q
 static volatile int g_apcm_busy;
 static void apcm_pump2(struct lx_apcm* a);
 u32 g_apcm_mixed, g_apcm_maxs;
+int msynth_mix(int* acc,int fr);
+int apcm_playing(void){ for(int i=0;i<APCM_N;i++){ struct lx_apcm* a=&g_apcm[i]; if(a->used&&a->stream==0&&a->bsize&&a->boundary&&a->ring&&(a->state==3||a->state==5)&&apcm_queued(a))return 1; } return 0; }
 static void apcm_mix(void){
     u64 now=hr_ns(); struct lx_apcm* st[APCM_N]; u64 qs[APCM_N]; int ns=0; u64 mq=0;
     for(int i=0;i<APCM_N;i++){ struct lx_apcm* a=&g_apcm[i]; if(!a->used||a->stream!=0||!a->bsize||!a->boundary||!a->ring||(a->state!=3&&a->state!=5))continue; u64 q=apcm_queued(a); if(!q){ if(a->state==5&&(!apcm_devq()||now>=a->tdrain))a->state=1; a->tlast=now; continue; } st[ns]=a; qs[ns]=q; if(q>mq)mq=q; ns++; }
@@ -80,6 +82,7 @@ static void apcm_mix(void){
         for(u64 k=0;k<n*2;k++)mixd[k]=0;
         for(int j=0;j<ns;j++){ struct lx_apcm* a=st[j]; if(qs[j]<=done)continue; u64 m=qs[j]-done; if(m>n)m=n;
             for(u64 k=0;k<m;k++){ u64 pos=(a->hw+done+k)%a->bsize; const short* f=(const short*)(a->ring+pos*4); mixd[k*2]+=f[0]; mixd[k*2+1]+=f[1]; } }
+        msynth_mix(mixd,(int)n);
         for(u64 k=0;k<n*2;k++){ int v=mixd[k]; out[k]=(short)(v>32767?32767:v<-32768?-32768:v); }
         int w=g_snd.write((u8*)out,(int)(n*4)); if(w<=0)break; done+=(u64)w/4; if((u64)w<n*4)break; }
     for(int j=0;j<ns;j++){ struct lx_apcm* a=st[j]; u64 adv=qs[j]<done?qs[j]:done; a->hw=(a->hw+adv)%a->boundary; a->tlast=now; if(adv&&apcm_queued(a)==0)a->tdrain=now+(fill+adv)*1000000000ULL/(a->rate?a->rate:48000); }

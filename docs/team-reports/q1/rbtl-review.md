@@ -1,6 +1,6 @@
 # rbtl review: Intel / MediaTek / Broadcom BT loaders in main (8f0ec653)
 
-Scope: drivers/bluetooth/intelbt_fw.c, mtkbt_fw.c, bcmbt_fw.c, hooks in hci.c bt_up and btusb.c, NOTICE/build.sh.
+Scope: drivers/bluetooth/firmware/intelbt_fw.c, mtkbt_fw.c, bcmbt_fw.c, hooks in hci.c bt_up and btusb.c, NOTICE/build.sh.
 Read-only; nothing built or committed.
 
 ## Verdict for the owner's Realtek 0BDA:C123
@@ -17,7 +17,7 @@ The one shared-helper change that can still alter `bt up` on the owner's machine
 ## HIGH
 
 ### H1. Intel 8260/8265 legacy path can never work: the Boot Params length and the limited_cce offset are both wrong
-**Where:** drivers/bluetooth/intelbt_fw.c:260-261.
+**Where:** drivers/bluetooth/firmware/intelbt_fw.c:260-261.
 
 **What is wrong:** FreeBSD `struct iwmbt_boot_params` is 23 bytes. I fetched iwmbt_fw.h to confirm: limited_cce is at offset 21 and unlocked_state at 22. The code has two errors:
 - It requires `ib_rp(m,&v)<24`, so a correct 23-byte reply is rejected with "Read Boot Params failed". Every 0a2b/0aaa/0025/0026/0029 device fails here.
@@ -37,7 +37,7 @@ It fails cleanly, so there is no hang, and it is Intel-only. But it is a false i
 
 ### M1. The widened claim rule can root-reset unrelated vendor-class devices during `bt up`, before the owner's E0 adapter is reached
 **Where:**
-- drivers/bluetooth/btusb.c:151 (`btu_candidate`)
+- drivers/bluetooth/transport/btusb.c:151 (`btu_candidate`)
 - btusb.c:170-172 (probe loop)
 
 **What is wrong:** `g_usbdev[].cls` is the class of the first interface (storage_fat_and_hubs.c:98). Any device whose first interface is 0xFF and whose VID is one of 0489, 13d3, 04ca, 0b05, 413c, 0930, 050d, 105b, 0bb4 or 19ff now becomes a candidate. Examples: Foxconn/IMC/Lite-On fingerprint readers, Dell/ASUS OEM USB NICs (r8152 vendor mode), WWAN modems. The probe then runs `xh_root_reset(p)` on it. Parse fails ("no Bluetooth HCI interface"), the slot is disabled and a setup-failed line is logged.
@@ -69,7 +69,7 @@ This also stops `btusb_listed` (btusb.c:162) from naming a vendor device first. 
 
 **Patch:** append to build.sh:305:
 ```
- && sed -n '1,18p' drivers/bluetooth/mtkbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.btmtk-ISC && sed -n '1,29p' drivers/bluetooth/intelbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.iwmbtfw-BSD-2-Clause
+ && sed -n '1,18p' drivers/bluetooth/firmware/mtkbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.btmtk-ISC && sed -n '1,29p' drivers/bluetooth/firmware/intelbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.iwmbtfw-BSD-2-Clause
 ```
 
 ## LOW

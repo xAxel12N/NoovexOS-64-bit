@@ -14,8 +14,8 @@ static u8* rtlbt_load(const char* path,int* len){
     FILE* f=fopen(fn,"rb"); if(!f)return 0; u8* b=malloc(1<<20); int n=(int)fread(b,1,1<<20,f); fclose(f);
     if(n<=0){ free(b); return 0; } *len=n; return b;
 }
-#include "drivers/bluetooth/hci_parse.h"
-#include "drivers/bluetooth/rtlbt_fw.c"
+#include "net/bluetooth/hci_parse.h"
+#include "drivers/bluetooth/firmware/rtlbt_fw.c"
 #ifndef FWDIR
 #define FWDIR "assets/firmware/rtl_bt"
 #endif

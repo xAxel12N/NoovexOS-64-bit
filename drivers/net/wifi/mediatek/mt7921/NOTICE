@@ -1,0 +1,34 @@
+NoovexOS MediaTek Wi-Fi 6/6E driver (drivers/net/wifi/mediatek/mt7921)
+
+mt7921.h, glue.c, pci/*, fw/*, mcu/*
+  Port of Linux drivers/net/wireless/mediatek/mt76 (mt76_connac_mcu.[ch],
+  mt76_connac2_mac.h, mt792x*.[ch], dma.c, mt7921/*.[ch]).
+  SPDX-License-Identifier: BSD-3-Clause-Clear (verified on every upstream file used)
+  Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
+  Copyright (C) 2018 Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
+  Copyright (C) 2020-2025 MediaTek Inc.
+  The full licence text is in LICENCE.BSD-3-Clause-Clear next to this file and
+  is installed at /usr/share/licenses/wifi/LICENCE.mt76-BSD-3-Clause-Clear.
+  glue.c (wifi_hw_ops adapter and status text) is Clear BSD like the rest of the
+  driver (its PCI ID table comes from mt7921/pci.c); the mtwifi shell command is
+  own code (GPLv3).
+
+Firmware: unmodified linux-firmware files, redistributable under LICENCE.mediatek
+(assets/firmware/linux-firmware/LICENSES/LICENCE.mediatek, WHENCE.txt), installed
+at /lib/firmware/mediatek/:
+  WIFI_MT7961_patch_mcu_1_2_hdr.bin, WIFI_RAM_CODE_MT7961_1.bin    (MT7921)
+  WIFI_MT7961_patch_mcu_1a_2_hdr.bin, WIFI_RAM_CODE_MT7961_1a.bin  (MT7920)
+  WIFI_MT7922_patch_mcu_1_1_hdr.bin, WIFI_RAM_CODE_MT7922_1.bin    (MT7922)
+If a file is missing the driver names it in the kernel log and in mtwifi status.
+
+mt7925 (drivers/net/wifi/mediatek/mt7925: mt7925.h, mcu.c, mac.c, clc.c, glue.c; connac3 paths in
+mt7921/pci/mt7921_pci.c) are ported from mt76 mt7925/ (mcu.c, mcu.h, mac.c, mt7925.h, pci.c, regs.h; clc.c from mcu.c mt7925_load_clc/__mt7925_mcu_set_clc),
+SPDX-License-Identifier: BSD-3-Clause-Clear, Copyright (C) 2023 MediaTek Inc.
+Firmware: mediatek/mt7925/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin, WIFI_RAM_CODE_MT7925_1_1.bin
+(unmodified linux-firmware, LICENCE.mediatek, listed in WHENCE.txt).
+
+mt7921u (drivers/net/wifi/mediatek/mt7921/usb: mt7921_usb.c, mt7921_usb.h) is ported from mt76 usb.c,
+mt792x_usb.c, mt792x.h, mt792x_regs.h, mt76.h, mt7921/usb.c and mt7921/mac.c (USB TXD/header),
+SPDX-License-Identifier: BSD-3-Clause-Clear (verified on each file), Copyright (C) 2018 Lorenzo Bianconi
+<lorenzo.bianconi83@gmail.com>, Copyright (C) 2022-2023 MediaTek Inc. Uses the MT7961 firmware above.
+drivers/usb/class/mt7921u_xhci.c (xHCI attach) is own code (GPLv3).

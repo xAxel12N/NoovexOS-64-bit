@@ -2,7 +2,9 @@
 #include "include/nvx/mem/pmm_vmm.h"
 #include "include/nvx/mem/dmawin.h"
 #include "include/nvx/mem/heap.h"
+#include "include/nvx/core/kaslr.h"
 #include "include/nvx/arch/x86_64/smp/smp_sched.h"
+#include "include/nvx/arch/x86_64/cpu/percpu.h"
 #include "include/nvx/apps/system/files_classic.h"
 /* ================= STAGE 1: physical page-frame allocator =================
    Manages 4 KB frames in the free RAM gap between the image-scratch region and
@@ -116,20 +118,23 @@ static void pframe_grow_from_heap(void){
     u64 top=heap_top&~0xFFFULL, base=(top-x)&~0x1FFFFFULL; if(base<=heap_cur+0x8000000ULL)return;
     heap_top=base; pf_x_base=base; pf_x_top=top; pf_n=PF_N+(u32)((top-base)>>12);
 }
+static u64 pf_rs; static u32 pf_rc;
 void pframe_init(void){ pf_ready=(g_ram_mb>=500); if(pf_ready)pframe_grow_from_heap();
     for(u32 i=0;i<(pf_n+7)/8;i++)pf_bitmap[i]=0; pf_used=0; pf_hint=0;
     for(u32 i=0;i<pf_n;i++){ u64 pa=pf_pa(i); if(!mm_is_clean(pa,pa+4096ULL)){ pf_bitmap[i>>3]|=(u8)(1u<<(i&7)); pf_used++; } }
-    if(pf_ready)hp_init(); }
+    if(pf_ready)hp_init();
+    if(pf_ready&&g_kaslr_on){ u64 s=kaslr_rand(~0ULL)|1; pf_rs=s; g_kaslr_pf_seed=1; if(pf_n)pf_hint=(u32)(s%pf_n); if(hp_n)hp_hint=(u32)((s>>32)%((hp_n+63)/64)); } }
 u64 pframe_alloc(void){ if(!pf_ready)return 0;
+    if(pf_rs&&!(++pf_rc&63)){ pf_rs^=pf_rs<<13; pf_rs^=pf_rs>>7; pf_rs^=pf_rs<<17; if(pf_n)pf_hint=(u32)(pf_rs%pf_n); if(hp_n)hp_hint=(u32)((pf_rs>>32)%((hp_n+63)/64)); }
     { u64 h=hp_alloc(); if(h)return h; }
     if(pf_used<pf_n) for(u32 k=0;k<pf_n;k++){ u32 i=pf_hint+k; if(i>=pf_n)i-=pf_n;
         if(!(pf_bitmap[i>>3]&(1u<<(i&7)))){ pf_bitmap[i>>3]|=(u8)(1u<<(i&7)); pf_used++; pf_ref[i]=1; pf_hint=i+1>=pf_n?0:i+1;
             u64 pa=pf_pa(i); u64* z=(u64*)pa; for(int j=0;j<512;j++)z[j]=0; return pa; } }
     return 0; }
 void pframe_free(u64 pa){ int ii=pf_idx(pa); if(ii<0)return; u32 i=(u32)ii;
-    if(i>=pf_n){ u32 j=i-pf_n; if(!hp_isset(j))return; if(hp_ref[j]>1){ hp_ref[j]--; return; } hp_ref[j]=0; hp_bits[j>>6]&=~(1ULL<<(j&63)); if(hp_used)hp_used--; if((j>>6)<hp_hint)hp_hint=j>>6; return; }
+    if(i>=pf_n){ u32 j=i-pf_n; if(!hp_isset(j)||hp_ref[j]==0xFFFF)return; if(hp_ref[j]>1){ hp_ref[j]--; return; } hp_ref[j]=0; hp_bits[j>>6]&=~(1ULL<<(j&63)); if(hp_used)hp_used--; if((j>>6)<hp_hint)hp_hint=j>>6; return; }
     if(!(pf_bitmap[i>>3]&(1u<<(i&7))))return;
-    if(pf_ref[i]>1){ pf_ref[i]--; return; }
+    if(pf_ref[i]==0xFFFF)return; if(pf_ref[i]>1){ pf_ref[i]--; return; }
     pf_ref[i]=0; pf_bitmap[i>>3]&=(u8)~(1u<<(i&7)); if(pf_used)pf_used--; if(i<pf_hint)pf_hint=i; }
 void pframe_ref(u64 pa){ int ii=pf_idx(pa); if(ii<0)return; u32 i=(u32)ii; if(i>=pf_n){ u32 j=i-pf_n; if(hp_isset(j)&&hp_ref[j]<0xFFFF)hp_ref[j]++; return; } if((pf_bitmap[i>>3]&(1u<<(i&7)))&&pf_ref[i]<0xFFFF)pf_ref[i]++; }
 static u32 pframe_refs(u64 pa){ int ii=pf_idx(pa); if(ii<0)return 1; u32 i=(u32)ii; if(i>=pf_n){ u32 j=i-pf_n; return hp_isset(j)?hp_ref[j]:0; } return (pf_bitmap[i>>3]&(1u<<(i&7)))?pf_ref[i]:0; }
@@ -178,8 +183,18 @@ u64 vm_live(u64 pa,u64 old){ return vm_pflags((pa&PTE_ADDR)|0x7ULL|(old&PTE_SHR)
 int vm_map_lazy_p(u64 pml4,u64 v,u64 bits){ u64* e=vm_walk(pml4,v,1); if(!e)return -1; if(*e&1)return 0; *e=PTE_LAZY|(bits&PTE_PBITS); return 0; }
 int vm_pte_used(u64 e){ return (e&1)||(e&PTE_LAZY); }
 u64 g_vm_file_faults;
-static u64 vm_frame(void){ u64 f=pframe_alloc(); if(f)return f; extern u32 sysroot_pc_reclaim(u32) __attribute__((weak));
-    if(mem_reclaim){ for(int t=0;t<6&&!f;t++){ if(mem_reclaim(64))f=pframe_alloc(); } } else if(sysroot_pc_reclaim&&sysroot_pc_reclaim(4096u))f=pframe_alloc(); return f; }
+int g_vm_oom_why; u32 g_vm_frame_rounds; u64 g_vm_oom_fails;
+#define VM_KRES 256u
+u64 g_vm_kres_fills; static u32 g_vm_kres_skip;
+static void vm_kres(void){ extern int g_sr_nolock[64]; if(!mem_reclaim||!g_sr_nolock[cpu_id()&63]||pframe_free_count()>=VM_KRES)return;
+    if(g_vm_kres_skip){ g_vm_kres_skip--; return; } if(mem_reclaim(64))g_vm_kres_fills++; else g_vm_kres_skip=256; }
+static u64 vm_frame(void){ vm_kres(); u64 f=pframe_alloc(); if(f)return f; extern u32 sysroot_pc_reclaim(u32) __attribute__((weak));
+    if(!mem_reclaim){ if(sysroot_pc_reclaim&&sysroot_pc_reclaim(4096u))f=pframe_alloc(); g_vm_frame_rounds=1; if(!f)g_vm_oom_fails++; return f; }
+    u64 c0=swap_cycles?swap_cycles():0; u32 t=0, idle=0;
+    while(t<512&&idle<64){ u32 n=mem_reclaim(64); t++; f=pframe_alloc(); if(f)break;
+        if(n){ idle=0; c0=swap_cycles?swap_cycles():0; continue; }
+        idle++; if(idle>=3&&(!swap_cycles||swap_cycles()-c0>=2))break; }
+    g_vm_frame_rounds=t; if(!f)g_vm_oom_fails++; return f; }
 int vm_fault_user(u64 cr3,u64 va,int write){
     u64* e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e)return -1;
     if(!(*e&1)){
@@ -187,19 +202,19 @@ int vm_fault_user(u64 cr3,u64 va,int write){
         if(*e&PTE_PNO)return -1;
         if(write&&(*e&PTE_PRO))return -1;
         if(*e&PTE_FILE){ extern u64 sysroot_pc_page(int h,u32 pg) __attribute__((weak)); if(!sysroot_pc_page)return -1;
-            extern u64 g_pc_oom; u64 oo=g_pc_oom; u64 m=*e; u64 f=sysroot_pc_page((int)((m>>PTE_FH_SHIFT)&0xFFFFFu),(u32)((m&PTE_FP_MASK)>>12)); if(!f)return g_pc_oom!=oo?-2:-1;
+            extern u64 g_pc_oom; u64 oo=g_pc_oom; u64 m=*e; u64 f=sysroot_pc_page((int)((m>>PTE_FH_SHIFT)&0xFFFFFu),(u32)((m&PTE_FP_MASK)>>12)); if(!f){ g_vm_oom_why=3; return g_pc_oom!=oo?-2:-1; }
             e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
             *e=vm_pflags((f&PTE_ADDR)|0x5ULL|PTE_COW|(m&PTE_SHR),m&PTE_PBITS); cpu_flush_page(va&~0xFFFULL); g_vm_file_faults++;
             if(!write)return 0; }
-        else { u64 m=*e; u64 f=vm_frame(); if(!f)return -2; e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
-        if(m&PTE_SWP){ if(!swap_in||swap_in(m,f)){ pframe_free(f); return -2; } }
+        else { u64 m=*e; u64 f=vm_frame(); if(!f){ g_vm_oom_why=1; return -2; } e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
+        if(m&PTE_SWP){ if(!swap_in||swap_in(m,f)){ pframe_free(f); g_vm_oom_why=2; return -2; } }
         *e=vm_live(f,m)|((m&PTE_SHR)?0:PTE_ANON); cpu_flush_page(va&~0xFFFULL); return 0; } }
     if(!(*e&4))return -1;
     if(write&&!(*e&2)){
         if(!(*e&PTE_COW)||(*e&PTE_PRO))return -1;
         u64 pa=*e&PTE_ADDR;
         if(pframe_refs(pa)<=1){ *e=vm_live(pa,*e&~PTE_SHR)|PTE_ANON; cpu_flush_page(va&~0xFFFULL); return 0; }
-        u64 m=*e; u64 f=vm_frame(); if(!f)return -2; e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
+        u64 m=*e; u64 f=vm_frame(); if(!f){ g_vm_oom_why=1; return -2; } e=vm_walk(cr3&~0xFFFULL,va&~0xFFFULL,0); if(!e||*e!=m){ pframe_free(f); return 0; }
         u8* d=(u8*)f; const u8* s=(const u8*)pa; for(int b=0;b<4096;b++)d[b]=s[b];
         *e=vm_live(f,*e&~PTE_SHR)|PTE_ANON; cpu_flush_page(va&~0xFFFULL); smp_tlb_sync(cr3); pframe_free(pa); return 0; }
     return 0;

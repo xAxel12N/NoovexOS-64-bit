@@ -28,6 +28,7 @@ int virtio_blk_write(u64 lba,int count,const u8* buf){
         for(int i=0;i<c*512;i++)bounce[i]=buf[i]; if(vb_req(1,lba,c,1))return -1; buf+=c*512; lba+=(u64)c; count-=c; }
     return 0;
 }
+int virtio_blk_flush_ok(void){ return ready&&has_flush; }
 int virtio_blk_flush(void){ if(!has_flush)return 0; return vb_req(4,0,0,0); }
 int virtio_blk_probe(u64* sectors){
     int b,d,f; if(!vio_open(0x1001,0,&io,&b,&d,&f))return 0;

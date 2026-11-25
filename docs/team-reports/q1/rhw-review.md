@@ -1,6 +1,6 @@
 # rhw review: wifi_hw interface (p-hwops 0647276b, as merged in main 8f0ec653)
 
-Scope: include/nvx/net/wifi/wifi_hw.h, net/wifi/wifi_hw.c, and the hwops changes to net/wifi/{wifi_mgr,wifi_netdev}.c and drivers/net/wifi/rtw88/rtw8821ce.c. I also read /home/claude/wt/iwxi (the uncommitted iwx wiring) to check the contract. I made no changes to the repo.
+Scope: include/nvx/net/wifi/wifi_hw.h, net/wifi/wifi_hw.c, and the hwops changes to net/wifi/{wifi_mgr,wifi_netdev}.c and drivers/net/wifi/realtek/rtw88/rtw8821ce.c. I also read /home/claude/wt/iwxi (the uncommitted iwx wiring) to check the contract. I made no changes to the repo.
 
 ## Verdict on the main question: the RTL8821CE path is unchanged
 
@@ -23,12 +23,12 @@ Scope: include/nvx/net/wifi/wifi_hw.h, net/wifi/wifi_hw.c, and the hwops changes
    - Note that the merge with p-amp later changed `wnd_rx_frame` and the ring loop (A-MPDU). That is not hwops. With `ba==0` it reduces to the hwops version.
 5. **Tests.** `tools/check.py --only wifi` on an exported copy of main (`/tmp/rhw`): 15/15 passed.
 
-Out of scope, for the p-amp reviewer: the owner's association request HT A-MPDU parameter byte changed from 0x17 to 0x13 (drivers/net/wifi/rtw88/rtw8821ce.c:654). This came from the p-amp merge, not hwops.
+Out of scope, for the p-amp reviewer: the owner's association request HT A-MPDU parameter byte changed from 0x17 to 0x13 (drivers/net/wifi/realtek/rtw88/rtw8821ce.c:654). This came from the p-amp merge, not hwops.
 
 ## Findings
 
 ### MEDIUM-1: the probe runs only once and is never retried, and the iwx wiring does a heavy, blocking start inside it
-- **Where:** net/wifi/wifi_hw.c:9 (`whw_probed=1` is set even when nothing registered). In iwxi, the probe calls `iwx_start()`, which loads firmware from disk and waits for the card's "alive" message (iwxi drivers/net/wifi/iwx/iwx_glue.c:52; iwx_pcie.c:253).
+- **Where:** net/wifi/wifi_hw.c:9 (`whw_probed=1` is set even when nothing registered). In iwxi, the probe calls `iwx_start()`, which loads firmware from disk and waits for the card's "alive" message (iwxi drivers/net/wifi/intel/iwx/iwx_glue.c:52; iwx_pcie.c:253).
 - **What goes wrong:** on an Intel machine the first `wifi_hw_generic()` call is `sysfiles_build -> sf_hardware -> wifi_info_text` at boot (core/sysfiles.c:346).
   - Boot blocks on the firmware load.
   - If that load fails (firmware not installed yet, disk slow), the latch means Wi-Fi never appears until reboot. The only way around it is the `iwx_up` shell command.
@@ -40,7 +40,7 @@ Out of scope, for the p-amp reviewer: the owner's association request HT A-MPDU 
 +static void whw_probe(void){ if(whw_n)return; if(whw_probed&&g_ticks-whw_last<3000)return; whw_probed=1; whw_last=g_ticks; rtw_wifi_hw_probe(); }
 ```
   (When iwx is merged, keep `if(!whw_n)iwx_wifi_hw_probe();` after `rtw_wifi_hw_probe();`. On the owner's machine `whw_n` becomes 1, so nothing changes there.)
-- **Patch, iwxi drivers/net/wifi/iwx/iwx_glue.c:**
+- **Patch, iwxi drivers/net/wifi/intel/iwx/iwx_glue.c:**
 ```c
 -static int iwx_g_init(void* ctx){ struct iwx_softc* sc=(struct iwx_softc*)ctx; if(!sc)return -1; iwx_rx_deliver=iwx_glue_rx; return iwx_init_hw_cmds(sc); }
 +static int iwx_g_init(void* ctx){ struct iwx_softc* sc=(struct iwx_softc*)ctx; if(!sc)return -1; if(iwx_start()!=0)return -1; iwx_rx_deliver=iwx_glue_rx; return iwx_init_hw_cmds(sc); }

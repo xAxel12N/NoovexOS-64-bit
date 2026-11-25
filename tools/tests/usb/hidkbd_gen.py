@@ -18,5 +18,6 @@ i=ci.index('static u8 xhid_kprev['); code+=ci[i:ci.index('\n',i)]+'\n'
 code+='static int hid_inlen;\n'+fn(ci,'static int hid_parse(')+'\n'+fn(ci,'static int hid_bits(')+'\n'
 code+=fn(hk,'static char hid2ascii(')+'\n'+fn(hk,'static u8 hid2scan(')+'\n'
 i=hk.index('static int usbk_rep_code'); code+=hk[i:hk.index('\n',i)]+'\n'
-for s in ['static int usb_key_code(','static void usbk_mods_sync(','static void kbd_report(','static void usb_kbd_repeat(','static int cc_hk(','static void hid_report_decode(']: code+=fn(hk,s)+'\n'
+code+='static int hpp_wheel(int e,int wz){ (void)e; return wz; }\n'
+for s in ['static int usb_key_code(','static void usbk_mods_sync(','static void kbd_report(','static void kbd_nkro(','static void usb_kbd_repeat(','static int cc_hk(','static void hid_report_decode(']: code+=fn(hk,s)+'\n'
 open(sys.argv[4],'w').write(code+'\n#include "hidkbd_main.c"\n')

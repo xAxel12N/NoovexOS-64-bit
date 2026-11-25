@@ -1,5 +1,6 @@
 int desk_win_exposed(int i){
     if(!WN[i].open||WN[i].min||WN[i].ws!=g_ws||i==anim_hide||drag>=0||g_resize>=0||g_fdrag||g_ddrag>=0||g_marq) return 0;
+    { extern int g_disp_extend; if(g_disp_extend&&(WN[i].x<0||WN[i].y<0||WN[i].x+WN[i].w>(int)W||WN[i].y+WN[i].h>(int)H)) return 0; }
     if(g_launcher||g_qs||g_clockpop||g_ctx||g_submenu||g_imgview>=0||g_alttab||g_rename||g_prop||g_wifipop||g_notifpanel||g_toast_cur>=0||toast_t) return 0;
     for(int k=0;k<NWIN;k++) if(k!=i&&WN[k].open&&!WN[k].min&&WN[k].ws==g_ws&&WN[k].z>WN[i].z) return 0;
     return 1;
@@ -75,7 +76,7 @@ static void compose_present_body(void){
     int part=g_gfx&&g_dmg_ok;
     if(g_gfx){ if(!part) gq_copy(gs_nc,0,0,(int)W,(int)H,gs_scene,0,0,256,0); else if(g_dmw>0&&g_dmh>0) gq_copy(gs_nc,g_dmx,g_dmy,g_dmw,g_dmh,gs_scene,g_dmx,g_dmy,256,0); }
     else memcpy(SCENE_NC, SCENE, (u64)W*H*4);
-    int skip=part&&g_dmw<=0&&cxlast==mx&&cylast==my;
+    extern int g_amdflip_redo; int skip=part&&g_dmw<=0&&cxlast==mx&&cylast==my&&!g_amdflip_redo;
     quiet_on();
     if(skip) g_frames_skipped++;
     else { draw_cursor();
@@ -110,6 +111,7 @@ void present_cursor(void){
     nc_restore(mx-CURBB/2, my-CURBB/2, CURBB, CURBB);                          /* restore SCENE to cursor-free */
     cxlast=mx; cylast=my;
     quiet_off();
+    { extern void out2_cursor(void); out2_cursor(); }
 }
 static u64 g_pump_last=0; static int g_pump_hooked=0;
 volatile int g_busy_esc=0;
@@ -131,7 +133,7 @@ void desk_nested_step(void){
 void busy_pump(void){
     static int in=0; static u64 last=0, lastp=~0ULL;
     if(g_state!=ST_DESKTOP){ extern volatile u32 g_ml_beat, g_nest_beat; g_ml_beat++; if(g_state==ST_LIVE&&g_ticks!=lastp){ lastp=g_ticks; g_nest_beat++; } return; }
-    if(in||g_ticks==lastp)return; lastp=g_ticks; in=1;
+    if(in||g_ticks==lastp)return; lastp=g_ticks; in=1; { extern void cur_busy_note(void); cur_busy_note(); }
     { extern volatile u32 g_ml_beat, g_nest_beat; g_ml_beat++; g_nest_beat++; }
     if(xhid_n) xhci_mouse_poll();
     int dx,dy; extern void in_mq_rebase_locked(int,int); extern u64 in_lock_x(void); extern void in_unlock_x(u64); u64 lf=in_lock_x(); dx=mouse_dx; dy=mouse_dy; mouse_dx=0; mouse_dy=0; in_mq_rebase_locked(dx,dy); in_unlock_x(lf);
@@ -148,8 +150,9 @@ void busy_pump(void){
     in=0; }
 void ui_pump(void){
     if(!g_pump_hooked){ g_wpa_pump=ui_pump; g_pump_hooked=1; }
+    { extern void cur_busy_note(void); cur_busy_note(); }
     { extern volatile u32 g_nest_beat; g_nest_beat++; }
-    { extern void tp_poll(void); extern void etp_poll(void); extern void syn_poll(void); static int in=0; if(!in){ in=1; tp_poll(); etp_poll(); syn_poll(); in=0; } }   /* v11.10: touchpad keeps moving the pointer during waits */
+    { extern void tp_poll(void); extern void etp_poll(void); extern void syn_poll(void); static int in=0; if(!in){ in=1; tp_poll(); etp_poll(); syn_poll(); in=0; } }   /* v11.22: touchpad keeps moving the pointer during waits */
     if(xhid_n) xhci_mouse_poll();
     if(g_ticks-g_pump_last>=2&&!pump_building()){ g_pump_last=g_ticks; present_cursor(); }
 }
@@ -173,7 +176,6 @@ static void win_anim_unused(int i,int opening){
 }
 
 
-void snd_apply_volume(int v){ if(g_snd_state)g_snd.volume(v); }
 void desk_nv_progress(int step,const char* what){
     { extern volatile u32 g_ml_beat; g_ml_beat++; }
     if(g_gfx||step<=0||g_state!=ST_DESKTOP)return;

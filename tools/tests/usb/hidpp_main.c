@@ -1,0 +1,130 @@
+static int fails, checks;
+#define CK(c,m) do{ checks++; if(c)printf("  %s ok\n",m); else { fails++; printf("  %s FAIL\n",m); } }while(0)
+static u8 out[20]; static int on;
+static int step(hpp_rcv_t* R,u64 t){ on=hpp_step(R,t,out); return on; }
+static void rx7(hpp_rcv_t* R,u64 t,u8 a,u8 b,u8 c,u8 d,u8 e,u8 f,u8 g){ u8 m[7]={a,b,c,d,e,f,g}; hpp_rx(R,m,7,t); }
+static void rx20(hpp_rcv_t* R,u64 t,const u8* p,int n){ u8 m[20]; memset(m,0,20); memcpy(m,p,n); hpp_rx(R,m,20,t); }
+static void reply_root(hpp_rcv_t* R,u64 t,u8 idx){ rx20(R,t,(u8[]){0x11,out[1],out[2],out[3],idx},5); }
+int main(void){
+    static const u8 unif_rd[]={0x06,0x00,0xFF,0x09,0x01,0xA1,0x01,0x85,0x10,0x75,0x08,0x95,0x06,0x15,0x00,0x26,0xFF,0x00,0x09,0x01,0x81,0x00,0x09,0x01,0x91,0x00,0xC0,0x06,0x00,0xFF,0x09,0x02,0xA1,0x01,0x85,0x11,0x75,0x08,0x95,0x13,0x09,0x02,0x81,0x00,0x09,0x02,0x91,0x00,0xC0};
+    static const u8 mouse_rd[]={0x05,0x01,0x09,0x02,0xA1,0x01,0x85,0x10,0xC0};
+    printf("== HID++ interface detection ==\n");
+    CK(hpp_vendor_iface(0x046D,unif_rd,sizeof unif_rd)==3,"Unifying vendor interface: short+long reports");
+    CK(hpp_vendor_iface(0x248A,unif_rd,sizeof unif_rd)==0,"other vendors (Attack Shark style receiver) untouched");
+    CK(hpp_vendor_iface(0x046D,mouse_rd,sizeof mouse_rd)==0,"report ID 0x10 outside the vendor page ignored");
+    CK(hpp_receiver_pid(0xC52B)&&hpp_receiver_pid(0xC548)&&!hpp_receiver_pid(0xC077),"receiver PIDs: Unifying, Bolt yes; wired mouse no");
+    printf("== Unifying receiver: notifications, device arrival, HID++ 2.0 mouse ==\n");
+    hpp_rcv_t* R=hpp_new(3,2,0xC52B,2,3); CK(R&&!R->bolt,"receiver slot");
+    u64 t=10;
+    CK(step(R,t)==7&&out[0]==0x10&&out[1]==0xFF&&out[2]==0x80&&out[3]==0x00&&out[5]==0x09,"enable wireless+software-present notifications (register 0x00)");
+    CK(step(R,t)==0,"one request at a time");
+    rx7(R,t,0x10,0xFF,0x80,0x00,0,0,0); CK(R->ok,"reply accepted");
+    CK(step(R,t)==7&&out[3]==0x02&&out[4]==0x02,"ask receiver to announce paired devices (register 0x02)");
+    rx7(R,t,0x10,0xFF,0x80,0x02,0,0,0);
+    CK(step(R,t)==0,"idle with no devices");
+    rx7(R,t,0x10,0x01,0x41,0x04,0x02,0x4D,0x40); CK(R->d[1].on&&R->d[1].kind==2&&R->d[1].wpid==0x404D,"0x41: mouse online, wpid 404D");
+    CK(step(R,t)==7&&out[2]==0x83&&out[3]==0xB5&&out[4]==0x40,"read device name (long register B5, 0x40)");
+    rx20(R,t,(u8[]){0x11,0xFF,0x83,0xB5,0x40,0x04,'M','7','2','0'},10); CK(!strcmp(R->d[1].name,"M720"),"name M720");
+    CK(step(R,t)==7&&out[1]==1&&out[2]==0&&out[3]==0x1A,"ping (root fn 1)");
+    rx20(R,t,(u8[]){0x11,0x01,0x00,0x1A,0x04,0x05,0xA5},7); CK(R->d[1].ver==4,"HID++ 4.5");
+    CK(step(R,t)==7&&out[4]==0x10&&out[5]==0x00,"getFeature 0x1000"); reply_root(R,t,0);
+    CK(step(R,t)==7&&out[4]==0x10&&out[5]==0x04,"getFeature 0x1004"); reply_root(R,t,6);
+    CK(step(R,t)==7&&out[4]==0x21&&out[5]==0x21,"getFeature 0x2121"); reply_root(R,t,9);
+    CK(R->d[1].fu==6&&R->d[1].fw==9,"feature indexes stored");
+    CK(step(R,t)==7&&out[2]==6&&out[3]==0x1A,"unified battery get_status");
+    rx20(R,t,(u8[]){0x11,0x01,0x06,0x1A,77,0x04,0x00},7); CK(R->d[1].bat==77&&R->d[1].bst==0,"battery 77%, discharging");
+    CK(step(R,t)==7&&out[2]==9&&out[3]==0x0A,"getWheelCapability");
+    rx20(R,t,(u8[]){0x11,0x01,0x09,0x0A,8,0x0C},6); CK(R->d[1].mult==8,"multiplier 8");
+    CK(step(R,t)==7&&out[3]==0x3A&&out[4]==0x02,"setWheelMode hi-res, not diverted");
+    rx20(R,t,(u8[]){0x11,0x01,0x09,0x3A,0x02},5); CK(R->d[1].hires,"hi-res on");
+    CK(step(R,t)==0,"set-up done");
+    int s=0; for(int i=0;i<8;i++)s+=hpp_scale(R,1); CK(s==1,"8 hi-res units = 1 notch");
+    s=0; for(int i=0;i<3;i++)s+=hpp_scale(R,1); s+=hpp_scale(R,-1); CK(s==0,"direction change drops partial notch");
+    char b[96]; hpp_fmt(R,1,b,96); CK(strstr(b,"M720")&&strstr(b,"battery 77%")&&strstr(b,"Unifying"),b);
+    rx20(R,t,(u8[]){0x11,0x01,0x06,0x00,40,0x02,0x01},7); CK(R->d[1].bat==40&&R->d[1].bst==1,"battery event: 40% charging");
+    printf("== sleep and wake without replug ==\n");
+    rx7(R,t,0x10,0x01,0x41,0x04,0x42,0x4D,0x40); CK(!R->d[1].on&&!R->d[1].hires,"link lost: offline, hi-res forgotten");
+    CK(hpp_scale(R,5)==5,"no scaling while asleep");
+    hpp_fmt(R,1,b,96); CK(strstr(b,"asleep")!=0,b);
+    rx7(R,t,0x10,0x01,0x41,0x04,0x02,0x4D,0x40); CK(R->d[1].on&&R->d[1].step==1,"link back: set-up restarts");
+    CK(step(R,t)==7&&out[3]==0x1A,"name cached, goes straight to ping");
+    rx20(R,t,(u8[]){0x11,0x01,0x00,0x1A,0x04,0x05,0xA5},7);
+    for(int k=0;k<3;k++){ step(R,t); reply_root(R,t,(u8)(k==1?6:k==2?9:0)); }
+    step(R,t); rx20(R,t,(u8[]){0x11,0x01,0x06,0x1A,70,0x04,0x00},7);
+    step(R,t); rx20(R,t,(u8[]){0x11,0x01,0x09,0x0A,8,0x0C},6);
+    CK(step(R,t)==7&&out[3]==0x3A,"hi-res wheel re-enabled after wake"); rx20(R,t,(u8[]){0x11,0x01,0x09,0x3A,0x02},5); CK(R->d[1].hires,"hi-res on again");
+    printf("== HID++ 1.0 keyboard, timeouts, unknown device ==\n");
+    rx7(R,t,0x10,0x02,0x41,0x04,0x01,0x10,0x20); step(R,t); rx20(R,t,(u8[]){0x11,0xFF,0x83,0xB5,0x41,0x03,'K','3','6'},9);
+    CK(step(R,t)==7&&out[1]==2&&out[3]==0x1A,"keyboard ping");
+    rx7(R,t,0x10,0x02,0x8F,0x00,0x1A,0x01,0x00); CK(R->d[2].ver==1,"error 0x01: HID++ 1.0");
+    CK(step(R,t)==7&&out[2]==0x81&&out[3]==0x0D,"battery register 0x0D");
+    rx7(R,t,0x10,0x02,0x8F,0x81,0x0D,0x02,0x00); CK(step(R,t)==7&&out[3]==0x07,"fallback battery register 0x07");
+    rx7(R,t,0x10,0x02,0x81,0x07,0x05,0,0); CK(R->d[2].bat==50,"level 5 = 50%");
+    CK(step(R,t)==0&&R->d[2].step==10,"keyboard done, no wheel");
+    rx7(R,t,0x10,0x03,0x41,0x04,0x02,0x11,0x11); step(R,t); u64 t2=t; for(int k=0;k<3;k++){ t2+=HPP_TMO; step(R,t2); }
+    CK(R->d[3].named,"name request gives up after 3 tries (bounded)");
+    step(R,t2); CK(on==7&&out[3]==0x1A,"then pings");
+    rx7(R,t2,0x10,0x03,0x8F,0x00,0x1A,0x08,0x00); CK(!R->d[3].on,"unknown device (asleep) marked offline");
+    for(int k=0;k<4;k++){ t2+=HPP_TMO; step(R,t2); }
+    printf("== battery refresh, pairing, unpair, Bolt ==\n");
+    t2+=HPP_BATT_EVERY+1; CK(step(R,t2)==7&&out[1]==1&&out[2]==6,"periodic battery refresh");
+    rx20(R,t2,(u8[]){0x11,0x01,0x06,0x1A,65,0x04,0x03},7); CK(R->d[1].bat==65&&R->d[1].bst==2,"refresh 65% full");
+    step(R,t2); rx20(R,t2,(u8[]){0x11,0x01,0x09,0x0A,8,0x0C},6); step(R,t2); rx20(R,t2,(u8[]){0x11,0x01,0x09,0x3A,0x02},5);
+    R->pair=1; R->rq=0; CK(step(R,t2)==7&&out[2]==0x80&&out[3]==0xB2&&out[4]==0x01,"open pairing lock (register B2)");
+    rx7(R,t2,0x10,0xFF,0x80,0xB2,0,0,0); CK(R->pair==0,"pairing request acknowledged"); R->pst=0;
+    rx7(R,t2,0x10,0x02,0x40,0x04,0,0,0); CK(!R->d[2].kind&&!R->d[2].on,"0x40: unpaired device removed");
+    hpp_rcv_t* B=hpp_new(5,4,0xC548,2,2); CK(B&&B->bolt,"Bolt receiver");
+    CK(step(B,1)==20&&out[0]==0x11,"long-only interface uses report 0x11"); rx20(B,1,(u8[]){0x11,0xFF,0x80,0x00},4); step(B,1); rx20(B,1,(u8[]){0x11,0xFF,0x80,0x02},4);
+    rx7(B,1,0x10,0x01,0x41,0x10,0x02,0x9A,0xB0); CK(step(B,1)==20&&out[2]==0x83&&out[3]==0xB5&&out[4]==0x61&&out[5]==0x01,"Bolt name: long register B5, 0x61 part 1");
+    rx20(B,1,(u8[]){0x11,0xFF,0x83,0xB5,0x61,0x01,0x0C,'M','X',' ','M','a','s','t','e','r',' ','3','S'},19); CK(!strcmp(B->d[1].name,"MX Master 3S"),B->d[1].name);
+    CK(step(B,1)==20&&out[1]==1&&out[3]==0x1A,"then ping"); rx20(B,1,(u8[]){0x11,0x01,0x8F,0x00,0x1A,0x08},6);
+    char pa[96],pb[96]; CK(hpp_pstate(B,pa,96,pb,96)==0,"idle: no pairing state");
+    printf("== Bolt pairing: mouse, click passkey ==\n");
+    hpp_pair_start(B,100); CK(step(B,100)==20&&out[2]==0x80&&out[3]==0xC0&&out[4]==30&&out[5]==0x01,"start discovery (register C0: 30 s, open)");
+    rx20(B,100,(u8[]){0x11,0xFF,0x80,0xC0},4); CK(B->pst==1&&!B->rq,"discovery acknowledged");
+    rx20(B,100,(u8[]){0x11,0xFF,0x53,0x00,0x00},5); CK(B->pst==1,"0x53: discovery open");
+    CK(hpp_pstate(B,pa,96,pb,96)==1&&strstr(pa,"Searching"),pa);
+    rx20(B,101,(u8[]){0x11,0xFF,0x4F,0x05,0x00,0x00,0x00,0x02,0x00,0x00,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0,0,0x02},19); CK(B->pgot==1&&B->pkind==2&&B->paddr[0]==0xA1&&B->paddr[5]==0xA6&&B->pauth==0x02,"0x4F part 0: kind mouse, address, authentication");
+    rx20(B,101,(u8[]){0x11,0xFF,0x4F,0x09,0x00,0x01,0x04,'X','X','X','X'},11); CK(B->pgot==1,"0x4F from another counter ignored");
+    rx20(B,101,(u8[]){0x11,0xFF,0x4F,0x05,0x00,0x01,0x04,'M','6','5','0'},11); CK(B->pst==2&&!strcmp(B->pname,"M650"),"0x4F part 1: name M650, ready to pair");
+    CK(step(B,102)==20&&out[2]==0x82&&out[3]==0xC1&&out[4]==0x01&&out[5]==0&&out[6]==0xA1&&out[11]==0xA6&&out[12]==0x02&&out[13]==10,"pair request (long register C1): address, authentication, entropy 10 for a mouse");
+    rx20(B,102,(u8[]){0x11,0xFF,0x82,0xC1},4); CK(B->pst==3,"pair request acknowledged");
+    rx20(B,102,(u8[]){0x11,0xFF,0x53,0x01,0x00},5); CK(B->pst==3,"discovery closing after pair request is not a failure");
+    rx20(B,103,(u8[]){0x11,0xFF,0x54,0x00,0x00},5); CK(B->pst==3,"0x54: pairing lock open");
+    rx20(B,103,(u8[]){0x11,0xFF,0x4D,0x00,'0','0','0','6','8','2'},10); CK(B->pst==4&&!strcmp(B->pkey,"000682"),"0x4D: passkey 000682");
+    CK(hpp_pstate(B,pa,96,pb,96)==2&&strstr(pa,"Click on M650")&&!strcmp(pb,"R L R L R L R L R L"),pb);
+    rx20(B,103,(u8[]){0x11,0xFF,0x4E,0x00,0x00},5); rx20(B,103,(u8[]){0x11,0xFF,0x4E,0x00,0x00},5); CK(B->ppress==2,"0x4E: presses counted");
+    rx20(B,104,(u8[]){0x11,0xFF,0x54,0x02,0x00,0,0,0,0,0,0,0x02},12); CK(B->pst==5&&B->pnew==2,"0x54 closed, status 2, no error: paired in slot 2");
+    CK(hpp_pstate(B,pa,96,pb,96)==3&&strstr(pa,"Paired: M650"),pa);
+    rx7(B,104,0x10,0x02,0x41,0x10,0x02,0x50,0xB0); CK(B->d[2].on&&B->d[2].kind==2,"new device arrives with 0x41"); B->d[2].step=10;
+    printf("== Bolt pairing: keyboard typed passkey, failure, timeout, cancel ==\n");
+    hpp_pair_start(B,200); step(B,200); rx20(B,200,(u8[]){0x11,0xFF,0x80,0xC0},4);
+    rx20(B,200,(u8[]){0x11,0xFF,0x4F,0x01,0x00,0x00,0x00,0x01,0,0,1,2,3,4,5,6,0,0,0x01},19); rx20(B,200,(u8[]){0x11,0xFF,0x4F,0x01,0x00,0x01,0x07,'M','X',' ','K','e','y','s'},14);
+    CK(step(B,200)==20&&out[13]==20,"entropy 20 for a keyboard"); rx20(B,200,(u8[]){0x11,0xFF,0x82,0xC1},4);
+    rx20(B,200,(u8[]){0x11,0xFF,0x54,0x00,0x00},5); rx20(B,200,(u8[]){0x11,0xFF,0x4D,0x00,'1','2','3','4','5','6'},10);
+    CK(hpp_pstate(B,pa,96,pb,96)==2&&strstr(pa,"MX Keys")&&!strcmp(pb,"Type 123456 and then press Enter"),pb);
+    rx20(B,201,(u8[]){0x11,0xFF,0x54,0x01,0x02},5); CK(B->pst==6&&B->perr==2,"0x54 with error 2: failed");
+    CK(hpp_pstate(B,pa,96,pb,96)==4&&strstr(pb,"refused"),pb);
+    hpp_pair_start(B,300); step(B,300); rx20(B,300,(u8[]){0x11,0xFF,0x80,0xC0},4);
+    rx20(B,330,(u8[]){0x11,0xFF,0x53,0x01,0x01},5); CK(B->pst==6&&B->perr==1,"0x53 closed with error 1: device timeout");
+    hpp_pair_start(B,400); step(B,400); rx20(B,400,(u8[]){0x11,0xFF,0x8F,0x80,0xC0,0x03},6); CK(B->pst==6&&B->perr==3,"receiver error reply ends pairing");
+    hpp_pair_start(B,500); step(B,500); rx20(B,500,(u8[]){0x11,0xFF,0x80,0xC0},4); CK(step(B,500+HPP_PAIR_TMO-1)==0&&B->pst==1,"still searching before 90 s");
+    CK(step(B,500+HPP_PAIR_TMO)==20&&out[2]==0x80&&out[3]==0xC0&&out[5]==0x02&&B->pst==6&&B->perr==0xFD,"90 s: cancel discovery, timed out");
+    rx20(B,600,(u8[]){0x11,0xFF,0x80,0xC0},4);
+    hpp_pair_start(B,700); step(B,700); { u64 tt=700; for(int k=0;k<3;k++){ tt+=HPP_TMO; step(B,tt); } CK(B->pst==6&&B->perr==0xFE&&!B->wlen,"no answer to discovery: bounded, fails"); }
+    printf("== unpair ==\n");
+    B->uslot=2; CK(step(B,800)==20&&out[2]==0x82&&out[3]==0xC1&&out[4]==0x03&&out[5]==0x02,"Bolt unpair: register C1 03 slot");
+    rx20(B,800,(u8[]){0x11,0xFF,0x82,0xC1},4); CK(!B->d[2].kind&&!B->d[2].on,"slot cleared on acknowledge");
+    R->uslot=1; CK(step(R,t2)==7&&out[2]==0x80&&out[3]==0xB2&&out[4]==0x03&&out[5]==0x01,"Unifying unpair: register B2 03 slot");
+    rx7(R,t2,0x10,0xFF,0x8F,0x80,0xB2,0x02,0); CK(R->d[1].kind==2,"refused unpair keeps the device");
+    printf("== Unifying pairing ==\n");
+    hpp_pair_start(R,t2); CK(step(R,t2)==7&&out[3]==0xB2&&out[4]==0x01&&out[6]==60,"open lock (B2 01 00 3C)");
+    rx7(R,t2,0x10,0xFF,0x80,0xB2,0,0,0); CK(R->pst==3,"lock open");
+    rx7(R,t2,0x10,0xFF,0x4A,0x01,0x00,0,0); rx7(R,t2,0x10,0x04,0x41,0x04,0x01,0x23,0x40); CK(R->pnew==4,"new device in slot 4 seen");
+    rx7(R,t2,0x10,0xFF,0x4A,0x00,0x00,0,0); CK(R->pst==5,"lock closed: paired");
+    hpp_pair_start(R,t2); step(R,t2); rx7(R,t2,0x10,0xFF,0x80,0xB2,0,0,0); rx7(R,t2,0x10,0xFF,0x4A,0x00,0x01,0,0); CK(R->pst==6&&R->perr==1&&!R->pnew,"lock closed with error 1: failed");
+    hpp_rcv_t* S=hpp_new(9,8,0xC548,2,1); hpp_pair_start(S,1); S->rstep=3; CK(step(S,1)==0&&S->pst==6&&S->perr==0xF9,"Bolt without long reports cannot pair (fails closed)");
+    printf("== garbage ==\n");
+    hpp_rcv_t* G=hpp_new(7,6,0xC52B,2,1); u32 x=1; for(int k=0;k<20000;k++){ u8 m[20]; for(int q=0;q<20;q++){ x=x*1103515245u+12345u; m[q]=(u8)(x>>16); } if(k&1)m[0]=0x10; hpp_rx(G,m,(int)(x%21),(u64)k); hpp_step(G,(u64)k,out); }
+    int okr=1; for(int i=1;i<=HPP_DMAX;i++) if(G->d[i].bat>100||G->d[i].step>10)okr=0; CK(okr,"20000 random reports: state stays in range");
+    if(fails){ printf("FAILURES %d of %d\n",fails,checks); return 1; } printf("ALL PASS (%d checks)\n",checks); return 0; }

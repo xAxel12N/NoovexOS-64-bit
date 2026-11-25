@@ -8,6 +8,8 @@
     else { tcol(rgb(230,160,60)); term_puts("  handshake failed\n"); tcol(WHT); }
 }
 void term_key(char c){
+    { extern int vtc_login_key(char); if(vtc_login_key(c))return; }
+    if(g_http_cmd_busy)return;
     if(g_pwprompt){
         if(c=='\n'){ term_putc('\n'); tline[tlen]=0; g_pwprompt=0; if(g_pwbyid){ wpa_connect_saved(rtw_find_mmio(),g_pwbyid-1,tline); g_pwbyid=0; } else wpa_do_join(g_pwssid,tline); tlen=0; term_prompt(); }
         else if(c=='\b'){ if(tlen>0){tlen--;term_putc('\b');} }
@@ -34,7 +36,7 @@ static void term_glass(int x,int y,int w,int h,int r,u32 bg){
     if(g_topa>=100){ fill_round(x,y,w,h,r,15,bg); return; }
     { extern int g_gfx; extern void gfx_glass(int,int,int,int,int,u32,int,int); if(g_gfx){ int a=g_topa*256/100; if(a>256)a=256; gfx_glass(x,y,w,h,r,bg,a,g_tblur?2:0); return; } }
     int x0=x<0?0:x, y0=y<0?0:y, x1=x+w>(int)W?(int)W:x+w, y1=y+h>(int)H?(int)H:y+h; if(x1<=x0||y1<=y0)return;
-    int bw=x1-x0, bh=y1-y0, R=g_tblur?10:0;
+    int bw=x1-x0, bh=y1-y0, R=g_tblur&&(u64)bw*(u64)bh<=(u64)MAXW*MAXH?10:0;
     if(R){ for(int j=0;j<bh;j++){ u32* src=&SCENE[(u64)(y0+j)*SW+x0]; u32* dst=&g_blurtmp[(u64)j*bw]; int sr=0,sg=0,sb=0,n=0;
             for(int i=-R;i<=R&&i<bw;i++){ if(i<0)continue; u32 c=src[i]; sr+=(c>>16)&255; sg+=(c>>8)&255; sb+=c&255; n++; }
             for(int i=0;i<bw;i++){ dst[i]=rgb(sr/n,sg/n,sb/n); int a=i+R+1, d=i-R; if(a<bw){ u32 c=src[a]; sr+=(c>>16)&255; sg+=(c>>8)&255; sb+=c&255; n++; } if(d>=0){ u32 c=src[d]; sr-=(c>>16)&255; sg-=(c>>8)&255; sb-=c&255; n--; } } }
@@ -79,7 +81,7 @@ static void live_cell(int cx,int cy,int on){
     if(on&&!g_vt_curhide){ fill_rect(x,y,8,TLH-1,rgb(120,220,140)); if(ch!=' ')tglyph(x,y,ch,LIVE_BG); }
 }
 void live_present(void){
-    { extern int g_fb0_open; if(g_fb0_open>0){ g_lfull=1; return; } }
+    { extern int g_fb0_open, g_vtc_kdmode; if(g_fb0_open>0||g_vtc_kdmode){ g_lfull=1; return; } }
     int on=(int)((g_ticks/40)&1);
     int ccx=tcx>=tcols?tcols-1:tcx;
     if(g_lfull){

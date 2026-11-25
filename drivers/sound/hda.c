@@ -11,7 +11,7 @@ static u8* pcm; static u64* bdl; static struct sring ring;
 static u8 wtype[MAXW]; static u32 wcaps[MAXW]; static u8 conn[MAXW][16]; static u8 nconn[MAXW];
 static int npaths; static u8 path[4][8]; static u8 plen[4]; static u8 pidx[4][8]; static u8 ppin[4]; static u8 pdev[4];
 static char info[640];
-static int isd=-1, irun=0, nin=0, in_adc=-1, in_pin=-1, in_dev=0, in_conn=0; static u8 in_path[8], in_idx[8]; static int in_len=0; static u8* ipcm; static u64* ibdl; static u32 in_rd=0; static char in_name[48];
+static int isd=-1, irun=0, nin=0, in_adc=-1, in_pin=-1, in_dev=0, in_conn=0; static u8 in_path[8], in_idx[8]; static int in_len=0; static u8* ipcm; static u64* ibdl; static u32 in_rd=0; static char in_name[48]; static u64 irun_t0=0; static int istall_log=0;
 static u8 r8(int o){ return R[o]; } static u16 r16(int o){ return *(volatile u16*)(R+o); } static u32 r32(int o){ return *(volatile u32*)(R+o); }
 static void w8(int o,u8 v){ R[o]=v; } static void w16(int o,u16 v){ *(volatile u16*)(R+o)=v; } static void w32(int o,u32 v){ *(volatile u32*)(R+o)=v; }
 static int vfail, vdead_log;
@@ -135,7 +135,7 @@ static int hda_rec_start(void){
     w32((int)si(0x18),(u32)kapi_phys(ibdl)); w32((int)si(0x1C),(u32)(kapi_phys(ibdl)>>32));
     w32((int)si(0x08),NBUF*BSZ); w16((int)si(0x0C),NBUF-1); w16((int)si(0x12),0x0011);
     w8((int)si(2),0x20); w8((int)si(3),0x1C); w8((int)si(0),0x02);
-    in_rd=0; irun=1; return 1; }
+    in_rd=0; irun=1; irun_t0=kapi_ns(); istall_log=0; return 1; }
 static int hda_rec_read(u8* d,int len){
     if(!irun)return 0; u32 sz=NBUF*BSZ; u32 hw=ihw()%sz; u32 av=(hw+sz-in_rd)%sz; av&=~3u; if((u32)len>av)len=(int)av; len&=~3;
     for(int i=0;i<len;i++)d[i]=ipcm[(in_rd+(u32)i)%sz];
@@ -152,6 +152,7 @@ static void hda_jack(void){
     kapi_log(in?"hda: headphones plugged in - speakers off":"hda: headphones removed - speakers on"); }
 static void hda_sync(void){ if(running)sring_hw(&ring,hwpos()%(NBUF*BSZ)); }
 static void hda_poll(void){ hda_sync(); u64 t=kapi_ns(); if(codec<0)return;
+    if(irun&&!istall_log&&t-irun_t0>1500000000ULL){ istall_log=1; if(ihw()==0)kapi_log("hda: capture stream started but its position never moved - the codec delivers no input (under QEMU the wav audiodev has no capture; use -audiodev none or a host backend)"); }
     int dead=vfail>=3; if(dead&&!vdead_log){ vdead_log=1; kapi_log("hda: codec stopped answering - jack polling every 30 s"); }
     if(t-jk_t>(dead?30000000000ULL:300000000ULL)){ jk_t=t; hda_jack(); if(dead&&!vfail){ vdead_log=0; kapi_log("hda: codec answers again"); } } }
 static int hda_start(void){

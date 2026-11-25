@@ -38,7 +38,7 @@ def main():
     hdr = '/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */\n/* Copyright(c) 2018-2019  Realtek Corporation */\n'
     guard = pre.upper() + '_TABLES_H'
     h = [hdr, '#ifndef %s\n#define %s\n\n' % (guard, guard)]
-    c = [hdr, '#include "drivers/net/wifi/rtw88/chips/%s_tables.h"\n' % pre]
+    c = [hdr, '#include "drivers/net/wifi/realtek/rtw88/chips/%s_tables.h"\n' % pre]
     for (k, cn), (n, v) in zip(kinds, got):
         check(n, v)
         an = pre + '_' + cn

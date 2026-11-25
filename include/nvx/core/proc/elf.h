@@ -22,6 +22,8 @@ extern int g_xa_off[XA_MAX], g_xa_n , g_xa_set;
 extern char g_xe_buf[XA_CAP];
 extern int g_xe_off[XA_MAX], g_xe_n , g_xe_set;
 extern int g_elf_pie;
+extern u64 g_elf_base, g_elf_ibase, g_ustk;
+u64 elf_interp_base(const u8* ie,u64 phoff,u16 phentsz,u16 phnum);
 
 u64 elf_build_space(const u8* elf,u32 len,u64* entry);
 int nvx_dlload(const u8* elf,u32 len,nvx_module* mod);

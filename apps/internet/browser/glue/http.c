@@ -2,7 +2,7 @@ static int chunk_done(const u8* b, int n, int* pos) {
     int i = *pos;
     for (;;) {
         int j = i, sz = 0, any = 0;
-        while (j < n) { int c = b[j]; int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; if (v < 0) break; sz = sz * 16 + v; any = 1; j++; if (sz > (1 << 28)) return -1; }
+        while (j < n) { int c = b[j]; int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; if (v < 0) break; if (sz > (1 << 24)) return -1; sz = sz * 16 + v; any = 1; j++; if (sz > (1 << 28)) return -1; }
         while (j < n && b[j] != '\n') j++;
         if (j >= n) return 0;
         j++;

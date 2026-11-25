@@ -6,23 +6,23 @@
 #define AHCI_FIS DMW(0x181000u)
 #define AHCI_CT  DMW(0x182000u)
 
-static volatile u32* ahci_abar=0; static volatile u32* ahci_port=0; int ahci_ok=0; u32 ahci_sectors=0;
+static volatile u32* ahci_abar=0; static volatile u32* ahci_port=0; int ahci_ok=0; u64 ahci_sectors=0;
 static void ahci_port_stop(volatile u32* P); static void ahci_port_start(volatile u32* P);
 static int ahci_fail(volatile u32* P){ ahci_port_stop(P); if(P[0x18/4]&((1u<<15)|(1u<<14))){ if(P==ahci_port){ ahci_ok=0; ahci_port=0; } return -1; } P[0x30/4]=0xFFFFFFFFu; P[0x10/4]=0xFFFFFFFFu;
     if(P[0x20/4]&(0x80|0x08)){ u32 sc=P[0x2C/4]&~0xFu; P[0x2C/4]=sc|1u; for(int t=0;t<20000;t++)(void)P[0x28/4]; P[0x2C/4]=sc; for(int t=0;t<2000000&&(P[0x28/4]&0xF)!=3;t++){} for(int t=0;t<2000000&&(P[0x20/4]&0x88);t++){} P[0x30/4]=0xFFFFFFFFu; }
     ahci_port_start(P); return -1; }
-int ahci_cmd(u32 lba,u32 count,u32 buf,int write,int atacmd){
+int ahci_cmd(u64 lba,u32 count,u32 buf,int write,int atacmd){
     if(!ahci_port)return -1; volatile u32* P=ahci_port;
     P[0x10/4]=0xFFFFFFFFu;                                 /* clear PxIS */
     volatile u32* ch=(volatile u32*)(u64)AHCI_CLB;         /* command header slot 0 */
-    if(count>360u)return -1;
+    if(count>AHCI_MAXSEC||lba>>48||(lba+count)>>48)return -1;
     ch[0]=(5)|(write?(1u<<6):0)|((count?1u:0u)<<16); ch[1]=0; ch[2]=AHCI_CT; ch[3]=0;
     volatile u8* ct=(volatile u8*)(u64)AHCI_CT; for(int i=0;i<128;i++)ct[i]=0;
     volatile u32* prdt=(volatile u32*)(u64)(AHCI_CT+0x80); prdt[0]=buf; prdt[1]=0; prdt[2]=0; prdt[3]=(count*512u-1u);
     volatile u8* fis=(volatile u8*)(u64)AHCI_CT;
     fis[0]=0x27; fis[1]=0x80; fis[2]=(u8)atacmd; fis[3]=0;
     fis[4]=(u8)(lba&0xFF); fis[5]=(u8)((lba>>8)&0xFF); fis[6]=(u8)((lba>>16)&0xFF); fis[7]=0x40;
-    fis[8]=(u8)((lba>>24)&0xFF); fis[9]=0; fis[10]=0; fis[11]=0;
+    fis[8]=(u8)((lba>>24)&0xFF); fis[9]=(u8)((lba>>32)&0xFF); fis[10]=(u8)((lba>>40)&0xFF); fis[11]=0;
     fis[12]=(u8)(count&0xFF); fis[13]=(u8)((count>>8)&0xFF);
     for(int t=0;t<2000000;t++){ if(!(P[0x20/4]&(0x80|0x08)))break; }   /* wait BSY|DRQ clear */
     P[0x38/4]=1;                                                        /* issue slot 0 (PxCI) */
@@ -51,11 +51,13 @@ int ahci_port_io(int port,u64 lba,u8* out,u64* sectors){
     if(sw){ ahci_port_stop(P); ahci_port=old; if(old)ahci_port_start(old); }
     return r; }
 int ahci_flush(void){ if(!ahci_ok)return -1; return ahci_cmd(0,0,AHCI_BUF,0,0xEA); }
-int ahci_read(u32 lba,int cnt,u8* out){ if(!ahci_ok)return -1; if(ahci_cmd(lba,(u32)cnt,AHCI_BUF,0,0x25))return -1;
-    volatile u8* s=(volatile u8*)(u64)AHCI_BUF; for(int i=0;i<cnt*512;i++)out[i]=s[i]; return 0; }
-int ahci_write1(u32 lba,const u8* in){ if(!ahci_ok)return -1; volatile u8* d=(volatile u8*)(u64)AHCI_BUF;
+int ahci_read(u64 lba,int cnt,u8* out){ if(!ahci_ok||cnt<0)return -1;
+    while(cnt>0){ int c=cnt>(int)AHCI_MAXSEC?(int)AHCI_MAXSEC:cnt; if(ahci_cmd(lba,(u32)c,AHCI_BUF,0,0x25))return -1;
+        volatile u8* s=(volatile u8*)(u64)AHCI_BUF; for(int i=0;i<c*512;i++)out[i]=s[i]; lba+=(u64)c; out+=c*512; cnt-=c; }
+    return 0; }
+int ahci_write1(u64 lba,const u8* in){ if(!ahci_ok)return -1; volatile u8* d=(volatile u8*)(u64)AHCI_BUF;
     for(int i=0;i<512;i++)d[i]=in[i]; return ahci_cmd(lba,1,AHCI_BUF,1,0x35); }
-static int ahci_pl[8]; static u32 ahci_ps[8]; static int ahci_pn=0;
+static int ahci_pl[8]; static u64 ahci_ps[8]; static u8 ahci_pf[8]; static int ahci_pn=0;
 int ahci_init(void){
     ahci_ok=0; ahci_pn=0;
     int bus,slot,fn; if(!pci_find(0x01,0x06,-1,&bus,&slot,&fn)&&!pci_find(0x01,0x04,-1,&bus,&slot,&fn))return 0;   /* SATA, any bus */
@@ -86,7 +88,7 @@ int ahci_init(void){
         /* IDENTIFY (0xEC) */
         if(ahci_cmd(0,1,AHCI_BUF,0,0xEC)==0){ volatile u16* id=(volatile u16*)(u64)AHCI_BUF;
             u32 s28=id[60]|((u32)id[61]<<16); unsigned long long s48=id[100]|((unsigned long long)id[101]<<16)|((unsigned long long)id[102]<<32);
-            u32 sc = s48? (s48>0xFFFFFFFFULL?0xFFFFFFFFu:(u32)s48) : s28; if(sc&&ahci_pn<8){ ahci_pl[ahci_pn]=p; ahci_ps[ahci_pn]=sc; ahci_pn++; } }
+            u64 sc = s48? (u64)s48 : s28; if(sc&&ahci_pn<8){ u16 w82=id[82], w83=id[83]; ahci_pl[ahci_pn]=p; ahci_ps[ahci_pn]=sc; ahci_pf[ahci_pn]=(u8)((((w83>>14)==1)&&(w83&(1u<<13)))||(w82!=0xFFFF&&w82&&!(w82&(1u<<5)))); ahci_pn++; } }
         ahci_port_stop(P); ahci_port=0;
     }
     if(!ahci_pn)return 0;
@@ -94,12 +96,14 @@ int ahci_init(void){
     return ahci_pn;
 }
 int ahci_count(void){ return ahci_pn; }
+int ahci_flush_ok(void){ if(!ahci_ok||!ahci_port||!ahci_abar)return 0; for(int k=0;k<ahci_pn;k++) if(ahci_port==(volatile u32*)((u64)ahci_abar+0x100+(u32)ahci_pl[k]*0x80))return ahci_pf[k]; return 0; }
 int ahci_unit_port(int k){ return (k>=0&&k<ahci_pn)?ahci_pl[k]:-1; }
-u32 ahci_unit_sectors(int k){ return (k>=0&&k<ahci_pn)?ahci_ps[k]:0; }
+u64 ahci_unit_sectors(int k){ return (k>=0&&k<ahci_pn)?ahci_ps[k]:0; }
 int ahci_select(int k){
     if(!ahci_abar||k<0||k>=ahci_pn)return -1; volatile u32* P=(volatile u32*)((u64)ahci_abar+0x100+(u32)ahci_pl[k]*0x80);
     if(P!=ahci_port){ if(ahci_port)ahci_port_stop(ahci_port); ahci_port_stop(P); ahci_port_start(P); ahci_port=P; }
     ahci_sectors=ahci_ps[k]; ahci_ok=1; return 0; }
+int ahci_resume(void){ if(!ahci_ok||!ahci_abar)return 0; int cp=ahci_cur_port(), k=0; if(ahci_init()<=0)return -1; for(int i=0;i<ahci_pn;i++) if(ahci_pl[i]==cp)k=i; return ahci_select(k); }
 int ahci_shutdown_all(int standby){
     if(!ahci_abar||!ahci_pn)return 0; int bad=0, cur=-1, wasok=ahci_ok;
     for(int k=0;k<ahci_pn;k++) if(ahci_port==(volatile u32*)((u64)ahci_abar+0x100+(u32)ahci_pl[k]*0x80))cur=k;

@@ -9,6 +9,7 @@ static int ux_lookup(const char* p,int* isd,int f){ (void)p; (void)f; *isd=0; re
 static void dt_save(void){}
 static void notify_from(const char* a,const char* b,const char* c){ (void)a; (void)b; (void)c; }
 scan_ap g_aps[24]; int g_apn=0;
+static char g_rcc[3]="--"; static const char* regdb_setting(void){ return g_rcc; } static int regdb_set_country(const char* c){ if(!c[0]||!c[1]||c[2])return -1; g_rcc[0]=c[0]; g_rcc[1]=c[1]; return 0; }
 /*MAIN*/
 static int fails=0;
 #define CHECK(c,m) do{ if(c)printf("  %s ok\n",m); else { printf("  %s FAIL\n",m); fails++; } }while(0)
@@ -21,7 +22,8 @@ int main(void){
     CHECK(g_wnet_n==2&&!strcmp(g_wnets[0].ssid,"Home")&&!strcmp(g_wnets[0].pass,"secret12")&&g_wnets[0].autoc&&!g_wnets[1].autoc,"old file format still loads");
     CHECK(g_wm_auto==1&&g_wm_5g==0&&wm_useroff==0&&!wm_last[0],"old header: auto/5g read, Wi-Fi not off, no last network");
     wm_cpy(wm_last,"Cafe",33); wifi_user_power(0);
-    CHECK(wm_useroff==1&&g_writes==1&&strstr(g_file," off=1 last=43616665\n"),"wifi off is written to the file with the last network");
+    CHECK(wm_useroff==1&&g_writes==1&&strstr(g_file," off=1 last=43616665 cc=--\n"),"wifi off is written to the file with the last network");
+    regdb_set_country("NO"); wifi_saved_save(); g_rcc[0]='-'; g_rcc[1]='-'; wm_loaded=0; wifi_saved_load(); CHECK(!strcmp(g_rcc,"NO"),"country setting saved and loaded"); regdb_set_country("--"); wifi_saved_save(); g_writes=1;
     CHECK(g_uid==1000,"user id restored after saving");
     reboot(); wifi_saved_load();
     CHECK(wm_useroff==1&&!strcmp(wm_last,"Cafe")&&g_wnet_n==2&&g_wm_5g==0,"after reboot: Wi-Fi stays off, last network remembered");

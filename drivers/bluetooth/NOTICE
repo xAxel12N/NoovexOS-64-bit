@@ -65,8 +65,21 @@ bcmbt_fw.c, bcmbt_fw.h
   SPDX-License-Identifier: GPL-2.0-or-later
   Copyright (C) 2015  Intel Corporation
   The Broadcom USB ID/vendor list (vendor-specific 0xFF/0x01/0x01 interfaces)
-  follows the facts in Linux drivers/bluetooth/btusb.c (GPL-2.0-or-later).
+  follows the facts in Linux drivers/bluetooth/transport/btusb.c (GPL-2.0-or-later).
   Firmware: NOT shipped. Broadcom .hcd patch files are not in linux-firmware
   and are not redistributable; they are read at run time from
   /lib/firmware/brcm/<chip>-<vid>-<pid>.hcd, BCM-<vid>-<pid>.hcd or <chip>.hcd
   when present. Without them the controller keeps running its ROM firmware.
+
+net/bluetooth/sbc/sbc_enc.c, net/bluetooth/sbc/sbc_tables.h
+  SBC encoder ported from FFmpeg libavcodec (sbcenc.c, sbcdsp.c, sbc.c, sbcdsp_data.h),
+  itself derived from the BlueZ SBC library.
+  Copyright (C) 2017 Aurelien Jacobs, (C) 2012-2013 Intel Corporation, (C) 2008-2010 Nokia Corporation,
+  (C) 2004-2010 Marcel Holtmann, (C) 2004-2005 Henryk Ploetz, (C) 2005-2008 Brad Midgley.
+  License: LGPL-2.1-or-later (used under its terms; compatible with GPL-3.0). Headers kept in the files.
+
+net/bluetooth/sbc/sbc_dec.c
+  mSBC decoder (unpack, synthesis filter and its tables) ported from the BlueZ SBC library (sbc.c, sbc_tables.h).
+  Copyright (C) 2004-2010 Marcel Holtmann, (C) 2004-2005 Henryk Ploetz, (C) 2005-2008 Brad Midgley,
+  (C) 2008-2010 Nokia Corporation, (C) 2012-2013 Intel Corporation.
+  License: LGPL-2.1-or-later (used under its terms; compatible with GPL-3.0). Header kept in the file.

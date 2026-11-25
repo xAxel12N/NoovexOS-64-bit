@@ -27,6 +27,8 @@ static inline u64 vm_file_marker(u32 h,u32 pg,u64 bits){ return 0x400ULL|PTE_FIL
 #define PTE_ANON 0x0040000000000000ULL
 int swap_in(u64 e,u64 dst) __attribute__((weak)); int swap_read(u64 e,u64 dst) __attribute__((weak)); int swap_dup(u64 e) __attribute__((weak)); void swap_put(u64 e) __attribute__((weak));
 u32 mem_reclaim(u32 want) __attribute__((weak)); u32 swap_pageout(u64 cr3,u64 a,u64 e) __attribute__((weak));
+u64 swap_cycles(void) __attribute__((weak)); int swap_reserve_level(void) __attribute__((weak)); void swap_stats(u64* total_kb,u64* used_kb,u64* store_kb,u64* comp_kb) __attribute__((weak));
+extern int g_vm_oom_why; extern u32 g_vm_frame_rounds; extern u64 g_vm_oom_fails;
 static inline int pte_is_swap(u64 x){ return (x&(1ULL|PTE_SWP|PTE_LAZY|PTE_FILE))==(PTE_SWP|PTE_LAZY); }
 extern int g_nx_on;
 u64 vm_prot_bits(int prot);

@@ -10,6 +10,10 @@ void kdf_sha256(const u8* key,int klen,const char* label,const u8* ctx,int clen,
 void wpa_derive_ptk_akm(const u8* pmk,const u8* aa,const u8* spa,const u8* an,const u8* sn,u8* ptk);
 int sae_derive_pwe(const u8* a1,const u8* a2,const char* pw,u8 pwe[65]);
 int sae_commit(sae_ctx* s,const u8* own,const u8* peer,const char* pw);
+int sae_sswu(const u8 u[32],u8 out[65]);
+int sae_derive_pt(const u8* ssid,int sl,const u8* pw,int pl,const u8* id,int il,u8 pt[65]);
+int sae_pwe_from_pt(const u8 pt[65],const u8* a1,const u8* a2,u8 pwe[65]);
+int sae_commit_pt(sae_ctx* s,const u8* own,const u8* peer,const u8 pt[65]);
 int sae_process_commit(sae_ctx* s,const u8* ps,const u8* pe);
 void sae_confirm(const sae_ctx* s,u16 sc,u8 out[32]);
 int sae_check_confirm(const sae_ctx* s,u16 psc,const u8* c);

@@ -3,6 +3,7 @@
 #include "include/nvx/net/http/http.h"
 #include "include/nvx/graphics/theme/theme.h"
 #include "include/nvx/graphics/ui/wm.h"
+#include "include/nvx/graphics/ui/outputs.h"
 #include "include/nvx/apps/accessories/small_apps.h"
 #include "include/nvx/apps/games/doom.h"
 #include "include/nvx/core/focus.h"
@@ -56,19 +57,22 @@ static void focus_next(void){ int best=-1, bz=-1; for(int k=0;k<NWIN;k++) if(WN[
 void close_win(int i){ if(WN[i].open&&!WN[i].min&&g_state==ST_DESKTOP){ win_anim(i,0); gfx_win_event(i,1); } { int wo=WN[i].open; WN[i].open=0; WN[i].min=0; if(focus==i)focus_next(); if(wo)focus_app_closed(i); } if(i==W_DOOM) g_doom_mcap=0; if(i==W_GPU3D){ extern void gpu3d_closed(void); gpu3d_closed(); } if(i==W_CAMERA){ extern void camera_closed(void); camera_closed(); } if(i==W_RECORDER){ extern void recorder_closed(void); recorder_closed(); } if(i==W_QUAKE){ extern void quake_closed(void); quake_closed(); } if(i==W_VIDEO){ extern void video_stop(void); video_stop(); } if(i==W_BROWSER){ extern void browser_media_pause(void); extern int web_busy(void); extern volatile int g_busy_esc; if(web_busy())g_busy_esc=1; browser_media_pause(); } }
 void focus_win(int i){ { extern int g_xkbd; g_xkbd=0; } if(!WN[i].open){ open_win(i); return; } if(WN[i].min)gfx_win_event(i,0); WN[i].min=0; WN[i].ws=g_ws; focus=i; WN[i].z=++ztop; }
 void win_min(int i){ if(!WN[i].min&&WN[i].open)gfx_win_event(i,2); WN[i].min=1; if(focus==i)focus_next(); }
-void win_max(int i){ if(!WN[i].max){ WN[i].sx=WN[i].x;WN[i].sy=WN[i].y;WN[i].sw=WN[i].w;WN[i].sh=WN[i].h;
-        WN[i].x=6; WN[i].y=32; WN[i].w=(int)W-12; WN[i].h=(int)H-32-86; WN[i].max=1; }
+void win_max(int i){ if(!WN[i].max){ int bx,by,bw,bh; out_snap_rect(WN[i].x,WN[i].y,WN[i].w,WN[i].h,-1,(int)W,(int)H,&bx,&by,&bw,&bh); WN[i].sx=WN[i].x;WN[i].sy=WN[i].y;WN[i].sw=WN[i].w;WN[i].sh=WN[i].h;
+        WN[i].x=bx; WN[i].y=by; WN[i].w=bw; WN[i].h=bh; WN[i].max=1; }
     else { WN[i].x=WN[i].sx; WN[i].y=WN[i].sy; WN[i].w=WN[i].sw; WN[i].h=WN[i].sh; WN[i].max=0; } focus=i; WN[i].z=++ztop; }
-void apply_snap(int i,int s){ int wy=32, wh=(int)H-32-86, hw=((int)W-18)/2, hh=(wh-6)/2; if(!WN[i].max){ WN[i].sx=WN[i].x; WN[i].sy=WN[i].y; WN[i].sw=WN[i].w; WN[i].sh=WN[i].h; } WN[i].max=1;
-    if(s==3){ WN[i].x=6;WN[i].y=wy;WN[i].w=(int)W-12;WN[i].h=wh; }
-    else if(s==1){ WN[i].x=6;WN[i].y=wy;WN[i].w=hw;WN[i].h=wh; }
-    else if(s==2){ WN[i].x=(int)W-6-hw;WN[i].y=wy;WN[i].w=hw;WN[i].h=wh; }
-    else if(s==4){ WN[i].x=6;WN[i].y=wy;WN[i].w=hw;WN[i].h=hh; }
-    else if(s==5){ WN[i].x=(int)W-6-hw;WN[i].y=wy;WN[i].w=hw;WN[i].h=hh; }
-    else if(s==6){ WN[i].x=6;WN[i].y=wy+hh+6;WN[i].w=hw;WN[i].h=hh; }
-    else { WN[i].x=(int)W-6-hw;WN[i].y=wy+hh+6;WN[i].w=hw;WN[i].h=hh; } focus=i; WN[i].z=++ztop; }
+void apply_snap_on(int i,int s,int o){ int bx,by,bw,bh; out_snap_rect(WN[i].x,WN[i].y,WN[i].w,WN[i].h,o,(int)W,(int)H,&bx,&by,&bw,&bh); int hw=(bw-6)/2, hh=(bh-6)/2;
+    if(!WN[i].max){ WN[i].sx=WN[i].x; WN[i].sy=WN[i].y; WN[i].sw=WN[i].w; WN[i].sh=WN[i].h; } WN[i].max=1;
+    if(s==3){ WN[i].x=bx;WN[i].y=by;WN[i].w=bw;WN[i].h=bh; }
+    else if(s==1){ WN[i].x=bx;WN[i].y=by;WN[i].w=hw;WN[i].h=bh; }
+    else if(s==2){ WN[i].x=bx+bw-hw;WN[i].y=by;WN[i].w=hw;WN[i].h=bh; }
+    else if(s==4){ WN[i].x=bx;WN[i].y=by;WN[i].w=hw;WN[i].h=hh; }
+    else if(s==5){ WN[i].x=bx+bw-hw;WN[i].y=by;WN[i].w=hw;WN[i].h=hh; }
+    else if(s==6){ WN[i].x=bx;WN[i].y=by+hh+6;WN[i].w=hw;WN[i].h=hh; }
+    else { WN[i].x=bx+bw-hw;WN[i].y=by+hh+6;WN[i].w=hw;WN[i].h=hh; } focus=i; WN[i].z=++ztop; }
+void apply_snap(int i,int s){ apply_snap_on(i,s,-1); }
 
 static void wtbtn_geom(int i,int b,int* bx,int* by);
+int win_title_fit(int avail){ int n=(avail-10)/8; if(n<0)n=0; if(n>WIN_TITLE_MAX)n=WIN_TITLE_MAX; return n; }
 int win_ctl_hit(int i,int px,int py){          /* 0=min 1=max 2=close, -1=none */
     if(py<WN[i].y||py>=WN[i].y+TITLEH) return -1;
     for(int b=0;b<3;b++){ int bx,by; wtbtn_geom(i,b,&bx,&by); if(px>=bx-1&&px<bx+17) return b; } return -1;
@@ -91,10 +95,10 @@ void win_frame(int i,const char*title){
     int tx=x+4,ty=y+4,tw=w-8,th=TITLEH-6;
     u32 c0=foc?rgb(110,34,9):rgb(128,128,128), c1=foc?rgb(244,202,158):rgb(192,192,192);
     if(g_gfx) gq_grad(g_rt,tx,ty,tw,th,c0,c1,0); else for(int ii=0;ii<tw;ii++){ u32 c=mix(c0,c1,ii*256/(tw>0?tw:1)); for(int j=0;j<th;j++) putpx(tx+ii,ty+j,c); }
-    { char t[64]; int k=0; int maxc=(tw-110)/8; if(maxc>62)maxc=62; while(title[k]&&k<maxc){ t[k]=title[k]; k++; } t[k]=0; u32 tc=foc?rgb(255,255,255):rgb(213,208,199), sh=foc?rgb(66,20,5):rgb(76,76,76);
-      extern void win_title_icon(int,int,int); win_title_icon(i,tx+2,ty+(th-16)/2); int lx=tx+22, lyy=ty+(th-14)/2;
+    { char t[WIN_TITLE_MAX+1]; int k=0; int lx=tx+22, lyy=ty+(th-14)/2; int bx0,by0; wtbtn_geom(i,0,&bx0,&by0); int s1=bx0-6; int maxc=win_title_fit(s1-lx); while(title[k]&&k<maxc){ t[k]=title[k]; k++; } t[k]=0; u32 tc=foc?rgb(255,255,255):rgb(213,208,199), sh=foc?rgb(66,20,5):rgb(76,76,76);
+      extern void win_title_icon(int,int,int); win_title_icon(i,tx+2,ty+(th-16)/2);
       dstr(lx+1,lyy+1,t,sh,1); dstr(lx,lyy,t,tc,1); if(foc) dstr(lx+1,lyy,t,tc,1);
-      int s0=lx+k*8+10, bx0,by0; wtbtn_geom(i,0,&bx0,&by0); int s1=bx0-6; u32 sc=foc?rgb(110,34,9):rgb(128,128,128);
+      int s0=lx+k*8+10; u32 sc=foc?rgb(110,34,9):rgb(128,128,128);
       if(s1-s0>8) for(int yy=ty+3;yy<ty+th-3;yy+=2){ fill_rect(s0,yy,s1-s0,1,sc); } }
     for(int b=0;b<3;b++){ int bx,by; wtbtn_geom(i,b,&bx,&by); int pr=(focus==i&&mouse_btn&&mx>=bx&&mx<bx+16&&my>=by&&my<by+14); wbevel(bx,by,16,14,pr); int gx=bx+4+pr, gy=by+3+pr; u32 g=rgb(0,0,0);
         if(b==0){ fill_rect(gx,gy+6,6,2,g); }

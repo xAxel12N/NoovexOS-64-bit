@@ -42,7 +42,7 @@ static void if_add(ifat* f,u32 dirc,int* slot,const char* nm,u8 attr,u32 clus,u3
     u8* e=f->img+if_off(f,dirc)+(u64)(*slot)*32; for(int i=0;i<11;i++)e[i]=sn[i]; e[11]=attr; *(u16*)(e+20)=(u16)(clus>>16); *(u16*)(e+26)=(u16)(clus&0xFFFF); *(u32*)(e+28)=size;
     *(u16*)(e+14)=0x6000; *(u16*)(e+16)=0x5B3B; *(u16*)(e+22)=0x6000; *(u16*)(e+24)=0x5B3B; *(u16*)(e+18)=0x5B3B; (*slot)++; }
 static u32 if_mkdir(ifat* f,u32 parent,int* pslot,const char* nm,u8 attr){ u32 d=if_alloc(f,2); if(f->err)return 0; if_add(f,parent,pslot,nm,attr,d,0); if_ent(f,d,0,".",0x10,d,0); if_ent(f,d,1,"..",0x10,parent==2?0:parent,0); return d; }
-static const char IF_INFO[]="NoovexOS 64 v11.10\r\n\r\nThis disk was set up by the NoovexOS installer.\r\n\r\nEFI\\BOOT\\BOOTX64.EFI       UEFI boot loader (started by the firmware)\r\nEFI\\NoovexOS\\              copy of the boot loader and its settings\r\nNoovexOS\\System\\          system files and drivers\r\nNoovexOS\\Boot\\            boot settings\r\nNoovexOS\\Logs\\            log files\r\nProgram Files\\            installed programs\r\nProgramData\\              settings shared by all users\r\nUsers\\                    user folders\r\nboot\\kernel64.bin, KERNEL64.BIN, boot.cfg   hidden system files used to start NoovexOS\r\n";
+static const char IF_INFO[]="NoovexOS 64 v11.22\r\n\r\nThis disk was set up by the NoovexOS installer.\r\n\r\nEFI\\BOOT\\BOOTX64.EFI       UEFI boot loader (started by the firmware)\r\nEFI\\NoovexOS\\              copy of the boot loader and its settings\r\nNoovexOS\\System\\          system files and drivers\r\nNoovexOS\\Boot\\            boot settings\r\nNoovexOS\\Logs\\            log files\r\nProgram Files\\            installed programs\r\nProgramData\\              settings shared by all users\r\nUsers\\                    user folders\r\nboot\\kernel64.bin, KERNEL64.BIN, boot.cfg   hidden system files used to start NoovexOS\r\n";
 static u32 inst_fs_layout(u32 bps,u32 psec,u32 klen,u32* fatsz,u32* dstart){
     u32 res=32, clus=psec-res; u32 fs=((clus+2)*4+bps-1)/bps; u32 ds=res+2*fs;
     u32 cfglen=(u32)(_binary_inst_boot_cfg_end-_binary_inst_boot_cfg_start), efilen=(u32)(_binary_inst_efi_bin_end-_binary_inst_efi_bin_start);
@@ -97,7 +97,7 @@ enum { IP_WELCOME, IP_TARGET, IP_CONFIRM, IP_RUN, IP_DONE, IP_ERROR, IP_FS };
 static int g_ip_fs=0;
 static int ip_page=IP_WELCOME, ip_mode=0, ip_part=-1, ip_copy=1, ip_ack=0, ip_ret=ST_BOOTMENU, ip_stage=-1, ip_prog=0;
 static const char* ip_err=""; static const char* ip_err2="";
-static u8 ip_mbr[512]; static int ip_ptype[4]; static u32 ip_pst[4], ip_psz[4]; static int ip_gpt=0;
+static u8 ip_mbr[512]; static int ip_ptype[4]; static u64 ip_pst[4], ip_psz[4]; static int ip_gpt=0;
 static int ip_bx[24], ip_by[24], ip_bw[24], ip_bh[24], ip_bid[24], ip_bn=0;
 static const char* IP_STAGES[8]={"Checking the kernel image","Preparing the boot partition","Writing the partition table","Installing the boot loader","Writing system files","Creating the data partition","Copying your files","Verifying the installation"};
 static void ip_btnreg(int x,int y,int w,int h,int id){ if(ip_bn<24){ ip_bx[ip_bn]=x; ip_by[ip_bn]=y; ip_bw[ip_bn]=w; ip_bh[ip_bn]=h; ip_bid[ip_bn]=id; ip_bn++; } }
@@ -105,7 +105,7 @@ void ip_load(void){
     gdisk_ensure(); for(int i=0;i<512;i++)ip_mbr[i]=0; ip_gpt=0;
     if(g_dktype!=DK_NONE)gdisk_read(0,1,ip_mbr);
     int valid=(ip_mbr[510]==0x55&&ip_mbr[511]==0xAA);
-    for(int e=0;e<4;e++){ u8* pe=ip_mbr+446+e*16; ip_ptype[e]=valid?pe[4]:0; ip_pst[e]=*(u32*)(pe+8)*dk_ratio(); ip_psz[e]=*(u32*)(pe+12)*dk_ratio();
+    for(int e=0;e<4;e++){ u8* pe=ip_mbr+446+e*16; ip_ptype[e]=valid?pe[4]:0; ip_pst[e]=(u64)*(u32*)(pe+8)*dk_ratio(); ip_psz[e]=(u64)*(u32*)(pe+12)*dk_ratio();
         if(!ip_psz[e])ip_ptype[e]=0; if(ip_ptype[e]==0xEE)ip_gpt=1; }
 }
 static int g_ip_focus=2, g_ip_lastpg=-1;
@@ -114,7 +114,7 @@ void ip_open(int ret){ dm_load(); g_ip_lastpg=-1; g_ip_focus=2; ip_ret=ret; ip_p
 static u32 ip_need(void){ return INST_BOOTP+INST_DATAP; }
 static int ip_disk_ok(void){ return g_dktype!=DK_NONE&&g_dksectors>=2048u+ip_need()+2048u&&!(g_dktype==DK_NVME&&!g_nvme_bsz); }
 static int ip_free_slot(int except){ for(int e=0;e<4;e++) if(e!=except&&!ip_ptype[e])return e; return -1; }
-static int ip_part_ok(int e){ if(e<0||e>3||!ip_ptype[e]||ip_gpt)return 0; if(ip_psz[e]<ip_need())return 0; if(ip_pst[e]<64)return 0; if(ip_free_slot(e)<0)return 0;
+static int ip_part_ok(int e){ if(e<0||e>3||!ip_ptype[e]||ip_gpt)return 0; if(ip_psz[e]<ip_need())return 0; if(ip_pst[e]<64||ip_pst[e]+ip_psz[e]>0xFFFFFFFFULL)return 0; if(ip_free_slot(e)<0)return 0;
     for(int q=0;q<4;q++) if(q!=e&&ip_ptype[q]&&ip_pst[q]<64)return 0; return 1; }
 static const char* ip_tname(int t){ switch(t){ case 0x0B: case 0x0C: return "FAT32"; case 0x07: return "NTFS/exFAT"; case 0x83: return "Linux"; case 0x82: return "Linux swap"; case 0xEE: return "GPT"; case 0xEF: return "EFI"; case NVX_PTYPE: return "NoovexOS"; case 0x05: case 0x0F: return "Extended"; default: return "Other"; } }
 static char* ip_size(char* p,u64 secs){ u64 mb=secs*512/1048576ULL; if(mb>=1024){ p=udec(p,(u32)(mb/1024)); *p++='.'; p=udec(p,(u32)((mb%1024)*10/1024)); return scopy(p," GB"); } p=udec(p,(u32)mb); return scopy(p," MB"); }
@@ -187,14 +187,14 @@ void ip_present(void){
         ip_cbtn(ox+ow/2, oy, "Continue", 2);
     }
     else if(ip_page==IP_WELCOME || ip_page==IP_TARGET){
-        extern int gdisk_count(void); extern int gdisk_current(void); extern u32 gdisk_size_of(int); extern const char* gdisk_name_of(int);
+        extern int gdisk_count(void); extern int gdisk_current(void); extern u64 gdisk_size_of(int); extern const char* gdisk_name_of(int);
         int nd=gdisk_count(); if(nd<1)nd=1; if(nd>6)nd=6;
         ip_box(&ox,&oy,&ow,660,172+(nd-1)*24,"Select Target Disk");
         dstr(ox,oy,"Choose the disk to install NoovexOS to (click it or use Up/Down):",rgb(20,24,34),1); oy+=18;
         dstr(ox,oy,"Or Skip to set up NoovexOS without installing.  Press P to edit partitions.",rgb(110,118,135),1); oy+=28;
         for(int i=0;i<nd;i++){ int sel=(i==gdisk_current()); int bx2=ox; int rww=ow;
           fill_rect(bx2,oy-2,rww,20, sel?rgb(20,24,34):rgb(238,240,244));
-          char b[80],*p=b; p=scopy(p,sel?"(*) ":"( ) "); p=scopy(p,gdisk_count()?(char*)gdisk_name_of(i):"/dev/hda"); p=scopy(p,"   -   "); u32 sz=gdisk_count()?gdisk_size_of(i):0; if(sz)p=ip_size(p,sz); else p=scopy(p,"no disk found"); *p=0;
+          char b[80],*p=b; p=scopy(p,sel?"(*) ":"( ) "); p=scopy(p,gdisk_count()?(char*)gdisk_name_of(i):"/dev/hda"); p=scopy(p,"   -   "); u64 sz=gdisk_count()?gdisk_size_of(i):0; if(sz)p=ip_size(p,sz); else p=scopy(p,"no disk found"); *p=0;
           dstr(bx2+8,oy+2,b, sel?rgb(255,255,255):rgb(20,24,34),1);
           ip_btnreg(bx2,oy-2,rww,20,60+i); oy+=24; }
         if(g_dm_np>0){ char b[200],*p=b; int any=0; p=scopy(p,"Partitions: ");
@@ -254,7 +254,7 @@ static void ip_run2(void){
     { extern int disk_ok; extern volatile int g_fs_wb_pending; disk_ok=0; g_fs_wb_pending=0; }
     u32 bst,bsz=INST_BOOTP,dst,dsz; int bslot,dslot;
     if(ip_mode==0){ bst=2048u; dst=bst+bsz; dsz=INST_DATAP; bslot=0; dslot=1;
-        if(g_dksectors>dst+INST_DATAP+4096u){ u32 avail=g_dksectors-dst-4096u; u32 cap=g_ip_fs==0?0x8000000u:g_ip_fs==3?4186112u:g_ip_fs==2?0x4000000u:0xFFFFF000u; dsz=avail<cap?avail:cap; } }
+        u64 dtot=g_dksectors<0xFFFFFFFFULL?g_dksectors:0xFFFFFFFFULL; if(dtot>(u64)dst+INST_DATAP+4096u){ u32 avail=(u32)(dtot-dst-4096u); u32 cap=g_ip_fs==0?0x8000000u:g_ip_fs==3?4186112u:g_ip_fs==2?0x4000000u:0xFFFFF000u; dsz=avail<cap?avail:cap; } }
     else { if(!ip_part_ok(ip_part)){ ip_fail("The chosen partition can't be used.",""); return; }
         bst=ip_pst[ip_part]; dst=bst+bsz; dsz=ip_psz[ip_part]-bsz; bslot=ip_part; dslot=ip_free_slot(ip_part); }
     if(dsz%dk_ratio())dsz-=dsz%dk_ratio();
@@ -279,13 +279,13 @@ static void ip_run2(void){
     { u8* pe=mbr+446+dslot*16; for(int i=0;i<16;i++)pe[i]=0; pe[2]=2; pe[4]=g_ip_fs==1?0x07:g_ip_fs==2?0x0C:g_ip_fs==3?0x0E:NVX_PTYPE; pe[5]=0xFE; pe[6]=0xFF; pe[7]=0xFF; *(u32*)(pe+8)=dst/R; *(u32*)(pe+12)=dsz/R; }
     if(ip_mode==0){ *(u32*)(mbr+440)=0x4E565849u^(u32)g_ticks; } mbr[510]=0x55; mbr[511]=0xAA;
     if(gdisk_write(0,mbr)){ kfree(img); ip_fail("Writing the partition table failed.","The disk reported an error."); return; }
-    if(ip_mode==0){ u8 z[512]; for(int i=0;i<512;i++)z[i]=0; for(u32 q=1;q<34u*R;q++)gdisk_write(q,z); if(g_dksectors>34u*R) for(u32 q=g_dksectors-34u*R;q<g_dksectors;q++)gdisk_write(q,z); }
+    if(ip_mode==0){ u8 z[512]; for(int i=0;i<512;i++)z[i]=0; for(u64 q=1;q<34u*R;q++)gdisk_write(q,z); if(g_dksectors>34u*R) for(u64 q=g_dksectors-34u*R;q<g_dksectors;q++)gdisk_write(q,z); }
     ip_stage_go(3,110);
     u32 s2len=(u32)(_binary_inst_stage2_bin_end-_binary_inst_stage2_bin_start), s2s=(s2len+511)/512;
     if(R>1)s2s=0;
     for(u32 s=0;s<s2s;s++){ u8 sec[512]; for(int i=0;i<512;i++){ u32 o=s*512+i; sec[i]=o<s2len?_binary_inst_stage2_bin_start[o]:0; } if(gdisk_write(1+s,sec)){ kfree(img); ip_fail("Writing the boot loader failed.",""); return; } }
     ip_stage_go(4,140);
-    { extern int gdisk_writen(u32,int,const u8*);
+    { extern int gdisk_writen(u64,int,const u8*);
       for(u32 s=0;s<used;){ u32 c=used-s; if(c>128)c=128; if(gdisk_writen(bst+s,(int)c,img+(u64)s*512)){ kfree(img); ip_fail("Writing the boot partition failed.","The disk reported an error."); return; }
         s+=c; ip_prog=140+(int)((u64)s*560/used); ip_present(); } }
     ip_stage_go(5,700);
@@ -306,7 +306,7 @@ static void ip_run2(void){
       if(gdisk_read(0,1,rb)){ bad=1; } else for(int i=0;i<512;i++) if(rb[i]!=mbr[i]){ bad=1; break; }
       for(u32 s=0;s<s2s&&!bad;s++){ if(gdisk_read(1+s,1,rb)){ bad=1; break; } for(int i=0;i<512;i++){ u32 o=s*512+i; if(rb[i]!=(o<s2len?_binary_inst_stage2_bin_start[o]:0)){ bad=1; break; } } }
       u32 bads=0;
-      { extern int gdisk_readn(u32,int,u8*); u8* vb=(u8*)kmalloc(128*512);
+      { extern int gdisk_readn(u64,int,u8*); u8* vb=(u8*)kmalloc(128*512);
         for(u32 s=0;s<used&&!bad;){ u32 c=used-s; if(c>128)c=128;
           if(!vb){ if(gdisk_read(bst+s,1,rb)){ bad=2; bads=s; break; } const u8* w=img+(u64)s*512; for(int i=0;i<512;i++) if(rb[i]!=w[i]){ bad=1; bads=s; break; } s++; continue; }
           if(gdisk_readn(bst+s,(int)c,vb)){ bad=2; bads=s; break; }

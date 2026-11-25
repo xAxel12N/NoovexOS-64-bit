@@ -3,6 +3,7 @@
 #include "include/nvx/mem/pmm_vmm.h"
 #include "include/nvx/drivers/net/wifi/rtw_efuse.h"
 #include "include/nvx/drivers/net/wifi/rtw8821ce.h"
+#include "include/nvx/drivers/net/wifi/rtw_chip.h"
 #include "include/nvx/net/wifi/wpa2.h"
 #include "include/nvx/graphics/ui/desktop.h"
 u8 g_ptk[48];
@@ -26,8 +27,8 @@ void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int e
     fr[fl++]=0xAA; fr[fl++]=0xAA; fr[fl++]=0x03; fr[fl++]=0x00; fr[fl++]=0x00; fr[fl++]=0x00;
     fr[fl++]=0x88; fr[fl++]=0x8E;
     for(int i=0;i<elen;i++)fr[fl++]=eapol[i];
-    u32 total=48+fl; for(u32 i=0;i<total;i++)pkt[i]=0;
-    u32 w0=((u32)fl&0xFFFFu)|((48u&0xFFu)<<16)|(1u<<26);
+    u32 total=rtw_txd_sz()+fl; for(u32 i=0;i<total;i++)pkt[i]=0;
+    u32 w0=((u32)fl&0xFFFFu)|((rtw_txd_sz()&0xFFu)<<16)|(1u<<26);
     *(volatile u32*)(pkt+0)=w0;
     *(volatile u32*)(pkt+4)=((u32)0u<<8)|((u32)8u<<16);
     *(volatile u32*)(pkt+12)=(1u<<8)|(1u<<10);
@@ -35,11 +36,11 @@ void rtw_tx_data_eapol(u32 m,const u8* bssid,const u8* mac,const u8* eapol,int e
     rtw_txdesc_rate(pkt,1);
     *(volatile u32*)(pkt+32)=(1u<<15);
     rtw_desc_csum(pkt);
-    for(int i=0;i<fl;i++)pkt[48+i]=fr[i];
+    for(int i=0;i<fl;i++)pkt[rtw_txd_sz()+i]=fr[i];
     u32 i=g_beidx % g_benum; u8* bd=g_bering+i*16;
     u32 psb=((total-1)/128)+1;
-    *(volatile u16*)(bd+0)=48; *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
-    *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+48);
+    *(volatile u16*)(bd+0)=(u16)rtw_txd_sz(); *(volatile u16*)(bd+2)=(u16)psb; *(volatile u32*)(bd+4)=(u32)(u64)pkt;
+    *(volatile u16*)(bd+8)=(u16)fl; *(volatile u16*)(bd+10)=0; *(volatile u32*)(bd+12)=(u32)(u64)(pkt+rtw_txd_sz());
     cpu_wmb();
     g_beidx=(g_beidx+1)%g_benum; rtw_w16(m,0x03A8,(u16)g_beidx);
 }
@@ -102,6 +103,7 @@ int wpa_rsn_ie(u8* b){
     b[n++]=0x01;b[n++]=0x00;
     b[n++]=0x00;b[n++]=0x0F;b[n++]=0xAC;b[n++]=(u8)g_wpa_akm;
     b[n++]=(u8)(g_wpa_mfp?0x80:0x00);b[n++]=0x00;
+    if(g_wpa_sae_h2e&&g_wpa_akm==8){ b[n++]=244; b[n++]=1; b[n++]=0x20; }
     return n;
 }
 

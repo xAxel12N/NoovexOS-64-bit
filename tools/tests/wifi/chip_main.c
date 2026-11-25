@@ -69,7 +69,7 @@ static void snap_init(u32 s){ seed=s; for(int i=0;i<0x10000;i++)R0[i]=(u8)rnd();
 static void restore(int rfe,int valid,int coex,int band5){
     memcpy(R,R0,sizeof R); memset(RF,0,sizeof RF); for(int a=0;a<256;a++){ RF[0][a]=raw32(0x2800+a*4)&0xFFFFFu; RF[1][a]=raw32(0x2C00+a*4)&0xFFFFFu; }
     memcpy(rtw_logmap,L0,512); rtw_logmap[0xCA]=(u8)((rtw_logmap[0xCA]&0xE0)|rfe); rtw_efuse_valid=valid; memset(&g_rtw_efuse,0,sizeof g_rtw_efuse); rtw_efuse_apply();
-    g_rtw_coex_done=coex; g_wifi_band5=band5; g_wifi_curch=0; memset(g_wifi_pwr,0,sizeof g_wifi_pwr); g_wifi_txpwr=1; h2c_host=h2c_hw=0;
+    g_rtw_coex_done=coex; g_wifi_band5=band5; g_wifi_curch=0; memset(g_wifi_pwr,0,sizeof g_wifi_pwr); g_wifi_txpwr=1; g_rtw_txpwr_tbl=0; h2c_host=h2c_hw=0;
     tn=0; waited=0; iowaits=0; trace_on=1; }
 static u32 TA[TMAX][3]; static int tna; static u8 RA[0x10000]; static u8 PA[20]; static int BA, CA; static u64 WA, IA;
 static void keep(void){ trace_on=0; tna=tn; memcpy(TA,T,sizeof(T[0])*(size_t)tn); memcpy(RA,R,sizeof R); memcpy(PA,g_wifi_pwr,20); BA=g_wifi_band5; CA=g_wifi_curch; WA=waited; IA=iowaits; }
@@ -105,7 +105,7 @@ int main(void){ int bad=0, cmp=0;
       if(!c->pcie_phy||c->pcie_phy(0)!=0||mdio_n!=1||mdio_a!=0x09||mdio_d!=0x6380||mdio_g1!=1){ bad++; puts("2 8821C PCIe PHY write"); } }
     /* 3: old (v10.99) and new code write the same registers in the same order */
     snap_init(777);
-    static const int RFE[]={0,2,3,4,5,7,11,12,13,15}; static const u8 CH[]={1,6,11,13,14,36,48,64,100,116,140,149,165};
+    static const int RFE[]={0,2,3,4,5,7,11,12,13,15}; static const u8 CH[]={1,6,11,13,12,36,48,64,100,116,140,149,165};
     for(int ri=0;ri<10;ri++) for(int v=0;v<2;v++) for(int co=0;co<2;co++) for(int b5=0;b5<2;b5++) for(int ci=0;ci<13;ci++){
         u8 ch=CH[ci];
         restore(RFE[ri],v,co,b5); old_rtw_set_channel_2g(0,ch); keep();
@@ -160,7 +160,7 @@ int main(void){ int bad=0, cmp=0;
     card_gone=1; if(rtw_h2c_pkt_send(0,pk,32)!=-1){ bad++; puts("5 card gone"); } card_gone=0;
     /* 6: calibration (IQK) through the chip op */
     memset(R,0,sizeof R); memset(RF,0,sizeof RF); h2c_host=h2c_hw=0; nh2c=0; njl=0; rtw_efuse_valid=1; g_rtw_efuse.rfe_option=0x04; put32(0x00F0,0x2000u);
-    if(g_rtw_iqk_en!=0){ bad++; puts("6 IQK must be off by default"); } g_rtw_iqk_en=1;
+    if(g_rtw_iqk_en!=1){ bad++; puts("6 IQK must be on by default"); }
     rtw_h2c_ring_off(); memset(R,0,sizeof R); put32(0x00F0,0x2000u); put32(0x0080,0xC000u); g_rtw_iqk_en=0; rtw_chip_calibrate(1); if(raw32(0x1320)||raw32(0x1328)||nh2c){ bad++; puts("6 IQK off must not touch the H2C ring registers"); } g_rtw_iqk_en=1;
     put32(0x0080,0); rtw_chip_calibrate(1); if(!raw32(0x1320)||(raw32(0x1328)&0xFFFF)!=32){ bad++; puts("6 IQK on did not set up the ring on demand"); }
     rtw_h2c_ring_setup(0); put32(0x0080,0); rtw_chip_calibrate(1); if(g_rtw_iqk_last!=-4||nh2c){ bad++; printf("6 fw not running: %d\n",g_rtw_iqk_last); }
@@ -176,6 +176,38 @@ int main(void){ int bad=0, cmp=0;
     int nb=nh2c; rtw_chip_calibrate(1); if(nh2c!=nb){ bad++; puts("6 IQK retried after timeout"); }
     rtw_h2c_ring_setup(0); iqk_answer=1; if(g_rtw_iqk_dead){ bad++; puts("6 restart did not re-enable IQK"); }
     h2c_stuck=1; waited=0; rtw_chip_calibrate(1); if(g_rtw_iqk_last!=-1||waited>200000){ bad++; printf("6 stuck command ring: last %d waited %llu\n",g_rtw_iqk_last,waited); } h2c_stuck=0;
+    rtw_h2c_ring_setup(0); put32(0x0080,0xC000u); put32(0x1B00,0xF8015008u); put32(0x1B38,0x20000000u); put32(0x1B3C,0x20000000u); nettype=2; rtw_chip_calibrate(1);
+    for(int t=0,b=0;t<=12000;t+=20){ if(t%100==0)b++; rtw_iqk_guard(1,b,100,100000+t); }
+    if(g_rtw_iqk_runs<1||!g_rtw_iqk_en||g_rtw_iqk_undone){ bad++; puts("7 healthy link after IQK must keep IQK on"); }
+    put32(0x1B38,0x20000000u); put32(0x1B3C,0x20000000u); rtw_chip_calibrate(1); put32(0x1B38,0x11111111u); put32(0x1B3C,0x22222222u);
+    for(int t=0;t<=4000;t+=20)rtw_iqk_guard(1,121,100,112100+t);
+    if(g_rtw_iqk_en||!g_rtw_iqk_dead||g_rtw_iqk_undone!=1||raw32(0x1B38)!=0x20000000u||raw32(0x1B3C)!=0x20000000u||raw32(0x1B00)!=0xF8015008u){ bad++; printf("7 beacon drop after IQK: en %d undone %d 1b38 %08x\n",g_rtw_iqk_en,g_rtw_iqk_undone,raw32(0x1B38)); }
+    int n7=nh2c; rtw_chip_calibrate(1); if(nh2c!=n7){ bad++; puts("7 IQK ran after being turned off"); }
+    g_rtw_iqk_en=1; rtw_h2c_ring_setup(0); rtw_chip_calibrate(1); for(int t=0;t<=600;t+=20)rtw_iqk_guard(1,200+t/100,100,200000+t); rtw_iqk_guard(1,207,100,210000); for(int t=0;t<=4000;t+=20)rtw_iqk_guard(1,207,100,210020+t);
+    if(!g_rtw_iqk_en||g_rtw_iqk_undone!=1){ bad++; puts("7 a gap (scan) must not count as a beacon drop"); }
+    nettype=0; for(int k=0;k<5;k++)rtw_chip_calibrate(1);
+    if(g_rtw_iqk_en||g_rtw_iqk_undone!=2){ bad++; printf("7 IQK without a working link 4 times must turn off: en %d undone %d\n",g_rtw_iqk_en,g_rtw_iqk_undone); }
+    g_rtw_iqk_en=1; rtw_h2c_ring_setup(0); nettype=0;
+    { restore(0,1,1,0); trace_on=0; g_rtw_chip=&rtw8821c_chip;
+      g_rtw_bw_sec=0; g_rtw_bw_vc0=42; rtw8821c_chip.set_channel(0,44,RTW_BW_80); u32 adc=raw32(0x08AC), rf18=RF[0][0x18];
+      if(R[0x0483]!=0x91||(raw32(0x0668)&0x180u)!=0x100u||(adc&0xFFu)!=((1u<<2)|2u)||(adc&0x40040000u)!=0x40040000u||(adc&0x03003000u)||(rf18&0xFFu)!=42||(rf18&0xC00u)!=0x400u
+         ||((raw32(0x094C)>>28)&3)!=1||!(raw32(0x08F0)>>31)||(raw32(0x0C20)>>31)||g_rtw_bw_cur!=RTW_BW_80||g_rtw_bw_cch!=42||g_wifi_curch!=44){ bad++; printf("8 set_channel 44/80: 483 %02x 668 %08x 8ac %08x rf18 %05x\n",R[0x0483],raw32(0x0668),adc,rf18); }
+      g_rtw_bw_sec=-1; g_rtw_bw_vc0=0; rtw8821c_chip.set_channel(0,6,RTW_BW_40); adc=raw32(0x08AC); rf18=RF[0][0x18];
+      if(R[0x0483]!=0x01||(raw32(0x0668)&0x180u)!=0x80u||!(raw32(0x0A00)&0x10u)||(adc&0xFFu)!=((1u<<2)|1u)||(adc&0x00C00C00u)||(rf18&0xFFu)!=4||(rf18&0xC00u)!=0x800u||((raw32(0x094C)>>28)&3)!=2||(raw32(0x08F0)>>31)||g_rtw_bw_cur!=RTW_BW_40||g_wifi_curch!=6){ bad++; printf("8 set_channel 6/40-: 483 %02x 8ac %08x rf18 %05x\n",R[0x0483],adc,rf18); }
+      g_rtw_bw_sec=1; rtw8821c_chip.set_channel(0,36,RTW_BW_40); if(R[0x0483]!=0x02||(raw32(0x0A00)&0x10u)||(RF[0][0x18]&0xFFu)!=38){ bad++; puts("8 set_channel 36/40+"); }
+      g_rtw_bw_sec=1; rtw8821c_chip.set_channel(0,13,RTW_BW_40); if(R[0x0483]!=0||(RF[0][0x18]&0xC00u)!=0xC00u||g_rtw_bw_cur!=RTW_BW_20){ bad++; puts("8 13/40+ must fall back to 20"); }
+      g_rtw_bw_jch=0; rtw_set_channel_2g(0,6); if(R[0x0483]||(raw32(0x0668)&0x180u)||(RF[0][0x18]&0xC00u)!=0xC00u||(raw32(0x0C20)>>31)!=1||(raw32(0x08AC)&0x003003FFu)||(raw32(0x08AC)&0x10010000u)!=0x10010000u){ bad++; puts("8 back to 20 MHz"); }
+      u32 a0=raw32(0x0A24), c0=raw32(0x0AAC); g_rtw_txpwr_regd=9; rtw_set_channel_2g(0,13);
+      if(raw32(0x0A24)!=0x64b80c1cu||(raw32(0x0A28)&0xFFFFu)!=0x8810u||raw32(0x0AAC)!=0x01235667u||(raw32(0x0A20)>>16)!=0xf8feu||RF[0][0x3F]!=0x26||RF[0][0xEE]!=0){ bad++; printf("9 SRRC ch13 CCK filter %08x %08x %05x\n",raw32(0x0A24),raw32(0x0AAC),RF[0][0x3F]); }
+      rtw_set_channel_2g(0,6); if(raw32(0x0A24)!=a0||raw32(0x0AAC)!=c0||(raw32(0x0A20)>>16)!=0xe82cu||RF[0][0x3F]!=0){ bad++; puts("9 SRRC ch6 restores the default CCK filter"); }
+      g_rtw_bw_sec=-1; g_rtw_bw_jch=13; g_rtw_bw_join=RTW_BW_40; rtw_set_channel_2g(0,13); if(g_rtw_bw_cur!=RTW_BW_40||g_rtw_bw_cch!=11||raw32(0x0A24)!=0x64b80c1cu){ bad++; puts("9 SRRC 13/40- (center 11 at 40 MHz) CCK filter"); }
+      g_rtw_bw_jch=9; g_rtw_bw_sec=1; rtw_set_channel_2g(0,9); if(g_rtw_bw_cch!=11||raw32(0x0A24)!=0x64b80c1cu){ bad++; puts("9 SRRC 9/40+ (center 11) CCK filter"); }
+      g_rtw_bw_jch=0; g_rtw_bw_join=RTW_BW_20; g_rtw_txpwr_regd=-1; rtw_set_channel_2g(0,6);
+      rtw_set_channel_2g(0,14); if(raw32(0x0A24)!=0x0000b81cu||raw32(0x0AAC)!=0x00003667u||(raw32(0x0A28)&0xFFFFu)){ bad++; puts("9 ch14 CCK filter (non-SRRC)"); }
+      rtw_set_channel_2g(0,1); if(raw32(0x0A24)!=a0||raw32(0x0AAC)!=c0){ bad++; puts("9 ch14 filter restored on ch1"); } }
     printf("%d old/new trace compares, %d failures\n",cmp,bad);
     if(!bad)puts("chip ok");
     return bad?1:0; }
+int wifi_feat_on(int f){ (void)f; return 1; }
+void wifi_feat_unsup(int f,const char* why){ (void)f; (void)why; }
+void wifi_feat_fail(int f,const char* why){ (void)f; (void)why; }

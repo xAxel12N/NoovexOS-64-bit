@@ -1,3 +1,7 @@
+static void find_toggle(int on){
+    g_findmode=on; g_findn=-1; g_findstr[0]=0; g_findlen=0;
+    if(g_haspage&&!web_busy()){ nwe_req* r=&g_req; for(unsigned k=0;k<sizeof(*r);k++)((u8*)r)[k]=0; r->data=g_findstr; r->key=0; web_call(NWE_OP_FIND,r); web_info(r); }
+}
 static int g_bmbar_on(void){ return g_bmbar&&nbmarks>0; }
 
 const char* browser_cur_url(void){ return g_cururl; }
@@ -75,7 +79,7 @@ static void browser_click_now(int px,int py){
         for(int k=0;k<g_ntab;k++){ int tx=tab_x[k]; if(px>=tx && px<tx+tab_w-4){ if(g_ntab>1 && px>=tx+tab_w-24){ tab_close(k); return; } tab_switch(k); return; } }
         return; }
     if(in_rect(px,py,g_starx,g_stary,g_starw,28)){ if(g_cururl[0])bm_toggle(g_cururl); return; }
-    if(in_rect(px,py,g_findbx,g_findby,g_findbw,28)){ g_findmode=!g_findmode; g_urlfocus=0; g_findn=-1; return; }
+    if(in_rect(px,py,g_findbx,g_findby,g_findbw,28)){ find_toggle(!g_findmode); g_urlfocus=0; return; }
     if(in_rect(px,py,g_cookbx,g_findby,g_cookbw,28)){ sset(g_url,"about:cookies"); g_urllen=slen(g_url); browser_go(1); return; }
     if(in_rect(px,py,tab_savex,br_bary,tab_savew,28)){ browser_save(); return; }
     if(in_rect(px,py,br_bkx,br_bary,br_bkw,28)){ if(backn>0){ extern int g_http_mode; sset(g_url,backstk[--backn]); g_urllen=slen(g_url); g_http_mode=1; browser_go(0); g_http_mode=0; } return; }
@@ -95,13 +99,14 @@ static void browser_click_now(int px,int py){
         g_urllen=slen(g_url); browser_go(1); return; } }
     if(g_page==3 && !g_isimg && px>=g_cx && px<g_cx+g_cw && py>=g_cy && py<g_cy+g_ch) web_mouse(px,py);
 }
-static void browser_wheelxy_now(int sc,int hs){
+static void browser_wheelpx_now(int py,int px){
     if(g_page!=3||!g_haspage||web_busy()) return;
-    if(!sc&&!hs) return;
+    if(!py&&!px) return;
     nwe_req* r=&g_req; for(unsigned k=0;k<sizeof(*r);k++)((u8*)r)[k]=0;
-    if(frame_wheel(mx,my,-sc*60,hs*60)) return;
-    r->x=mx-g_cx; r->y=my-g_cy; r->key=-sc*60; r->btn=hs*60; web_call(NWE_OP_WHEEL,r); web_info(r);
+    if(frame_wheel(mx,my,py,px)) return;
+    r->x=mx-g_cx; r->y=my-g_cy; r->key=py; r->btn=px; web_call(NWE_OP_WHEEL,r); web_info(r);
 }
+static void browser_wheelxy_now(int sc,int hs){ browser_wheelpx_now(-sc*60,hs*60); }
 void browser_wheelxy(int sc,int hs);
 void browser_wheel(int sc){
     extern volatile unsigned char kdown[128]; int sh=kdown[0x2A]||kdown[0x36];
@@ -161,7 +166,7 @@ static int map_key(int c){
 static void browser_key_now(char c,int mods){
     if(g_findmode){
         if(c=='\n'||c==27||c=='\b'||(c>=32&&c<127)){
-            if(c==27){ g_findmode=0; g_findn=-1; return; }
+            if(c==27){ find_toggle(0); return; }
             if(c=='\b'){ if(g_findlen>0)g_findstr[--g_findlen]=0; }
             else if(c>=32){ if(g_findlen<60){ g_findstr[g_findlen++]=c; g_findstr[g_findlen]=0; } }
             if(g_haspage&&!web_busy()){ nwe_req* r=&g_req; for(unsigned k=0;k<sizeof(*r);k++)((u8*)r)[k]=0; r->data=g_findstr; r->key=(c=='\n'); web_call(NWE_OP_FIND,r); g_findn=r->ret; web_info(r); }
@@ -200,6 +205,7 @@ static void bq_push(int k,int x,int y,int a,int b,char c){
 void browser_click(int px,int py){ if(web_busy()&&g_ur_on&&py>=g_ur_y&&py<g_ur_y+28){ if(px>=g_ur_sx&&px<g_ur_sx+78){ extern volatile int g_busy_esc; g_busy_esc=1; g_ur_on=0; return; } if(px>=g_ur_wx&&px<g_ur_wx+78){ g_ur_wait=nwk_ms()+15000; g_ur_on=0; return; } } if(g_page==3&&!g_isimg&&px>=g_cx&&px<g_cx+g_cw&&py>=g_cy&&py<g_cy+g_ch)g_bq_down=1; bq_push(1,px,py,0,0,0); }
 void browser_mouse_held(int px,int py){ bqev* l=bq_last(); if(l&&l->k==2){ l->x=px; l->y=py; return; } bq_push(2,px,py,0,0,0); }
 void browser_mouse_release(int px,int py){ g_bq_down=0; bq_push(3,px,py,0,0,0); }
+void browser_wheelhr(int v120){ extern volatile unsigned char kdown[128]; int sh=kdown[0x2A]||kdown[0x36], a=sh?0:v120, b=sh?-v120:0; if(!v120)return; bqev* l=bq_last(); if(l&&l->k==7&&l->x==mx&&l->y==my){ l->a+=a; l->b+=b; return; } bq_push(7,mx,my,a,b,0); }
 void browser_wheelxy(int sc,int hs){ if(!sc&&!hs)return; bqev* l=bq_last(); if(l&&l->k==4&&l->x==mx&&l->y==my){ l->a+=sc; l->b+=hs; return; } bq_push(4,mx,my,sc,hs,0); }
 int browser_xback(void){ if(g_page!=3||backn<=0)return 0; bq_push(6,0,0,0,0,0); return 1; }
 void browser_key(char c){
@@ -217,5 +223,6 @@ static int bq_drain(void){
         else if(e.k==4){ int smx=mx,smy=my; mx=e.x; my=e.y; browser_wheelxy_now(e.a,e.b); mx=smx; my=smy; }
         else if(e.k==5)browser_key_now(e.c,e.a);
         else if(e.k==6)browser_xback_now();
+        else if(e.k==7){ int smx=mx,smy=my; mx=e.x; my=e.y; browser_wheelpx_now(-e.a/2,e.b/2); mx=smx; my=smy; }
     }
     return any; }

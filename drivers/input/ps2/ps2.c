@@ -60,11 +60,13 @@ void ps2_kbd_tick(void){
 }
 static void kbd_feed2(u8 sc){
     if(!kext&&!(sc&0x80)&&sc!=0x1D&&sc!=0x2A&&sc!=0x36&&sc!=0x38&&sc!=0x3A)g_kbd_last_tick=(u32)g_ticks;
-    if(!kext){ if(sc&0x80) kdown[sc&0x7F]=0; else kdown[sc]=1; }
-    if(kext){ kext=0; if(sc&0x80) kdown[sc&0x7F]=0; else kdown[sc]=1; if(sc==0x38){ if(g_kbd_layout>0&&g_kbd_layout!=5)kaltgr=1; else kalt=1; return;} if(sc==0xB8){kalt=0;kaltgr=0;return;} if(sc&0x80) return;
-        if(sc==0x35){ kpush('/'); return; } if(sc==0x1C){ kpush('\n'); return; }
+    if(!kext){ if(sc&0x80) kdown[sc&0x7F]=0; else kdown[sc]=1; if(!g_krep_flag)gkey_push(sc&0x7F,!(sc&0x80)); }
+    if(kext){ kext=0; if(sc&0x80) kdown[sc&0x7F]=0; else kdown[sc]=1; if(!g_krep_flag)gkey_push(sc&0x7F,!(sc&0x80)); if(sc==0x38){ if(g_kbd_layout>0&&g_kbd_layout!=5)kaltgr=1; else kalt=1; return;} if(sc==0xB8){kalt=0;kaltgr=0;return;} if(sc&0x80) return;
+        int sup=kdown[0x5B]||kdown[0x5C];
+        if(sc==0x35){ if(!sup)kpush('/'); return; } if(sc==0x1C){ if(!sup)kpush('\n'); return; }
         if(sc!=0x2A&&sc!=0x5B&&sc!=0x5C&&sc!=0x1D)klog_key(0x10000u|sc);
         { int h=hk_of(sc); if(h){ g_kbd_last_tick=(u32)g_ticks; hk_push(h); return; } }
+        if(sup) return;
         if(sc==0x4B) kpush(17); else if(sc==0x4D) kpush(18);
         else if(sc==0x48) kpush(19); else if(sc==0x50) kpush(20);
         else if(sc==0x47) kpush(2); else if(sc==0x4F) kpush(5); else if(sc==0x49) kpush(6); else if(sc==0x51) kpush(7); else if(sc==0x53) kpush(14); else if(sc==0x52) kpush(15);

@@ -3,15 +3,15 @@
 Branch p-iwx, commit 0eea1720 in /home/claude/wt/iwx. Only my three files are committed.
 
 ## Files
-- drivers/net/wifi/iwx/iwx.h: the shared header. It has the CSR/PRPH registers, the context-info structs (gen2 and gen3), the TFD and RX descriptors, `struct iwx_softc`, and the API. It includes iwx2's iwx_cmd.h and does not redefine any of iwx2's macros.
-- drivers/net/wifi/iwx/iwx_fw.c: picks the firmware for each PCI ID (the OpenBSD attach table), parses the TLV file (checks magic 0x0a4c5749), and loads the file from disk.
-- drivers/net/wifi/iwx/iwx_pcie.c: PCI match and probe, MMIO, NIC lock, PRPH access, prepare_card_hw, sw_reset, apm_init, start_hw, DMA rings, gen2 and gen3 context info, the polled ALIVE wait, RX polling, host-command TX, data TX, MAC address from CSR, and `iwx_status()`.
+- drivers/net/wifi/intel/iwx/iwx.h: the shared header. It has the CSR/PRPH registers, the context-info structs (gen2 and gen3), the TFD and RX descriptors, `struct iwx_softc`, and the API. It includes iwx2's iwx_cmd.h and does not redefine any of iwx2's macros.
+- drivers/net/wifi/intel/iwx/fw/iwx_fw.c: picks the firmware for each PCI ID (the OpenBSD attach table), parses the TLV file (checks magic 0x0a4c5749), and loads the file from disk.
+- drivers/net/wifi/intel/iwx/trans/iwx_pcie.c: PCI match and probe, MMIO, NIC lock, PRPH access, prepare_card_hw, sw_reset, apm_init, start_hw, DMA rings, gen2 and gen3 context info, the polled ALIVE wait, RX polling, host-command TX, data TX, MAC address from CSR, and `iwx_status()`.
 
 ## Licence
 - Ported from OpenBSD if_iwx.c rev 1.230. I fetched the upstream raw file and checked that its ISC header matches the local copy.
 - The struct and register definitions come from if_iwxreg.h, which is dual BSD/GPLv2 (Intel). It is used under BSD.
 - The licence header block is the same one iwx2 uses (ISC plus the Intel BSD-3 text).
-- **NOTICE entry still needed:** I did not add an entry to a NOTICE file. There is none under drivers/net/wifi yet. The lead should add one, for example drivers/net/wifi/iwx/NOTICE, covering both coders' files.
+- **NOTICE entry still needed:** I did not add an entry to a NOTICE file. There is none under drivers/net/wifi yet. The lead should add one, for example drivers/net/wifi/intel/iwx/NOTICE, covering both coders' files.
 - No firmware blobs are committed.
 
 ## Behaviour and safety

@@ -45,7 +45,7 @@ static const rg_bound B[] = {
     { "System\\Input", "KeyRepeat", &g_krep_speed, 0, 2, 0, ap_krep, 0, 0, "Key repeat 0 slow, 1 normal, 2 fast" },
     { "System\\Security", "GuestAccount", &g_guest_on, 0, 1, 0, 0, 0, 0, "Guest account on (1) or off (0)" },
     { "System\\Security", "LockMinutes", &g_lock_min, 0, 240, 0, 0, 0, 0, "Lock the screen after this many idle minutes, 0 never" },
-    { "System\\Power", "LidAction", &g_lid_action, 0, 2, 0, 0, 0, 0, "When the lid closes: 0 sleep, 1 lock, 2 nothing" },
+    { "System\\Power", "LidAction", &g_lid_action, 0, 2, 0, 0, 0, 0, "When the lid closes: 0 turn off the screen, 1 sleep, 2 nothing" },
     { "System\\Power", "PowerButtonAction", &g_pbtn_action, 0, 2, 0, 0, 0, 0, "Power button: 0 menu, 1 sleep, 2 shut down" },
     { "System\\SignIn", "UsbStickSignInScreen", 0, 0, 1, 0, 0, gt_usb, st_usb, "Sign-in screen when starting from the USB stick (saved on the stick)" },
     { "User\\FaceID", "Enabled", 0, 0, 1, 1, 0, gt_face, 0, "Face ID is set up for this account (read only)" },

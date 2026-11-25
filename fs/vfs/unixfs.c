@@ -185,6 +185,7 @@ void ux_mouse_push(int dx,int dy,int btn){ if(!g_mouse_open)return; while(dx||dy
         int nt=(g_mq_t+1)&255; if(nt==g_mq_h)return; g_mq[g_mq_t][0]=(u8)(0x08|(btn&7)|(sx<0?0x10:0)|(sy<0?0x20:0)); g_mq[g_mq_t][1]=(u8)sx; g_mq[g_mq_t][2]=(u8)sy; g_mq_t=nt; dx-=sx; dy-=sy; if(!dx&&!dy)break; } }
 int ux_dev_read(struct vfile* v,char* buf,int len){
     if(v->dev==16){ extern int xin_read(char*,int); return xin_read(buf,len); }
+    if(v->dev==43){ extern int evdev_read(char*,int); int c=evdev_read(buf,len); if(!c&&g_js_running)return JS_BLOCK; return c; }
     if(v->dev==9){ u64 tot=(u64)SW*H*4; if((u64)v->off>=tot)return 0; int c=len; if((u64)v->off+(u64)c>tot)c=(int)(tot-(u64)v->off); __builtin_memcpy(buf,(u8*)SCENE+v->off,(unsigned long)c); v->off+=c; return c; }
     if(v->dev==10){ int c=0; while(c+3<=len&&g_mq_h!=g_mq_t){ buf[c]=(char)g_mq[g_mq_h][0]; buf[c+1]=(char)g_mq[g_mq_h][1]; buf[c+2]=(char)g_mq[g_mq_h][2]; g_mq_h=(g_mq_h+1)&255; c+=3; } if(!c&&g_js_running)return JS_BLOCK; return c; }
     return 0;
@@ -313,7 +314,7 @@ int proc_gen(const char* p,char* out,int cap){ (void)cap;
     if(seq((char*)p,"/dev/console")||seq((char*)p,"/dev/tty")){ char* o=out; o=pc_(o,"console\n"); return (int)(o-out); }
     /* ---- SysFS ---- */
     if(seq((char*)p,"/sys/kernel/ostype")){ char* o=out; o=pc_(o,"NoovexOS\n"); return (int)(o-out); }
-    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"11.10\n"); return (int)(o-out); }
+    if(seq((char*)p,"/sys/kernel/osrelease")||seq((char*)p,"/proc/sys/kernel/osrelease")){ char* o=out; o=pc_(o,"11.22\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/hostname")){ char* o=out; o=pc_(o,g_hostname); o=pc_(o,"\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/kernel/arch")){ char* o=out; o=pc_(o,"x86_64\n"); return (int)(o-out); }
     if(seq((char*)p,"/sys/devices/system/cpu/online")){ extern volatile int g_cores_online; char* o=out; int n=g_smp_on?g_cores_online:1; if(n<=1)o=pc_(o,"0\n"); else { o=pc_(o,"0-"); o=pn_(o,n-1); o=pc_(o,"\n"); } return (int)(o-out); }
@@ -434,7 +435,7 @@ static void ux_boot_layout(void){
         ux_mkfile(etc,"passwd","root:x:0:0:root:/root:/bin/nsh\nuser:x:1000:1000:user:/home:/bin/nsh\n",0100644u);
         ux_mkfile(etc,"group","root:x:0:\nadmin:x:10:user\nusers:x:1000:user\n",0100644u);
         ux_mkfile(etc,"hostname","noovex\n",0100644u);
-        ux_mkfile(etc,"rc","# /etc/rc - run by init (PID 1) at boot\necho NoovexOS: init started\n",0100644u);
+        ux_mkfile(etc,"rc","# /etc/rc - run by init (PID 1) at boot\n# commands listed here run once before the first login; add a trailing & to run one in the background\n",0100644u);
         ux_write_anchors(etc);
         char hb[40]; int n=ux_read_file("/etc/hostname",hb,sizeof(hb)); if(n>0){ int o=0; for(int i=0;hb[i]&&hb[i]!='\n'&&o<31;i++)g_hostname[o++]=hb[i]; g_hostname[o]=0; }
     }
@@ -468,13 +469,14 @@ int k_readdir_extra(int d,int n,char* name,int* type){
     if(d==dt_resolve_dir("/bin")) for(int i=0;JS_BIN[i].name;i++){ if(JS_BIN[i].name[0]=='+')continue; if(c==n){ int j=0; while(JS_BIN[i].name[j]&&j<63){ name[j]=JS_BIN[i].name[j]; j++; } name[j]=0; if(type)*type=8; return 1; } c++; }
     if(d==dt_resolve_dir("/sbin")){ if(c==n){ name[0]='i';name[1]='n';name[2]='i';name[3]='t';name[4]=0; if(type)*type=8; return 1; } c++; }
     if(g_usb_mounted&&d==dt_resolve_dir("/mnt/usb")) for(int f=0;f<ufs_n;f++){ if(c==n){ int j=0; while(ufs[f].name[j]&&j<15){ name[j]=ufs[f].name[j]; j++; } name[j]=0; if(type)*type=8; return 1; } c++; }
-    if(d==dt_resolve_dir("/dev")){ static const char* DV[]={"null","zero","random","urandom","full","tty","console","fb0","dsp","kmsg",0}; for(int i=0;DV[i];i++){ if(c==n){ int j=0; while(DV[i][j]){ name[j]=DV[i][j]; j++; } name[j]=0; if(type)*type=2; return 1; } c++; } }
+    if(d==dt_resolve_dir("/dev")){ static const char* DV[]={"null","zero","random","urandom","full","tty","tty0","tty1","tty2","tty3","tty4","tty5","tty6","console","fb0","dsp","kmsg",0}; for(int i=0;DV[i];i++){ if(c==n){ int j=0; while(DV[i][j]){ name[j]=DV[i][j]; j++; } name[j]=0; if(type)*type=2; return 1; } c++; } }
     return 0;
 }
 static void jc_start_init(void){
     if(jc_idx(1)>=0)return;
     int i=jc_create("init",0,0); if(i<0)return;
     g_jp[i].pid=1; g_jp[i].tgid=1; g_jp[i].pgid=1; g_jp[i].ppid=0; g_jp[i].uid=0; g_jp[i].gid=0; if(g_next_pid<2)g_next_pid=2;
+    klog("NoovexOS: init started");
 }
 static int g_ux_core=0;
 void ux_session_user(const char* user){

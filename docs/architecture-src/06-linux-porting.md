@@ -1218,7 +1218,7 @@ D-Bus and the keyring. `nvx-xrun` sets `DBUS_SESSION_BUS_ADDRESS` from `/usr/bin
 
 Chromium. With a stripped Chromium 141 as the test program (`nvx-xrun` adds `--no-sandbox --disable-gpu --disable-gpu-compositing --password-store=gnome-libsecret` to programs that have a `resources.pak` next to them): the browser process, the zygotes, the crash handler and the page processes start and the window opens with its title. Found and fixed on the way, in this order: the image window for big programs; `/proc/self/fd` as a folder; the number of links of `/proc/self/task` (Chromium checks that a process has one thread before it forks); `libX11-xcb.so.1` (opened with `dlopen`); the reservation table; `stat` of `/proc/self/fd/N`; memfd and `/dev/shm` sharing between processes. Left: helper processes end with code 127, the page stays empty.
 
-v10.44: `execve` of `/proc/self/exe` or `/proc/<pid>/exe` runs that process's program (Chromium starts every helper this way; before, all helpers ended with code 127 in a loop). epoll entries remember the open file (`vi[]`) and are dropped when the descriptor number now points at another file; epoll tables are freed on close (they leaked) and there are 256 tables of 128 entries. Unix sockets: 512 sockets, up to 64 passed descriptors per message and 64 queued messages with descriptors (a sender waits instead of losing them), the descriptor queue is allocated per socket. With these, Chromium renders pages in `--single-process` mode (a `data:` page, then `st/p/v42.html` over the network with AVIF images and a worker). In the normal mode the browser window, tabs and address bar work, the renderers start (`ChildThreadImpl::EnsureConnected`) and stay idle in `epoll_wait`/`futex`, the page stays at "Loading" and the browser later restarts the network service and kills renderers. `--disable-features=MojoIpcz` and `--no-zygote` did not change this. Next step: trace the Mojo messages between the browser and one renderer (`lxtrace on` limited to two pids). `nvx-xrun` therefore adds `--single-process` for Chromium-based programs; Electron programs (Claude Desktop, VS Code, Discord) get the same flag and were not tested, because none of them can be downloaded on the build machine.
+v10.44: `execve` of `/proc/self/exe` or `/proc/<pid>/exe` runs that process's program (Chromium starts every helper this way; before, all helpers ended with code 127 in a loop). epoll entries remember the open file (`vi[]`) and are dropped when the descriptor number now points at another file; epoll tables are freed on close (they leaked) and there are 256 tables of 128 entries. Unix sockets: 512 sockets, up to 64 passed descriptors per message and 64 queued messages with descriptors (a sender waits instead of losing them), the descriptor queue is allocated per socket. With these, Chromium renders pages in `--single-process` mode (a `data:` page, then `st/p/v42.html` over the network with AVIF images and a worker). In the normal mode the browser window, tabs and address bar work, the renderers start (`ChildThreadImpl::EnsureConnected`) and stay idle in `epoll_wait`/`futex`, the page stays at "Loading" and the browser later restarts the network service and kills renderers. `--disable-features=MojoIpcz` and `--no-zygote` did not change this. Next step: trace the Mojo messages between the browser and one renderer (`lxtrace on` limited to two pids). `nvx-xrun` therefore adds `--single-process` for Chromium-based programs; Electron programs (VS Code, Discord) get the same flag and were not tested, because none of them can be downloaded on the build machine.
 
 
 ## 6.25 /proc/cpuinfo, pseudo-terminals, sound, downloaded packages and notifications (v10.45)
@@ -1664,3 +1664,26 @@ A container lives in `/var/lib/containers/NAME` (`root`, `upper`, `work`, and `b
 `contest` (`usr/musl/contest.c`, also copied to `/usr/libexec/noovex/contest`) runs 113 checks in eleven child processes; `check.py` runs it in the QEMU group. Result in QEMU (TCG, 2 cores): 113 of 113; CPU work in 1.5 s was 21285 loops without a limit and 8010 with `cpu.max 20000 100000`.
 
 Not done: cgroup namespaces (a container sees the whole cgroup tree), file owners shown through `uid_map` in `stat`, separate port numbers per network namespace (a container can still bind loopback ports the host uses), virtual network devices (veth/bridges), `/proc` showing only the container's mounts in `mountinfo` details, `/dev` limited to safe devices (a container with `devtmpfs` sees the host's `/dev`), `memory.max` checked on page faults, nested PID namespaces deeper than one level showing intermediate pids, the overlay `workdir`, `open_tree`/`fsmount` (new mount API), `userfaultfd`, `io_uring`. Alpine packages (`apk`) are planned for v10.84.
+
+## 6.41 SSH server, man pages and rsync (v11.15)
+
+These three are ported programs. They use the Linux ABI and are built by scripts in `tools/`. None of them needs kernel code of its own, apart from pseudo-terminals.
+
+### SSH (Dropbear, `third_party/dropbear`)
+
+- Built by `tools/build_ports2.sh` as one static `dropbearmulti` binary. `ssh`, `dbclient`, `scp`, `dropbear`, `dropbearkey` and `dropbearconvert` are links to it in `/usr/bin`.
+- The build script patches `svr-runopts.c` so `norootpass` is 1: root cannot log in with a password. The build stops if the patch does not apply.
+- The server runs as the `sshd` service (section 5.18): `dropbear -F -E -R -g -p 22`. `-R` creates host keys on first start.
+- `sshd on|off|status` (root) enables and starts, or stops and disables, that service. It is off by default. Settings > Advanced system > Remote login has the same switch.
+- Pseudo-terminals: `/dev/ptmx` and `/dev/pts/N` are in `sys/linux/syscalls/fifos_and_names.c`. A new pty belongs to the user who opened it, and only that user or root can open the slave side.
+
+### Man pages (mandoc, `third_party/mandoc`)
+
+- `tools/build_man.sh` builds mandoc with the musl port compiler and installs `man`, `apropos`, `whatis` and `makewhatis` as links to it.
+- `tools/mkman.py` writes compressed pages into `/usr/share/man` (sections 1, 5, 7 and 8): one for each shell command and for the ported tools. `/etc/man.conf` sets the search path.
+- The result is cached in `build/man`. `build.sh` copies it into the image.
+
+### rsync 3.4.1 (`third_party/rsync`)
+
+- Built by `tools/build_ports2.sh` without OpenSSL, xxhash, zstd or lz4. The default remote shell is `dbclient`, so `rsync host:path` uses SSH.
+- Local copies and copies over SSH work. The test is `tools/tests/rsync/run.sh`.

@@ -42,7 +42,7 @@ static int procfs_build(const char* p,char* out,int cap){
     #define PN(n) do{ char nb[16]; int L=0; unsigned v=(unsigned)(n); if(!v)nb[L++]='0'; char t[16]; int ti=0; while(v){t[ti++]='0'+v%10;v/=10;} while(ti)nb[L++]=t[--ti]; for(int q=0;q<L&&(o-out)<cap-1;q++)*o++=nb[q]; }while(0)
     if(seq((char*)leaf,"meminfo")){ extern int proc_gen(const char*,char*,int); if(cap>=1024){ int n=proc_gen("/proc/meminfo",o,cap-1); if(n>0)o+=n; } }
     else if(seq((char*)leaf,"uptime")){ PN((unsigned)(g_ticks/100)); PW(" ticks\n"); }
-    else if(seq((char*)leaf,"version")){ PW("NoovexOS 64 v11.10 (from-scratch, Unix-like)\n"); }
+    else if(seq((char*)leaf,"version")){ PW("NoovexOS 64 v11.22 (from-scratch, Unix-like)\n"); }
     else if(seq((char*)leaf,"fb")){ PN(W); PW(" "); PN(H); PW(" 32 "); PN(W*4); PW("\n"); }
     else if(seq((char*)leaf,"mounts")){ for(int i=0;i<g_vfs_n;i++){ PW(g_vfs[i]->name); PW("\n"); } PW("rootfs\n"); }
     else if(!*leaf){ PW("meminfo\nuptime\nversion\ncpuinfo\nmounts\nfb\n"); }
@@ -86,7 +86,7 @@ int vfs_open(const char* nm,int flags){
     int dv=dev_id(nm);
     if(dv==17&&g_uid!=0)return -1;
     if(dv){ int vi=-1; for(int i=0;i<VMAXOPEN;i++) if(!g_vf[i].used){vi=i;break;} if(vi<0)return -1;
-        g_vf[vi].used=1; g_vf[vi].fs_idx=-1; g_vf[vi].off=0; g_vf[vi].flags=flags; g_vf[vi].dev=dv; if(dv==9)g_fb0_open++; if(dv==10)g_mouse_open++;
+        g_vf[vi].used=1; g_vf[vi].fs_idx=-1; g_vf[vi].off=0; g_vf[vi].flags=flags; g_vf[vi].dev=dv; if(dv==9)g_fb0_open++; if(dv==10)g_mouse_open++; if(dv==43){ extern void evdev_opened(void); evdev_opened(); }
         int fd=-1; int* T=fdt(); for(int i=(g_jcur>=0?0:3);i<FDMAX;i++) if(T[i]==-1){fd=i;break;} if(fd<0){g_vf[vi].used=0;return -1;}
         g_vf[vi].ref=1; T[fd]=vi; fdce()[fd]=(flags&0x80000)?1:0; return fd; }
     int isd=0; int idx=ux_lookup(nm,&isd,1); if(isd)return -1;
@@ -109,7 +109,7 @@ int vfs_read(int fd,char* buf,int len){ fd_init(); int* T=fdt(); if(fd<0||fd>=FD
     struct vfile* v=&g_vf[T[fd]];
     if(v->dev==5&&g_js_running) return jc_tty_read(buf,len);
     if(v->dev==6) return jc_pipe_read(v,buf,len);
-    if(v->dev==9||v->dev==10||v->dev==16) return ux_dev_read(v,buf,len);
+    if(v->dev==9||v->dev==10||v->dev==16||v->dev==43) return ux_dev_read(v,buf,len);
     if(v->dev==17){ extern int fid_dev_read(char*,int); return fid_dev_read(buf,len); }
     if(v->dev==40){ extern int xtray_read(char*,int); return xtray_read(buf,len); }
     if(v->dev==41){ extern int xclip_read(char*,int); return xclip_read(buf,len); }

@@ -4,7 +4,7 @@ Sources checked locally: Linux 7.4-rc3 merge `7e1392a` (/tmp/ref/linux, rtw88 + 
 linux-firmware `1399ab8` (2026-11-13, /tmp/ref/linux-firmware, WHENCE + LICENSES/).
 
 ## 1. What NoovexOS already has (do not re-propose)
-- drivers/net/wifi/rtw88/: hand port, PCIe only. Chips: RTL8821CE (works on owner's PC), RTL8822BE, RTL8822CE
+- drivers/net/wifi/realtek/rtw88/: hand port, PCIe only. Chips: RTL8821CE (works on owner's PC), RTL8822BE, RTL8822CE
   (chips/rtw8821c.c, rtw8822b.c, rtw8822c.c + generated tables). Firmware embedded: assets/firmware/rtw8821c_fw.bin.
 - Bus layer: `rtw_bus` in include/nvx/drivers/net/wifi/rtw_chip.h has only r8/r16/r32/w8/w16/w32 + `kind`
   (`RTW_BUS_USB` enum exists). `g_rtw_bus=&rtw_bus_pcie` (rtw_efuse.c:19). No USB bus ops implemented;

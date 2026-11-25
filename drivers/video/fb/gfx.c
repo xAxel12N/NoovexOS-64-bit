@@ -9,6 +9,7 @@
 #include "include/nvx/mem/heap.h"
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/core/klog.h"
+#include "include/nvx/drivers/video/fb/gtext.h"
 
 int g_gfx=GFX_OFF, g_gfx_fx=1, g_gfx_ok=0, g_rt=0, gs_scene=0, gs_bg=0, gs_nc=0, g_gfx_present=0;
 u32 g_gfx_frames=0, g_gfx_frame_us=0, g_gfx_layers=0, g_gfx_layer_mb=0; char g_gfx_why[64];
@@ -33,9 +34,8 @@ static int pb_on=0;
 #define RUNMAX 4096
 #define RUNAREA (1920*640)
 #define RUNH 40
-typedef struct { short x, y; char ch; u8 mode, s; u32 c; } gly;
 static struct { int t, n, x0, y0, x1, y1, mono; u32 c; gly g[RUNMAX]; } RN;
-static int st_x=0, st_y=0, st_h=0;
+static int st_x=0, st_y=0, st_h=0; static gtatl GA; static int gs_atl=0;
 static u32 g_text_ops=0, g_text_glyphs=0;
 static u32 hsh(u32 h,u32 v){ h^=v; h*=16777619u; return h; }
 static int st_alloc(int w,int h,int* ox,int* oy){
@@ -43,20 +43,16 @@ static int st_alloc(int w,int h,int* ox,int* oy){
     if(st_x+w>SWd){ st_y+=st_h; st_x=0; st_h=0; }
     if(st_y+h>SHd){ gq_sync(); st_x=0; st_y=0; st_h=0; }
     *ox=st_x; *oy=st_y; st_x+=w; if(h>st_h)st_h=h; return 0; }
+static void cpu_mark(int s,int x,int y,int w,int h){ if(g_gq_mark_hook&&s>0)g_gq_mark_hook(s,x,y,w,h); }
 static void run_flush(void){
     if(RN.n<=0)return; int n=RN.n; RN.n=0; g_gfx_run=pb_on;
     int w=RN.x1-RN.x0, h=RN.y1-RN.y0, sx, sy; if(w<=0||h<=0)return;
+    int t=RN.t; g_text_ops++; g_text_glyphs+=(u32)n;
+    if(gs_atl>0&&g_gq_mode==GQM_GPU&&gt_run(&GA,t,RN.g,n))return;
     if(st_alloc(w,h,&sx,&sy))return;
-    u32 mp=g_gs[gs_stm].pitch, cp=g_gs[gs_stc].pitch; u32 key=2166136261u;
-    for(int j=0;j<h;j++){ u32* m=p_stm+(u64)(sy+j)*mp+sx; for(int i=0;i<w;i++)m[i]=0; }
-    for(int k=0;k<n;k++){ gly* G=&RN.g[k]; int idx=(u8)G->ch-32; if(idx<0||idx>=95)continue; const unsigned char* gp=fontaa[idx]; int bx=G->x-RN.x0, by=G->y-RN.y0, s=G->s;
-        key=hsh(key,(u32)(u16)G->x|((u32)(u16)G->y<<16)); key=hsh(key,(u32)(u8)G->ch|((u32)G->mode<<8)|((u32)s<<16)); key=hsh(key,G->c&0x00FFFFFFu);
-        for(int r=0;r<14;r++) for(int col=0;col<8;col++){ int a=gp[r*8+col]; u32 cov;
-            if(G->mode==0){ if(a<6)continue; cov=a>=250?256u:(u32)a; } else if(G->mode==1){ if(a<6)continue; cov=(u32)a; } else { if(a<8)continue; cov=(u32)a; }
-            for(int dy=0;dy<s;dy++) for(int dx=0;dx<s;dx++){ int px=bx+col*s+dx, py=by+r*s+dy; if(px<0||px>=w||py<0||py>=h)continue;
-                u32* m=p_stm+(u64)(sy+py)*mp+sx+px; u32 o=*m; *m=o+cov-((o*cov)>>8); if(*m>256)*m=256;
-                if(!RN.mono) p_stc[(u64)(sy+py)*cp+sx+px]=G->c&0x00FFFFFFu; } } }
-    int t=RN.t; g_text_ops++; g_text_glyphs+=(u32)n; gq_set_key(key|1u);
+    u32 key=gt_stage(p_stm,g_gs[gs_stm].pitch,p_stc,g_gs[gs_stc].pitch,sx,sy,w,h,RN.g,n,RN.x0,RN.y0,RN.mono);
+    cpu_mark(gs_stm,sx,sy,w,h); if(!RN.mono)cpu_mark(gs_stc,sx,sy,w,h);
+    gq_set_key(key|1u);
     if(RN.mono) gq_mask(t,RN.x0,RN.y0,w,h,RN.c&0x00FFFFFFu,256,gs_stm,sx,sy);
     else gq_copym(t,RN.x0,RN.y0,w,h,gs_stc,sx,sy,gs_stm,sx,sy,256,0); }
 static struct { int t, n, x0, y0, x1, y1; struct { short x, y; u32 c; u16 a; } p[PBMAX]; } PB;
@@ -69,7 +65,7 @@ static void pb_flush(void){
         key=hsh(key,(u32)(u16)PB.p[k].x|((u32)(u16)PB.p[k].y<<16)); key=hsh(key,PB.p[k].c^((u32)a<<24));
         if(a>=256||!o){ *m=a; } else { *m=o+a-((o*a)>>8); }
         p_stc[(u64)(sy+py)*cp+sx+px]=PB.p[k].c; }
-    int t=PB.t; gq_set_key(key|1u); gq_copym(t,PB.x0,PB.y0,w,h,gs_stc,sx,sy,gs_stm,sx,sy,256,0); }
+    cpu_mark(gs_stm,sx,sy,w,h); cpu_mark(gs_stc,sx,sy,w,h); int t=PB.t; gq_set_key(key|1u); gq_copym(t,PB.x0,PB.y0,w,h,gs_stc,sx,sy,gs_stm,sx,sy,256,0); }
 static int ovl(int ax,int ay,int aw,int ah,int bx0,int by0,int bx1,int by1){ return ax<bx1&&bx0<ax+aw&&ay<by1&&by0<ay+ah; }
 void gfx_px(int x,int y,u32 c,int a){
     if((u32)x>=W||(u32)y>=H||a<=0)return; if(a>256)a=256;
@@ -108,18 +104,19 @@ static u32 covf(int r,int dx,int dy){ u32 dd=isqrt32(((u32)(dx*dx+dy*dy))<<16); 
 static int mc_corner(int r,int v,int* x,int* y){
     if(mc_find(1,r,v,x,y))return 0; if(mc_new(1,r,v,r,x,y))return -1; u32 p=g_gs[gs_mc].pitch;
     for(int j=0;j<r;j++) for(int i=0;i<r;i++){ int dx=(v&1)?i+1:r-i, dy=(v&2)?j+1:r-j; p_mc[(u64)(*y+j)*p+*x+i]=covf(r,dx,dy); }
-    return 0; }
+    cpu_mark(gs_mc,*x,*y,r,r); return 0; }
 static int mc_circle(int r,int* x,int* y){
     if(mc_find(2,r,0,x,y))return 0; int sz=2*r+3; if(mc_new(2,r,0,sz,x,y))return -1; u32 p=g_gs[gs_mc].pitch;
     for(int j=0;j<sz;j++) for(int i=0;i<sz;i++){ int di=i-r-1, dj=j-r-1; int d2=di*di+dj*dj; u32 v=0; if(d2<=(r+1)*(r+1))v=covf(r,di,dj); if(!v){ p_mc[(u64)(*y+j)*p+*x+i]=0; continue; }
         u32 dd=isqrt32(((u32)d2)<<16); int cov=r*256-(int)dd+128; p_mc[(u64)(*y+j)*p+*x+i]=cov>=256?256u:(u32)cov; }
-    return 0; }
-static void rect_a(int x,int y,int w,int h,u32 c,int a){ if(w<=0||h<=0)return; if(a>=256)gq_fill(g_rt,x,y,w,h,c&0x00FFFFFFu); else gq_blend(g_rt,x,y,w,h,c,a); }
+    cpu_mark(gs_mc,*x,*y,sz,sz); return 0; }
+static void rect_a(int x,int y,int w,int h,u32 c,int a){ if(y<g_clip_y0){ h-=g_clip_y0-y; y=g_clip_y0; } if(y+h>g_clip_y1)h=g_clip_y1-y; if(w<=0||h<=0)return; if(a>=256)gq_fill(g_rt,x,y,w,h,c&0x00FFFFFFu); else gq_blend(g_rt,x,y,w,h,c,a); }
+static void mask_c(int t,int x,int y,int w,int h,u32 c,int a,int s,int mx,int my){ if(y<g_clip_y0){ int d=g_clip_y0-y; y+=d; h-=d; my+=d; } if(y+h>g_clip_y1)h=g_clip_y1-y; if(w<=0||h<=0)return; gq_mask(t,x,y,w,h,c,a,s,mx,my); }
 void gfx_round(int x,int y,int w,int h,int r,int m,u32 c,int a){
     if(w<=0||h<=0||a<=0)return; if(r>w/2)r=w/2; if(r>h/2)r=h/2; if(r<=0||!(m&15)){ rect_a(x,y,w,h,c,a); return; }
     rect_a(x+r,y,w-2*r,h,c,a); rect_a(x,y+r,r,h-2*r,c,a); rect_a(x+w-r,y+r,r,h-2*r,c,a);
     int cx[4]={x,x+w-r,x,x+w-r}, cy[4]={y,y,y+h-r,y+h-r}, bit[4]={1,2,4,8};
-    for(int k=0;k<4;k++){ if(!(m&bit[k])){ rect_a(cx[k],cy[k],r,r,c,a); continue; } int mx,my; if(mc_corner(r,k,&mx,&my)){ rect_a(cx[k],cy[k],r,r,c,a); continue; } gq_mask(g_rt,cx[k],cy[k],r,r,c&0x00FFFFFFu,a,gs_mc,mx,my); } }
+    for(int k=0;k<4;k++){ if(!(m&bit[k])){ rect_a(cx[k],cy[k],r,r,c,a); continue; } int mx,my; if(mc_corner(r,k,&mx,&my)){ rect_a(cx[k],cy[k],r,r,c,a); continue; } mask_c(g_rt,cx[k],cy[k],r,r,c&0x00FFFFFFu,a,gs_mc,mx,my); } }
 static const int SE[4]={12,8,5,2}, SS[4]={14,10,6,3}, SA[4]={6,8,10,12};
 #define SHK 64
 #define SHT 12
@@ -136,7 +133,7 @@ static void shd_init(void){
     if(gs_shd<=0||!p_shd)return; u32 P=g_gs[gs_shd].pitch; int SWd=(int)g_gs[gs_shd].w, SHd=(int)g_gs[gs_shd].h; shd_n=0; shd_top_nz=0;
     for(int j=0;j<SHT;j++){ u32 v=shcov(SHPW/2,-SHT+j,SHPW,SHPW,8); if(v)shd_top_nz=1; for(int x=0;x<SWd-24;x++)p_shd[(u64)j*P+x]=v; }
     for(int j=0;j<SHB;j++){ u32 v=shcov(SHPW/2,SHPW+j,SHPW,SHPW,8); for(int x=0;x<SWd-24;x++)p_shd[(u64)(SHT+j)*P+x]=v; }
-    for(int i=0;i<12;i++){ u32 vl=shcov(-12+i,SHPW/2,SHPW,SHPW,8), vr=shcov(SHPW+i,SHPW/2,SHPW,SHPW,8); for(int y=0;y<SHd;y++){ p_shd[(u64)y*P+SWd-24+i]=vl; p_shd[(u64)y*P+SWd-12+i]=vr; } } }
+    for(int i=0;i<12;i++){ u32 vl=shcov(-12+i,SHPW/2,SHPW,SHPW,8), vr=shcov(SHPW+i,SHPW/2,SHPW,SHPW,8); for(int y=0;y<SHd;y++){ p_shd[(u64)y*P+SWd-24+i]=vl; p_shd[(u64)y*P+SWd-12+i]=vr; } } cpu_mark(gs_shd,0,0,-1,-1); }
 static int shd_slot(int r){
     for(int q=0;q<shd_n;q++) if(shd_r[q]==r)return q; if(shd_n>=64||gs_shd<=0)return -1;
     int SWd=(int)g_gs[gs_shd].w, SHd=(int)g_gs[gs_shd].h; int nb=(SWd-24)/(4*SHTW); if(nb<1)return -1; int q=shd_n; int ox=(q%nb)*4*SHTW, oy=SHT+SHB+4+(q/nb)*SHTH; if(oy+SHTH>SHd)return -1;
@@ -144,7 +141,7 @@ static int shd_slot(int r){
     for(int j=0;j<SHTH;j++) for(int i=0;i<SHTW;i++){ u64 row=(u64)(oy+j)*P;
         p_shd[row+ox+i]=j<SHTW?shcov(-12+i,-12+j,SHPW,SHPW,r):0; p_shd[row+ox+SHTW+i]=j<SHTW?shcov(b0+i,-12+j,SHPW,SHPW,r):0;
         p_shd[row+ox+2*SHTW+i]=shcov(-12+i,b0+j,SHPW,SHPW,r); p_shd[row+ox+3*SHTW+i]=shcov(b0+i,b0+j,SHPW,SHPW,r); }
-    shd_r[q]=r; shd_x[q]=ox; shd_y[q]=oy; shd_n++; return q; }
+    cpu_mark(gs_shd,ox,oy,4*SHTW,SHTH); shd_r[q]=r; shd_x[q]=ox; shd_y[q]=oy; shd_n++; return q; }
 static void shd_slow(int wx,int wy,int ww,int wh,int wr){ f_shd_slow++; for(int k=0;k<4;k++){ int e=SE[k]; gfx_round(wx-e,wy-e+SS[k],ww+2*e,wh+2*e,wr+e,15,0,SA[k]); } }
 static int shd_alpha=256;
 void gfx_shadow(int wx,int wy,int ww,int wh,int wr){
@@ -160,7 +157,7 @@ void gfx_shadow(int wx,int wy,int ww,int wh,int wr){
     gq_mask(t,ax,Y1,bx-ax,SHB,0,256,gs_shd,0,SHT);
     gq_mask(t,X0-12,ay,12,by-ay,0,256,gs_shd,SWd-24,0);
     gq_mask(t,X1,ay,12,by-ay,0,256,gs_shd,SWd-12,0); }
-void gfx_circle(int cx,int cy,int r,u32 c,int a){ if(r<0)return; int mx,my; if(mc_circle(r,&mx,&my)){ rect_a(cx-r,cy-r,2*r+1,2*r+1,c,a); return; } gq_mask(g_rt,cx-r-1,cy-r-1,2*r+3,2*r+3,c&0x00FFFFFFu,a,gs_mc,mx,my); }
+void gfx_circle(int cx,int cy,int r,u32 c,int a){ if(r<0)return; int mx,my; if(mc_circle(r,&mx,&my)){ rect_a(cx-r,cy-r,2*r+1,2*r+1,c,a); return; } mask_c(g_rt,cx-r-1,cy-r-1,2*r+3,2*r+3,c&0x00FFFFFFu,a,gs_mc,mx,my); }
 static void cpy(int ov,int dst,int x,int y,int w,int h,int src,int sx,int sy,int a,int key){ if(ov)gq_overc(dst,x,y,w,h,src,sx,sy,a); else gq_copy(dst,x,y,w,h,src,sx,sy,a,key); }
 static void cpym(int ov,int dst,int x,int y,int w,int h,int src,int sx,int sy,int m,int mx,int my,int a,int key){ if(ov)gq_overm(dst,x,y,w,h,src,sx,sy,m,mx,my,a); else gq_copym(dst,x,y,w,h,src,sx,sy,m,mx,my,a,key); }
 static void copy_round(int dst,int x,int y,int w,int h,int r,int m,int src,int sx,int sy,int a,int key){
@@ -263,7 +260,7 @@ void gfx_window(int i){
         int capt=(L->opA&&L->opB);
         if(!capt) gq_fill(s,cx0,cy0,cx1-cx0,cy1-cy0,GQ_EMPTY);
         pre_hook(); int ort=g_rt; u32* osc=g_scene; g_rt=s; g_scene=L->px; gq_touch_reset(s); L->ng=0; g_cur_layer=i; L->nset=0;
-        if(capt) gq_cap_begin(s,L->opB,OPMAX,cx0,cy0,cx1-cx0,cy1-cy0);
+        GA.ops=0; if(capt) gq_cap_begin(s,L->opB,OPMAX,cx0,cy0,cx1-cx0,cy1-cy0);
         draw_app_marked(i); pre_hook();
         int ncap=capt?gq_cap_end():-1;
         g_rt=ort; g_scene=osc; g_cur_layer=-1;
@@ -303,14 +300,14 @@ void gfx_frame_begin(void){ if(g_gfx&&(W!=g_mw||H!=g_mh||SW!=g_ms)){ gfx_stop("t
     if(!sr_a&&!sr_fail){ sr_a=kmalloc((unsigned long)SROPS*(unsigned long)gq_op_size()); sr_b=kmalloc((unsigned long)SROPS*(unsigned long)gq_op_size()); if(!sr_a||!sr_b){ sr_fail=1; sr_a=sr_b=0; } }
     if(g_scene_wr!=sr_wr0||!g_gfx_srec){ gq_srec_invalidate(); sr_wr0=g_scene_wr; }
     if(sr_a&&g_gfx_srec&&gs_scene>0) gq_srec_begin(gs_scene,sr_a,sr_b,SROPS); f_t0=hr_ns(); g_rt=gs_scene; f_w0=g_gq_wait_ns; f_p0=g_gfx_pres_ns; f_s0=g_gq_submits; f_acc0=g_scene_acc; g_hash_d=gs_scene; g_ophash=1469598103934665603ULL;
-    f_lay_full=f_lay_part=f_lay_same=f_lay_abort=f_blur_hit=f_blur_miss=f_shd_fast=f_shd_slow=0; g_text_ops=0; g_text_glyphs=0; }
+    f_lay_full=f_lay_part=f_lay_same=f_lay_abort=f_blur_hit=f_blur_miss=f_shd_fast=f_shd_slow=0; g_text_ops=0; g_text_glyphs=0; if(gs_atl>0)gt_frame(&GA); }
 void gfx_frame_end(void){ gfx_sync(); g_gfx_frames++; u64 tot=hr_ns()-f_t0, wt=g_gq_wait_ns-f_w0, pr=g_gfx_pres_ns-f_p0; g_gfx_frame_us=(u32)(tot/1000ULL);
     g_gfx_gpu_us=(u32)((wt>pr?wt-pr:0)/1000ULL); g_gfx_pres_us=(u32)(pr/1000ULL); g_gfx_cpu_us=(u32)((tot>wt?tot-wt:0)/1000ULL); g_gfx_subs=g_gq_submits-f_s0;
     g_lay_full=f_lay_full; g_lay_part=f_lay_part; g_lay_same=f_lay_same; g_lay_abort=f_lay_abort; g_blur_hit=f_blur_hit; g_blur_miss=f_blur_miss; g_shd_fast=f_shd_fast; g_shd_slow=f_shd_slow; g_gfx_text_ops=g_text_ops; g_gfx_text_glyphs=g_text_glyphs; g_hash_d=0; gq_frame_mark(); }
 extern u32 SCENE_NC_STATIC[MAXW*MAXH];
 static int sfail(const char* why){ wcp(g_gfx_why,why); g_gq_mode=GQM_OFF; return -1; }
 static void drop_all(void){ gq_srec_invalidate();
-    int* ids[11]={&gs_bg,&gs_nc,&gs_tmp,&gs_tmp2,&gs_stm,&gs_stc,&gs_mc,&gs_snap,&gs_shd,&gs_light,0}; for(int k=0;ids[k];k++){ if(*ids[k]>0)gq_surf_free(*ids[k]); *ids[k]=0; }
+    int* ids[12]={&gs_bg,&gs_nc,&gs_tmp,&gs_tmp2,&gs_stm,&gs_stc,&gs_mc,&gs_snap,&gs_shd,&gs_light,&gs_atl,0}; for(int k=0;ids[k];k++){ if(*ids[k]>0)gq_surf_free(*ids[k]); *ids[k]=0; }
     for(int i=0;i<NL;i++){ if(LY[i].sid>0)gq_surf_free(LY[i].sid); if(LY[i].bc>0)gq_surf_free(LY[i].bc); LY[i].sid=0; LY[i].bc=0; LY[i].bvalid=0; LY[i].nold=-1; LY[i].px=0; LY[i].valid=0; LY[i].anim=0; LY[i].ghost=0; LY[i].sanim=0; }
     blur_caches=0; shd_n=0; p_shd=0;
     if(own_scene&&gs_scene>0)gq_surf_free(gs_scene); gs_scene=0; own_scene=0; g_snap_owner=-1; p_bg=p_nc=0; mc_n=0; mc_x=mc_y=mc_h=0; st_x=st_y=st_h=0; }
@@ -325,6 +322,7 @@ int gfx_start(int mode,gfx_alloc_fn al,u32* scene_px,int scene_sid){
     { gfx_alloc_fn ag=g_gfx_alloc_gpu?g_gfx_alloc_gpu:al; if(gs_tmp<=0)gs_tmp=ag(W,H,SW,&p_tmp); if(gs_tmp2<=0)gs_tmp2=ag(W,H,SW,&p_tmp); }
     if(gs_stm<=0)gs_stm=al(W,H,SW,&p_stm); if(gs_stc<=0)gs_stc=al(W,H,SW,&p_stc); if(gs_mc<=0)gs_mc=al(1024,1024,1024,&p_mc);
     if(gs_tmp<=0||gs_tmp2<=0||gs_stm<=0||gs_stc<=0||gs_mc<=0)return sfail("out of memory for GPU work buffers");
+    if(g_gfx_atlas&&mode==GFX_GPU&&gs_atl<=0){ u32* ap=0; gs_atl=al(NV2Q_GW,NV2Q_GH,NV2Q_GW,&ap); if(gs_atl>0)gt_init(&GA,gs_atl,ap,g_gs[gs_atl].pitch); else gs_atl=0; }
     if(gs_shd<=0){ gs_shd=al(W,H,SW,&p_shd); if(gs_shd<=0){ gs_shd=0; p_shd=0; } else { shd_n=0; shd_init(); } }
     if(scene_sid>0){ if(gs_scene!=scene_sid){ if(own_scene&&gs_scene>0)gq_surf_free(gs_scene); own_scene=0; gs_scene=scene_sid; } if(scene_px&&g_scene!=scene_px){ for(u64 k=0;k<(u64)SW*H;k++)scene_px[k]=g_scene[k]; g_scene=scene_px; } }
     else if(gs_scene>0&&own_scene){ u32* p=g_gs[gs_scene].px; if(g_scene!=p){ for(u64 k=0;k<(u64)SW*H;k++)p[k]=g_scene[k]; g_scene=p; } }

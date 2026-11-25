@@ -1,0 +1,20 @@
+drivers/net/wifi/realtek/rtw88/chips/rtw8723d.c, rtw8723d.h, rtw8723d_tables.c/.h, rtw8723d_txpwr_tbl.h (txpwr_lmt and the regd alternatives from regd.c)
+  Ported from Linux drivers/net/wireless/realtek/rtw88 rtw8723d.c, rtw8723d_table.c, rtw8723x.c and the legacy
+  firmware download in mac.c. Upstream SPDX: GPL-2.0 OR BSD-3-Clause; used here under BSD-3-Clause.
+  Copyright(c) 2018-2019 Realtek Corporation; Copyright 2024 Fiona Klute (rtw8723x.c).
+  Redistribution and use in source and binary forms, with or without modification, are permitted provided that
+  the BSD-3-Clause conditions are met (retain this notice; reproduce it in documentation of binary forms; do not
+  use the names of the copyright holders to endorse derived products without permission). Provided "AS IS"
+  without warranty of any kind.
+assets/firmware/linux-firmware/rtw88/rtw8723d_fw.bin
+  Unmodified from linux-firmware, LicenseRef-LICENCE.rtlwifi_firmware.txt (see linux-firmware/LICENSES and WHENCE.txt).
+drivers/net/wifi/realtek/rtw88/rtw_bw.c and the 40/80 MHz parts of chips/rtw8821c.c
+  Center channel / primary index (main.c rtw_update_channel), ADC clock, RF18, RX DFIR (rtw8821c.c), TXSC and RFMOD
+  (mac.c rtw_set_channel_mac), RA info BW/VHT fields (fw.c). Upstream SPDX: GPL-2.0 OR BSD-3-Clause; used here under
+  BSD-3-Clause, same notice and conditions as above. Copyright(c) 2018-2019 Realtek Corporation.
+drivers/net/wifi/realtek/rtw88/rtw_usb.c and drivers/usb/class/rtwusb.c
+  USB transport after Linux rtw88 usb.c/usb.h (vendor request 0x05 register access, 0x4E0 write after always-on
+  registers, qsel to bulk-out mapping from the rqpn table, TX desc checksum and DMA_TXAGG_NUM, RX aggregation walk,
+  burst size and RX aggregation registers), the 8821C USB power sequences (rtw8821c.c) and the USB ID lists
+  (rtw8821cu.c, rtw8822bu.c, rtw8822cu.c). Upstream SPDX: GPL-2.0 OR BSD-3-Clause; used here under BSD-3-Clause,
+  same notice and conditions as above. Copyright(c) 2018-2019 Realtek Corporation.

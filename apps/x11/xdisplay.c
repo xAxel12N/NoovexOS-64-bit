@@ -7,6 +7,7 @@
 #include "include/nvx/mem/heap.h"
 #include "include/nvx/mem/pmm_vmm.h"
 #include "include/nvx/arch/x86_64/time/hrtimer.h"
+#include "include/nvx/drivers/input/input.h"
 
 int desk_win_exposed(int i);
 void bkl_yield(void);
@@ -85,7 +86,7 @@ int xdisp_fast(void){
     int ax,ay,aw,ah; xd_area(W_XDISP,&ax,&ay,&aw,&ah);
     if(dv>0){ u32 w,h,bpl; u64 d; int r0,r1; if(xfb_geom(&w,&h,&bpl,&d)&&xd_rows(d,bpl,h,&r0,&r1)){ xd_clear(); if(r0>=ah)return 0; if(r1>=ah)r1=ah-1; xd_blit_rows(W_XDISP,r0,r1); present_rect(ax,ay+r0,aw,r1-r0+1); return 0; } xd_clear(); }
     xd_blit(W_XDISP); present_rect(ax,ay,aw,ah); return 0; }
-static u8 g_xq[512][8]; static int g_xq_h, g_xq_t; static int g_xb_prev, g_xr_prev, g_xmx=-1, g_xmy=-1;
+static u8 g_xq[512][8]; static int g_xq_h, g_xq_t; static int g_xb_prev, g_xr_prev, g_xmx=-1, g_xmy=-1; static u32 g_xm_prev;
 static void xq_push(int type,int code,int down,int x,int y){ int n=(g_xq_t+1)&511; if(n==g_xq_h)return; u8* r=g_xq[g_xq_t]; r[0]=(u8)type; r[1]=(u8)code; r[2]=(u8)down; r[3]=0; r[4]=(u8)x; r[5]=(u8)(x>>8); r[6]=(u8)y; r[7]=(u8)(y>>8); g_xq_t=n; extern void jc_kick_waiters(void); jc_kick_waiters(); }
 static int xq_free(void){ return 511-((g_xq_t-g_xq_h)&511); }
 static void xq_wheel(int sc){
@@ -96,11 +97,12 @@ int xin_read(char* buf,int len){ int c=0; while(c+8<=len&&g_xq_h!=g_xq_t){ for(i
 int xin_ready(void){ return g_xq_h!=g_xq_t; }
 void xdisp_mouse(int btn,int rbtn,int sc){
     extern int g_xover; if(g_xfull||g_xover)return;
-    if(!g_xfb_live||!WN[W_XDISP].open||WN[W_XDISP].min||focus!=W_XDISP){ g_xb_prev=btn; g_xr_prev=rbtn; return; }
+    if(!g_xfb_live||!WN[W_XDISP].open||WN[W_XDISP].min||focus!=W_XDISP){ g_xb_prev=btn; g_xr_prev=rbtn; g_xm_prev=mouse_btnmask&~3u; return; }
     int ax,ay,aw,ah; xd_area(W_XDISP,&ax,&ay,&aw,&ah); int in=mx>=ax&&my>=ay&&mx<ax+aw&&my<ay+ah; int x=mx-ax, y=my-ay;
     if(in&&(x!=g_xmx||y!=g_xmy)){ xq_push(1,0,0,x,y); g_xmx=x; g_xmy=y; }
     if(btn!=g_xb_prev&&(in||!btn)){ xq_push(2,1,btn?1:0,x,y); }
     if(rbtn!=g_xr_prev&&(in||!rbtn)){ xq_push(2,3,rbtn?1:0,x,y); }
+    { u32 m=mouse_btnmask&~3u, ch=m^g_xm_prev; for(int i=2;i<5;i++) if(((ch>>i)&1)&&(in||!((m>>i)&1)))xq_push(2,i==2?2:i+5,(int)((m>>i)&1),x,y); g_xm_prev=m; }
     if(in&&sc){ int b=sc>0?4:5; xq_push(2,b,1,x,y); xq_push(2,b,0,x,y); }
     g_xb_prev=btn; g_xr_prev=rbtn; }
 void xdisp_key(int c){ if(!g_xfb_live)return; extern volatile unsigned char kdown[128]; extern int kalt; int n=(g_xq_t+1)&511; if(n==g_xq_h)return; u8* r=g_xq[g_xq_t]; r[0]=3; r[1]=(u8)(c&0xFF); r[2]=1; r[3]=(u8)((kdown[0x1D]?1:0)|(kalt?2:0)); r[4]=r[5]=r[6]=r[7]=0; g_xq_t=n; extern void jc_kick_waiters(void); jc_kick_waiters(); }

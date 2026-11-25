@@ -4,7 +4,7 @@
 #include <stdint.h>
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
 #define INTELBT_HOST
-#include "drivers/bluetooth/intelbt_fw.c"
+#include "drivers/bluetooth/firmware/intelbt_fw.c"
 static int fails, checks;
 #define CHECK(c,msg) do{ checks++; if(c)printf("  %-60s ok\n",msg); else { fails++; printf("  %-60s FAIL (line %d)\n",msg,__LINE__); } }while(0)
 static int put32(u8* p,u32 v){ p[0]=(u8)v; p[1]=(u8)(v>>8); p[2]=(u8)(v>>16); p[3]=(u8)(v>>24); return 4; }

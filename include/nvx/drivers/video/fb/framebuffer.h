@@ -17,7 +17,8 @@ extern volatile int g_gq_inb, g_gfx_run;
 void gfx_sync(void);
 extern u32 g_scene_acc;
 extern volatile int g_gq_capon; extern int g_scene_quiet; extern u32 g_scene_wr;
-static inline u32* scene_ptr(void){ g_scene_acc++; if(!g_scene_quiet)g_scene_wr++; if(g_gq_inb|g_gfx_run|g_gq_capon)gfx_sync(); return g_scene; }
+extern void (*g_gq_mark_hook)(int s,int x,int y,int w,int h); extern int g_rt;
+static inline u32* scene_ptr(void){ g_scene_acc++; if(!g_scene_quiet)g_scene_wr++; if(g_gq_inb|g_gfx_run|g_gq_capon)gfx_sync(); if(g_gq_mark_hook)g_gq_mark_hook(g_rt,0,0,-1,-1); return g_scene; }
 #define SCENE (scene_ptr())
 extern u8 *FBB;
 extern u32 PITCHB, W, H, SW;
@@ -28,6 +29,10 @@ extern u32 PITCHB2, W2, H2;
 extern u8 BYPP2;
 extern int g_fb2_ok, g_fb2_rgb, g_mirror2;
 void blit_mirror2(void);
+extern u32 g_fb_fww, g_fb_fwh; extern int g_fb_native;
+int fb_desktop_resize(u32 w,u32 h,int apply);
+extern u32 g_desk_cpu_mb, g_desk_scale; extern char g_desk_why[96];
+u32 fb_desk_scale(void); int fb_desk_scale_set(u32 pct);
 extern int g_gl[95], g_gw[95], g_gm_ready;
 
 void copy_swap32(u32* d,const u32* s,int n);
@@ -50,12 +55,15 @@ int pdsub(int x,int y,const char*str,int a,int b,u32 c,int s);
 void pdstr_ctr(int cx,int y,const char*s,u32 c,int sc);
 void blit_all(void);
 
+extern int g_clip_y0, g_clip_y1, g_clip_maxy;
+void fb_clip_y(int y0,int y1);
+void fb_clip_off(void);
 extern int g_gfx; void gfx_px(int x,int y,u32 c,int a);
-static inline void putpx(int x,int y,u32 c){ if(g_gfx){ gfx_px(x,y,c,256); return; } if((u32)x<W&&(u32)y<H) g_scene[(u32)y*SW+x]=c; }
+static inline void putpx(int x,int y,u32 c){ if(y<g_clip_y0||y>=g_clip_y1)return; if(g_gfx){ gfx_px(x,y,c,256); return; } if((u32)x<W&&(u32)y<H) g_scene[(u32)y*SW+x]=c; }
 static inline u32 mix(u32 a,u32 b,int t){
     int ar=(a>>16)&255,ag=(a>>8)&255,ab=a&255,br=(b>>16)&255,bg=(b>>8)&255,bb=b&255;
     return rgb((u8)((ar*(256-t)+br*t)>>8),(u8)((ag*(256-t)+bg*t)>>8),(u8)((ab*(256-t)+bb*t)>>8));
 }
-static inline void pblend(int x,int y,u32 c,int a){ if(g_gfx){ gfx_px(x,y,c,a); return; } if((u32)x<W&&(u32)y<H){ u32*p=&g_scene[(u32)y*SW+x]; *p=mix(*p,c,a);} }
+static inline void pblend(int x,int y,u32 c,int a){ if(y<g_clip_y0||y>=g_clip_y1)return; if(g_gfx){ gfx_px(x,y,c,a); return; } if((u32)x<W&&(u32)y<H){ u32*p=&g_scene[(u32)y*SW+x]; *p=mix(*p,c,a);} }
 
 #endif

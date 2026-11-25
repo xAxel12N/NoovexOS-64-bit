@@ -103,15 +103,18 @@ static int twod(void){
     g_2d_ok=1; nvl_s("  the 2D engine draws correctly - Gears and screen copies can use it"); nvl_nl(); return 1; }
 
 #include "include/nvx/drivers/video/nvidia/gqk_cubin.h"
+#include "include/nvx/drivers/video/nvidia/gqk_cubin_sm8x.h"
+#include "include/nvx/drivers/video/nvidia/nvqmd.h"
+#include "include/nvx/drivers/video/nvidia/nvsettings.h"
 static u32 lu16(const u8* p){ return (u32)p[0]|((u32)p[1]<<8); }
 static u32 lu32(const u8* p){ return lu16(p)|(lu16(p+2)<<16); }
 static u64 lu64(const u8* p){ return (u64)lu32(p)|((u64)lu32(p+4)<<32); }
 static int nm_eq(const u8* a,const char* b){ while(*b){ if(*a!=(u8)*b)return 0; a++; b++; } return *a==0; }
 static int nm_pre(const u8* a,const char* b){ while(*b){ if(*a!=(u8)*b)return 0; a++; b++; } return 1; }
-int nvc_parse(const u8* f,u32 n,nvkern* k){
+int nvc_parse_sm(const u8* f,u32 n,nvkern* k,u32 sm){
     for(u32 i=0;i<sizeof(*k);i++)((u8*)k)[i]=0; k->pofs=0x160; k->psz=136; const char* why=0;
     if(n<0x40||f[0]!=0x7F||f[1]!='E'||f[2]!='L'||f[3]!='F'||f[4]!=2||lu16(f+0x12)!=190){ why="not a 64-bit CUDA ELF"; goto bad; }
-    { u32 fl=lu32(f+0x30); if((fl&0xFFu)!=75u&&((fl>>8)&0xFFu)!=75u){ why="not built for sm_75 (Turing)"; goto bad; } }
+    { u32 fl=lu32(f+0x30); if((fl&0xFFu)!=sm&&((fl>>8)&0xFFu)!=sm){ why=sm==75?"not built for sm_75 (Turing)":sm==86?"not built for sm_86 (Ampere)":"not built for this GPU generation"; goto bad; } }
     u64 sho=lu64(f+0x28); u32 she=lu16(f+0x3A), shn=lu16(f+0x3C), sst=lu16(f+0x3E);
     if(she!=64||!shn||sst>=shn||sho+(u64)shn*64>n){ why="bad section table"; goto bad; }
     const u8* ss=f+sho+(u64)sst*64; u64 so=lu64(ss+24), sz=lu64(ss+32); if(so+sz>n){ why="bad section names"; goto bad; }
@@ -136,6 +139,7 @@ int nvc_parse(const u8* f,u32 n,nvkern* k){
     if(k->smem){ why="the shader needs shared memory"; goto bad; }
     k->ok=1; return 1;
     bad: k->ok=0; { char* q=k->why; const char* t=why; while(*t&&q<k->why+60)*q++=*t++; *q=0; } return 0; }
+int nvc_parse(const u8* f,u32 n,nvkern* k){ return nvc_parse_sm(f,n,k,75); }
 
 #define CP_MAXOPS 1600
 #define CP_PBCAP 0x4000
@@ -145,13 +149,19 @@ static volatile u32* g_cpsem=0; static u64 g_cpsem_va=0; static u32 g_cp_seq=0; 
 static u32 g_cp_ops=0, g_cp_subs=0, g_cp_waits=0, g_cp_timeouts=0, g_cp_last_us=0; static char g_cp_why[80];
 static void cpm(u32 m,int n){ g_cppb[g_cpn++]=(1u<<29)|((u32)n<<16)|(1u<<13)|(m>>2); }
 static void cp1(u32 m,u32 v){ cpm(m,1); g_cppb[g_cpn++]=v; }
-static void qset(u32* q,u32 lo,u32 hi,u32 v){ u32 w=lo>>5, b=lo&31, n=hi-lo+1; u32 m=n>=32?0xFFFFFFFFu:((1u<<n)-1u); q[w]=(q[w]&~(m<<b))|((v&m)<<b); }
-static int cp_why(const char* s){ char* q=g_cp_why; q=scopy(q,s); *q=0; return 0; }
+int g_nv_sm8x_try=0; static u32 g_cp_qmd=2, g_cp_sm=75;
+int nvc_sm8x_allowed(u32 sm){ return (sm==86&&nvset_allowed(NVSET_AMPERE)&&nvset_allowed(NVSET_SHADER8X))||(sm==89&&nvset_allowed(NVSET_ADA)&&nvset_allowed(NVSET_SHADER8X)); }
+int nvc_pick(const u8** blob,u32* len){ const nvgsp_cls* c=nvgsp_cls_cur(); int r=nvqmd_pick(c->sm,c->qmd_major,g_gqk_sm8x_verified,g_nv_sm8x_try);
+    if((r==86||r==89)&&!g_nv_sm8x_try&&!nvc_sm8x_allowed((u32)r))r=NVQMD_GUARD_OFF;
+    if(r==75){ *blob=g_gqk_cubin; *len=g_gqk_cubin_len; } else if(r==86){ *blob=g_gqk_cubin_sm86; *len=g_gqk_cubin_sm86_len; } else if(r==89){ *blob=g_gqk_cubin_sm89; *len=g_gqk_cubin_sm89_len; } else { *blob=0; *len=0; } return r; }
+static int cp_why(const char* s){ u32 i=0; while(s[i]&&i<sizeof(g_cp_why)-1){ g_cp_why[i]=s[i]; i++; } g_cp_why[i]=0; return 0; }
 static int cp_load(void){
     if(g_cp_ready&&g_cp_gen==(int)g_ce_gen)return 1;
     g_cp_ready=0; g_cp_ok=0; g_cpn=0; g_cpi=0;
-    if(!g_gqk_cubin_len)return cp_why("the compiled shader is not built in");
-    if(!nvc_parse(g_gqk_cubin,g_gqk_cubin_len,&g_kn))return cp_why(g_kn.why);
+    const u8* blob=0; u32 blen=0; int sm=nvc_pick(&blob,&blen); if(sm<0)return cp_why(nvqmd_why(sm));
+    if(!blen)return cp_why("the compiled shader is not built in");
+    if(!nvc_parse_sm(blob,blen,&g_kn,(u32)sm))return cp_why(g_kn.why);
+    g_cp_sm=(u32)sm; g_cp_qmd=nvgsp_cls_cur()->qmd_major;
     u64 cl=((u64)g_kn.code_len+0x1000+0xFFFULL)&~0xFFFULL;
     g_kcode_vram=nvv_alloc(cl,0x10000); if(!g_kcode_vram)return cp_why("no VRAM for the shader code");
     for(u64 i=0;i<cl;i+=4){ u32 v=i<g_kn.code_len?lu32(g_kn.code+i):0; nvp_wr32(g_kcode_vram+i,v); }
@@ -167,9 +177,10 @@ static int cp_load(void){
     if(!g_cpd_va||!g_cppb_va||!g_cpsem_va)return cp_why("could not map the launch descriptors");
     nvm_tlb_flush(g_uv.pd3,0); g_cp_gen=(int)g_ce_gen; g_cp_ready=1; return 1; }
 int nvc_ready(void){ return g_cp_ok&&g_cp_ready&&g_cp_gen==(int)g_ce_gen&&nvgsp_ce_ready(); }
+static u32 g_cp_raw=0;
 static void cp_head(void){
-    g_cpn=0; g_cpi=0;
-    cp1(0x0000,0xC5C0u);
+    g_cpn=0; g_cpi=0; g_cp_raw=0;
+    cp1(0x0000,nvgsp_cls_cur()->compute);
     cpm(0x02A0,2); g_cppb[g_cpn++]=0; g_cppb[g_cpn++]=0xFEu<<24;
     cpm(0x07B0,2); g_cppb[g_cpn++]=0; g_cppb[g_cpn++]=0xFFu<<24;
     cp1(0x021C,1u|(1u<<4)|(1u<<12)); }
@@ -177,7 +188,7 @@ int nvc_op(const nvcop* o,int wait){
     if(!g_cp_ready||g_cp_gen!=(int)g_ce_gen)return -1;
     if(g_cpi>=CP_MAXOPS||g_cpn+48>CP_PBCAP)return -1;
     if(!g_cpn)cp_head();
-    if(wait&&g_cpi){ cp1(0x0110,0); g_cp_waits++; }
+    if(wait&&(g_cpi||g_cp_raw)){ cp1(0x0110,0); g_cp_waits++; }
     u32 gx=(o->w+31u)/32u, gy=(o->h+3u)/4u; if(!gx||!gy)return 0;
     u8* sl=g_cpd+(u64)g_cpi*g_cp_slot; u64 sv=g_cpd_va+(u64)g_cpi*g_cp_slot; g_cpi++;
     u32* q=(u32*)sl; for(int i=0;i<64;i++)q[i]=0;
@@ -187,15 +198,8 @@ int nvc_op(const nvcop* o,int wait){
     p[0]=o->k; p[1]=o->x; p[2]=o->y; p[3]=o->w; p[4]=o->h; p[5]=(u32)o->sdx; p[6]=(u32)o->sdy; p[7]=(u32)o->mdx; p[8]=(u32)o->mdy; p[9]=o->c0; p[10]=o->c1; p[11]=o->a; p[12]=o->inv; p[13]=o->key; p[14]=o->goff; p[15]=0;
     for(int s=0;s<3;s++){ const nvcsurf* f=s==0?&o->d:s==1?&o->s:&o->m; u32* e=p+16+s*6; e[0]=(u32)f->va; e[1]=(u32)(f->va>>32); e[2]=f->pitch; e[3]=f->w; e[4]=f->h; e[5]=0; }
     u32 regs=(g_kn.regs+2u+7u)&~7u; if(regs>255u)regs=255u; u64 cb0=sv+256;
-    qset(q,134,134,1); qset(q,189,189,1); qset(q,191,191,1); qset(q,366,366,1); qset(q,368,369,1); qset(q,378,378,1);
-    qset(q,384,415,gx); qset(q,416,431,gy); qset(q,448,463,1);
-    qset(q,544,561,0); qset(q,562,568,3); qset(q,569,575,17); qset(q,657,663,3);
-    qset(q,576,579,2); qset(q,580,583,2);
-    qset(q,592,607,32); qset(q,608,623,4); qset(q,624,639,1);
-    qset(q,648,656,regs); qset(q,955,959,g_kn.bars);
-    for(int b=0;b<8;b++){ u64 a=b?g_kcb_va[b]:cb0; u32 l=b?g_kn.cbl[b]:cl; if(!a||!l)continue; u32 base=1024u+(u32)b*64u;
-        qset(q,640u+(u32)b,640u+(u32)b,1); qset(q,base,base+31,(u32)a); qset(q,base+32,base+48,(u32)(a>>32)); qset(q,base+51,base+63,(l+15u)>>4); }
-    qset(q,1536,1567,(u32)g_kcode_va); qset(q,1568,1584,(u32)(g_kcode_va>>32));
+    u64 cba[8]; u32 cbl[8]; for(int b=0;b<8;b++){ cba[b]=b?g_kcb_va[b]:cb0; cbl[b]=b?g_kn.cbl[b]:cl; }
+    if(!nvqmd_fill(q,g_cp_qmd,gx,gy,regs,g_kn.bars,cba,cbl,g_kcode_va)){ g_cpi--; return -1; }
     cp1(0x02B4,(u32)(sv>>8)); cp1(0x02BC,3); g_cp_ops++; return 0; }
 int nvc_submit(void){
     if(!g_cpn)return 0;
@@ -207,19 +211,23 @@ int nvc_submit(void){
         g_cppb[g_cpn++]=(1u<<29)|(5u<<16)|(0x005Cu>>2); g_cppb[g_cpn++]=(u32)a&0xFFFFFFFCu; g_cppb[g_cpn++]=(u32)(a>>32); g_cppb[g_cpn++]=seq; g_cppb[g_cpn++]=0; g_cppb[g_cpn++]=1u|(1u<<20);
         if(k)g_cppb[g_cpn++]=(1u<<29)|(4u<<16)|(0x0028u>>2), g_cppb[g_cpn++]=0, g_cppb[g_cpn++]=0, g_cppb[g_cpn++]=0, g_cppb[g_cpn++]=0x10u<<27; }
     cflush(g_cpd,(u64)g_cpi*g_cp_slot); cflush(g_cppb,(u64)g_cpn*4); ch_kick(0,g_cppb_va,g_cpn); g_cp_subs++;
-    g_cpn=0; g_cpi=0;
+    g_cpn=0; g_cpi=0; g_cp_raw=0;
     u64 t0=hr_ns(); while(g_cpsem[0]!=seq){ if(hr_ns()-t0>500000000ULL){ g_cp_timeouts++; g_gr_busy=0; g_cp_ok=0; ch_hung(0,g_cpsem,seq); nv_auto_need("a compute batch timed out"); cp_why(g_cpsem[4]==seq?"the GPU finished but the cache flush did not complete":"a compute batch did not finish within 500 ms"); klog("nvgsp: GPU drawing stopped - a compute batch did not finish"); return -1; } cpu_pause(); }
     g_cp_last_us=(u32)((hr_ns()-t0)/1000ULL); g_gr_busy=0; return 0; }
-void nvc_abort(void){ g_cpn=0; g_cpi=0; }
+void nvc_abort(void){ g_cpn=0; g_cpi=0; g_cp_raw=0; }
+int nvc_raw(const u32* m,u32 n){ if(!g_cp_ready||g_cp_gen!=(int)g_ce_gen||!n)return -1; if(!g_cpn)cp_head(); if(g_cpn+n+48>CP_PBCAP)return -1; for(u32 i=0;i<n;i++)g_cppb[g_cpn++]=m[i]; g_cp_raw++; return 0; }
 void nvc_stats(u32* ops,u32* subs,u32* waits,u32* tmo){ if(ops)*ops=g_cp_ops; if(subs)*subs=g_cp_subs; if(waits)*waits=g_cp_waits; if(tmo)*tmo=g_cp_timeouts; }
 const char* nvc_why(void){ return g_cp_why; }
 void nvc_set_ok(int ok){ g_cp_ok=ok; }
+void nvc_sm8x_setting(int on){ if(!on&&(g_cp_sm==86||g_cp_sm==89)&&!g_nv_sm8x_try){ g_cp_ok=0; g_cp_gen=-1; cp_why(nvqmd_why(NVQMD_GUARD_OFF)); klog("nvgsp: RTX 30/40 compute compositor turned off - drawing through the copy and 2D engines"); } }
+static int cp_selftest(char* why,u32* us){ extern int nvd_selftest(char*,int,u32*); int s8=g_cp_sm==86||g_cp_sm==89; int g=s8&&!g_nv_sm8x_try&&nvset_try_begin(NVSET_SHADER8X); int r=nvd_selftest(why,80,us);
+    if(g)nvset_try_end(NVSET_SHADER8X,r,why[0]?why:"the RTX 30/40 compositor shader self-test failed"); if(!r&&s8)klog("nvgsp: RTX 30/40 compute compositor failed its self-test - drawing through the copy and 2D engines"); return r; }
 static int compute(void){
-    nvl_s("[18] compute shaders (TURING_COMPUTE_A): the desktop drawing shader, checked against the CPU"); nvl_nl();
+    nvl_s("[18] compute shaders: the desktop drawing shader, checked against the CPU"); nvl_nl();
     g_cp_ok=0; g_cp_why[0]=0;
     if(!cp_load()){ nvl_s("  "); nvl_s(g_cp_why); nvl_nl(); return 0; }
-    nvl_kv("shader code bytes",g_kn.code_len); nvl_kv("registers",g_kn.regs); nvl_kv("parameter offset in constant bank 0",g_kn.pofs); nvl_kv("constant bank 2 bytes",g_kn.cbl[2]); nvl_kv("shader GPU address",g_kcode_va);
-    char why[80]; why[0]=0; extern int nvd_selftest(char* why,int max,u32* us); u32 us=0; int r=nvd_selftest(why,80,&us);
+    nvl_kv("shader sm version",g_cp_sm); nvl_kv("launch descriptor (QMD) major version",g_cp_qmd); nvl_kv("shader code bytes",g_kn.code_len); nvl_kv("registers",g_kn.regs); nvl_kv("parameter offset in constant bank 0",g_kn.pofs); nvl_kv("constant bank 2 bytes",g_kn.cbl[2]); nvl_kv("shader GPU address",g_kcode_va);
+    char why[80]; why[0]=0; u32 us=0; int r=cp_selftest(why,&us);
     nvl_kv("compute launches",g_cp_ops); nvl_kv("compute batches",g_cp_subs); nvl_kv("waits between dependent launches",g_cp_waits); nvl_kv("self-test time us",us);
     if(!r){ nvl_s("  "); nvl_s(why); nvl_nl(); cp_why(why); for(int k=0;k<20;k++){ u32 fn=0,nn=0; if(msg_one(&fn,g_evbuf,sizeof(g_evbuf),&nn,1)<=0)break; ev_handle(fn,g_evbuf,nn); } return 0; }
     g_cp_ok=1; nvl_s("  every drawing operation on the GPU matched the CPU pixel for pixel - the desktop can be drawn by the GPU"); nvl_nl(); return 1; }
@@ -232,6 +240,7 @@ void nvgsp_status(void){
     if(g_off_count){ nvl_kv("times NVIDIA drawing was turned off",g_off_count); }
     if(g_auto_tries||g_auto_at){ nvl_kv("automatic re-checks after a timeout (max 1, only while idle)",g_auto_tries); }
     if(g_rc_other){ nvl_kv("channel errors on channels that are not ours (ignored, like nouveau)",g_rc_other); }
+    if(g_rc_n||g_pf_n){ nvl_kv("channel errors on our channels this GPU start",g_rc_n); nvl_kv("channels freed and made again",g_rc_fixed); nvl_kv("channel re-creations that failed",g_rc_failed); nvl_kv("GPU page faults queued by GSP-RM",g_pf_n); if(g_rc_dead){ nvl_s("GPU drawing stays on the CPU: too many channel errors, or a channel could not be made again"); nvl_nl(); } }
     if(g_nv_why[0]){ nvl_s("last failure: step "); nvl_d((u64)g_nv_step); nvl_s(" - "); nvl_s(g_nv_why); nvl_nl(); }
     if(G.state>=3){ nvl_kv("VRAM allocator total",nvv_total()); nvl_kv("VRAM allocator free",nvv_free_bytes()); nvl_kv("VRAM allocations",(u64)nvv_count()); nvl_kv("GSP errors seen",G.err_count); }
     if(G.state>=7){ nvl_s("screen through the copy engine: "); nvl_s(nvgsp_present_on()?"on":g_sc.ok?"off":"not set up"); nvl_nl();
@@ -264,7 +273,7 @@ static int log_build(int r,const char* cmd){
     else if(r>0){ const char* t="all steps passed"; while(*t&&h<he)*h++=*t++; if(G.state>=7){ t=nvgsp_present_on()?" (screen through the copy engine)":" (screen still copied by the CPU, see step 16)"; while(*t&&h<he)*h++=*t++;  { extern int g_nvd_on; t=g_nvd_on?", desktop drawn by the GPU":nvc_ready()?", compute shaders work":", no GPU drawing (see step 18)"; while(*t&&h<he)*h++=*t++; } } }
     else { const char* t="FAILED at step "; while(*t&&h<he)*h++=*t++; char d[12]; int n=0; u32 v=(u32)g_nv_step; do{ d[n++]=(char)('0'+v%10); v/=10; }while(v); while(n&&h<he)*h++=d[--n]; *h++=':'; *h++=' '; t=g_nv_why; while(*t&&h<he)*h++=*t++; }
     *h++='\n'; *h=0;
-    o=lo_wrap(o,hd); o=lo_s(o,"driver: NoovexOS 64 v11.10\n"); o=lo_s(o,"state reached: "); o=lo_s(o,g_stname[G.state<8?G.state:0]); o=lo_s(o,"\n----------------------------------------------------------------\n");
+    o=lo_wrap(o,hd); o=lo_s(o,"driver: NoovexOS 64 v11.22\n"); o=lo_s(o,"state reached: "); o=lo_s(o,g_stname[G.state<8?G.state:0]); o=lo_s(o,"\n----------------------------------------------------------------\n");
     o=lo_wrap(o,g_nv_log);
     *o=0; return (int)(o-g_logout); }
 void (*g_nv_progress)(int step,const char* what)=0;
@@ -296,10 +305,11 @@ int nvgsp_cmd(const char* a){
     while(*a==' ')a++; int r=1;
     if(seq(a,"auto on")||seq(a,"auto off")){ extern void nvd_set_auto(int); int on=a[6]=='n'; nvd_set_auto(on); nvl_s(on?"the NVIDIA GPU will start automatically 3 s after the desktop appears (next boot)":"automatic NVIDIA start is off - run nvgsp all to start it by hand"); nvl_nl(); return 1; }
     if(seq(a,"log")){ if(!g_nv_log_n){ nvl_s("no nvgsp log yet"); nvl_nl(); } return 1; }
-    if(seq(a,"cardmem on")||seq(a,"cardmem off")){ g_nv_log_n=0; g_nv_log[0]=0; extern int g_nvd_vram, g_nvd_on; extern void gfx_stop(const char*); extern void nvd_request(void); int on=a[9]=='n'; int was=g_nvd_on; g_nvd_vram=on;
+    if(seq(a,"cardmem on")||seq(a,"cardmem off")){ g_nv_log_n=0; g_nv_log[0]=0; extern int g_nvd_vram, g_nvd_on; extern void gfx_stop(const char*); extern void nvd_request(void); int on=a[9]=='n'; int was=g_nvd_on; g_nvd_vram=on; if(on){ extern u32 g_vl_fail; g_vl_fail=0; }
         if(was){ gfx_stop("switching where the work buffers live"); nvd_request(); }
         nvl_s(on?"GPU-only work buffers go into the card's memory":"all desktop images stay in normal RAM"); nvl_s(was?" - GPU drawing restarts":""); nvl_nl(); return 1; }
     if(seq(a,"monitors")){ nvl_reset(); nvl_s("nvgsp monitors"); nvl_nl(); int r3=nvgsp_monitors(); save_log(r3?1:0,a); return r3; }
+    if(seq(a,"dp train")||seq(a,"dp")){ extern int nvgsp_dp(int); nvl_reset(); nvl_s("nvgsp "); nvl_s(a); nvl_nl(); int r3=nvgsp_dp(a[2]==' '); save_log(r3?1:0,a); return r3; }
     if(seq(a,"3d")){ nvl_reset(); nvl_s("nvgsp 3d"); nvl_nl(); int r3=nv3d_selftest(); if(!r3&&!g_nv_why[0]){ char* q=g_nv_why; const char* w=nv3d_why(); int k=0; while(w[k]&&k<158){ q[k]=w[k]; k++; } q[k]=0; } save_log(r3?1:0,a); return r3; }
     if(seq(a,"mode")||seq(a,"mode all")||seq(a,"mode off")){ nvl_reset(); nvl_s("nvgsp "); nvl_s(a); nvl_nl(); int isoff=a[4]&&a[5]=='o'; int r3=isoff?nvgsp_mode_off():nvgsp_mode(a[4]!=0); { extern void nvd_mode_remember(int) __attribute__((weak)); if(nvd_mode_remember&&r3)nvd_mode_remember(!isoff); } if(!r3&&!g_nv_why[0]){ nvgsp_mode_t mi; nvgsp_mode_info(&mi); char* q=g_nv_why; const char* w=mi.why; int k=0; while(w[k]&&k<158){ q[k]=w[k]; k++; } q[k]=0; } save_log(r3?1:0,a); return r3; }
     if(seq(a,"on")){ g_nv_log_n=0; g_nv_log[0]=0; char m[120]; int r2=nvgsp_on(m,120); nvl_s(m); nvl_nl(); return r2; }

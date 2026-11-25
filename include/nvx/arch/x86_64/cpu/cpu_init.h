@@ -4,6 +4,8 @@
 #include "include/nvx/base.h"
 
 void apic_virtual_wire(void);
+void apic_s3_save(void);
+int apic_s3_restore(void);
 void arch_fpu_init(void);
 void arch_idt_init(void);
 

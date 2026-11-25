@@ -1,4 +1,5 @@
 extern int xapps_count(void); extern const char* app_name(int); extern int app_icon_draw(int,int,int,int); extern void app_launch(int);
+#include "include/nvx/drivers/video/fb/deskscale.h"
 #include "include/nvx/apps/internet/browser.h"
 #include "include/nvx/apps/system/settings.h"
 #include "include/nvx/apps/system/files_classic.h"
@@ -75,6 +76,51 @@ static void draw_icon(int k){ int x=IC_X,y=IC_Y[k],ix=x+14;
     if(k==0)ic_folder(ix,y);else if(k==1)ic_term(ix,y);else if(k==2)ic_edit(ix,y);else if(k==3)ic_web(ix,y);else if(k==4)ic_calc(ix,y);else ic_gear(ix,y);
     dstr_ctr(x+38,y+52,IC_LBL[k],rgb(238,242,250),1); }
 
+#include "include/nvx/fs/vfs/unixfs.h"
+#include "include/nvx/arch/x86_64/cpu/percpu.h"
+#include "include/nvx/fs/nvx/nvx4.h"
+int desk_dir(void){
+    extern char g_home[]; extern int g_home_dir; extern int dt_resolve_dir(const char*); extern int dt_child(int,const char*); extern int dt_mkdir_at(int,const char*); extern void dt_init(void);
+    dt_init(); int home=dt_resolve_dir(g_home); if(home<0)home=(g_home_dir>0&&g_home_dir<DN_MAX&&DT[g_home_dir].used)?g_home_dir:-1; if(home<0)return -1;
+    int d=dt_child(home,"Desktop"); if(d<0)d=dt_mkdir_at(home,"Desktop"); return d; }
+int desk_file_on(int s){ if(s<0||s>=FS_N||!FS[s].used)return 0; if(FS[s].folder==2)return 1; int d=desk_dir(); return d>=0&&(int)FS[s].dir==d; }
+static int desk_name_free(const char* nm){ for(int i=0;i<FS_N;i++) if(FS[i].used&&seq(FS[i].name,(char*)nm))return 0; return 1; }
+static void desk_unique_name(const char* want,char* out){
+    int dot=-1; int L=0; for(;want[L]&&L<58;L++) if(want[L]=='.')dot=L;
+    int q=0; for(;q<L;q++)out[q]=want[q]; out[q]=0; if(desk_name_free(out))return;
+    for(int n=2;n<1000;n++){ char* p=out; int stem=dot<0?L:dot; for(int k=0;k<stem;k++)*p++=want[k]; p=udec(p,(u32)n); for(int k=stem;k<L;k++)*p++=want[k]; *p=0; if(desk_name_free(out))return; } }
+int desk_new_file(const char* want,const char* body){
+    int d=desk_dir(); if(d<0)return -1; { extern int perm_dir(int); if(!perm_dir(d))return -1; }
+    int i=-1; for(int k=0;k<FS_N;k++) if(!FS[k].used){ i=k; break; } if(i<0)return -1;
+    fs_newslot(i); desk_unique_name(want,FS[i].name);
+    int b=0; while(body[b])b++; if(fs_set(i,body,b)){ FS[i].name[0]=0; return -1; }
+    FS[i].used=1; FS[i].folder=0; FS[i].dir=d; FS[i].mode=0100644u; FS[i].uid=g_uid; FS[i].gid=g_gid; ux_touch(i,1);
+    g_fpl[i]=0; desk_place_file(i); if(disk_ok)fs_sync(i); g_fsel=i; return i; }
+int desk_dup_file(int s){
+    if(s<0||s>=FS_N||!FS[s].used)return -1; int d=desk_file_on(s)?(FS[s].folder==2?desk_dir():(int)FS[s].dir):desk_dir(); if(d<0)return -1;
+    int i=-1; for(int k=0;k<FS_N;k++) if(!FS[k].used){ i=k; break; } if(i<0)return -1;
+    fs_newslot(i); { char want[64]; const char* n=FS[s].name; int L=0; while(n[L]&&L<50)L++; int dot=-1; for(int k=0;k<L;k++) if(n[k]=='.')dot=k; int stem=dot<0?L:dot; char* p=want; for(int k=0;k<stem;k++)*p++=n[k]; p=scopy(p," copy"); for(int k=stem;k<L;k++)*p++=n[k]; *p=0; desk_unique_name(want,FS[i].name); }
+    if(fs_set(i,fsd(s),FS[s].len)){ FS[i].name[0]=0; return -1; }
+    FS[i].used=1; FS[i].folder=0; FS[i].dir=d; FS[i].mode=FS[s].mode?FS[s].mode:0100644u; FS[i].uid=g_uid; FS[i].gid=g_gid; ux_touch(i,1);
+    g_fpl[i]=0; desk_place_file(i); if(disk_ok)fs_sync(i); g_fsel=i; return i; }
+static void file_icon(const char* name,int x,int y);
+static void cl_doc(const char* name,int x,int y){
+    int img=fext_eq(name,"png")||fext_eq(name,"jpg")||fext_eq(name,"jpeg")||fext_eq(name,"bmp")||fext_eq(name,"webp");
+    int web=fext_eq(name,"html")||fext_eq(name,"htm"); int code=fext_eq(name,"nvx")||fext_eq(name,"c")||fext_eq(name,"py")||fext_eq(name,"js")||fext_eq(name,"rn");
+    fill_rect(x+6,y+1,22,30,rgb(64,64,64)); fill_rect(x+7,y+2,20,28,rgb(255,255,255)); fill_rect(x+22,y+2,5,5,rgb(192,192,192)); fill_rect(x+22,y+2,1,6,rgb(64,64,64)); fill_rect(x+22,y+7,6,1,rgb(64,64,64));
+    if(img){ fill_rect(x+9,y+10,16,14,rgb(120,180,230)); fill_rect(x+9,y+18,16,6,rgb(80,160,90)); fill_circle(x+20,y+13,2,rgb(255,230,120)); }
+    else if(web){ fill_circle(x+17,y+17,7,rgb(70,150,235)); fill_rect(x+10,y+17,14,1,rgb(200,230,255)); fill_rect(x+17,y+10,1,14,rgb(200,230,255)); }
+    else if(code){ for(int r=0;r<5;r++) fill_rect(x+9+(r&1)*3,y+10+r*4,10-(r&1)*3,2,rgb(60,120,200)); }
+    else { for(int r=0;r<5;r++) fill_rect(x+9,y+10+r*4,r==4?8:14,2,rgb(80,110,200)); } }
+void desk_files_draw(void){
+    int d=desk_dir();
+    for(int s=0;s<FS_N;s++){ if(!FS[s].used||!(FS[s].folder==2||(d>=0&&(int)FS[s].dir==d)))continue;
+        if(!g_fpl[s])desk_place_file(s); int x=g_fpx[s],y=g_fpy[s]; if(g_ddrag==100+s){ x=mx-g_ddx; y=my-g_ddy; }
+        int hov=(g_ddrag!=100+s&&mx>=x-6&&mx<x+54&&my>=y-6&&my<y+74);
+        char nm[13]; int i=0; for(;FS[s].name[i]&&i<11;i++)nm[i]=FS[s].name[i]; if(FS[s].name[i]){nm[i-1]='.';nm[i]=0;}else nm[i]=0;
+        if(g_dstyle==1){ if(hov){ int tw=pw_str(nm,1)+6; fill_rect(x+24-tw/2,y+40,tw,14,rgb(10,36,106)); } cl_doc(FS[s].name,x+8,y+4); dstr_ctr(x+25,y+42,nm,rgb(0,0,0),1); dstr_ctr(x+24,y+41,nm,rgb(255,255,255),1); }
+        else { if(hov){ if(g_gfx)gfx_round(x-6,y-6,60,80,12,15,rgb(255,255,255),42); else fill_round(x-6,y-6,60,80,12,15,mix(rgb(60,70,100),rgb(255,255,255),42)); } file_icon(FS[s].name,x,y); dstr_ctr(x+24,y+52,nm,rgb(238,242,250),1); } } }
+
 static void wall_gradient(u32 t,u32 b){ (void)SCENE; for(u32 y=0;y<H;y++){ u32 c=mix(t,b,(int)((y*256)/H)); for(u32 x=0;x<W;x++) g_scene[(u64)y*SW+x]=c; } }
 static void fill_tri(int x0,int y0,int x1,int y1,int x2,int y2,u32 c){
     int t;
@@ -122,43 +168,44 @@ static void wall_decode(int th){
     if(jpeg_decode(jd,jl,wallsrc,(int)sizeof(wallsrc),&w,&h)==0 && w>0 && h>0){ wall_sw=w; wall_sh=h; wall_have=th; }
     else { wall_sw=0; wall_sh=0; wall_have=-1; }
 }
-static int ws_x0[MAXW]; static u8 ws_fx[MAXW]; static short ws_cw[MAXW][4];
+static int ws_x0[DESK_MAXW]; static u8 ws_fx[DESK_MAXW]; static short ws_cw[DESK_MAXW][4];
 static void cr_w(u32 f,short* w){ int t=(int)f; int t2=t*t>>8, t3=t2*t>>8; w[0]=(short)((-t3+2*t2-t)>>1); w[1]=(short)((3*t3-5*t2+512)>>1); w[2]=(short)((-3*t3+4*t2+t)>>1); w[3]=(short)((t3-t2)>>1); int s=w[0]+w[1]+w[2]+w[3]; w[1]+=(short)(256-s); }
-static void wall_cubic(const u8* src,int sw,int sh,int ox,int oy,int dw,int dh){
-    u32* sc=SCENE;
-    for(u32 x=0;x<W;x++){ long long u=((long long)(2*((int)x-ox)+1)*sw*65536LL)/(2LL*dw)-32768; if(u<0)u=0; if(u>(long long)(sw-1)*65536)u=(long long)(sw-1)*65536; ws_x0[x]=(int)(u>>16); cr_w((u32)((u>>8)&255),ws_cw[x]); }
-    for(u32 y=0;y<H;y++){ long long v=((long long)(2*((int)y-oy)+1)*sh*65536LL)/(2LL*dh)-32768; if(v<0)v=0; if(v>(long long)(sh-1)*65536)v=(long long)(sh-1)*65536;
+static void wall_cubic(u32* dst,int dsp,const u8* src,int sw,int sh,int ox,int oy,int dw,int dh,int ya,int yb){
+    if(ya==0) for(u32 x=0;x<W;x++){ long long u=((long long)(2*((int)x-ox)+1)*sw*65536LL)/(2LL*dw)-32768; if(u<0)u=0; if(u>(long long)(sw-1)*65536)u=(long long)(sw-1)*65536; ws_x0[x]=(int)(u>>16); cr_w((u32)((u>>8)&255),ws_cw[x]); }
+    for(int y=ya;y<yb;y++){ long long v=((long long)(2*(y-oy)+1)*sh*65536LL)/(2LL*dh)-32768; if(v<0)v=0; if(v>(long long)(sh-1)*65536)v=(long long)(sh-1)*65536;
         int y0=(int)(v>>16); short wy[4]; cr_w((u32)((v>>8)&255),wy); const u8* rr[4]; for(int j=0;j<4;j++){ int yy=y0-1+j; if(yy<0)yy=0; if(yy>=sh)yy=sh-1; rr[j]=src+(u64)yy*sw*4; }
-        u32* d=sc+(u64)y*SW;
+        u32* d=dst+(u64)y*dsp;
         for(u32 x=0;x<W;x++){ int x0=ws_x0[x]; int xi[4]; for(int i=0;i<4;i++){ int xx=x0-1+i; if(xx<0)xx=0; if(xx>=sw)xx=sw-1; xi[i]=xx*4; } short* wx=ws_cw[x]; int o[3];
             for(int k=0;k<3;k++){ int acc=0; for(int j=0;j<4;j++){ const u8* r=rr[j]; int h=r[xi[0]+k]*wx[0]+r[xi[1]+k]*wx[1]+r[xi[2]+k]*wx[2]+r[xi[3]+k]*wx[3]; acc+=h*wy[j]; } acc=(acc+32768)>>16; o[k]=acc<0?0:acc>255?255:acc; }
             d[x]=rgb(o[0],o[1],o[2]); } } }
-static void wall_smooth(const u8* src,int sw,int sh,int ox,int oy,int dw,int dh){
-    u32* sc=SCENE; if(sw<1||sh<1||dw<1||dh<1)return;
-    if(dw>sw+sw/8&&sw>=4&&sh>=4){ wall_cubic(src,sw,sh,ox,oy,dw,dh); return; }
-    for(u32 x=0;x<W;x++){ long long u=((long long)(2*((int)x-ox)+1)*sw*65536LL)/(2LL*dw)-32768; if(u<0)u=0; if(u>(long long)(sw-1)*65536)u=(long long)(sw-1)*65536; ws_x0[x]=(int)(u>>16); ws_fx[x]=(u8)((u>>8)&255); }
-    for(u32 y=0;y<H;y++){ long long v=((long long)(2*((int)y-oy)+1)*sh*65536LL)/(2LL*dh)-32768; if(v<0)v=0; if(v>(long long)(sh-1)*65536)v=(long long)(sh-1)*65536;
-        int y0=(int)(v>>16), y1=y0+1<sh?y0+1:sh-1; u32 fy=(u32)((v>>8)&255); const u8* r0=src+(u64)y0*sw*4; const u8* r1=src+(u64)y1*sw*4; u32* d=sc+(u64)y*SW;
+static void wall_smooth_rows(u32* dst,int dsp,const u8* src,int sw,int sh,int ox,int oy,int dw,int dh,int ya,int yb){
+    if(sw<1||sh<1||dw<1||dh<1)return;
+    if(dw>sw+sw/8&&sw>=4&&sh>=4){ wall_cubic(dst,dsp,src,sw,sh,ox,oy,dw,dh,ya,yb); return; }
+    if(ya==0) for(u32 x=0;x<W;x++){ long long u=((long long)(2*((int)x-ox)+1)*sw*65536LL)/(2LL*dw)-32768; if(u<0)u=0; if(u>(long long)(sw-1)*65536)u=(long long)(sw-1)*65536; ws_x0[x]=(int)(u>>16); ws_fx[x]=(u8)((u>>8)&255); }
+    for(int y=ya;y<yb;y++){ long long v=((long long)(2*(y-oy)+1)*sh*65536LL)/(2LL*dh)-32768; if(v<0)v=0; if(v>(long long)(sh-1)*65536)v=(long long)(sh-1)*65536;
+        int y0=(int)(v>>16), y1=y0+1<sh?y0+1:sh-1; u32 fy=(u32)((v>>8)&255); const u8* r0=src+(u64)y0*sw*4; const u8* r1=src+(u64)y1*sw*4; u32* d=dst+(u64)y*dsp;
         for(u32 x=0;x<W;x++){ int x0=ws_x0[x], x1=x0+1<sw?x0+1:sw-1; u32 fx=ws_fx[x]; const u8 *a=r0+x0*4, *b=r0+x1*4, *c=r1+x0*4, *e=r1+x1*4; u32 o[3];
             for(int k=0;k<3;k++){ u32 t=(a[k]*(256-fx)+b[k]*fx), bt=(c[k]*(256-fx)+e[k]*fx); o[k]=(t*(256-fy)+bt*fy+32768)>>16; }
             d[x]=rgb(o[0],o[1],o[2]); } } }
+static void wall_smooth(const u8* src,int sw,int sh,int ox,int oy,int dw,int dh){ wall_smooth_rows(SCENE,(int)SW,src,sw,sh,ox,oy,dw,dh,0,(int)H); }
 static void wall_blit_cover(void){
     if(view_w<=0||view_h<=0){ wall_gradient(rgb(28,34,72),rgb(58,66,120)); return; }
     int sw=view_w, sh=view_h; int s1=(int)W*1000/sw, s2=(int)H*1000/sh; int scn=s1>s2?s1:s2;
     int dw=sw*scn/1000, dh=sh*scn/1000; if(dw<1)dw=1; if(dh<1)dh=1; int ox=((int)W-dw)/2, oy=((int)H-dh)/2;
     wall_smooth(viewbuf,sw,sh,ox,oy,dw,dh);
 }
+static u8 wall_thumb_have[NWALL]; static int wall_thumb_want=0;
+static void wall_thumb_one(int k){
+    const unsigned char* jd; int jl; wall_src(k,&jd,&jl);
+    int w=wall_sw,h=wall_sh; int ok=(wall_have==k&&wall_sw>0);
+    if(!ok){ w=0; h=0; ok=(jpeg_decode(jd,jl,wallsrc,(int)sizeof(wallsrc),&w,&h)==0&&w>0&&h>0); if(ok){ wall_sw=w; wall_sh=h; wall_have=k; } else { wall_sw=0; wall_sh=0; wall_have=-1; } }
+    if(ok){ for(int y=0;y<40;y++) for(int x=0;x<64;x++){ int sx0=x*w/64, sx1=(x+1)*w/64, sy0=y*h/40, sy1=(y+1)*h/40; if(sx1<=sx0)sx1=sx0+1; if(sy1<=sy0)sy1=sy0+1; u32 r=0,g=0,b=0,n=0;
+            for(int yy=sy0;yy<sy1;yy+=2) for(int xx=sx0;xx<sx1;xx+=2){ u8* p=wallsrc+((u64)yy*w+xx)*4; r+=p[0]; g+=p[1]; b+=p[2]; n++; } if(!n)n=1; wall_thumb[k][y*64+x]=rgb(r/n,g/n,b/n); } }
+    else { for(int i=0;i<64*40;i++)wall_thumb[k][i]=THSW[k]; }
+    wall_thumb_have[k]=1; int all=1; for(int i=0;i<NWALL;i++) if(!wall_thumb_have[i])all=0; if(all){ wall_thumb_ready=1; wall_thumb_want=0; } }
 void wall_thumbs_build(void){
     if(wall_thumb_ready)return;
-    for(int k=0;k<NWALL;k++){
-        const unsigned char* jd; int jl; wall_src(k,&jd,&jl);
-        int w=0,h=0;
-        if(jpeg_decode(jd,jl,wallsrc,(int)sizeof(wallsrc),&w,&h)==0 && w>0 && h>0){
-            for(int y=0;y<40;y++) for(int x=0;x<64;x++){ int sx0=x*w/64, sx1=(x+1)*w/64, sy0=y*h/40, sy1=(y+1)*h/40; if(sx1<=sx0)sx1=sx0+1; if(sy1<=sy0)sy1=sy0+1; u32 r=0,g=0,b=0,n=0;
-                for(int yy=sy0;yy<sy1;yy+=2) for(int xx=sx0;xx<sx1;xx+=2){ u8* p=wallsrc+((u64)yy*w+xx)*4; r+=p[0]; g+=p[1]; b+=p[2]; n++; } if(!n)n=1; wall_thumb[k][y*64+x]=rgb(r/n,g/n,b/n); }
-        } else { for(int i=0;i<64*40;i++)wall_thumb[k][i]=THSW[k]; }
-    }
-    wall_thumb_ready=1; wall_have=-1;   /* wallsrc was reused; force wallpaper re-decode */
+    if(!wall_thumb_want){ wall_thumb_want=1; for(int k=0;k<NWALL;k++) if(!wall_thumb_have[k]) for(int i=0;i<64*40;i++)wall_thumb[k][i]=THSW[k]; }
 }
 int g_dstyle=1;
 static void draw_wallpaper(int th){
@@ -170,7 +217,53 @@ static void draw_wallpaper(int th){
     if(wall_sw<=0){ wall_gradient(rgb(38,52,132),rgb(70,80,150)); return; }
     wall_smooth(wallsrc,wall_sw,wall_sh,0,0,(int)W,(int)H);
 }
-void build_bg(void){ draw_wallpaper(g_theme); memcpy(BG,SCENE,(u64)W*H*4); if(g_wallmode!=2){ extern int wall_enhance(u32*,int,int,int); wall_enhance(BG,(int)W,(int)H,(int)SW); } if(g_gfx) gq_bump(gs_bg); }
+extern int wall_enhance(u32*,int,int,int); extern int wall_enhance_begin(u32*,int,int,int); extern int wall_enhance_step(int); extern void wall_enhance_abort(void);
+extern u64 hr_ns(void);
+static u32* bg_job=0; static u64 bg_job_cap=0; static int bg_phase=0, bg_row=0, bg_theme=-1, bg_ok=0, bg_w=0, bg_h=0, bg_async=0; static u64 bg_t0=0, bg_us=0;
+u32 g_bg_build_us=0, g_bg_builds=0;
+static u32* wall_cache[NWALL]; static int wall_cache_w=0, wall_cache_h=0;
+static int wall_cache_ok(void){ u64 need=(u64)W*H*4*NWALL; return g_ram_mb>=768&&need<=(96ULL<<20); }
+static void wall_cache_drop(void){ for(int k=0;k<NWALL;k++){ if(wall_cache[k])kfree(wall_cache[k]); wall_cache[k]=0; } wall_cache_w=(int)W; wall_cache_h=(int)H; }
+static int bg_job_get(void){ u64 need=(u64)W*H*4; if(bg_job&&bg_job_cap>=need)return 1; if(bg_job)kfree(bg_job); bg_job=(u32*)kmalloc((unsigned long)need); bg_job_cap=bg_job?need:0; return bg_job!=0; }
+static void bg_copy_rows(u32* dst,int dsp,const u32* src,int ssp,int y0,int y1){ for(int y=y0;y<y1;y++) memcpy(dst+(u64)y*dsp,src+(u64)y*ssp,(u64)W*4); }
+static void build_bg_now(void){ u64 t0=hr_ns(); draw_wallpaper(g_theme); memcpy(BG,SCENE,(u64)W*H*4); if(g_wallmode!=2) wall_enhance(BG,(int)W,(int)H,(int)SW); if(g_gfx) gq_bump(gs_bg); g_bg_build_us=(u32)((hr_ns()-t0)/1000ULL); g_bg_builds++; }
+static void bg_stop(void){ if(bg_phase==2)wall_enhance_abort(); bg_phase=0; }
+static int bg_plain(void){ return g_safemode||g_wallmode==2||g_wallmode==1||g_theme<0; }
+void build_bg(void){
+    if(!bg_async||!bg_job_get()){ bg_stop(); build_bg_now(); return; }
+    bg_stop();
+    if(bg_w!=(int)W||bg_h!=(int)H){ wall_gradient(rgb(38,52,132),rgb(70,80,150)); memcpy(BG,SCENE,(u64)W*H*4); if(g_gfx) gq_bump(gs_bg); }
+    bg_w=(int)W; bg_h=(int)H; bg_theme=g_theme; bg_phase=1; bg_row=0; bg_ok=0; bg_t0=hr_ns(); bg_us=0; }
+int bg_busy(void){ return bg_phase!=0; }
+static int bg_step(void){
+    u64 t0=hr_ns(); const u64 budget=5000000ULL;
+    while(bg_phase){
+        if(bg_phase==1){
+            if(bg_row==0){
+                if(bg_plain()){ draw_wallpaper(g_theme); bg_copy_rows(bg_job,(int)W,SCENE,(int)SW,0,(int)H); bg_phase=2; bg_row=0; continue; }
+                int th=bg_theme; if(th>=NWALL)th=NWALL-1;
+                if(wall_cache_w!=(int)W||wall_cache_h!=(int)H)wall_cache_drop();
+                if(wall_cache[th]){ bg_copy_rows(bg_job,(int)W,wall_cache[th],(int)W,0,(int)H); bg_phase=2; continue; }
+                wall_decode(th);
+                if(wall_sw<=0){ wall_gradient(rgb(38,52,132),rgb(70,80,150)); bg_copy_rows(bg_job,(int)W,SCENE,(int)SW,0,(int)H); bg_phase=2; continue; } }
+            int y1=bg_row+24; if(y1>(int)H)y1=(int)H;
+            wall_smooth_rows(bg_job,(int)W,wallsrc,wall_sw,wall_sh,0,0,(int)W,(int)H,bg_row,y1); bg_row=y1;
+            if(bg_row>=(int)H){ int th=bg_theme>=NWALL?NWALL-1:bg_theme;
+                if(wall_cache_ok()){ if(!wall_cache[th])wall_cache[th]=(u32*)kmalloc((unsigned long)((u64)W*H*4)); if(wall_cache[th])memcpy(wall_cache[th],bg_job,(u64)W*H*4); }
+                bg_phase=2; bg_row=0; continue; }
+        } else if(bg_phase==2){
+            if(bg_row==0){ bg_row=1; if(g_wallmode==2||wall_enhance_begin(bg_job,(int)W,(int)H,(int)W)<=0){ bg_phase=3; continue; } }
+            if(wall_enhance_step(2)){ bg_phase=3; continue; }
+        } else if(bg_phase==3){
+            bg_copy_rows(BG,(int)SW,bg_job,(int)W,0,(int)H); if(g_gfx) gq_bump(gs_bg);
+            bg_us+=(hr_ns()-t0)/1000ULL; g_bg_build_us=(u32)bg_us; g_bg_builds++; bg_phase=0; return 1; }
+        if(hr_ns()-t0>=budget)break; }
+    bg_us+=(hr_ns()-t0)/1000ULL; return 0; }
+int bg_tick(void){
+    bg_async=1;
+    if(bg_phase)return bg_step();
+    if(wall_thumb_want&&!wall_thumb_ready){ for(int k=0;k<NWALL;k++) if(!wall_thumb_have[k]){ wall_thumb_one(k); break; } return 1; }
+    return 0; }
 
 /* ---- macOS-style top menu bar + dock ---- */
 static int g_applemenu=0;
@@ -219,10 +312,15 @@ static int ap_eap(int idx){ return idx>=0&&idx<g_apn&&(g_aps[idx].akm&AKM_8021X)
 static int g_wifi_defer=0;
 static void wifi_gui_connect_now(void);
 void wifi_gui_connect(int idx){ (void)idx; g_wifi_defer=1; wm_status_set("Connecting..."); }
-int wifi_gui_tick(void){ int d=g_wifi_defer; if(!d)return 0; g_wifi_defer=0;
+static int g_wifi_scanq=0;
+int wifi_gui_tick(void){ extern const char* volatile g_in_what; extern volatile int g_in_win; void in_mark(const char*,int,const char*,int); void in_unmark(const char*,int);
+    const char* pw=g_in_what; int pn=g_in_win; int q=g_wifi_scanq;
+    if(q){ g_wifi_scanq=0; in_mark(q>1?"Wi-Fi scan button (deferred)":"Wi-Fi tray scan (deferred)",-1,0,0); wifi_scan_start(q-1); in_unmark(pw,pn); return 1; }
+    int d=g_wifi_defer; if(!d)return 0; g_wifi_defer=0;
+    in_mark(d==1?"Wi-Fi connect (deferred)":"Wi-Fi hidden network connect (deferred)",-1,0,0);
     if(d==1)wifi_gui_connect_now();
     else { wifi_connect_ssid(g_wifi_hid,g_wifi_pw,"",1); for(int i=0;i<64;i++)g_wifi_pw[i]=0; g_wifi_pwlen=0; g_wifi_sel=-1; }
-    return 1; }
+    in_unmark(pw,pn); return 1; }
 static void wifi_gui_connect_now(void){ g_wifi_pw[g_wifi_pwlen<63?g_wifi_pwlen:63]=0; g_wifi_user[g_wifi_userlen<63?g_wifi_userlen:63]=0;
     compose_present(); int k=wifi_sel_resolve(); int r=k>=0?wifi_connect_ap(k,g_wifi_pw,g_wifi_user,1):wifi_connect_ssid(g_wifi_sels,g_wifi_pw,g_wifi_user,0);
     if(r==6||r==7){ int i=0; for(;g_wifi_sels[i];i++)g_wifi_failed[i]=g_wifi_sels[i]; g_wifi_failed[i]=0; } else g_wifi_failed[0]=0;
@@ -258,7 +356,7 @@ u32 rtw_find_mmio(void){
             if(a>0x100000u)g_wifi_mmio=a; } }
     return g_wifi_mmio;
 }
-void wifi_gui_scan(int full){ if(!rtw_find_mmio()){ wm_status_set("No Wi-Fi adapter found"); return; } if(!full&&!g_wm_up){ wm_status_set("Wi-Fi is off - press Scan"); return; } wifi_scan_start(full); }
+void wifi_gui_scan(int full){ if(!rtw_find_mmio()){ wm_status_set("No Wi-Fi adapter found"); return; } if(!full&&!g_wm_up){ wm_status_set("Wi-Fi is off - press Scan"); return; } if(full+1>g_wifi_scanq)g_wifi_scanq=full+1; if(full&&!g_wm_up)wm_status_set("Starting Wi-Fi..."); }
 static void wifi_icon_glyph(int cx,int cy,u32 col){
     /* three stacked arcs + dot, simple Wi-Fi symbol */
     for(int r=2;r<=8;r+=3){ for(int a=-r;a<=r;a++){ int y=(int)((r*r-a*a)); if(y<0)continue;
@@ -287,8 +385,8 @@ static void draw_tray(void){ if(!g_gm_ready)gmetrics();
     int x=(int)W-22;
     g_bellx=x-slot+6; { int sx=g_bellx-6; tb_btn(sx,cy-17,slot-2,34,g_notifpanel); int bx=sx+(slot-2)/2-6,by=cy-8; fill_round(bx+2,by,8,10,3,15,tc); fill_rect(bx,by+10,12,2,tc); fill_rect(bx+4,by+12,4,2,tc); { focus_mode* f=focus_get(g_focus_cur); if(f&&f->show_tb){ fill_circle(bx+6,by+6,11,f->color); focus_glyph(bx+6,by+6,f->icon,rgb(255,255,255)); } else if(g_notif_n>0) fill_circle(bx+12,by+1,4,rgb(236,72,72)); } }
     x=g_bellx-6-10; tb_sep(x);
-    int hh,mm,ss,yy2,mo,dd; read_clock(&hh,&mm,&ss,&yy2,&mo,&dd); (void)ss;
-    char t[8],*p=t; p=u2(p,hh);*p++=':';p=u2(p,mm); *p=0;
+    int hh,mm,ss,yy2,mo,dd; read_clock(&hh,&mm,&ss,&yy2,&mo,&dd);
+    char t[12],*p=t; p=u2(p,hh);*p++=':';p=u2(p,mm); if(g_showsec){ *p++=':'; p=u2(p,ss); } *p=0;
     char dt[16],*q=dt; q=udec(q,(u32)yy2); *q++='/'; q=u2(q,mo); *q++='/'; q=u2(q,dd); *q=0;
     int cw=pw_str(t,2), dw=pw_str(dt,1); int bw=(cw>dw?cw:dw)+20; g_clockx=x-10-bw;
     tb_btn(g_clockx,cy-26,bw,52,g_clockpop); pdstr_ctr(g_clockx+bw/2,cy-21,t,tc,2); pdstr_ctr(g_clockx+bw/2,cy+11,dt,rgb(186,190,212),1);

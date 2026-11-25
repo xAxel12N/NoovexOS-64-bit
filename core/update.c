@@ -18,6 +18,7 @@
 #include "include/nvx/fs/vfs/ramfs.h"
 #include "include/nvx/drivers/usb/xhci.h"
 #include "include/nvx/fs/vfs/sysroot.h"
+#include "include/nvx/fs/vfs/volfs.h"
 #include "include/nvx/core/secboot.h"
 
 extern volatile u64 g_ticks;
@@ -113,10 +114,10 @@ static const u8* g_up_mem; static long g_up_memlen;
 static int up_memrd(unsigned long long lba,int n,void* buf){ unsigned long long o=lba*512ULL, e=o+(unsigned long long)n*512ULL; if(e>(unsigned long long)g_up_memlen)return -1; const u8* s=g_up_mem+o; u8* d=(u8*)buf; for(int i=0;i<n*512;i++)d[i]=s[i]; return 0; }
 
 static struct nvx_g_vfat_t g_up_save; static int g_up_swapped=0, g_up_usbw=0;
-static void up_close(void){ vf_umount(); if(g_up_swapped){ vf_swap_in(&g_up_save); g_up_swapped=0; } if(g_up_usbw){ g_up_usbw=0; ufat_mount(); } }
+static void up_close(void){ vf_umount(); if(g_up_swapped){ vf_swap_in(&g_up_save); g_up_swapped=0; } if(g_up_usbw){ g_up_usbw=0; ufat_mount(); volfs_usb_claim(0); } }
 static int up_mount(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long long n,int ro){
     if(g_up_swapped)up_close(); vf_swap_out(&g_up_save); g_up_swapped=1;
-    if(g_upd.usb&&rd==up_rd&&!ro){ ufat_sync(); g_up_usbw=1; }
+    if(g_upd.usb&&rd==up_rd&&!ro){ if(volfs_usb_claim(1)){ up_close(); up_set_why("the USB stick is busy in Files (a copy is running) - try again when it has finished",0); return -1; } ufat_sync(); g_up_usbw=1; }
     if(vf_mount(rd,wr,base,n,ro)){ up_close(); return -1; } return 0; }
 static int up_open(int ro){ if(!g_upd.pbase)return -1; return up_mount(up_rd,up_wr,g_upd.pbase,g_upd.pn,ro); }
 
@@ -571,7 +572,7 @@ int upd_tick(void){
     static int ph=0, tries=0; static u64 t0=0, tn=0;
     if(!t0){ t0=g_ticks?g_ticks:1; return 0; }
     if(ph==0){ if(g_ticks-t0<300||g_upd.busy)return 0; ph=1; tries++; if(!up_boot()&&!up_installed()&&tries<8){ ph=2; tn=g_ticks; } return 1; }
-    if(ph==2){ u64 wait=500ULL<<(tries<5?tries:5); if(g_ticks-tn<wait||g_upd.busy)return 0; ph=0; t0=g_ticks-300; return 0; }   /* v11.10: 10 s, 20 s ... 160 s between boot-partition searches (each one blocks the screen) */
+    if(ph==2){ u64 wait=500ULL<<(tries<5?tries:5); if(g_ticks-tn<wait||g_upd.busy)return 0; ph=0; t0=g_ticks-300; return 0; }   /* v11.22: 10 s, 20 s ... 160 s between boot-partition searches (each one blocks the screen) */
     if(g_upd.trial&&!g_upd.busy&&g_ticks-g_upd.trial_t0>=6000){ g_upd.trial=0; up_confirm(); return 1; }
     if(g_upd.want_check&&!g_upd.busy&&g_state==ST_DESKTOP){ upd_check(); return 1; }
     if(g_upd.sr_missing&&!g_upd.sr_tried&&!g_upd.busy&&!g_upd.trial&&g_state==ST_DESKTOP&&ph==1&&g_ticks-t0>=3000){ g_upd.sr_tried=1; klog("update: the Linux files are missing, downloading them"); upd_repair(); return 1; }

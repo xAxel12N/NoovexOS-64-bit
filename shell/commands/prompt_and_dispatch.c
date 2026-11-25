@@ -1,5 +1,9 @@
 void kidle(void);
 static void sh_redraw(void){ if(g_state==ST_LIVE)live_present(); else if(g_state==ST_DESKTOP)compose_present(); }
+static int g_sh_brk; static u64 g_sh_brk_t, g_sh_brk_rd;
+static int sh_brk(void){ extern void busy_pump(void); if(g_sh_brk)return 1; if(g_ticks==g_sh_brk_t)return 0; g_sh_brk_t=g_ticks; busy_pump();
+    if(kdown[0x01]||(kdown[0x1D]&&kdown[0x2E])){ g_sh_brk=1; term_puts("^C\n"); return 1; }
+    if(g_ticks-g_sh_brk_rd>=100){ g_sh_brk_rd=g_ticks; sh_redraw(); } return 0; }
 static int sh_readpw(char* pw,int cap){ int n=0; sh_redraw();
     for(;;){ int c=kpop(); if(c<0){ kidle(); continue; }
         if(c=='\n'){ term_putc('\n'); sh_redraw(); break; }
@@ -48,6 +52,7 @@ static int sudo_auth(void){
     for(int t=0;t<3;t++){ char pw[72]; term_puts("[sudo] password for "); term_puts(who); term_puts(": "); if(sh_readpw(pw,72)<0)return 0;
         int ok=acct_check(who,pw); sh_wipe(pw,72);
         if(ok){ g_sudo_until=g_ticks+(u64)g_sudo_min*6000u; acct_log("sudo: accepted for ",who,0); return 1; }
+        if(acct_wait_secs(who)>0){ sh_err("sudo: ",g_acct_err); return 0; }
         term_puts("Sorry, try again.\n"); acct_log("sudo: wrong password for ",who,0); sh_redraw(); }
     sh_err("sudo: 3 incorrect password attempts",0); return 0; }
 void sh_sudo_reset(void){ g_sudo_until=0; }
@@ -94,7 +99,9 @@ static int g_lastrc=0;
 static char al_name[ALIAS_MAX][24]; static char al_val[ALIAS_MAX][96]; static int al_n=0;
 static void al_set(const char* nm,const char* val){ for(int i=0;i<al_n;i++)if(seq(al_name[i],(char*)nm)){ int k=0; for(;val[k]&&k<95;k++)al_val[i][k]=val[k]; al_val[i][k]=0; return; } if(al_n>=ALIAS_MAX)return; int k=0; for(;nm[k]&&k<23;k++)al_name[al_n][k]=nm[k]; al_name[al_n][k]=0; k=0; for(;val[k]&&k<95;k++)al_val[al_n][k]=val[k]; al_val[al_n][k]=0; al_n++; }
 static const char* al_get(const char* nm){ for(int i=0;i<al_n;i++)if(seq(al_name[i],(char*)nm))return al_val[i]; return 0; }
-static const char* shv_get(const char* nm,int nl){ for(int i=0;i<shv_n;i++){ int j=0; for(;j<nl&&shv_name[i][j];j++)if(shv_name[i][j]!=nm[j])break; if(j==nl&&shv_name[i][j]==0)return shv_val[i]; } return 0; }
+extern const char* env_get(const char* nm);
+static const char* shv_get(const char* nm,int nl){ for(int i=0;i<shv_n;i++){ int j=0; for(;j<nl&&shv_name[i][j];j++)if(shv_name[i][j]!=nm[j])break; if(j==nl&&shv_name[i][j]==0)return shv_val[i]; } char en[32]; int k=0; for(;k<nl&&k<31;k++)en[k]=nm[k]; en[k]=0; return env_get(en); }
+static const char* sh_home(void){ extern char g_home[]; const char* h=env_get("HOME"); if(h&&h[0]=='/')return h; return g_uid==0?"/root":g_home; }
 static void shv_set(const char* nm,const char* val){ for(int i=0;i<shv_n;i++){ if(seq(shv_name[i],(char*)nm)){ int k=0; for(;val[k]&&k<191;k++)shv_val[i][k]=val[k]; shv_val[i][k]=0; return; } } if(shv_n>=SHV_MAX)return; int k=0; for(;nm[k]&&k<31;k++)shv_name[shv_n][k]=nm[k]; shv_name[shv_n][k]=0; k=0; for(;val[k]&&k<191;k++)shv_val[shv_n][k]=val[k]; shv_val[shv_n][k]=0; shv_n++; }
 static long sh_arith(const char* e){
     long terms[32]; char ops[32]; int nt=0; ops[0]='+'; int i=0;
@@ -110,11 +117,11 @@ static void sh_expand(const char* in,char* out,int max){
     for(int i=0;in[i]&&o<max-1;){
         if(in[i]=='"'){ dq=!dq; out[o++]=in[i++]; continue; }
         if(in[i]=='\''&&!dq){ out[o++]=in[i++]; while(in[i]&&in[i]!='\''&&o<max-1)out[o++]=in[i++]; if(in[i]&&o<max-1)out[o++]=in[i++]; continue; }
-        if(in[i]=='~' && (i==0||in[i-1]==' ') && (in[i+1]=='/'||in[i+1]==0||in[i+1]==' ')){ const char* h=shv_get("HOME",4); if(h)for(int k=0;h[k]&&o<max-1;k++)out[o++]=h[k]; i++; continue; }
+        if(in[i]=='~' && (i==0||in[i-1]==' '||in[i-1]=='=') && (in[i+1]=='/'||in[i+1]==0||in[i+1]==' ')){ const char* h=sh_home(); for(int k=0;h[k]&&o<max-1;k++)out[o++]=h[k]; i++; continue; }
         if(in[i]=='$'){
             if(in[i+1]=='?'){ char b[12]; char* p=b; p=udec(p,(u32)g_lastrc); *p=0; for(int j=0;b[j]&&o<max-1;j++)out[o++]=b[j]; i+=2; continue; }
             if(in[i+1]=='('&&in[i+2]=='('){ int j=i+3; char ex2[128]; int s=0; int d2=2; while(in[j]&&s<127){ if(in[j]=='(')d2++; else if(in[j]==')'){d2--; if(d2==0)break;} ex2[s++]=in[j++]; } ex2[s]=0; if(in[j]==')')j++; if(in[j]==')')j++; char exx[160]; sh_expand(ex2,exx,160); long val=sh_arith(exx); char nb[24]; char* q=nb; if(val<0){*q++='-';val=-val;} q=udec(q,(u32)val); *q=0; for(int k=0;nb[k]&&o<max-1;k++)out[o++]=nb[k]; i=j; continue; }
-            if(in[i+1]=='('){ int depth=1,j=i+2; char sub[256]; int s=0; while(in[j]&&depth&&s<255){ if(in[j]=='(')depth++; else if(in[j]==')'){depth--; if(!depth)break;} sub[s++]=in[j++]; } sub[s]=0; char cap[256]; sh_capture(sub,cap,256); for(int k=0;cap[k]&&o<max-1;k++)out[o++]=cap[k]; i=j+1; continue; }
+            if(in[i+1]=='('){ int depth=1,j=i+2; char sub[256]; int s=0; while(in[j]&&depth&&s<255){ if(in[j]=='(')depth++; else if(in[j]==')'){depth--; if(!depth)break;} sub[s++]=in[j++]; } sub[s]=0; char cap[256]; sh_capture(sub,cap,256); for(int k=0;cap[k]&&o<max-1;k++)out[o++]=cap[k]; i=in[j]?j+1:j; continue; }
             if(in[i+1]=='{'){ int j=i+2; char nm[32]; int n=0; while(in[j]&&in[j]!='}'&&n<31)nm[n++]=in[j++]; nm[n]=0; if(in[j]=='}')j++; const char* v=shv_get(nm,n); if(v)for(int k=0;v[k]&&o<max-1;k++)out[o++]=v[k]; i=j; continue; }
             if((in[i+1]>='A'&&in[i+1]<='Z')||(in[i+1]>='a'&&in[i+1]<='z')||in[i+1]=='_'){ int j=i+1; char nm[32]; int n=0; while(((in[j]>='A'&&in[j]<='Z')||(in[j]>='a'&&in[j]<='z')||(in[j]>='0'&&in[j]<='9')||in[j]=='_')&&n<31)nm[n++]=in[j++]; nm[n]=0; const char* v=shv_get(nm,n); if(v)for(int k=0;v[k]&&o<max-1;k++)out[o++]=v[k]; i=j; continue; }
         }
@@ -142,7 +149,7 @@ static int sh_truth(const char* cond){
 
 static void sh_run_block(char** lines,int lo,int hi){
     int i=lo;
-    while(i<hi){
+    while(i<hi&&!sh_brk()){
         char* ln=lines[i]; while(*ln==' '||*ln=='\t')ln++;
         if(!ln[0]||ln[0]=='#'){ i++; continue; }
         if(str_eq_n(ln,"if ",3)){
@@ -158,34 +165,53 @@ static void sh_run_block(char** lines,int lo,int hi){
             int depth=1, done=-1;
             for(int j=i+1;j<hi;j++){ char* t=lines[j]; while(*t==' '||*t=='\t')t++; if(str_eq_n(t,"while ",6)||str_eq_n(t,"for ",4)||str_eq_n(t,"if ",3))depth++; else if(seq(t,"done")){ depth--; if(depth==0){done=j;break;} } else if(seq(t,"fi")){depth--;} }
             if(done<0)done=hi; char cond[256]; { char* c=ln+6; int k=0; while(*c&&k<255){ if(str_eq_n(c,"; do",4)||(str_eq_n(c,"do",2)&&(c[2]==0||c[2]==' ')))break; cond[k++]=*c++; } cond[k]=0; }
-            int guard=0; while(sh_truth(cond)&&guard++<1000000){ sh_run_block(lines,i+1,done); } i=done+1; continue;
+            int guard=0; while(!sh_brk()&&sh_truth(cond)&&guard++<1000000){ sh_run_block(lines,i+1,done); } i=done+1; continue;
         }
         if(str_eq_n(ln,"for ",4)){
             int depth=1, done=-1;
             for(int j=i+1;j<hi;j++){ char* t=lines[j]; while(*t==' '||*t=='\t')t++; if(str_eq_n(t,"for ",4)||str_eq_n(t,"while ",6)||str_eq_n(t,"if ",3))depth++; else if(seq(t,"done")){ depth--; if(depth==0){done=j;break;} } else if(seq(t,"fi")){depth--;} }
             if(done<0)done=hi; char* c=ln+4; while(*c==' ')c++; char var[32]; int vn=0; while(*c&&*c!=' '&&vn<31)var[vn++]=*c++; var[vn]=0; while(*c==' ')c++; if(str_eq_n(c,"in ",3))c+=3;
             char items[256]; sh_expand(c,items,256); char* p=items; int guard=0;
-            while(*p&&guard++<4096){ while(*p==' ')p++; if(!*p||*p==';')break; char val[96]; int k=0; while(*p&&*p!=' '&&*p!=';'&&k<95)val[k++]=*p++; val[k]=0; shv_set(var,val); sh_run_block(lines,i+1,done); } i=done+1; continue;
+            while(*p&&guard++<4096&&!sh_brk()){ while(*p==' ')p++; if(!*p||*p==';')break; char val[96]; int k=0; while(*p&&*p!=' '&&*p!=';'&&k<95)val[k++]=*p++; val[k]=0; shv_set(var,val); sh_run_block(lines,i+1,done); } i=done+1; continue;
         }
         { char buf[512]; int k=0; for(;ln[k]&&k<511;k++)buf[k]=ln[k]; buf[k]=0; sh_run_line(buf); }
         i++;
     }
 }
+static void sh_run_simple(char* ln);
 void sh_run_line(char* ln){
+    while(*ln==' ')ln++;
+    if(str_eq_n(ln,"if ",3)||str_eq_n(ln,"for ",4)||str_eq_n(ln,"while ",6)){ sh_run_simple(ln); return; }
+    int prev=0; int guard=0;
+    while(ln&&guard++<64){
+        int op=0; int nx=sh_list_cut(ln,&op);
+        char* rest=nx>=0?ln+nx:0;
+        while(*ln==' ')ln++;
+        int skip=sh_list_skip(prev,g_lastrc);
+        if(*ln&&!skip)sh_run_simple(ln);
+        else if(!*ln&&!skip)g_lastrc=0;
+        prev=op; ln=rest;
+    }
+}
+static void sh_run_simple(char* ln){
     while(*ln==' ')ln++;
     if(str_eq_n(ln,"alias ",6)){ const char* a=ln+6; while(*a==' ')a++; char nm[24]; int k=0; while(*a&&*a!='='&&k<23)nm[k++]=*a++; nm[k]=0; if(*a=='='){ a++; if(*a=='"'||*a=='\'')a++; char v[96]; int j=0; while(*a&&*a!='"'&&*a!='\''&&j<95)v[j++]=*a++; v[j]=0; al_set(nm,v);} g_lastrc=0; return; }
     if(seq(ln,"alias")){ for(int i=0;i<al_n;i++){ term_puts("alias "); term_puts(al_name[i]); term_puts("='"); term_puts(al_val[i]); term_puts("'\n"); } g_lastrc=0; return; }
     { char fw[24]; int k=0; const char* p=ln; while(*p&&*p!=' '&&k<23)fw[k++]=*p++; fw[k]=0; const char* av=al_get(fw); if(av){ static char xl[512]; int o=0; const char* q=av; while(*q&&o<511)xl[o++]=*q++; while(*p&&o<511)xl[o++]=*p++; xl[o]=0; ln=xl; while(*ln==' ')ln++; } }
     int eq=-1; for(int i=0;ln[i]&&ln[i]!=' ';i++){ if(ln[i]=='='){eq=i;break;} }
     if(eq>0){ int ok=1; for(int i=0;i<eq;i++){ char ch=ln[i]; if(!((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')||ch=='_')){ok=0;break;} } if(ok){ char nm[32]; int k=0; for(;k<eq&&k<31;k++)nm[k]=ln[k]; nm[k]=0; char val[256]; sh_expand(ln+eq+1,val,256); shv_set(nm,val); g_lastrc=0; return; } }
-    if(str_eq_n(ln,"export ",7)){ sh_run_line(ln+7); return; }
+    if(str_eq_n(ln,"export ",7)){ sh_run_simple(ln+7); return; }
     char ex[512]; sh_expand(ln,ex,512); run_cmd(ex);
 }
-static char* g_sh_lines[256]; static char g_sh_buf[8192];
+static int g_sh_depth;
 static void sh_run_script(const char* text){
+    if(g_sh_depth>=8){ sh_err("sh: ","scripts nested too deep"); g_lastrc=1; return; }
+    char** g_sh_lines=(char**)kmalloc(256*sizeof(char*)); char* g_sh_buf=(char*)kmalloc(8192); if(!g_sh_lines||!g_sh_buf){ if(g_sh_lines)kfree(g_sh_lines); if(g_sh_buf)kfree(g_sh_buf); sh_err("sh: ","out of memory"); g_lastrc=1; return; }
     int n=0; int bl=0;
     for(int i=0;text[i]&&bl<8190;){ g_sh_lines[n++]=&g_sh_buf[bl]; while(text[i]&&text[i]!='\n'&&bl<8190){ if(text[i]==';'){ i++; break; } g_sh_buf[bl++]=text[i++]; } g_sh_buf[bl++]=0; if(text[i]=='\n')i++; if(n>=255)break; }
-    sh_run_block(g_sh_lines,0,n);
+    if(!g_sh_depth){ g_sh_brk=0; g_sh_brk_t=g_ticks; g_sh_brk_rd=g_ticks; }
+    g_sh_depth++; sh_run_block(g_sh_lines,0,n); g_sh_depth--; if(!g_sh_depth)g_sh_brk=0;
+    kfree(g_sh_lines); kfree(g_sh_buf);
 }
 
 static int x_needs(const char* l){
@@ -212,7 +238,8 @@ void run_cmd(char* line){
     /* pull out > outfile  and  < infile  and >> */
     char outfile[64]={0}; int append=0; char infile[64]={0};
     for(int i=0;work[i];i++){
-        if(work[i]=='>'){ int ap=(work[i+1]=='>'); char* d=outfile; int j=i+(ap?2:1); while(work[j]==' ')j++; int k=0; while(work[j]&&work[j]!=' '&&work[j]!='|'&&k<63)d[k++]=work[j++]; d[k]=0; append=ap; work[i]=0; /* cut here */ }
+        if(work[i]=='>'){ int fd2=i>0&&work[i-1]=='2'&&(i<2||work[i-2]==' '); if(fd2||work[i+1]=='&'){ int j=i+1; if(work[j]=='&')j++; while(work[j]==' ')j++; while(work[j]&&work[j]!=' '&&work[j]!='|')j++; work[fd2?i-1:i]=0; i=j-1; if(!work[j])break; continue; }
+            int ap=(work[i+1]=='>'); char* d=outfile; int j=i+(ap?2:1); while(work[j]==' ')j++; int k=0; while(work[j]&&work[j]!=' '&&work[j]!='|'&&k<63)d[k++]=work[j++]; d[k]=0; append=ap; work[i]=0; i=j-1; /* cut here */ }
     }
     for(int i=0;work[i];i++){
         if(work[i]=='<'){ char* d=infile; int j=i+1; while(work[j]==' ')j++; int k=0; while(work[j]&&work[j]!=' '&&work[j]!='|'&&k<63)d[k++]=work[j++]; d[k]=0; for(int m=i;work[m];m++)work[m]=work[m+1]; i--; }

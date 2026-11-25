@@ -11,7 +11,7 @@ static int slept;
 static void bcmbt_sleep_ms(int ms){ slept+=ms; }
 static u8* file_d; static int file_n; static char file_nm[64]; static char tried[8][64]; static int ntried;
 static u8* bcmbt_read(const char* name,int* len);
-#include "drivers/bluetooth/bcmbt_fw.c"
+#include "drivers/bluetooth/firmware/bcmbt_fw.c"
 static u8* bcmbt_read(const char* name,int* len){
     if(ntried<8)snprintf(tried[ntried++],64,"%s",name);
     *len=0; if(!file_d||strcmp(name,file_nm))return 0;

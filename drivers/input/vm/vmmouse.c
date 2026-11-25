@@ -53,6 +53,8 @@ static void vm_apply(u32 x,u32 y,int l,int r,int m,int wheel){
     int bb=(l?1:0)|(r?2:0)|(m?4:0); if(bb!=g_vm_lb&&l>=0){ in_buttons(l,r,m); g_vm_lb=bb; }
     if(wheel)in_scroll(-wheel,0); }
 
+void in_abs(int x,int xr,int y,int yr){ if(xr<=0||yr<=0||x<0||y<0||x>xr||y>yr)return; int tx=(int)((u64)x*(W?W-1:0)/(u32)xr), ty=(int)((u64)y*(H?H-1:0)/(u32)yr), cx=mx+mouse_dx, cy=my-mouse_dy; in_rel(tx-cx,ty-cy); }
+
 static void vmw_poll(void){
     for(int guard=0;guard<16;guard++){
         u32 a,b,c,d; vmw_call(VMM_STATUS,0,&a,&b,&c,&d);

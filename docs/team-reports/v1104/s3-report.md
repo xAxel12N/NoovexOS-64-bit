@@ -1,7 +1,7 @@
 # S3 - network / Wi-Fi receive-path safety sweep (v11.04, read-only)
 
 Scope covered: net/stack/tcpip.c, sys/linux/lxsock.c (lxs_frame/tcp_in/udp_in/icmp_in), net/http/http.c (tcps_*, cookies, json),
-net/wifi/{wifi_netdev,wpa2,eap}.c, drivers/net/wifi/rtw88/{rtw8821ce.c scan/IE parse, rtw_sec.c EAPOL/4-way/GTK},
+net/wifi/{wifi_netdev,wpa2,eap}.c, drivers/net/wifi/realtek/rtw88/{rtw8821ce.c scan/IE parse, rtw_sec.c EAPOL/4-way/GTK},
 drivers/net/ethernet/* rx paths.
 
 ## Bottom line
@@ -41,7 +41,7 @@ tcpip.c do_ping: `if(rip[9]==1&&rd32(rip+12)==tip&&(rip[0]&0x0F)>=5){`
 Without the thl check, a frame with thl<20 gets TCP header bytes copied into the HTTP body. The reads stay inside rx[1600].
 
 ### 3. LOW - an unauthenticated M1 during the 4-way handshake makes the join fail as "wrong password"
-drivers/net/wifi/rtw88/rtw_sec.c:211-242. M1 carries no MIC. If a spoofed M1 arrives before the real one, the PTK is built from the
+drivers/net/wifi/realtek/rtw88/rtw_sec.c:211-242. M1 carries no MIC. If a spoofed M1 arrives before the real one, the PTK is built from the
 attacker's ANonce. The real M3's ANonce then does not match (line 242), and the join returns 6, which the UI reports as a wrong
 password. This is a DoS only and normal 802.11 behavior. Cheap improvement: on the line-242 mismatch, if the M3 MIC verifies against
 a PTK re-derived from eap[17..48], accept it (the same re-derive the tries<3 branch already does), and only then report 6.

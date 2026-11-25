@@ -138,7 +138,7 @@ static const sf_drv DRV[]={
     { "rtl8139",    "Realtek RTL8139",               "Network",  "drivers/net/ethernet/rtl8139.c",  "Realtek wired network (old)" },
     { "rtl8169",    "Realtek RTL8111/8168/8169",     "Network",  "drivers/net/ethernet/rtl8169.c",  "Realtek gigabit wired network" },
     { "virtio_net", "VirtIO network",                "Network",  "drivers/virtio/virtio_net.c",     "Network in QEMU and KVM virtual machines" },
-    { "rtw8821ce",  "Realtek RTW8821CE Wi-Fi",       "Network",  "drivers/net/wifi/rtw88/rtw8821ce.c",    "Wi-Fi" },
+    { "rtw8821ce",  "Realtek RTW8821CE Wi-Fi",       "Network",  "drivers/net/wifi/realtek/rtw88/rtw8821ce.c",    "Wi-Fi" },
     { "hda",        "Intel HD Audio",                "Sound",    "drivers/sound/hda.c",             "Built-in speakers, headphones and microphone" },
     { "ac97",       "AC97 audio",                    "Sound",    "drivers/sound/ac97.c",            "Older sound cards (and virtual machines)" },
     { "framebuffer","Framebuffer",                   "Display",  "drivers/video/fb/framebuffer.c",  "Draws the screen through the firmware framebuffer" },

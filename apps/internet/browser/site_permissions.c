@@ -67,7 +67,9 @@ void browser_go(int push){
     if(istarts_(g_url,"about:")){
         if(push && g_cururl[0] && !seq(g_cururl,g_url)){ if(backn<16)sset(backstk[backn++],g_cururl); else { for(int i=1;i<16;i++)sset(backstk[i-1],backstk[i]); sset(backstk[15],g_cururl); } }
         if(istarts_(g_url+6,"perf")&&g_cururl[0]&&!istarts_(g_cururl,"about:")) perf_after();
-        g_urlfocus=0; g_urlsel=1; sset(g_cururl,g_url); { extern int web_err_total(void); g_go_err0=web_err_total(); } about_page(g_url+6); return; }
+        g_urlfocus=0; g_urlsel=1; sset(g_cururl,g_url); g_host[0]=0; g_isimg=0; { extern int web_err_total(void); g_go_err0=web_err_total(); } about_page(g_url+6);
+        if(!g_title[0]){ int i=0; for(;g_url[i]&&i<127;i++)g_title[i]=g_url[i]; g_title[i]=0; }
+        nwk_status("Done"); return; }
     if(istarts_(g_url,"javascript:")) return;
     if(!g_post_body&&is_dl_ext(g_url)&&(istarts_(g_url,"http://")||istarts_(g_url,"https://"))){ browser_download(g_url); if(g_cururl[0]){ sset(g_url,g_cururl); g_urllen=slen(g_url); } return; }
     { extern nwk_netstat g_netstat; g_go_ns0=g_netstat; g_go_t0=nwk_us(); g_go_on=1; g_nwk_slow.ms=0; g_nwk_slow.host[0]=0; }
@@ -85,7 +87,8 @@ void browser_go(int push){
     if(noscheme){ char* p=scopy(full,"https://"); int i=0; while(g_url[i]&&(p-full)<4090)*p++=g_url[i++]; *p=0; } else sset(full,g_url);
     host_of(full,g_host);
     if(!g_host[0]){ nwk_status("Enter a URL, e.g. example.com"); return; }
-    { extern int web_err_total(void); extern void nwk_error_mark(const char*); nwk_error_mark(full); g_go_err0=web_err_total(); extern void web_pending_clear(void); web_pending_clear(); }
+    extern int web_err_total(void); extern void nwk_error_mark(const char*); int err_mark0=web_err_total();
+    { nwk_error_mark(full); g_go_err0=web_err_total(); extern void web_pending_clear(void); web_pending_clear(); }
     if(push && g_cururl[0] && !seq(g_cururl,full)){ if(backn<16)sset(backstk[backn++],g_cururl); else { for(int i=1;i<16;i++)sset(backstk[i-1],backstk[i]); sset(backstk[15],g_cururl); } }
     if(!g_post_body&&yt_try(full)){ sset(g_cururl,full); sset(g_url,full); g_urllen=slen(g_url); return; }
     { char b[300],*p=b; p=scopy(p,"Connecting to "); p=scopy(p,g_host); *p=0; nwk_status(b); }
@@ -96,7 +99,9 @@ void browser_go(int push){
     const char* nref=g_nav_from_page?g_cururl:0;
     g_nwk_kind=1; { extern void (*g_nwk_stream)(const char*,int,const char*); g_nwk_stream=web_preview; }
     int rc=nwk_fetch(full,meth,g_post_body?"application/x-www-form-urlencoded":0,g_post_body,g_post_len,nref,&r);
-    if(rc<0 && noscheme){ char* p=scopy(full,"http://"); int i=0; while(g_url[i]&&(p-full)<4090)*p++=g_url[i++]; *p=0; rc=nwk_fetch(full,meth,g_post_body?"application/x-www-form-urlencoded":0,g_post_body,g_post_len,nref,&r); }
+    if(rc<0 && noscheme){ char* p=scopy(full,"http://"); int i=0; while(g_url[i]&&(p-full)<4090)*p++=g_url[i++]; *p=0;
+        rc=nwk_fetch(full,meth,g_post_body?"application/x-www-form-urlencoded":0,g_post_body,g_post_len,nref,&r);
+        if(rc>=0&&r.body){ extern void web_err_rewind(int); web_err_rewind(err_mark0); nwk_error_mark(full); g_go_err0=web_err_total(); } }
     g_nwk_kind=0; { extern void (*g_nwk_stream)(const char*,int,const char*); g_nwk_stream=0; }
     if(g_post_body){ kfree(g_post_body); g_post_body=0; g_post_len=0; }
     if(rc<0||!r.body){
@@ -137,21 +142,23 @@ static void web_process_nav(nwe_req* r){
 }
 
 #define NTAB 6
-typedef struct { int used; char url[4096]; char title[64]; int page; int isimg; int backn; char back[16][4096]; } TabSt;
+typedef struct { int used; char url[4096]; char title[64]; int page; int isimg; int backn; int scroll; char back[16][4096]; } TabSt;
 static TabSt tabs[NTAB]; static int g_ntab=1, g_tab=0; static int tab_x[NTAB], tab_w=172, tab_plusx, tab_savex, tab_savew;
-static void save_tab(int t){ TabSt*T=&tabs[t]; T->used=1; sset(T->url,g_cururl); int i=0; for(;g_title[i]&&i<63;i++)T->title[i]=g_title[i]; T->title[i]=0; T->page=g_page; T->isimg=g_isimg; T->backn=backn; for(int k=0;k<backn&&k<16;k++)sset(T->back[k],backstk[k]); }
+static void save_tab(int t){ TabSt*T=&tabs[t]; T->used=1; sset(T->url,g_cururl); int i=0; for(;g_title[i]&&i<63;i++)T->title[i]=g_title[i]; T->title[i]=0; T->page=g_page; T->isimg=g_isimg; T->scroll=(g_haspage&&g_page==3)?g_scrolly:0; T->backn=backn; for(int k=0;k<backn&&k<16;k++)sset(T->back[k],backstk[k]); }
 static void load_tab(int t){ TabSt*T=&tabs[t]; backn=T->backn; for(int k=0;k<backn&&k<16;k++)sset(backstk[k],T->back[k]);
-    if(T->page==3&&T->url[0]){ extern int g_http_mode; g_cururl[0]=0; sset(g_url,T->url); g_urllen=slen(g_url); g_http_mode=1; browser_go(0); g_http_mode=0; return; }
+    if(T->page==3&&T->url[0]){ extern int g_http_mode; g_cururl[0]=0; sset(g_url,T->url); g_urllen=slen(g_url); g_http_mode=1; browser_go(0); g_http_mode=0;
+        if(T->scroll>0&&g_haspage&&!web_busy()){ nwe_req* r=&g_req; for(unsigned k=0;k<sizeof(*r);k++)((u8*)r)[k]=0; r->y=T->scroll-g_scrolly; web_call(NWE_OP_SCROLL,r); web_info(r); }
+        return; }
     g_page=T->page; g_url[0]=0; g_urllen=0; g_cururl[0]=0; g_title[0]=0; g_haspage=0; }
 static void tab_switch(int t){ if(t==g_tab||t<0||t>=g_ntab)return; save_tab(g_tab); g_tab=t; load_tab(t); }
 void browser_profile_switch(void){
     nhist=0; nbmarks=0; g_perm_loaded=0; g_nperm=0; g_pq.on=0; g_smenu=0;
-    for(int t=0;t<NTAB;t++){ tabs[t].used=0; tabs[t].url[0]=0; tabs[t].title[0]=0; tabs[t].backn=0; }
+    for(int t=0;t<NTAB;t++){ tabs[t].used=0; tabs[t].url[0]=0; tabs[t].title[0]=0; tabs[t].backn=0; tabs[t].scroll=0; }
     g_ntab=1; g_tab=0; tabs[0].used=1;
     g_url[0]=0; g_urllen=0; g_cururl[0]=0; g_host[0]=0; g_title[0]=0; g_isimg=0; g_page=0; backn=0; g_haspage=0; sset(web_stat,"New Tab");
     { extern void ck_profile_switch(void); ck_profile_switch(); }
 }
-static void tab_new(void){ if(g_ntab>=NTAB)return; save_tab(g_tab); int t=g_ntab++; g_tab=t; tabs[t].used=1; tabs[t].url[0]=0; tabs[t].title[0]=0;
+static void tab_new(void){ if(g_ntab>=NTAB)return; save_tab(g_tab); int t=g_ntab++; g_tab=t; tabs[t].used=1; tabs[t].url[0]=0; tabs[t].title[0]=0; tabs[t].scroll=0;
     g_url[0]=0; g_urllen=0; g_cururl[0]=0; g_host[0]=0; g_title[0]=0; g_isimg=0; g_page=0; backn=0; g_haspage=0; sset(web_stat,"New Tab"); }
 void nvx_open_url_tab(const char* u){ if(WN[W_BROWSER].open&&g_cururl[0]&&g_ntab<NTAB)tab_new(); nvx_open_url(u); }
 static void tab_close(int t){ if(g_ntab<=1||t<0||t>=g_ntab)return; int cur=(t==g_tab); if(!cur)save_tab(g_tab); for(int k=t;k<g_ntab-1;k++)tabs[k]=tabs[k+1]; g_ntab--; if(!cur){ if(g_tab>t)g_tab--; return; } if(g_tab>=g_ntab)g_tab=g_ntab-1; load_tab(g_tab); }
@@ -328,7 +335,11 @@ void browser_draw(int i){
         if(g_acsug[0]){ int cxp=abx+14+(g_urllen-st)*8; int rem=maxch-(g_urllen-st); if(rem>0){ char sg[128]; int sn=0; for(int q=g_urllen;g_acsug[q]&&sn<rem&&sn<126;q++)sg[sn++]=g_acsug[q]; sg[sn]=0; dstr(cxp,y+7,sg,rgb(170,178,192),1); } } }
       if(!g_urlsel&&((g_ticks/50)&1)){ int cxp=abx+14+(g_urllen-st)*8; fill_rect(cxp,y+8,2,14,ACC); } }
     else { g_acsug[0]=0; int ux=abx+12; g_lockx=abx; g_locky=y; const char* u=g_url; int sec=istarts_(u,"https://"); int pl=sec?8:istarts_(u,"http://")?7:0;
-      if(pl){ u32 lc=sec?rgb(22,140,80):rgb(150,158,174); fill_round(ux,y+13,10,8,2,15,lc); for(int t=0;t<5;t++){putpx(ux+2,y+8+t,lc);putpx(ux+7,y+8+t,lc);} for(int t=2;t<8;t++)putpx(ux+t,y+8,lc); fill_rect(ux+4,y+16,2,3,rgb(241,243,248)); ux+=16; }
+      if(pl){ u32 lc=sec?rgb(22,140,80):rgb(150,158,174); fill_round(ux,y+13,10,8,2,15,lc);
+        if(sec){ for(int t=0;t<5;t++){putpx(ux+2,y+8+t,lc);putpx(ux+7,y+8+t,lc);} for(int t=2;t<8;t++)putpx(ux+t,y+8,lc); }
+        else { for(int t=0;t<7;t++)putpx(ux+7,y+6+t,lc); for(int t=0;t<3;t++)putpx(ux+2,y+6+t,lc); for(int t=2;t<8;t++)putpx(ux+t,y+6,lc); }
+        fill_rect(ux+4,y+16,2,3,rgb(241,243,248)); ux+=16;
+        if(!sec&&barw>=420){ pdstr(ux,y+6,"Not secure",rgb(150,158,174),1); ux+=pw_str("Not secure",1)+8; } }
       int hl=0; while(u[pl+hl]&&u[pl+hl]!='/'&&u[pl+hl]!='?'&&u[pl+hl]!='#')hl++;
       char host[160]; int hn=0; for(;hn<hl&&hn<159;hn++)host[hn]=u[pl+hn]; host[hn]=0;
       int lim=abx+barw-14; char rest[300]; int rn=0;

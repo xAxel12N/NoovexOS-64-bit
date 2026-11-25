@@ -1,0 +1,4 @@
+mandoc 1.14.6 from https://mandoc.bsd.lv/snapshots/mandoc-1.14.6.tar.gz (regress/ removed).
+Licence: ISC (see LICENSE); compat_*.c, soelim.c and man.1 are BSD-2/3-Clause as stated in their headers and in LICENSE.
+NoovexOS addition: configure.noovex (cross settings for musl, used by tools/build_man.sh).
+Installed as /usr/bin/mandoc with man, apropos, whatis, makewhatis links; licence in /usr/share/licenses/mandoc.

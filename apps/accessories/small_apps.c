@@ -26,7 +26,10 @@ static void clock_hand(int cx,int cy,int ang,int len,int wdt,u32 col){
 void clock_draw(int i){
     win_frame(i,"Clock");
     int h,m,s,yr,mo,dy; read_clock(&h,&m,&s,&yr,&mo,&dy);
-    int cx=WN[i].x+WN[i].w/2, cy=WN[i].y+TITLEH+30+ (WN[i].w-60)/2, R=(WN[i].w-90)/2; if(R>180)R=180;
+    int top=WN[i].y+TITLEH, bot=WN[i].y+WN[i].h;
+    int Rw=(WN[i].w-90)/2, Rh=(WN[i].h-TITLEH-106)/2, R=Rw<Rh?Rw:Rh; if(R>180)R=180; if(R<16)R=16;
+    int cx=WN[i].x+WN[i].w/2, cy=top+30+R;
+    fb_clip_y(top,bot);
     fill_circle(cx,cy,R+10,rgb(240,242,248)); fill_circle(cx,cy,R+6,ACC); fill_circle(cx,cy,R+2,rgb(252,253,255));
     for(int t=0;t<60;t++){ int a=t*6; int o1=(t%5==0)?R-14:R-7; int x1=cx+icos(a-90)*o1/1000,y1=cy+isin(a-90)*o1/1000;
         int x2=cx+icos(a-90)*R/1000,y2=cy+isin(a-90)*R/1000; u32 c=(t%5==0)?rgb(60,66,86):rgb(180,186,200); line_bl(x1,y1,x2,y2,c,255,(t%5==0)?2:1); }
@@ -40,6 +43,7 @@ void clock_draw(int i){
     static const char*MON[13]={"","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
     char d[32],*q=d; q=udec(q,(u32)dy);*q++=' '; { const char*mn=MON[(mo>=1&&mo<=12)?mo:0]; while(*mn)*q++=*mn++; } *q++=' '; q=udec(q,(u32)yr); *q=0;
     dstr_ctr(cx,cy+R+56,d,rgb(90,100,120),1);
+    fb_clip_off();
 }
 /* ---- Task Manager ---- */
 static const char* pci_class_name(u8 cl,u8 sub){
@@ -175,7 +179,8 @@ void calendar_draw(int i){
 static u8 snx[SN_GW*SN_GH], sny[SN_GW*SN_GH]; int snlen, sdx, sdy, applex, appley, snake_score, snake_state; u64 snake_last; static u32 sn_rng=2463534242u;
 static u32 snr(void){ sn_rng^=sn_rng<<13; sn_rng^=sn_rng>>17; sn_rng^=sn_rng<<5; return sn_rng; }
 static void snake_place_apple(void){ for(int tr=0;tr<300;tr++){ int ax=snr()%SN_GW, ay=snr()%SN_GH; int hit=0; for(int k=0;k<snlen;k++)if(snx[k]==ax&&sny[k]==ay){hit=1;break;} if(!hit){applex=ax;appley=ay;return;} } }
-void snake_reset(void){ snlen=4; for(int k=0;k<snlen;k++){ snx[k]=(u8)(8-k); sny[k]=SN_GH/2; } sdx=1; sdy=0; snake_score=0; snake_state=1; sn_rng^=(u32)g_ticks*2654435761u; snake_place_apple(); snake_last=g_ticks; }
+void snake_reset(void){ snlen=4; for(int k=0;k<snlen;k++){ snx[k]=(u8)(8-k); sny[k]=SN_GH/2; } sdx=1; sdy=0; snake_score=0; snake_state=0; sn_rng^=(u32)g_ticks*2654435761u; snake_place_apple(); snake_last=g_ticks; }
+void snake_start(void){ if(snake_state==2) snake_reset(); snake_state=1; snake_last=g_ticks; }
 void snake_step(void){ int nx=snx[0]+sdx, ny=sny[0]+sdy;
     if(nx<0||nx>=SN_GW||ny<0||ny>=SN_GH){ snake_state=2; return; }
     for(int k=0;k<snlen;k++) if(snx[k]==nx&&sny[k]==ny){ snake_state=2; return; }
@@ -183,18 +188,21 @@ void snake_step(void){ int nx=snx[0]+sdx, ny=sny[0]+sdy;
     for(int k=snlen-1;k>0;k--){ snx[k]=snx[k-1]; sny[k]=sny[k-1]; }
     snx[0]=(u8)nx; sny[0]=(u8)ny;
     if(grow){ snake_score++; snake_place_apple(); } }
-void snake_key(int c){ if(snake_state==2){ snake_reset(); return; }
+void snake_key(int c){ if(snake_state!=1){ snake_start(); if(c!=17&&c!=18&&c!=19&&c!=20) return; }
     if(c==17&&sdx!=1){sdx=-1;sdy=0;} else if(c==18&&sdx!=-1){sdx=1;sdy=0;}
     else if(c==19&&sdy!=1){sdx=0;sdy=-1;} else if(c==20&&sdy!=-1){sdx=0;sdy=1;} }
 void snake_draw(int i){
     win_frame(i,"Snake");
     char b[24],*p=b; p=scopy(p,"Score ");p=udec(p,(u32)snake_score);*p=0; dstr(WN[i].x+20,WN[i].y+TITLEH+12,b,INK,1);
-    int cell=(WN[i].w-40)/SN_GW, bw=cell*SN_GW, bh=cell*SN_GH; int bx=WN[i].x+20, by=WN[i].y+TITLEH+40;
+    int cell=(WN[i].w-40)/SN_GW, ch=(WN[i].h-TITLEH-64)/SN_GH; if(ch<cell)cell=ch; if(cell<4)cell=4;
+    int bw=cell*SN_GW, bh=cell*SN_GH; int bx=WN[i].x+20, by=WN[i].y+TITLEH+40;
     fill_round(bx,by,bw,bh,8,15,rgb(20,26,46));
     fill_round(bx+applex*cell+2, by+appley*cell+2, cell-4, cell-4, 3,15, rgb(228,76,74));
     for(int k=0;k<snlen;k++){ u32 col=(k==0)?rgb(120,236,152):rgb(57,196,106); fill_round(bx+snx[k]*cell+1, by+sny[k]*cell+1, cell-2, cell-2, 3,15, col); }
-    if(snake_state==2){ dstr_ctr(WN[i].x+WN[i].w/2, by+bh/2-12, "Game over", rgb(255,255,255),3); dstr_ctr(WN[i].x+WN[i].w/2, by+bh/2+22, "press an arrow key to restart", rgb(206,212,226),1); }
-    else dstr_ctr(WN[i].x+WN[i].w/2, by+bh+10, "Arrow keys to steer", rgb(120,128,146),1);
+    int mx=bx+bw/2;
+    if(snake_state==2){ dstr_ctr(mx, by+bh/2-12, "Game over", rgb(255,255,255),3); dstr_ctr(mx, by+bh/2+22, "press an arrow key to restart", rgb(206,212,226),1); }
+    else if(snake_state==0){ dstr_ctr(mx, by+bh/2-12, "Press a key to start", rgb(255,255,255),2); dstr_ctr(mx, by+bh/2+16, "arrow keys steer the snake", rgb(206,212,226),1); }
+    dstr_ctr(mx, by+bh+8, "Arrow keys to steer", rgb(120,128,146),1);
 }
 /* ---- Flappy Bird ---- */
 int fb_y, fb_vy, fb_state, fb_score, fb_best=0; u64 flappy_last; static u32 fb_rng=88172645u;
@@ -204,8 +212,8 @@ int fb_y, fb_vy, fb_state, fb_score, fb_best=0; u64 flappy_last; static u32 fb_r
 #define FB_SP 190
 static int fb_px[FB_NP], fb_gy[FB_NP], fb_scored[FB_NP];
 static u32 fbr(void){ fb_rng^=fb_rng<<13; fb_rng^=fb_rng>>17; fb_rng^=fb_rng<<5; return fb_rng; }
-static void fb_dims(int*bw,int*bh){ *bw=WN[W_FLAPPY].w-24; *bh=WN[W_FLAPPY].h-TITLEH-64; }
-void flappy_reset(void){ int bw,bh; fb_dims(&bw,&bh); fb_y=bh/2; fb_vy=0; fb_score=0; fb_state=1; fb_rng^=(u32)g_ticks*2654435761u;
+static void fb_dims(int*bw,int*bh){ *bw=WN[W_FLAPPY].w-24; *bh=WN[W_FLAPPY].h-TITLEH-70; if(*bh<80)*bh=80; }
+void flappy_reset(void){ int bw,bh; fb_dims(&bw,&bh); fb_y=bh/2; fb_vy=0; fb_score=0; fb_state=0; fb_rng^=(u32)g_ticks*2654435761u;
     int span=bh-FB_GAP-60; if(span<40)span=40;
     for(int k=0;k<FB_NP;k++){ fb_px[k]=bw+30+k*FB_SP; fb_gy[k]=30+(int)(fbr()%(u32)span); fb_scored[k]=0; } flappy_last=g_ticks; }
 void flappy_step(void){ int bw,bh; fb_dims(&bw,&bh); int bx=bw/3, bsz=22; int span=bh-FB_GAP-60; if(span<40)span=40;
@@ -215,8 +223,8 @@ void flappy_step(void){ int bw,bh; fb_dims(&bw,&bh); int bx=bw/3, bsz=22; int sp
         if(!fb_scored[k] && fb_px[k]+FB_PW < bx){ fb_scored[k]=1; fb_score++; if(fb_score>fb_best)fb_best=fb_score; }
         if(bx+bsz>fb_px[k] && bx<fb_px[k]+FB_PW){ if(fb_y<fb_gy[k] || fb_y+bsz>fb_gy[k]+FB_GAP) fb_state=2; } }
     if(fb_y<0){fb_y=0;fb_vy=0;} if(fb_y+bsz>=bh){ fb_y=bh-bsz; fb_state=2; } }
-void flappy_flap(void){ if(fb_state==2){ flappy_reset(); return; } fb_vy=-8; }
-void flappy_key(int c){ if(c==' '||c==19||c=='\n') flappy_flap(); }
+void flappy_flap(void){ if(fb_state==2) flappy_reset(); if(fb_state==0){ fb_state=1; flappy_last=g_ticks; } fb_vy=-8; }
+void flappy_key(int c){ if(fb_state==0||c==' '||c==19||c=='\n') flappy_flap(); }
 void flappy_draw(int i){
     win_frame(i,"Flappy Bird");
     char b[24],*p=b; p=scopy(p,"Score ");p=udec(p,(u32)fb_score);*p=0; dstr(WN[i].x+20,WN[i].y+TITLEH+12,b,INK,1);
@@ -233,7 +241,8 @@ void flappy_draw(int i){
     fill_circle(ccx,ccy,bsz/2,rgb(250,208,60)); fill_round(bx+2,ccy,10,7,2,15,rgb(236,182,44));
     fill_circle(ccx+5,ccy-4,3,rgb(30,30,34)); fill_rect(bx+bsz-1,ccy-2,7,5,rgb(240,132,40));
     if(fb_state==2){ dstr_ctr(ox+bw/2, oy+bh/2-12, "Game over", rgb(255,255,255),3); dstr_ctr(ox+bw/2, oy+bh/2+22, "space / up to fly again", rgb(20,40,70),1); }
-    else dstr_ctr(WN[i].x+WN[i].w/2, oy+bh+12, "Space or Up to flap", rgb(120,128,146),1);
+    else if(fb_state==0){ dstr_ctr(ox+bw/2, oy+bh/2-40, "Press a key to start", rgb(255,255,255),2); dstr_ctr(ox+bw/2, oy+bh/2-12, "space / up / click to flap", rgb(20,40,70),1); }
+    dstr_ctr(WN[i].x+WN[i].w/2, oy+bh+8, "Space or Up to flap", rgb(120,128,146),1);
 }
 /* ---- neofetch (graphical) ---- */
 
@@ -245,12 +254,12 @@ void neofetch_draw(int i){
     int cx=WN[i].x+WN[i].w/2, top=WN[i].y+TITLEH+18;
     (void)cx;
     static const char* NFART[6]={
-    "  _   _                           _____ _____ ",
-    " | \\ | |                         |  _  /  ___|",
-    " |  \\| | ___   _____   _______  _| | | \\ `--. ",
-    " | . ` |/ _ \\ / _ \\ \\ / / _ \\ \\/ / | | |`--. \\\\",
-    " | |\\  | (_) | (_) \\ V /  __/>  <\\ \\_/ /\\__/ /",
-    " \\_| \\_/\\___/ \\___/ \\_/ \\___/_/\\_\\\\___/\\____/"
+    " _   _                                         _____   _____",
+    "| \\ | |                                       |  _  | /  ___|",
+    "|  \\| |   ___     ___   __   __   ___  __  __ | | | | \\ `--.",
+    "| . ` |  / _ \\   / _ \\  \\ \\ / /  / _ \\ \\ \\/ / | | | |  `--. \\",
+    "| |\\  | | (_) | | (_) |  \\ V /  |  __/  >  <  \\ \\_/ / /\\__/ /",
+    "\\_| \\_/  \\___/   \\___/    \\_/    \\___| /_/\\_\\  \\___/  \\____/"
 };
     int x=WN[i].x+24, ay=top;
     for(int l=0;l<6;l++){ dstr(x, ay, NFART[l], rgb(57,196,106), 1); ay+=14; }
@@ -258,9 +267,9 @@ void neofetch_draw(int i){
     { char b[48],*p=b; p=scopy(p,g_user);*p++='@';p=scopy(p,"noovex64");*p=0; dstr(x,y,b,ACC,2); } y+=26;
     { int w=WN[i].w-80; for(int k=0;k<w/8;k++)dchar(x+k*8,y,'-',rgb(150,158,176),1); } y+=20;
     char v[80],*p;
-    nf_line(x,&y,"OS: ","NoovexOS 64 v11.10 (x86-64)");
+    nf_line(x,&y,"OS: ","NoovexOS 64 v11.22 (x86-64)");
     nf_line(x,&y,"Kernel: ","NoovexOS monolithic x86_64");
-    nf_line(x,&y,"Build: ","v11.10");
+    nf_line(x,&y,"Build: ","v11.22");
     nf_line(x,&y,"Firmware: ","BIOS / VESA LFB");
     { u32 up=(u32)(g_ticks/100); p=v; p=udec(p,up/3600);*p++='h';*p++=' ';p=udec(p,(up/60)%60);*p++='m';*p++=' ';p=udec(p,up%60);*p++='s';*p=0; nf_line(x,&y,"Uptime: ",v); }
     { p=v; { const char*b=g_brand[0]?g_brand:"x86-64 CPU"; while(*b)*p++=*b++; } *p=0; nf_line(x,&y,"CPU: ",v); }
@@ -285,10 +294,21 @@ void paint_clear(void){ for(int i=0;i<PCW*PCH;i++)paint_buf[i]=rgb(255,255,255);
 void paint_paste(void){ extern u32* g_clip_img; extern int g_clip_iw, g_clip_ih; if(!g_clip_img||g_clip_iw<1||g_clip_ih<1)return; if(!paint_inited){ paint_clear(); paint_inited=1; }
     int sw=g_clip_iw, sh=g_clip_ih; long num=PCW, den=sw; if((long)sh*PCW>(long)PCH*sw){ num=PCH; den=sh; } if(num>den)num=den; int dw=(int)(sw*num/den), dh=(int)(sh*num/den); if(dw<1)dw=1; if(dh<1)dh=1;
     for(int y=0;y<dh;y++){ int sy=(int)((long)y*den/num); if(sy>=sh)sy=sh-1; for(int x=0;x<dw;x++){ int sx=(int)((long)x*den/num); if(sx>=sw)sx=sw-1; paint_buf[y*PCW+x]=g_clip_img[(long)sy*sw+sx]; } } }
-void paint_at(int px,int py){
-    int bx=px-pcx, by=py-pcy; if(bx<0||by<0||bx>=PCW||by>=PCH) return;
-    int R=(paint_size==0)?2:(paint_size==1)?4:8; u32 c=PPAL[paint_col];
+static int paint_lx, paint_ly, paint_have;
+static void paint_stamp(int bx,int by,int R,u32 c){
+    if(bx+R<0||by+R<0||bx-R>=PCW||by-R>=PCH) return;
     for(int dy=-R;dy<=R;dy++)for(int dx=-R;dx<=R;dx++){ if(dx*dx+dy*dy>R*R)continue; int x=bx+dx,y=by+dy; if(x<0||y<0||x>=PCW||y>=PCH)continue; paint_buf[y*PCW+x]=c; }
+}
+void paint_end(void){ paint_have=0; }
+void paint_at(int px,int py){
+    int bx=px-pcx, by=py-pcy;
+    int R=(paint_size==0)?2:(paint_size==1)?4:8; u32 c=PPAL[paint_col];
+    if(!paint_have){ if(bx<0||by<0||bx>=PCW||by>=PCH) return; paint_stamp(bx,by,R,c); paint_lx=bx; paint_ly=by; paint_have=1; return; }
+    int x0=paint_lx, y0=paint_ly, dx=bx-x0, dy=by-y0; if(dx<0)dx=-dx; if(dy<0)dy=-dy;
+    int n=dx>dy?dx:dy; if(n>4096)n=4096;
+    for(int k=1;k<=n;k++) paint_stamp(x0+(bx-x0)*k/n, y0+(by-y0)*k/n, R, c);
+    if(n==0) paint_stamp(bx,by,R,c);
+    paint_lx=bx; paint_ly=by;
 }
 void paint_draw(int i){
     win_frame(i,"Paint");

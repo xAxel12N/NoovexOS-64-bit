@@ -285,6 +285,14 @@ static long lx_setsockopt(int fd,int lvl,int opt,u64 val,u64 len){
     if(len>(u64)0x7fffffff)return -LX_EINVAL;
     if(len&&!val)return -LX_EFAULT; if(len&&lx_get(b,val,len<16?len:16))return -LX_EFAULT;
     int x=*(int*)b;
+    if(lvl==1&&(opt==26||opt==27||opt==50)){
+        if(opt==27)return bpf_sock_detach(sid)==0?0:-LX_ENOENT;
+        if(len<(opt==50?4u:16u))return -LX_EINVAL;
+        if(opt==50)return bpf_sock_attach_fd(sid,x);
+        u16 fl=*(u16*)b; u64 fp=*(u64*)(b+8); if(fl==0||fl>4096)return -LX_EINVAL;
+        void* fi=kmalloc((unsigned long)fl*8); if(!fi)return -LX_ENOMEM;
+        if(lx_get(fi,fp,(u64)fl*8)){ kfree(fi); return -LX_EFAULT; }
+        int e=bpf_sock_attach_cbpf(sid,fi,fl); kfree(fi); return e; }
     if(lvl==1){
         if(opt==16){ if(len<4)return -LX_EINVAL; s->passcred=x!=0; return 0; }
         if(opt==2||opt==15||opt==9){ if(len<4)return -LX_EINVAL; if(opt==2)s->reuseaddr=x!=0; else if(opt==15)s->reuseport=x!=0; else s->keepalive=x!=0; }
@@ -354,7 +362,10 @@ static long lx_ioctl(int fd,u64 req,u64 arg){
     if(req==0x5450){ fdce()[fd]=0; return 0; }
     if(req==0x5421){ int on; if(lx_get(&on,arg,4))return -LX_EFAULT; if(on)v->flags|=0x800; else v->flags&=~0x800; return 0; }
     if(v->dev==LX_PTM||v->dev==LX_PTS)return pty_ioctl(v,fd,(u32)req,arg);
-    if(v->dev==LX_SNDCTL)return asnd_ctl_ioctl((u32)req,arg);
+    if(v->dev==LX_SNDCTL){ long m=armidi_ctl_ioctl((u32)req,arg); if(m!=-9999)return m; return asnd_ctl_ioctl((u32)req,arg); }
+    if(v->dev==LX_SNDMIDI)return armidi_ioctl(v,(u32)req,arg);
+    if(v->dev==LX_USBSER)return userial_ioctl(v,(u32)req,arg);
+    if(v->dev==LX_EVDEV||v->dev==LX_JSDEV)return aev_ioctl(v,(u32)req,arg);
     if(req==0x541B){ int n=0; if(v->dev==6)n=g_pipe[v->fs_idx].n; else if(v->dev==5)n=g_tin_n; else if(v->dev==0&&v->fs_idx>=0)n=FS[v->fs_idx].len-v->off; else if(v->dev==LX_INOFD&&v->fs_idx>=0&&v->fs_idx<INO_MAX)n=g_ino[v->fs_idx].qn; else if(v->dev==LX_AFU){ struct unsock* us=un_get(v->fs_idx); n=!us?0:(us->seq&&us->rlh!=us->rlt)?us->rl[us->rlh%64]:us->seq?0:us->rxn; } if(n<0)n=0; return lx_put(arg,&n,4); }
     if(v->dev==12){
         if(req==0x5000||req==0x5001)return 0;
@@ -375,6 +386,7 @@ static long lx_ioctl(int fd,u64 req,u64 arg){
         if(req==0x4600){ u32 vi[40]; lx_zero((u8*)vi,160); vi[0]=W; vi[1]=H; vi[2]=SW; vi[3]=H; vi[6]=32; vi[8]=16; vi[9]=8; vi[11]=8; vi[12]=8; vi[14]=0; vi[15]=8; vi[17]=24; vi[18]=8; return lx_put(arg,vi,160); }
         if(req==0x4602){ u8 fx[80]; lx_zero(fx,80); const char* id="noovexfb"; for(int i=0;id[i];i++)fx[i]=(u8)id[i]; *(u32*)(fx+24)=SW*H*4; *(u32*)(fx+36)=2; *(u32*)(fx+48)=SW*4; return lx_put(arg,fx,80); }
         return -LX_EINVAL; }
+    if(v->dev==43){ extern int evdev_ioctl(u64,u8*,int); u8 eb[128]; int sz=(int)((req>>16)&0x3FFF), r=evdev_ioctl(req,eb,sz<128?sz:128); if(r<=0||((u32)req>>30)!=2)return r; return lx_put(arg,eb,r)?-LX_EFAULT:r; }
     if(v->dev==10){ if(req==0x80084E50ull){ extern int mx,my; int pp[2]; pp[0]=mx; pp[1]=my; return lx_put(arg,pp,8); } return -LX_ENOTTY; }
     if(v->dev!=5)return -LX_ENOTTY;
     if(req==0x802C542Aull){ vt_raw(); u8 t[44]; lx_zero(t,44); *(u32*)(t+0)=g_tios.iflag; *(u32*)(t+4)=g_tios.oflag; *(u32*)(t+8)=g_tios.cflag; *(u32*)(t+12)=g_tios.lflag; t[16]=g_tios.line;
@@ -392,6 +404,7 @@ static long lx_ioctl(int fd,u64 req,u64 arg){
         if(req==0x5404){ g_tin_n=0; g_tin_eof=0; }
         return 0; }
     case 0x540B: if(a_is_in((int)arg)){ g_tin_n=0; g_tin_eof=0; } return 0;
+    case 0x5600: case 0x5603: case 0x5606: case 0x5607: case 0x4B3A: case 0x4B3B: { extern int vtc_ioctl(u64,u64,u8*,int*); u8 o[8]; int on=0; int r=vtc_ioctl(req,arg,o,&on); if(r)return r; return on?lx_put(arg,o,on):0; }
     case 0x5413: { u16 w[4]; w[0]=(u16)(trows>0?trows:25); w[1]=(u16)(tcols>0?tcols:80); w[2]=0; w[3]=0; return lx_put(arg,w,8); }
     case 0x5414: return 0;
     case 0x540F: { int g=g_tty_fg?g_tty_fg:jc_lead(p)->pgid; return lx_put(arg,&g,4); }

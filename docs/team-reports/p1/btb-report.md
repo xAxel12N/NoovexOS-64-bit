@@ -1,7 +1,7 @@
 # btb report: Broadcom USB Bluetooth patchram (branch p-btb, commit 5941c61c)
 
 ## What was done
-- New `drivers/bluetooth/bcmbt_fw.c` / `bcmbt_fw.h`. The patchram flow is derived from Linux `drivers/bluetooth/btbcm.c`. I fetched the file and its SPDX line is `GPL-2.0-or-later`; the Intel 2015 copyright and the GPL-2+ header are kept. The flow:
+- New `drivers/bluetooth/firmware/bcmbt_fw.c` / `bcmbt_fw.h`. The patchram flow is derived from Linux `drivers/bluetooth/btbcm.c`. I fetched the file and its SPDX line is `GPL-2.0-or-later`; the Intel 2015 copyright and the GPL-2+ header are kept. The flow:
   1. HCI Reset, then a 100 ms wait.
   2. Read Local Version, then look up the chip in the USB subversion table (BCM20702A0/A1/B0, BCM43142A0, BCM4335x, BCM4354, BCM4350C5 and others).
   3. Read USB Product (0xfc5a) to get the vid/pid, and Read Local Name (logged).
@@ -19,7 +19,7 @@
   If Launch RAM gets no Command Complete, that is tolerated. Every wait goes through hci.c `bt_cmd`, which has a 2 s timeout, and through the bounded `hr_delay_us` sleeps. `bcmbt_setup` never returns an error, so `bt_up` goes on to its normal HCI Reset.
 - Hook in `hci.c` `bt_up`: 1 include and 1 `else if` line after the Realtek branch. It runs only when the HCI manufacturer is 0x000F (Broadcom) or the USB vid is 0a5c. The owner's Realtek path runs first and does not change. I hooked in hci.c, not btusb.c, because the HCI command/wait helpers live there (the same place rtlbt is hooked, as the bti brief says).
 - `btusb.c` (1 include, 3 lines changed). Broadcom BCM20702 dongles report the HCI interface as vendor-specific 0xFF/0x01/0x01, not 0xE0, so the old code never claimed them. Claiming now also accepts 0xFF/1/1, but only when the vid is in the Broadcom-based list taken from Linux btusb.c: 0a5c, 0b05, 0489, 04ca, 050d, 13d3, 413c, 0930, 105b, 0bb4, 19ff. The rule is unchanged for 0bda (Realtek) and 8087 (Intel).
-- `units.list`: added `drivers/bluetooth/bcmbt_fw.c`.
+- `units.list`: added `drivers/bluetooth/firmware/bcmbt_fw.c`.
 - `drivers/bluetooth/NOTICE`: new entry (licence, origin, and that no firmware is shipped).
 - Host test: `tools/tests/bluetooth/bcm_main.c` and `bcm_run.sh`, built with ASan/UBSan, 27 checks. It covers:
   - the .hcd parser: valid, truncated, trailing bytes, empty, non-vendor opcode, random bytes

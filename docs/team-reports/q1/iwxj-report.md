@@ -55,7 +55,7 @@ The code is ported from OpenBSD if_iwx.c rev 1.230 and if_iwxreg.h, which are un
 - Beacon interval and DTIM are assumed to be 100 TU.
 
 ## The integrator needs to
-1. Add `drivers/net/wifi/iwx/iwx_pnvm.c` to units.list, next to iwx_data.c. Without it, PNVM and join are refused with a log message instead of breaking the build.
+1. Add `drivers/net/wifi/intel/iwx/fw/iwx_pnvm.c` to units.list, next to iwx_data.c. Without it, PNVM and join are refused with a log message instead of breaking the build.
 2. In iwx_glue.c:
    - `iwx_g_join`: call `int iwx_join_ssid(struct iwx_softc*,const u8* bssid,int ch,const char* ssid)` with the ssid argument, so hidden networks and an empty table work.
    - `iwx_g_leave`: call `void iwx_leave(struct iwx_softc*)`.

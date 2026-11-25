@@ -84,12 +84,12 @@ static void isr_body(regs_t*r){
 }
 
 void isr_dispatch(regs_t*r){
-    if(r->vector==2){ extern void nmiwd_nmi(regs_t*) __attribute__((weak)); if(nmiwd_nmi)nmiwd_nmi(r); return; }
+    if(r->vector==2){ extern int perf_nmi(regs_t*); perf_nmi(r); extern void nmiwd_nmi(regs_t*) __attribute__((weak)); if(nmiwd_nmi)nmiwd_nmi(r); return; }
     u64 v=r->vector; int user=(r->cs&3)==3;
     if(v>=0xF0&&v<=0xF2){ smp_ipi(r,user); return; }
     if(v==HR_LAPIC_VEC&&cpu_id()!=0){ ap_timer(r,user); return; }
     if(v==HR_LAPIC_VEC&&!user){ hr_lapic_isr(); return; }
-    if(v==32){ g_ticks++; if(g_ticks%500==0){ extern void lx_load_sample(void); lx_load_sample(); } if(cpu_id()==0){ extern void freeze_tick(regs_t*) __attribute__((weak)); if(freeze_tick)freeze_tick(r); } }
+    if(v==32){ g_ticks++; if(g_ticks%500==0){ extern void lx_load_sample(void); lx_load_sample(); } if(cpu_id()==0){ extern void freeze_tick(regs_t*) __attribute__((weak)); if(freeze_tick)freeze_tick(r); extern void perf_tick(regs_t*); perf_tick(r); } { extern void perf_cpu_drain(void); perf_cpu_drain(); } }
     if(v==33||v==44){ extern void ps2_byte_fast(void); ps2_byte_fast(); pic_eoi((int)v-32); if(!bkl_try())return; extern void ps2_drain(void); ps2_drain(); bkl_unlock(); return; }
     bkl_lock(); { extern void ps2_drain(void); ps2_drain(); } isr_body(r); bkl_unlock();
 }

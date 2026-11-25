@@ -63,3 +63,12 @@ void fk_layout(void){ ux_boot_layout(); }
 int fk_store_step(const char* name,const void* d,int n,int maxblk,int* steps){ int k=fs_store_nosync(name,(const u8*)d,n,0); if(k<0)return -1; int st=0,r; do{ r=fs_sync_step(k,maxblk); st++; }while(r==0&&st<100000); if(steps)*steps=st; return r; }
 int fk_same_name(const char* name,const void* d,int n){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&seq(FS[k].name,name)){ if(fs_ensure(k))return 0; if(FS[k].len!=n)return 0; return !memcmp(FS[k].data,d,(unsigned long)n); } return 0; }
 int fk_has_name(const char* name){ for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&seq(FS[k].name,name))return 1; return 0; }
+static int fk_fx_select(const char* path){ int d=dt_resolve_dir(path); if(d<=0)return -1; fx_session_reset(); fx_init(); fx_go(DT[d].parent); fx_seldir=d; g_fsel=-1; return d; }
+int fk_fx_clip(const char* path,int cut){ int d=fk_fx_select(path); if(d<0)return -1; fx_do(cut?9:8,0); return fx_clipdir==d?0:-2; }
+int fk_fx_paste(const char* dst){ int d=dt_resolve_dir(dst); if(d<0)return -1; fx_go(d); if(fx_dir!=d)return -2; fx_paste(); return 0; }
+int fk_fx_clip_has(void){ return fx_clip_has(); }
+void fk_fx_clear_clip(void){ fx_clip=-1; fx_clipdir=-1; }
+int fk_fx_delete(const char* path){ int d=fk_fx_select(path); if(d<0)return -1; fx_delete_sel(); return fx_confirm?1+fx_confirm_kind:0; }
+void fk_fx_confirm(int yes){ fx_confirm_do(yes); }
+int fk_fx_restore(const char* name){ int t=fx_trash_id(); if(t<0)return -1; int d=dt_child(t,name); if(d<0)return -2; fx_go(t); fx_seldir=d; g_fsel=-1; fx_restore_sel(); return 0; }
+int fk_fx_new_prompt(void){ fx_start_input(2,"New folder",-1,-1); int r=g_rensel&&g_renlen==10; g_rename=0; g_renmode=0; g_rensel=0; return r; }

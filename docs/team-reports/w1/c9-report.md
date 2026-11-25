@@ -5,7 +5,7 @@ This has not been tested on real hardware. QEMU has no BT dongle, so the first r
 
 ## What was built
 
-### HCI-over-USB transport: `drivers/bluetooth/btusb.c` (new, own code)
+### HCI-over-USB transport: `drivers/bluetooth/transport/btusb.c` (new, own code)
 - This file is a fragment included from `drivers/usb/xhci.c:24`, the same way `usb_network.c` is, because the xHCI helpers are static. It follows the usn pattern: its own DMA pages (8, `dma_alloc_pages`), its own EP0 context swap (`btu_ctrl`), a pump that takes `xh_poll_busy` (`btu_pump`), and bounded waits.
 - It claims the first interface with class E0/01/01, alt 0. Endpoints: interrupt IN for events, bulk IN/OUT for ACL. The bulk endpoints are configured in the endpoint context but not armed yet; that comes later with ACL.
 - HCI commands go out on EP0 as a class request: bmRequestType 0x20, bRequest 0, wIndex 0 (same as the spec, Linux and FreeBSD).
@@ -28,7 +28,7 @@ This has not been tested on real hardware. QEMU has no BT dongle, so the first r
   - So machines without BT see no change, apart from about 92 KB of firmware in the kernel image.
 - Limitation: an adapter behind a USB hub is not probed. The owner's 0BDA:C123 is internal, so it is normally on a root port.
 
-### Realtek firmware loader: `drivers/bluetooth/rtlbt_fw.c` + `.h` (port of FreeBSD rtlbtfw, BSD-2)
+### Realtek firmware loader: `drivers/bluetooth/firmware/rtlbt_fw.c` + `.h` (port of FreeBSD rtlbtfw, BSD-2)
 - The full FreeBSD BSD-2 header and copyrights are kept. `drivers/bluetooth/NOTICE` lists the origin of every file and every blob.
 - Ported parts: V1 epatch (`Realtech`), V2 epatch (`RTBTCore`: snippets, dummy, and security sections when the key id is non-zero), the project-id check against the chip, appending the config file, and the 0xFC20 download (252-byte fragments, index 0..0x7F then wrapping to 1, 0x80 on the last fragment).
 - Steps added from btrtl: read the ROM LMP subversion via 0xFC61 first. If Read_Local_Version then no longer matches the ROM table, the patch is already running and the download is skipped (result 2). This covers warm reboots.
@@ -44,7 +44,7 @@ This has not been tested on real hardware. QEMU has no BT dongle, so the first r
 - Licence: the WHENCE btusb entry says "Redistributable, LICENCE.rtlwifi_firmware.txt" — the same licence as our rtw88 blob. The licence text is now in `LICENSES/` upstream and sits next to the files here, with a `WHENCE.txt` that has sha256 sums.
 - `build.sh:38` links them into `rtlbt_fw.o`, which is added to BLOBS (`build.sh:297`). `rtlbt_fw.c` references the symbols weakly, so a missing blob gives "firmware file is not built in" instead of a link error.
 
-### Minimal HCI layer: `drivers/bluetooth/hci.c` + `hci_parse.h` (own code)
+### Minimal HCI layer: `net/bluetooth/hci.c` + `hci_parse.h` (own code)
 - Commands are synchronous, with matching on Command Complete / Command Status opcodes. Every wait is bounded, and it calls `ui_pump()` and bumps `g_ml_beat` every 20 ms so the freeze box does not fire.
 - `bt_up` sequence:
   1. Read_Local_Version.
@@ -66,7 +66,7 @@ This has not been tested on real hardware. QEMU has no BT dongle, so the first r
   - `bt list`
   - `bluetooth` is an alias.
 
-### Coex (the Wi-Fi antenna problem): `rtw_coex_bt_share` in `drivers/net/wifi/rtw88/rtw8821ce.c:262-281`
+### Coex (the Wi-Fi antenna problem): `rtw_coex_bt_share` in `drivers/net/wifi/realtek/rtw88/rtw8821ce.c:262-281`
 - How it was done: during `bt scan` only, BT gets a share of the antenna without turning Wi-Fi off.
   - The LTE coex register 0x38 GNT_BT/GNT_WL fields (mask 0xFF00) are set to HW PTA. This is rtw88 `COEX_SET_ANT_2G`.
   - Coex table: rtw88 8821c table 9 (0x66555555 / 0x5A5A5A5A) if Wi-Fi is connected, otherwise table 1 (0x55555555).
@@ -78,7 +78,7 @@ This has not been tested on real hardware. QEMU has no BT dongle, so the first r
 - Extra prototypes in `include/nvx/drivers/net/wifi/rtw8821ce.h`. `rtw_chip.h` is unchanged.
 
 ## Tests run
-- `/home/claude/ccheck.sh` on `drivers/bluetooth/hci.c`, `drivers/bluetooth/rtlbt_fw.c`, `drivers/usb/xhci.c` (the parent of `btusb.c`), `drivers/net/wifi/rtw88/rtw8821ce.c` and `shell/commands.c`: no new warnings (warning counts are identical to v11.06 for the touched old files).
+- `/home/claude/ccheck.sh` on `net/bluetooth/hci.c`, `drivers/bluetooth/firmware/rtlbt_fw.c`, `drivers/usb/xhci.c` (the parent of `btusb.c`), `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` and `shell/commands.c`: no new warnings (warning counts are identical to v11.06 for the touched old files).
 - `python3 tools/check.py --only usb`: 12/12 pass. The generated USB tests needed stubs for the new hooks: `tools/check.py:400`, `tools/tests/usb/hidmouse_gen.py`, `tools/tests/usb/hidsim_gen.py`.
 - New host test `sh tools/tests/bluetooth/run.sh` (ASan+UBSan): 43 checks, ALL PASS.
   - HCI event parser: all event types above, the RSSI and name priority rules, malformed and truncated events, a zero-length AD structure, a list overflow, and 20000 random events.
@@ -102,7 +102,7 @@ This has not been tested on real hardware. QEMU has no BT dongle, so the first r
 - docs/ARCHITECTURE.md still says there is no Bluetooth code. The lead may want a line there and in PORTING-WORKLIST rows 2/3.
 
 ## Fix round (r9 review), branch y-c9, commit on top of v11.07
-- H1 fixed: `drivers/bluetooth/hci.c` event mask byte 5 is now 0x40, so Extended Inquiry Result (bit 46) is unmasked. `tools/tests/bluetooth/run.sh` now parses the mask from hci.c and checks bits 0, 1, 6, 33, 46 and 61.
+- H1 fixed: `net/bluetooth/hci.c` event mask byte 5 is now 0x40, so Extended Inquiry Result (bit 46) is unmasked. `tools/tests/bluetooth/run.sh` now parses the mask from hci.c and checks bits 0, 1, 6, 33, 46 and 61.
 - M1 fixed: `rtw_coex_bt_share` off path in `rtw8821ce.c`:
   - It tries the 0x38 write up to 5 times and verifies each one by reading the GNT bits back.
   - If every try fails, it re-applies `rtw_coex_wifi_only`.

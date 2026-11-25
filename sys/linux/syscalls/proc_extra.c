@@ -19,7 +19,7 @@ int lx_proc_sys_gen(const char* p,char* out,int cap){
     char* o=out; if(cap<4096)return -1;
     if(lx_streq(p,"/proc/uptime")){ u64 idle=0; for(int i=0;i<NCPU;i++) if(i==0||(g_smp_on&&g_cpu[i].online))idle+=g_cpu[i].idle_ticks; o=lpx_fix2(o,g_ticks); *o++=' '; o=lpx_fix2(o,idle); *o++='\n'; return (int)(o-out); }
     if(lx_streq(p,"/proc/loadavg")){ for(int k=0;k<3;k++){ u64 l=g_lavg[k]; u64 c=(l*100+1024)>>11; o=lpx_fix2(o,c); *o++=' '; } int r=g_lavg_run; if(r<1)r=1; o=lx_u64s(o,(u64)r); *o++='/'; o=lx_u64s(o,(u64)(g_lavg_tot>0?g_lavg_tot:1)); *o++=' '; o=lx_u64s(o,(u64)(g_next_pid>1?g_next_pid-1:1)); *o++='\n'; return (int)(o-out); }
-    if(lx_streq(p,"/proc/version")){ o=lpx_s(o,"Linux version 6.12.0-noovex (noovex@noovexos) (gcc) #1 SMP PREEMPT NoovexOS 64 v11.10\n"); return (int)(o-out); }
+    if(lx_streq(p,"/proc/version")){ o=lpx_s(o,"Linux version 6.12.0-noovex (noovex@noovexos) (gcc) #1 SMP PREEMPT NoovexOS 64 v11.22\n"); return (int)(o-out); }
     if(lx_streq(p,"/proc/meminfo")){
         extern void mem_summary(u64*,u64*,u64*); u64 mt,mu,mh; mem_summary(&mt,&mu,&mh);
         extern void sysroot_cache_stats(u64*,u64*,u64*,u64*); extern void swap_stats(u64*,u64*,u64*,u64*); extern u32 pframe_free_count(void);
@@ -49,7 +49,7 @@ int lx_proc_sys_gen(const char* p,char* out,int cap){
     if(lx_streq(p,"/proc/sys/kernel/random/boot_id")||lx_streq(p,"/proc/sys/kernel/random/uuid")){ u8 r[16]; csprng_bytes(r,16); static const char H[]="0123456789abcdef"; for(int i=0;i<16;i++){ if(i==4||i==6||i==8||i==10)*o++='-'; *o++=H[r[i]>>4]; *o++=H[r[i]&15]; } *o++='\n'; return (int)(o-out); }
     if(lx_streq(p,"/proc/sys/fs/file-max")){ o=lpx_s(o,"9223372036854775807\n"); return (int)(o-out); }
     if(lx_streq(p,"/proc/sys/fs/nr_open")){ o=lx_u64s(o,FDMAX); *o++='\n'; return (int)(o-out); }
-    if(lx_streq(p,"/proc/partitions")){ o=lpx_s(o,"major minor  #blocks  name\n\n"); extern int gdisk_count(void); extern u32 gdisk_size_of(int); int n=gdisk_count(); for(int i=0;i<n&&i<8;i++){ o=lpx_s(o,"   8       "); o=lx_u64s(o,(u64)i*16); o=lpx_s(o,"   "); o=lx_u64s(o,(u64)gdisk_size_of(i)/2); o=lpx_s(o," sd"); *o++=(char)('a'+i); *o++='\n'; } return (int)(o-out); }
+    if(lx_streq(p,"/proc/partitions")){ o=lpx_s(o,"major minor  #blocks  name\n\n"); extern int gdisk_count(void); extern u64 gdisk_size_of(int); int n=gdisk_count(); for(int i=0;i<n&&i<8;i++){ o=lpx_s(o,"   8       "); o=lx_u64s(o,(u64)i*16); o=lpx_s(o,"   "); o=lx_u64s(o,(u64)gdisk_size_of(i)/2); o=lpx_s(o," sd"); *o++=(char)('a'+i); *o++='\n'; } return (int)(o-out); }
     if(lx_streq(p,"/proc/net/dev")){ o=lpx_s(o,"Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n  eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n"); return (int)(o-out); }
     return -1; }
 static int lpx_uread(u64 cr3,u64 va,u8* dst,int n){

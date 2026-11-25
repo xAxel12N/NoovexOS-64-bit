@@ -3,9 +3,18 @@ void mini_icon_big(int app,int x,int y){ if(app>=0&&app<NWIN&&g_aicon[app]){ ico
     const char* nm=(app>=0&&app<NWIN)?APPNAME[app]:"?"; char t[2]={nm[0],0}; int light=((c>>16&255)+(c>>8&255)+(c&255))>600; dstr(x+8,y+0,t,light?rgb(30,30,40):rgb(255,255,255),2); }
 static void nv_logo_small(int x,int y){ fill_round(x,y,16,16,3,15,rgb(40,60,150)); fill_round(x+2,y+2,12,12,2,15,rgb(90,130,230)); dstr(x+4,y+1,"N",rgb(255,255,255),1); }
 int g_tbtn_n=0, g_tbtn_x[16], g_tbtn_w[16], g_tbtn_app[16]; int g_tray_x0=0, g_airplane=0, g_nightlight=0, g_battsave=0, g_dnd=0;
+int g_qsmode=0;
+static void tray_snd_set(int v){ if(v<0)v=0; if(v>100)v=100; g_snd_vol=v; if(g_snd_state==1&&g_snd.volume)g_snd.volume(v); }
+static void tray_mute_toggle(void){ static int sv=50; if(g_snd_vol){ sv=g_snd_vol; tray_snd_set(0); } else tray_snd_set(sv?sv:50); }
 int g_ql_x0=-1000, g_lbx_end_ql=0;
+static void tb_label(int x,int y,const char* nm,int maxw){
+    int maxc=maxw/8; if(maxc<1)return; int n=slen(nm);
+    if(n<=maxc){ dstr(x,y,nm,rgb(0,0,0),1); return; }
+    char tt[24]; int k=0, keep=maxc-1; if(keep>22)keep=22;
+    while(nm[k]&&k<keep){ tt[k]=nm[k]; k++; } while(k>0&&tt[k-1]==' ')k--; tt[k]=0;
+    int ex=dstr(x,y,tt,rgb(0,0,0),1); for(int q=0;q<3;q++)fill_rect(ex+q*3,y+10,2,2,rgb(0,0,0)); }
 static void draw_classic_bar(void){
-    g_tbh=30; g_tby=(int)H-g_tbh; DOCK_x=-20000; DOCK_w=0; DOCK_y=g_tby; DOCK_h=g_tbh;
+    g_tbh=30; g_tby=(int)H-g_tbh; DOCK_x=-20000; DOCK_w=0; DOCK_y=g_tby; DOCK_h=g_tbh; { extern void out_work_reserve(int,int,int); out_work_reserve(0,0,(int)H-g_tby); }
     if(g_gfx&&g_gfx_fx) gfx_glass(0,g_tby,(int)W,g_tbh,0,C_FACE,212,2); else fill_rect(0,g_tby,(int)W,g_tbh,C_FACE); fill_rect(0,g_tby,(int)W,1,rgb(223,223,223)); fill_rect(0,g_tby+1,(int)W,1,rgb(255,255,255));
     int sb_w=96; bevel(3,g_tby+4,sb_w,g_tbh-7,g_launcher); nv_logo_small(9+(g_launcher?1:0),g_tby+7+(g_launcher?1:0));
     dstr(30+(g_launcher?1:0),g_tby+8+(g_launcher?1:0),"NoovexOS",rgb(0,0,0),1); dstr(31+(g_launcher?1:0),g_tby+8+(g_launcher?1:0),"NoovexOS",rgb(0,0,0),1);
@@ -16,13 +25,17 @@ static void draw_classic_bar(void){
         else if(q==1){ fill_rect(ox,oy+1,16,13,rgb(128,128,128)); fill_rect(ox+1,oy+2,14,11,rgb(0,0,0)); fill_rect(ox+3,oy+5,2,1,rgb(0,220,0)); fill_rect(ox+5,oy+6,1,1,rgb(0,220,0)); fill_rect(ox+3,oy+7,2,1,rgb(0,220,0)); fill_rect(ox+7,oy+8,4,1,rgb(0,220,0)); }
         else { fill_circle(ox+8,oy+8,7,rgb(30,90,200)); fill_circle(ox+8,oy+8,6,rgb(70,150,235)); fill_rect(ox+2,oy+8,13,1,rgb(200,230,255)); fill_rect(ox+8,oy+2,1,13,rgb(200,230,255)); fill_rect(ox+4,oy+4,3,4,rgb(60,170,70)); } }
       g_lbx_end_ql=g_ql_x0+3*24+4; fill_rect(g_lbx_end_ql-3,g_tby+6,1,g_tbh-11,rgb(128,128,128)); fill_rect(g_lbx_end_ql-2,g_tby+6,1,g_tbh-11,rgb(255,255,255)); }
-    int hh,mm,ss,yy2,mo,dd; read_clock(&hh,&mm,&ss,&yy2,&mo,&dd); (void)ss;(void)yy2;(void)mo;(void)dd; char t[8],*p=t; p=u2(p,hh);*p++=':';p=u2(p,mm);*p=0;
-    int cw=56, tw2=5*22+6, bxw=tw2+cw; int bx0=(int)W-bxw-4; bevel(bx0,g_tby+4,bxw,g_tbh-7,1); fill_rect(bx0+2,g_tby+6,bxw-4,g_tbh-11,C_FACE);
+    int hh,mm,ss,yy2,mo,dd; read_clock(&hh,&mm,&ss,&yy2,&mo,&dd); (void)yy2;(void)mo;(void)dd; char t[12],*p=t; p=u2(p,hh);*p++=':';p=u2(p,mm); if(g_showsec){ *p++=':'; p=u2(p,ss); } *p=0;
+    int cw=g_showsec?80:56, tw2=5*22+6, bxw=tw2+cw; int bx0=(int)W-bxw-4; bevel(bx0,g_tby+4,bxw,g_tbh-7,1); fill_rect(bx0+2,g_tby+6,bxw-4,g_tbh-11,C_FACE);
     { extern int sysmon_cpu_pct(void), sysmon_mem_pct(void); static u8 hc[24], hm[24]; static u64 lt; static int hp; if(g_ticks-lt>=100||!lt){ lt=g_ticks; hc[hp]=(u8)sysmon_cpu_pct(); hm[hp]=(u8)sysmon_mem_pct(); hp=(hp+1)%24; }
-      for(int g=0;g<2;g++){ int gx=bx0-60+g*29, gy=g_tby+6, gw=26, gh=g_tbh-11; fill_rect(gx,gy,gw,gh,rgb(0,0,0)); for(int q=0;q<24;q++){ int v=(g==0?hc:hm)[(hp+q)%24]; int bh=(gh-2)*v/100; if(v>0&&bh<1)bh=1; if(bh>0) fill_rect(gx+1+q,gy+gh-1-bh,1,bh,g==0?rgb(0,200,200):rgb(220,60,60)); } fill_rect(gx-1,gy-1,gw+2,1,rgb(128,128,128)); fill_rect(gx-1,gy-1,1,gh+2,rgb(128,128,128)); fill_rect(gx-1,gy+gh,gw+2,1,rgb(255,255,255)); fill_rect(gx+gw,gy-1,1,gh+2,rgb(255,255,255)); } }
+      int tipg=-1;
+      for(int g=0;g<2;g++){ int gx=bx0-60+g*29, gy=g_tby+6, gw=26, gh=g_tbh-11; fill_rect(gx,gy,gw,gh,rgb(0,0,0)); dstr(gx+2,gy+2,g==0?"C":"M",rgb(72,72,72),1); for(int q=0;q<24;q++){ int v=(g==0?hc:hm)[(hp+q)%24]; int bh=(gh-2)*v/100; if(v>0&&bh<1)bh=1; if(bh>0) fill_rect(gx+1+q,gy+gh-1-bh,1,bh,g==0?rgb(0,200,200):rgb(220,60,60)); } fill_rect(gx-1,gy-1,gw+2,1,rgb(128,128,128)); fill_rect(gx-1,gy-1,1,gh+2,rgb(128,128,128)); fill_rect(gx-1,gy+gh,gw+2,1,rgb(255,255,255)); fill_rect(gx+gw,gy-1,1,gh+2,rgb(255,255,255)); if(mx>=gx-1&&mx<gx+gw+1&&my>=gy-1&&my<gy+gh+1)tipg=g; }
+      if(tipg>=0){ int last=(hp+23)%24; char t[40],*q=t; q=scopy(q,tipg==0?"CPU usage ":"Memory in use "); q=udec(q,(u32)(tipg==0?hc:hm)[last]); *q++='%'; *q=0;
+        int tw=(int)slen(t)*8+16, tx=bx0-60+tipg*29+13-tw/2, ty=g_tby-28; if(tx+tw>(int)W-4)tx=(int)W-4-tw; if(tx<4)tx=4;
+        fill_rect(tx,ty,tw,22,rgb(255,255,225)); fill_rect(tx,ty,tw,1,rgb(0,0,0)); fill_rect(tx,ty+21,tw,1,rgb(0,0,0)); fill_rect(tx,ty,1,22,rgb(0,0,0)); fill_rect(tx+tw-1,ty,1,22,rgb(0,0,0)); dstr(tx+8,ty+3,t,rgb(0,0,0),1); } }
     g_clockx=bx0+tw2; dstr_ctr(g_clockx+cw/2-2,g_tby+8,t,rgb(0,0,0),1);
     g_tray_x0=bx0+4; for(int k=0;k<5;k++){ int ix=g_tray_x0+k*22, cy=g_tby+15; u32 ic=rgb(0,0,0);
-        if((k==1||k==2||k==3)&&g_qs) fill_rect(ix,g_tby+6,20,g_tbh-11,rgb(168,168,176));
+        if((g_qs&&((k==0&&g_qsmode==0)||(k==2&&g_qsmode==1)||(k==3&&g_qsmode==2)))||(k==1&&g_wifipop)) fill_rect(ix,g_tby+6,20,g_tbh-11,rgb(168,168,176));
         if(k==4&&g_notifpanel) fill_rect(ix,g_tby+6,20,g_tbh-11,rgb(168,168,176));
         if(k==0){ for(int r=0;r<4;r++) fill_rect(ix+10-r,cy-1+r,1+2*r,1,ic); }
         else if(k==1){ if(g_airplane){ fill_rect(ix+9,cy-6,2,12,ic); fill_rect(ix+4,cy-1,12,2,ic); fill_rect(ix+7,cy+4,6,2,ic); }
@@ -31,7 +44,7 @@ static void draw_classic_bar(void){
         else if(k==3){ if(bat_present){ fill_rect(ix+3,cy-4,14,9,ic); fill_rect(ix+4,cy-3,12,7,C_FACE); fill_rect(ix+17,cy-2,2,5,ic); int fw=bat_pct*10/100; fill_rect(ix+5,cy-2,fw,5,bat_pct<=15?rgb(200,0,0):rgb(0,128,0)); }
             else { fill_rect(ix+6,cy-6,2,4,ic); fill_rect(ix+12,cy-6,2,4,ic); fill_rect(ix+4,cy-2,12,5,ic); fill_rect(ix+9,cy+3,2,4,ic); } }
         else { fill_round(ix+6,cy-6,8,10,3,15,ic); fill_rect(ix+4,cy+3,12,2,ic); fill_rect(ix+8,cy+5,4,2,ic); if(g_notif_n>0&&!g_dnd) fill_circle(ix+15,cy-5,3,rgb(220,0,0)); { focus_mode* f=focus_get(g_focus_cur); if(f&&f->show_tb){ fill_rect(ix,g_tby+6,20,g_tbh-11,C_FACE); fill_circle(ix+10,cy,8,f->color); focus_glyph(ix+10,cy,f->icon,rgb(255,255,255)); } } } }
-    if(bat_present&&mx>=g_tray_x0+3*22&&mx<g_tray_x0+4*22&&my>=g_tby){ extern void bat_tip(int,int,int); bat_tip(g_tray_x0+3*22+10,g_tby-4,0); }
+    if(bat_present&&!(g_qs&&g_qsmode==2)&&mx>=g_tray_x0+3*22&&mx<g_tray_x0+4*22&&my>=g_tby){ extern void bat_tip(int,int,int); bat_tip(g_tray_x0+3*22+10,g_tby-4,0); }
     g_bellx=(int)W+100; g_qsx=-1000; g_wifix=(int)W-24; g_wsx=-1000; g_tray_left=bx0;
     { extern int xtray_bar(int,int,int,int); g_tray_left=xtray_bar(bx0-62,g_tby,g_tbh,0)+62; }
     { extern int dl_active(void); extern int dl_progress(char*,int); if(dl_active()){ char nm[48]; int pc=dl_progress(nm,sizeof nm); int pw2=150, px=g_tray_left-64-pw2, py=g_tby+4, ph=g_tbh-7;
@@ -42,13 +55,11 @@ static void draw_classic_bar(void){
     int bw=n?avail/n:160; if(bw>160)bw=160; if(bw<40)bw=40;
     for(int i=0;i<NWIN&&g_tbtn_n<16;i++){ if(!WN[i].open||WN[i].ws!=g_ws)continue; if(bx+bw>g_tray_left-64)break; int act=(focus==i&&!WN[i].min);
         bevel(bx,g_tby+4,bw-3,g_tbh-7,act); if(act)fill_rect(bx+2,g_tby+6,bw-7,g_tbh-11,rgb(227,223,219));
-        mini_icon(i,bx+5+act,g_tby+7+act); char tt[24]; int k=0; const char* nm=APPNAME[i]; int maxc=(bw-34)/8; if(maxc>22)maxc=22; while(nm[k]&&k<maxc){ tt[k]=nm[k]; k++; } tt[k]=0;
-        dstr(bx+26+act,g_tby+8+act,tt,rgb(0,0,0),1); { extern int g_web_badge; if(i==W_BROWSER&&g_web_badge>0){ char bd[8],*q=bd; q=udec(q,(u32)(g_web_badge>99?99:g_web_badge)); *q=0; int bwx=bx+bw-24; fill_circle(bwx+8,g_tby+12,8,rgb(210,30,30)); dstr_ctr(bwx+8,g_tby+5,bd,rgb(255,255,255),1); } } g_tbtn_x[g_tbtn_n]=bx; g_tbtn_w[g_tbtn_n]=bw-3; g_tbtn_app[g_tbtn_n]=i; g_tbtn_n++; bx+=bw; }
+        mini_icon(i,bx+5+act,g_tby+7+act); tb_label(bx+26+act,g_tby+8+act,APPNAME[i],bw-34); { extern int g_web_badge; if(i==W_BROWSER&&g_web_badge>0){ char bd[8],*q=bd; q=udec(q,(u32)(g_web_badge>99?99:g_web_badge)); *q=0; int bwx=bx+bw-24; fill_circle(bwx+8,g_tby+12,8,rgb(210,30,30)); dstr_ctr(bwx+8,g_tby+5,bd,rgb(255,255,255),1); } } g_tbtn_x[g_tbtn_n]=bx; g_tbtn_w[g_tbtn_n]=bw-3; g_tbtn_app[g_tbtn_n]=i; g_tbtn_n++; bx+=bw; }
     { extern int xwin_active(int); extern const char* xwin_title(int); extern void xwin_icon(int,int,int,int);
       for(int k=0;k<xwin_count()&&g_tbtn_n<16;k++){ if(bx+bw>g_tray_left-64)break; int act=xwin_active(k);
         bevel(bx,g_tby+4,bw-3,g_tbh-7,act); if(act)fill_rect(bx+2,g_tby+6,bw-7,g_tbh-11,rgb(227,223,219));
-        xwin_icon(k,bx+5+act,g_tby+7+act,16); char tt[24]; int q=0; const char* nm=xwin_title(k); int maxc=(bw-34)/8; if(maxc>22)maxc=22; while(nm[q]&&q<maxc){ tt[q]=nm[q]; q++; } tt[q]=0;
-        dstr(bx+26+act,g_tby+8+act,tt,rgb(0,0,0),1); g_tbtn_x[g_tbtn_n]=bx; g_tbtn_w[g_tbtn_n]=bw-3; g_tbtn_app[g_tbtn_n]=1000+k; g_tbtn_n++; bx+=bw; } }
+        xwin_icon(k,bx+5+act,g_tby+7+act,16); tb_label(bx+26+act,g_tby+8+act,xwin_title(k),bw-34); g_tbtn_x[g_tbtn_n]=bx; g_tbtn_w[g_tbtn_n]=bw-3; g_tbtn_app[g_tbtn_n]=1000+k; g_tbtn_n++; bx+=bw; } }
 }
 void focus_glyph(int cx,int cy,int k,u32 c){
     if(k==0){ for(int j=-7;j<=7;j++)for(int i=-7;i<=7;i++){ int a=i*i+j*j, b=(i-3)*(i-3)+(j+3)*(j+3); if(a<=42&&b>30)putpx(cx+i,cy+j,c); } }
@@ -80,12 +91,46 @@ static int fpop_click(int px,int py){ int x,y,w,h; fpop_geom(&x,&y,&w,&h); if(!i
     else if(k==1001){ g_fpop=0; g_qs=0; { extern int g_stpg; g_stpg=120; } open_win(W_SETTINGS); return 1; } else focus_set(k==g_focus_cur?-1:k,0);
     g_fpop=0; return 1; }
 int focus_popup_click(int px,int py){ if(!g_fpop)return 0; return fpop_click(px,py); }
-static void cqs_geom(int*x,int*y,int*w,int*h){ *w=360; *h=290; *x=(int)W-*w-4; *y=g_tby-*h-2; }
+static void cqs_geom(int*x,int*y,int*w,int*h){ if(g_qsmode==0){ *w=360; *h=290; *x=(int)W-*w-4; *y=g_tby-*h-2; return; }
+    *w=260; *h=g_qsmode==1?118:(bat_present?166:120); int cx=g_tray_x0+(g_qsmode==1?2:3)*22+10; *x=cx-*w/2; if(*x+*w>(int)W-4)*x=(int)W-4-*w; if(*x<4)*x=4; *y=g_tby-*h-2; }
+static void tpop_frame(int px,int py,int pw,int ph,const char* title){ g_bevel_glass=1; bevel(px,py,pw,ph,0); g_bevel_glass=0; dstr(px+12,py+10,title,rgb(0,0,0),1); fill_rect(px+8,py+28,pw-16,1,rgb(128,128,128)); fill_rect(px+8,py+29,pw-16,1,rgb(255,255,255)); }
+static void tpop_link(int x,int y,const char* t){ int hov=in_rect(mx,my,x-2,y-3,(int)slen(t)*8+4,16); u32 c=hov?rgb(0,0,196):rgb(0,0,128); dstr(x,y,t,c,1); fill_rect(x,y+13,(int)slen(t)*8,1,c); }
+static void tpop_btn(int x,int y,int w,int h,const char* t,int down){ bevel(x,y,w,h,down); if(down)fill_rect(x+2,y+2,w-4,h-4,rgb(227,223,219)); dstr_ctr(x+w/2+down,y+(h-8)/2+down,t,rgb(0,0,0),1); }
+static void tvol_geom(int*sx,int*sy,int*sw){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); *sx=px+40; *sy=py+46; *sw=pw-40-58; }
+static void tvol_draw(void){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); tpop_frame(px,py,pw,ph,"Volume");
+    int x,y,w; tvol_geom(&x,&y,&w); u32 ic=rgb(0,0,0); int v=g_snd_vol;
+    fill_rect(px+12,y+3,4,6,ic); for(int q=0;q<5;q++) fill_rect(px+16+q,y+3-q,1,6+2*q,ic); if(v==0){ for(int q=0;q<5;q++){ putpx(px+23+q,y+2+q,ic); putpx(px+27-q,y+2+q,ic); } }
+    bevel(x,y+3,w,6,1); if(v>0)fill_rect(x+1,y+4,(w-2)*v/100,4,rgb(0,0,128)); int kx=x+v*(w-11)/100; bevel(kx,y-4,11,20,0);
+    { char b[8],*p=b; p=udec(p,(u32)v); *p++='%'; *p=0; dstr(x+w+10,y-1,b,ic,1); }
+    tpop_btn(px+12,py+ph-38,72,26,v==0?"Unmute":"Mute",0);
+    if(g_snd_state!=1) dstr(px+92,py+ph-29,"No sound card",rgb(128,128,128),1); else tpop_link(px+pw-12-14*8,py+ph-29,"Sound settings"); }
+static int tvol_click(int mx0,int my0){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph);
+    int x,y,w; tvol_geom(&x,&y,&w); if(my0>=y-6&&my0<y+18&&mx0>=x-4&&mx0<x+w+4){ tray_snd_set((mx0-x)*100/(w>0?w:1)); return 1; }
+    if(in_rect(mx0,my0,px+12,py+ph-38,72,26)){ tray_mute_toggle(); return 1; }
+    if(g_snd_state==1&&in_rect(mx0,my0,px+pw-12-14*8-2,py+ph-32,14*8+4,16)){ g_qs=0; { extern int g_stpg; g_stpg=23; } { extern void settings_clear_search(void); settings_clear_search(); } open_win(W_SETTINGS); return 1; }
+    return 1; }
+static void tpwr_draw(void){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); tpop_frame(px,py,pw,ph,"Power"); extern int g_acb_pct, g_acb_charging, g_acb_mins, g_ac_online; u32 ic=rgb(0,0,0), dim=rgb(96,96,96);
+    if(bat_present){ int pc=g_acb_pct>=0?g_acb_pct:bat_pct; if(pc<0)pc=0; if(pc>100)pc=100; int chg=bat_charging||g_acb_charging;
+        int bx=px+12, by=py+40; fill_rect(bx,by,44,22,ic); fill_rect(bx+1,by+1,42,20,C_FACE); fill_rect(bx+44,by+6,4,10,ic); int fw=pc*38/100; if(fw>0)fill_rect(bx+3,by+3,fw,16,pc<=15?rgb(200,0,0):rgb(0,128,0));
+        if(chg){ for(int q=0;q<6;q++){ fill_rect(bx+22-q/2,by+4+q,2,1,rgb(255,220,0)); fill_rect(bx+20+q/2,by+11+q,2,1,rgb(255,220,0)); } }
+        char b[16],*p=b; p=udec(p,(u32)pc); *p++='%'; *p=0; dstr(bx+58,by+2,b,ic,2);
+        const char* st=chg?"Charging":(g_ac_online==1?"Plugged in, not charging":"On battery"); dstr(px+12,py+72,st,dim,1);
+        char t[48]; t[0]=0; if(g_acb_mins>=0){ p=t; int h=g_acb_mins/60, m=g_acb_mins%60; if(h){ p=udec(p,(u32)h); p=scopy(p," h "); } p=udec(p,(u32)m); p=scopy(p,chg?" min until full":" min remaining"); *p=0; }
+        else if(!chg) p=scopy(t,"Time remaining unknown"), *p=0;
+        if(t[0]) dstr(px+12,py+88,t,dim,1);
+        { int ty=py+ph-62; dstr(px+12,ty+4,"Battery saver",ic,1); tpop_btn(px+pw-12-44,ty,44,20,g_battsave?"On":"Off",g_battsave); } }
+    else { fill_rect(px+16,py+40,2,5,ic); fill_rect(px+22,py+40,2,5,ic); fill_rect(px+14,py+45,12,6,ic); fill_rect(px+19,py+51,2,6,ic);
+        dstr(px+36,py+42,"Plugged in",ic,1); dstr(px+12,py+66,"No battery found",dim,1); }
+    tpop_link(px+12,py+ph-29,"Power settings"); }
+static int tpwr_click(int mx0,int my0){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph);
+    if(bat_present&&in_rect(mx0,my0,px+pw-12-44,py+ph-62,44,20)){ g_battsave^=1; g_refresh_hz=g_battsave?30:60; return 1; }
+    if(in_rect(mx0,my0,px+10,py+ph-32,14*8+4,16)){ g_qs=0; { extern int g_stpg; g_stpg=24; } { extern void settings_clear_search(void); settings_clear_search(); } open_win(W_SETTINGS); return 1; }
+    return 1; }
 static void cqs_tile(int k,int*x,int*y,int*w,int*h){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); *w=(pw-16-16)/3; *h=60; *x=px+8+(k%3)*(*w+8); *y=py+10+(k/3)*(*h+8); }
 static void cqs_slider_geom(int k,int*x,int*y,int*w){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); *x=px+44; *y=py+164+k*38; *w=pw-44-18; }
 static const char* CQS_N[6]={"Wi-Fi","Airplane","Night light","Battery saver","Focus","All settings"};
 static int cqs_on(int k){ return k==0?(g_wm_state!=WM_OFF&&!g_airplane):k==1?g_airplane:k==2?g_nightlight:k==3?g_battsave:k==4?(g_focus_cur>=0):0; }
-static void cqs_draw(void){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); g_bevel_glass=1; bevel(px,py,pw,ph,0); g_bevel_glass=0;
+static void cqs_draw(void){ if(g_qsmode==1){ tvol_draw(); return; } if(g_qsmode==2){ tpwr_draw(); return; } int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); g_bevel_glass=1; bevel(px,py,pw,ph,0); g_bevel_glass=0;
     for(int k=0;k<6;k++){ int x,y,w,h; cqs_tile(k,&x,&y,&w,&h); int on=cqs_on(k); bevel(x,y,w,h,on); if(on) fill_rect(x+2,y+2,w-4,h-4,rgb(132,53,26));
         u32 fc=on?rgb(255,255,255):rgb(0,0,0); int cx=x+w/2, cy=y+18;
         if(k==0){ for(int a=0;a<3;a++){ int rr=3+a*3; for(int dx=-rr;dx<=rr;dx++){ int dy2=rr*rr-dx*dx; int d=0; while((d+1)*(d+1)<=dy2)d++; putpx(cx+dx,cy+5-d,fc); } } fill_rect(cx-1,cy+4,3,3,fc); }
@@ -104,25 +149,42 @@ static void cqs_draw(void){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); g_bevel_
     { int gx=px+pw-34, gy=py+ph-32; bevel(gx,gy,26,24,0); fill_circle(gx+13,gy+12,5,rgb(0,0,0)); fill_circle(gx+13,gy+12,2,C_FACE); for(int q=0;q<8;q++){ int dx[8]={0,5,7,5,0,-5,-7,-5},dy[8]={-7,-5,0,5,7,5,0,-5}; fill_rect(gx+13+dx[q]-1,gy+12+dy[q]-1,2,2,rgb(0,0,0)); } }
 }
 int classic_qs_click(int mx0,int my0){ int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); if(mx0<px||mx0>=px+pw||my0<py||my0>=py+ph) return 0;
+    if(g_qsmode==1) return tvol_click(mx0,my0); if(g_qsmode==2) return tpwr_click(mx0,my0);
     for(int k=0;k<6;k++){ int x,y,w,h; cqs_tile(k,&x,&y,&w,&h); if(mx0>=x&&mx0<x+w&&my0>=y&&my0<y+h){
         if(k==0){ g_qs=0; g_fpop=0; g_wifipop=1; if(g_apn==0||g_wm_state!=WM_CONNECTED)wifi_gui_scan(0); }
-        else if(k==1){ g_airplane^=1; }
+        else if(k==1){ extern int g_hka_osd; extern void hkact_airplane(int); int o=g_hka_osd; g_hka_osd=0; hkact_airplane(!g_airplane); g_hka_osd=o; }
         else if(k==2){ g_nightlight^=1; }
         else if(k==3){ g_battsave^=1; g_refresh_hz=g_battsave?30:60; }
         else if(k==4){ if(g_ticks>g_fpop_closed)g_fpop^=1; }
         else { g_qs=0; open_win(W_SETTINGS); }
         return 1; } }
     for(int k=0;k<2;k++){ int x,y,w; cqs_slider_geom(k,&x,&y,&w); if(my0>=y-6&&my0<y+18&&mx0>=x-4&&mx0<x+w+4){ int v=(mx0-x)*100/(w>0?w:1); if(v<0)v=0; if(v>100)v=100;
-        if(k==0){ if(g_bl.ok)bl_set(v); } else { g_snd_vol=v; if(g_snd_state)g_snd.volume(v); } return 1; } }
+        if(k==0){ if(g_bl.ok)bl_set(v); } else { g_snd_vol=v; snd_set_volume(v); } return 1; } }
     { int gx=px+pw-34, gy=py+ph-32; if(mx0>=gx&&mx0<gx+26&&my0>=gy&&my0<gy+24){ g_qs=0; open_win(W_SETTINGS); } }
     return 1; }
-int classic_tray_click(int px){ if(px<g_tray_x0||px>=g_tray_x0+5*22) return 0; int k=(px-g_tray_x0)/22;
-    if(k==4){ g_notifpanel^=1; g_qs=0; g_fpop=0; } else { g_qs^=1; g_fpop=0; g_notifpanel=0; g_clockpop=0; } return 1; }
+static int g_cqs_drag=0;
+static void cqs_slider_set(int k,int v){ if(v<0)v=0; if(v>100)v=100; if(k==0){ if(g_bl.ok)bl_set(v); } else { g_snd_vol=v; if(g_snd_state==1&&g_snd.volume)g_snd.volume(v); } }
+int classic_qs_drag(int mx0,int my0,int btn,int pressed){
+    if(!btn||!g_qs){ g_cqs_drag=0; return 0; }
+    if(pressed){ g_cqs_drag=0; int px,py,pw,ph; cqs_geom(&px,&py,&pw,&ph); if(mx0<px||mx0>=px+pw||my0<py||my0>=py+ph) return 0;
+        for(int k=0;k<2;k++){ int x,y,w; cqs_slider_geom(k,&x,&y,&w); if(my0>=y-6&&my0<y+18&&mx0>=x-4&&mx0<x+w+4){ g_cqs_drag=k+1; break; } } return 0; }
+    if(!g_cqs_drag) return 0;
+    int k=g_cqs_drag-1, x,y,w; cqs_slider_geom(k,&x,&y,&w); int v=(mx0-x)*100/(w>0?w:1); if(v<0)v=0; if(v>100)v=100;
+    int cur=k==0?(g_bl.ok?(g_bl.cur<0?0:g_bl.cur):-1):g_snd_vol; if(cur<0||cur==v) return 0;
+    cqs_slider_set(k,v); return 1; }
+int classic_tray_click(int px){ if(px<g_tray_x0||px>=g_tray_x0+5*22) return 0; int k=(px-g_tray_x0)/22; g_fpop=0; g_clockpop=0;
+    if(k==4){ g_notifpanel^=1; g_qs=0; return 1; }
+    g_notifpanel=0;
+    if(k==1){ g_qs=0; if(g_wifipop){ g_wifipop=0; extern void wifi_entry_cancel(void); wifi_entry_cancel(); } else { g_wifipop=1; if(g_apn==0||g_wm_state!=WM_CONNECTED)wifi_gui_scan(0); } return 1; }
+    int mode=k==0?0:k==2?1:2;
+    if(g_qs&&g_qsmode==mode){ g_qs=0; return 1; }
+    if(g_wifipop){ g_wifipop=0; extern void wifi_entry_cancel(void); wifi_entry_cancel(); }
+    g_qs=1; g_qsmode=mode; return 1; }
 static void night_tint(int y0,int y1){ if(!g_nightlight)return; if(g_gfx){ gq_tint(g_rt,0,y0,(int)W,y1-y0); return; } for(int y=y0;y<y1;y++){ u32* r=&SCENE[(u64)y*SW]; for(u32 x=0;x<W;x++){ u32 c=r[x]; u32 g=(c>>8)&255, b=c&255; r[x]=(c&0xFF0000)|((g*15/16)<<8)|(b*5/8); } } }
 void classic_taskbtn_click(int px){ for(int k=0;k<g_tbtn_n;k++) if(px>=g_tbtn_x[k]&&px<g_tbtn_x[k]+g_tbtn_w[k]){ int i=g_tbtn_app[k]; if(i>=1000){ extern void xwin_toggle(int); xwin_toggle(i-1000); return; } if(focus==i&&!WN[i].min)win_min(i); else focus_win(i); return; } }
 static void draw_dock(void){
     if(g_dstyle==1){ draw_classic_bar(); return; }
-    int n=12; g_tbh=64; g_tby=(int)H-g_tbh-12; DOCK_h=g_tbh; DOCK_y=g_tby; extern int xwin_count(void); int nx=xwin_count(); if(nx>8)nx=8; DOCK_w=(n+nx)*DOCK_IC+(n+nx-1)*DOCK_GAP+2*DOCK_PAD+(nx?8:0);
+    int n=12; g_tbh=64; g_tby=(int)H-g_tbh-12; DOCK_h=g_tbh; DOCK_y=g_tby; { extern void out_work_reserve(int,int,int); out_work_reserve(0,0,(int)H-g_tby); } extern int xwin_count(void); int nx=xwin_count(); if(nx>8)nx=8; DOCK_w=(n+nx)*DOCK_IC+(n+nx-1)*DOCK_GAP+2*DOCK_PAD+(nx?8:0);
     int bx0=12, bw0=(int)W-24, cy=g_tby+g_tbh/2;
     shadow_soft(bx0,g_tby,bw0,g_tbh,18); glass(bx0,g_tby,bw0,g_tbh,18,rgb(28,26,46),205);
     for(int i=18;i<bw0-18;i++){ u32*p=&SCENE[(u64)g_tby*SW+bx0+i]; *p=mix(*p,rgb(255,255,255),46); }

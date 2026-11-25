@@ -11,6 +11,12 @@ int main(){ int bad=0;
  if(!(g_apn==2&&g_aps[1].sec==2&&g_aps[1].grp==2)){ bad++; printf("wpa1 fail grp=%d sec=%d\n",g_aps[1].grp,g_aps[1].sec); }
  u8 ie4[]={0,3,'o','l','d', 3,1,6}; beacon(b3,ie4,sizeof ie4); int keep=g_aps[1].rssi; *(u32*)buf|=0; rtw_scan_frame(buf,1);
  if(g_aps[1].ch!=6){ bad++; printf("offch changed ch %d\n",g_aps[1].ch); }
+ { u8 bh[6]={9,9,9,9,9,1}; u8 ih[]={0,3,'s','a','e', 3,1,6, 48,20,1,0,0,0x0F,0xAC,4,1,0,0,0x0F,0xAC,4,1,0,0,0x0F,0xAC,8,0xC0,0, 244,1,0x20}; beacon(bh,ih,sizeof ih); rtw_scan_frame(buf,6);
+   int k=g_apn-1; if(!(g_aps[k].akm==(AKM_SAE|AKM_SAE_H2E))){ bad++; printf("rsnxe h2e fail akm=%d\n",g_aps[k].akm); }
+   u8 bh2[6]={9,9,9,9,9,2}; u8 ih2[]={0,3,'h','2','e', 1,2,0x8C,0xFB, 3,1,6, 48,20,1,0,0,0x0F,0xAC,4,1,0,0,0x0F,0xAC,4,1,0,0,0x0F,0xAC,8,0xC0,0}; beacon(bh2,ih2,sizeof ih2); rtw_scan_frame(buf,6);
+   k=g_apn-1; if(!(g_aps[k].akm==(AKM_SAE|AKM_SAE_H2E|AKM_SAE_H2E_ONLY))){ bad++; printf("h2e-only selector fail akm=%d\n",g_aps[k].akm); }
+   u8 bh3[6]={9,9,9,9,9,3}; u8 ih3[]={0,3,'p','s','k', 3,1,6, 48,20,1,0,0,0x0F,0xAC,4,1,0,0,0x0F,0xAC,4,1,0,0,0x0F,0xAC,2,0,0, 244,1,0x20}; beacon(bh3,ih3,sizeof ih3); rtw_scan_frame(buf,6);
+   k=g_apn-1; if(!(g_aps[k].akm==AKM_PSK)){ bad++; printf("psk rsnxe fail akm=%d\n",g_aps[k].akm); } }
  u8 ie5[]={0,4,0,0,0,0, 3,1,11}; beacon(b1,ie5,sizeof ie5); rtw_scan_frame(buf,11); 
  for(int it=0;it<200000;it++){ int n=(it*7919)%600; for(int i=0;i<n;i++)buf[24+i]=(u8)(it*31+i*17); *(u32*)buf=(u32)((it*13)%3000); buf[24]=0x80; rtw_scan_frame(buf,(u8)(it%14)); }
  printf(bad?"FAIL %d\n":"scan ok\n",bad); return bad; }

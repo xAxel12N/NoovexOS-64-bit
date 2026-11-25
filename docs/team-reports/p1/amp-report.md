@@ -16,7 +16,7 @@ Branch p-amp, commit 78f97bc0. Worktree /home/claude/wt/amp.
   - **DELBA:** a DELBA from the AP (initiator bit set) ends the session.
   - **Unicast QoS data on a BA TID:** CCMP is verified without the PN check, and the frame goes through the reorder buffer. The per-TID PN replay check happens when frames are released in order, which is what mac80211 does. The open-network path is handled the same way.
   - `ampdu_reset()` runs on `wnd_setup` and `wnd_down`.
-- **drivers/net/wifi/rtw88/rtw8821ce.c (a one-byte change).** The HT capabilities A-MPDU parameters byte goes from 0x17 to 0x13: max length 64K (exponent 3) and MPDU density 2 µs (`IEEE80211_HT_MPDU_DENSITY_2`), matching rtw88's 8821c `ampdu_density`. Max A-MSDU stays at 3839.
+- **drivers/net/wifi/realtek/rtw88/rtw8821ce.c (a one-byte change).** The HT capabilities A-MPDU parameters byte goes from 0x17 to 0x13: max length 64K (exponent 3) and MPDU density 2 µs (`IEEE80211_HT_MPDU_DENSITY_2`), matching rtw88's 8821c `ampdu_density`. Max A-MSDU stays at 3839.
 - **RX descriptor / RXDMA aggregation (facts from rtw88).** rtw88 turns on `REG_RXDMA_AGG_PG_TH` / `BIT_RXDMA_AGG_EN` only for USB and SDIO. On PCIe every MPDU arrives in its own RX buffer descriptor, so the existing descriptor loop already handles aggregated frames. rtw88's `ampdu_action` does nothing for RX_START, because the MAC sends the BlockAck in hardware. Our MAC init and RCR already match rtw88, so I made no register change.
 - **Shell (system_disks_packages_gpu.c):**
   - `wifi ampdu on|off` (default on). Off resets the sessions and declines new requests.

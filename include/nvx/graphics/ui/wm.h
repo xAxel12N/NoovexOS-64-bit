@@ -9,6 +9,8 @@ typedef struct{ int x,y,w,h,open,z,min,max,sx,sy,sw,sh,ws; } Win;
 typedef struct{ char title[40]; char body[72]; u64 t; int shown; char app[16]; } Notif;
 #define NOTIF_MAX 32
 #define TITLEH 24
+#define WIN_TITLE_MAX 158
+int win_title_fit(int avail);
 void ui_bevel(int x,int y,int w,int h,int in);
 void ui_menubar(int x,int y,int w,const char* const* items,int n);
 void ui_scrollbar(int x,int y,int h,int total,int vis,int pos);
@@ -52,6 +54,7 @@ void focus_win(int i);
 void win_min(int i);
 void win_max(int i);
 void apply_snap(int i,int s);
+void apply_snap_on(int i,int s,int o);
 int win_ctl_hit(int i,int px,int py);
 void win_frame(int i,const char*title);
 int in_rect(int px,int py,int x,int y,int w,int h);

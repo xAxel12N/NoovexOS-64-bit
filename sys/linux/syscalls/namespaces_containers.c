@@ -566,7 +566,7 @@ static long lxn_hook_pre(struct sysregs* r){
     case 234: { if(!t->pns)return LXM_NO; int g1=lxn_pid_in((int)a1), g2=lxn_pid_in((int)a2); if(g1<0||g2<0)return -LX_ESRCH; g_lxn_sv[0]=r->rdi; g_lxn_sv[1]=r->rsi; g_lxn_svn=2; r->rdi=(u64)g1; r->rsi=(u64)g2; return LXM_NO; }
     case 61: { if(!t->pns)return LXM_NO; int v=(int)a1; int g=v; if(v>0){ g=lxn_pid_in(v); if(g<0)return -LX_ECHILD; } long w=lx_wait4(r,g,a2,(int)a3,a4); return w>0?lxn_pid_out((int)w):w; }
     case 109: { if(!t->pns)return LXM_NO; int p1=(int)a1, p2=(int)a2; int g1=p1?lxn_pid_in(p1):0, g2=p2?lxn_pid_in(p2):0; if(g1<0||g2<0)return -LX_ESRCH; g_lxn_sv[0]=r->rdi; g_lxn_sv[1]=r->rsi; g_lxn_svn=2; r->rdi=(u64)g1; r->rsi=(u64)g2; return LXM_NO; }
-    case 63: { if(!t->uts)return LXM_NO; char u[390]; lx_zero(u,390); lx_cpy(u,"NoovexOS",65); lx_cpy(u+65,g_uts[t->uts].host,65); lx_cpy(u+130,"11.10",65); lx_cpy(u+195,"NoovexOS 64 v11.10",65); lx_cpy(u+260,"x86_64",65); lx_cpy(u+325,g_uts[t->uts].dom,65); return lx_put(a1,u,390); }
+    case 63: { if(!t->uts)return LXM_NO; char u[390]; lx_zero(u,390); lx_cpy(u,"NoovexOS",65); lx_cpy(u+65,g_uts[t->uts].host,65); lx_cpy(u+130,"11.22",65); lx_cpy(u+195,"NoovexOS 64 v11.22",65); lx_cpy(u+260,"x86_64",65); lx_cpy(u+325,g_uts[t->uts].dom,65); return lx_put(a1,u,390); }
     case 170: case 171: { if(!t->uts)return LXM_NO; if(!lxn_uown(g_uts[t->uts].uns))return -LX_EPERM; if(a2>64)return -LX_EINVAL; char h[65]; if(lx_get(h,a1,a2))return -LX_EFAULT; h[a2]=0; lxn_cpy(nr==170?g_uts[t->uts].host:g_uts[t->uts].dom,h,65); return 0; }
     case 102: case 107: if(!t->usr)return LXM_NO; return lxn_uid_in((u32)g_uid,0);
     case 104: case 108: if(!t->usr)return LXM_NO; return lxn_uid_in((u32)g_gid,1);

@@ -3,7 +3,7 @@ D = os.path.dirname(os.path.abspath(__file__))
 PARTS = ['01-overview-build.md', '02-boot-signatures.md', '03-memory.md', '04-cpu-smp.md', '05-processes.md',
          '06-linux-porting.md', '07-filesystems.md', '08-storage-installer.md', '09-network.md', '10-devices.md',
          '11-desktop-shell.md', '12-testing-debugging.md', '13-web-engine.md']
-VERSION = '11.10'
+VERSION = '11.22'
 
 def slug(text, seen):
     t = re.sub(r'`', '', text).strip().lower()

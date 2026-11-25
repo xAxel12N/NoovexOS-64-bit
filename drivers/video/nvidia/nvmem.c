@@ -2,10 +2,12 @@
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/drivers/video/nvidia/nvgpu.h"
 #include "include/nvx/drivers/video/nvidia/nvgsp.h"
+#include "include/nvx/drivers/video/nvidia/nvgsp_gen.h"
 
 nvfb_layout g_nvl;
 
 u64 nv_vram_size(void){
+    { u32 c=(nvr32(0)>>20)&0x1FFu; if(c>=0x172u&&c<=0x197u){ u32 m=nvr32(0x1183A4); if(m&&m!=0xFFFFFFFFu)return (u64)m<<20; } }
     u32 d=nvr32(0x100CE0); u64 lmag=(d&0x3F0u)>>4, lsca=d&0xFu; u64 s=lmag<<(lsca+20); if(d&0x40000000u)s=s/16*15; return s; }
 u64 nv_vga_workspace(u64 fb){
     u64 base=fb-0x100000ULL; u64 a=nvr32(0x625F04); if(!(a&8))return base;
@@ -13,7 +15,9 @@ u64 nv_vga_workspace(u64 fb){
 static u64 al_dn(u64 v,u64 a){ return v&~(a-1); }
 static u64 al_up(u64 v,u64 a){ return (v+a-1)&~(a-1); }
 u64 nv_wpr_heap_size(u64 fb){
-    u64 gb=(fb+(1ULL<<30)-1)>>30; u64 h=(8ULL<<20)+al_up((96ULL<<10)*gb,1ULL<<20)+al_up((48ULL<<10)*2048ULL,1ULL<<20); if(h<64)h=64; return h; }
+    u64 gb=(fb+(1ULL<<30)-1)>>30; u64 h=(8ULL<<20)+al_up((96ULL<<10)*gb,1ULL<<20)+al_up((48ULL<<10)*2048ULL,1ULL<<20); if(h<64)h=64;
+    if(nvgsp_gen_hooked()){ h+=g_nvgen->heap_os; if(h<g_nvgen->heap_min)h=g_nvgen->heap_min; }
+    return h; }
 int nv_fb_layout(u64 elf_size,u64 boot_size){
     nvfb_layout* L=&g_nvl; for(u32 i=0;i<sizeof(*L);i++)((u8*)L)[i]=0;
     L->fb_size=nv_vram_size(); if(!L->fb_size||L->fb_size>(64ULL<<30))return 0;

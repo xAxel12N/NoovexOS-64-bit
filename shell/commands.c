@@ -26,10 +26,12 @@
 #include "include/nvx/drivers/bus/pci.h"
 #include "include/nvx/drivers/net/ethernet/nic_names.h"
 #include "include/nvx/drivers/usb/xhci.h"
+#include "include/nvx/drivers/usb/usbreg.h"
 #include "include/nvx/drivers/net/ethernet/nic.h"
 #include "include/nvx/drivers/storage/ahci.h"
 #include "include/nvx/net/stack/tcpip.h"
 #include "include/nvx/net/http/http.h"
+#include "include/nvx/net/stack/firewall.h"
 #include "include/nvx/drivers/input/ps2/ps2.h"
 #include "include/nvx/graphics/theme/theme.h"
 #include "include/nvx/core/panic.h"
@@ -51,11 +53,14 @@
 #include "include/nvx/drivers/net/wifi/rtw_sec.h"
 #include "include/nvx/net/wifi/wifi_netdev.h"
 #include "include/nvx/net/wifi/wifi_ampdu.h"
+#include "include/nvx/net/wifi/wifi_stats.h"
 #include "include/nvx/fs/vfs/dirtree.h"
 #include "include/nvx/sys/native/syscall.h"
 #include "include/nvx/drivers/video/nvidia/nvgpu.h"
 #include "include/nvx/drivers/video/nvidia/nvdisp.h"
 #include "include/nvx/drivers/video/nvidia/nvmon.h"
+#include "include/nvx/drivers/video/nvidia/nvcursor.h"
+#include "include/nvx/graphics/ui/outputs.h"
 #include "include/nvx/core/power.h"
 #include "include/nvx/drivers/acpi/aml.h"
 #include "include/nvx/drivers/acpi/acpi_dev.h"
@@ -70,6 +75,7 @@
 #include "include/nvx/shell/commands.h"
 #include "include/nvx/core/focus.h"
 #include "include/nvx/net/wifi/wifi_mgr.h"
+#include "include/nvx/net/wifi/wifi_ps.h"
 #include "include/nvx/apps/system/settings.h"
 #include "include/nvx/apps/office/editor.h"
 #include "include/nvx/apps/internet/browser.h"
@@ -81,6 +87,7 @@
 #include "include/nvx/core/init/main.h"
 #include "include/nvx/core/auth/acctui.h"
 #include "include/nvx/core/secboot.h"
+#include "include/nvx/core/kaslr.h"
 /* ---- Stage 2: pipes | and redirection > < in the shell ---- */
 static const char* g_pipein=0;
 
@@ -90,6 +97,11 @@ static const char* g_pipein=0;
 static void run_cmd_one(char*s); 
 
 static u64 g_sudo_until=0;
+void sudo_forget(void){ g_sudo_until=0; }
+int sudo_fresh(void){ return g_ticks<g_sudo_until; }
+void sudo_touch(void){ g_sudo_until=g_ticks+(u64)g_sudo_min*6000u; }
+u64 sudo_until_get(void){ return g_sudo_until; }
+void sudo_until_set(u64 v){ g_sudo_until=v; }
 
 #include "shell/commands/usbhid.c"
 #include "shell/commands/prompt_and_dispatch.c"

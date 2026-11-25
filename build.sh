@@ -14,6 +14,7 @@ echo "[2/6] assemble isr64.S"
 gcc $CFLAGS -c arch/x86_64/boot/isr64.S -o $B/isr64.o
 gcc $CFLAGS -c arch/x86_64/boot/userspace.S -o $B/userspace.o
 gcc $CFLAGS -c arch/x86_64/boot/ap_trampoline.S -o $B/ap_trampoline.o
+gcc $CFLAGS -c arch/x86_64/boot/s3_wake.S -o $B/s3_wake.o
 
 echo "[3/6] compile kernel units (incremental, $(nproc 2>/dev/null || echo 4) at a time)"
 CXXFLAGS="$(echo "$CFLAGS" | sed 's/-Werror=implicit-function-declaration//; s/-Werror=int-conversion//; s/-Werror=incompatible-pointer-types//') -std=gnu++20 -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -fno-unwind-tables -Wno-missing-field-initializers"
@@ -35,12 +36,14 @@ echo "[3a2] embed RTL8821CE + RTL8822BE + RTL8822CE firmware blobs"
 ( cd assets/firmware && ld -r -b binary -o ../../$B/rtw_fw.o rtw8821c_fw.bin )
 ( cd assets/firmware && ld -r -b binary -o ../../$B/rtw8822b_fw.o rtw8822b_fw.bin )
 ( cd assets/firmware && ld -r -b binary -o ../../$B/rtw8822c_fw.o rtw8822c_fw.bin )
+( cd assets/firmware/linux-firmware/rtw88 && ld -r -b binary -o ../../../../$B/rtw8723d_fw.o rtw8723d_fw.bin )
 ( cd assets/firmware/rtl_bt && ld -r -b binary -o ../../../$B/rtlbt_fw.o rtl8821c_fw.bin rtl8821c_config.bin rtl8822cu_fw.bin rtl8761bu_config.bin )
 ( cd assets && ld -r -b binary -o ../$B/doom_wad.o doom1.wad.xz )
 ( cd assets && ld -r -b binary -o ../$B/wpf_data.o wpf_data.bin )
 ( cd assets && ld -r -b binary -o ../$B/emoji_data.o emoji32.bin )
 ( cd assets && ld -r -b binary -o ../$B/lq_pak0.o lq_pak0.xz && ld -r -b binary -o ../$B/lq_pak1.o lq_pak1.xz )
-( cd assets/nvidia && for f in gsp bootloader booter_load booter_unload acr_bl; do ld -r -b binary -o ../../$B/nvfw_$f.o nvfw_$f.xz; done )
+( cd assets/nvidia && for f in gsp bootloader booter_load booter_unload acr_bl ga102_bootloader ga102_booter_load ga102_booter_unload; do ld -r -b binary -o ../../$B/nvfw_$f.o nvfw_$f.xz; done )
+( cd assets/firmware/nvidia-ad102 && for f in booter_load booter_unload bootloader; do ld -r -b binary -o ../../../$B/nvfw_ad102_$f.o nvfw_ad102_$f.xz; done )
 for o in doom_wad lq_pak0 lq_pak1 wpf_data emoji_data nvfw_gsp; do objcopy --rename-section .data=.blobdata,alloc,load,data,contents $B/$o.o; done
 sh third_party/quake/build_quake.sh >/dev/null && mv third_party/quake/quake_blob.o $B/quake_blob.o && rm -rf third_party/quake/obj
 sh apps/graphics/r3d/build_r3d.sh >/dev/null && mv apps/graphics/r3d/r3d_blob.o $B/r3d_blob.o
@@ -151,8 +154,8 @@ port kilo $MCC -O2 -w -std=c99 -D_DEFAULT_SOURCE -D_BSD_SOURCE -o $P/kilo $TP/ki
 QJS=$TP/quickjs
 port qjs $MCC -O2 -w -D_GNU_SOURCE -I$QJS -o $P/qjs $QJS/qjs.c $QJS/quickjs.c $QJS/libregexp.c $QJS/libunicode.c $QJS/dtoa.c $QJS/quickjs-libc.c $QJS/gen/repl.c $QJS/gen/standalone.c -lm
 FF=$TP/ffmpeg; FB=$B/ffmpeg; DVB=$FB/dav1d
-FFDEMUX=mov,mp3,aac,matroska,ogg,wav,flac
-FFDEC=h264,hevc,aac,aac_latm,mp3float,vorbis,opus,pcm_s16le,vp8,vp9,flac,alac,pcm_s24le,pcm_s32le,pcm_f32le,libdav1d
+FFDEMUX=mov,mp3,aac,matroska,ogg,wav,flac,avi
+FFDEC=h264,hevc,aac,aac_latm,mp3float,vorbis,opus,pcm_s16le,vp8,vp9,flac,alac,pcm_s24le,pcm_s32le,pcm_f32le,libdav1d,mjpeg
 FFPARSE=h264,hevc,aac,mpegaudio,vp9,opus,vorbis,flac,av1
 FFSTAMP="$FFDEMUX $FFDEC $FFPARSE"
 if [ ! -f $FB/inst/lib/libavcodec.a ] || [ ! -f $DVB/lib/libdav1d.a ] || [ "$(cat $FB/flags.stamp 2>/dev/null)" != "$FFSTAMP" ]; then
@@ -283,6 +286,13 @@ if [ -f $B/glibc-root/lib64/libc.so.6 ]; then
 fi
 echo "[ports2] TCC, vim, less, curl, git and ssh (Dropbear) for musl, with ncurses, zlib and mbedTLS (cached in build/ports2)"
 sh tools/build_ports2.sh $B/ports2 > $B/ports2.log 2>&1 && cp -a $B/ports2/root/. $SR/ || { echo "PORTS2 BUILD FAILED (see build/ports2.log)"; exit 1; }
+echo "[cron] cron daemon and crontab (usr/musl/cron.c)"
+mkdir -p $SR/usr/sbin $SR/usr/bin $SR/etc/cron.d $SR/var/spool/cron/crontabs $SR/var/log/cron
+$MCC -O2 -Wall -Wno-unused-result -o $SR/usr/sbin/cron usr/musl/cron.c && strip $SR/usr/sbin/cron || { echo "CRON BUILD FAILED"; exit 1; }
+ln -sf /usr/sbin/cron $SR/usr/bin/crontab; chmod 1733 $SR/var/spool/cron/crontabs
+printf 'SHELL=/bin/sh\nPATH=/usr/bin:/bin:/usr/sbin:/sbin\n# m h dom mon dow user command\n' > $SR/etc/crontab
+echo "[man] mandoc (man, apropos, whatis) and manual pages in /usr/share/man (cached in build/man)"
+sh tools/build_man.sh $B/man $B/ports2/sys > $B/man.log 2>&1 && cp -a $B/man/root/. $SR/ && tail -1 $B/man.log || echo "  man pages skipped (see build/man.log)"
 echo "[netsurf] NetSurf web browser (framebuffer, NoovexOS surface) with libcss, libdom, libhubbub, FreeType, libpng, libjpeg-turbo, expat (cached in build/netsurf)"
 sh tools/build_netsurf.sh $B/netsurf $B/ports2/sys > $B/netsurf.log 2>&1 && cp -a $B/netsurf/root/. $SR/ || { echo "NETSURF BUILD FAILED (see build/netsurf.log)"; exit 1; }
 if command -v cargo >/dev/null 2>&1 && sh tools/build_rust_apps.sh $B/rust-apps > $B/rust-apps.log 2>&1; then mkdir -p $SR/usr/bin; cp $B/rust-apps/x86_64-unknown-linux-gnu/release/rustinfo $SR/usr/bin/rustinfo; cp $B/rust-apps/x86_64-unknown-linux-gnu/release/nvx-mem $SR/usr/bin/nvx-mem; echo "  rust: rustinfo ($(stat -c %s $SR/usr/bin/rustinfo) bytes), nvx-mem ($(stat -c %s $SR/usr/bin/nvx-mem) bytes)"; else echo "  rust: rustinfo skipped (see build/rust-apps.log)"; fi
@@ -302,13 +312,14 @@ rm -rf $B/apps-stage
 mkdir -p $SR/usr/lib/noovex && cp $B/install.nvx $SR/usr/lib/noovex/install.nvx
 rm -rf $B/packs; mkdir -p $B/packs; for d in $B/packs-root/*/; do [ -d "$d" ] || continue; n=$(basename $d); M=$SR/usr/share/noovex/packs/$n; [ -f $M ] || continue; F=$B/packs/$(echo $n | tr a-z A-Z).NVS; NVX_SR_ALLZSTD=1 python3 tools/mksysroot.py $F =$d >/dev/null || continue; head -1 $M > $M.t; python3 -c "import zlib,sys,os; d=open(sys.argv[1],'rb').read(); print(len(d), '%08X' % (zlib.crc32(d)&0xffffffff))" $F >> $M.t; mv $M.t $M; echo "  pack $n: $(tail -1 $M) (/PACKS on the boot disk, loaded on first start)"; done
 mkdir -p $SR/usr/share/licenses/firmware && cp assets/nvidia/LICENCE.nvidia assets/firmware/LICENCE.rtlwifi_firmware.txt $SR/usr/share/licenses/firmware/ && cp assets/nvidia/README.txt $SR/usr/share/licenses/firmware/README.nvidia.txt && cp assets/firmware/README.txt $SR/usr/share/licenses/firmware/README.realtek.txt
-mkdir -p $SR/usr/share/licenses/bluetooth && cp drivers/bluetooth/NOTICE $SR/usr/share/licenses/bluetooth/NOTICE && sed -n '1,29p' drivers/bluetooth/rtlbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.rtlbtfw-BSD-2-Clause && cp assets/firmware/rtl_bt/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.rtl_bt.txt && sed -n '1,18p' drivers/bluetooth/mtkbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.btmtk-ISC && sed -n '1,29p' drivers/bluetooth/intelbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.iwmbtfw-BSD-2-Clause
-LF=assets/firmware/linux-firmware; mkdir -p $SR/lib/firmware && for d in intel mediatek rtl_bt; do cp -a $LF/$d $SR/lib/firmware/; done && while read l t; do [ -n "$l" ] && mkdir -p $SR/lib/firmware/$(dirname $l) && ln -sfn $t $SR/lib/firmware/$l; done < $LF/links.txt && cp $LF/LICENSES/LICENCE.* $SR/usr/share/licenses/firmware/ && cp $LF/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.linux-firmware.txt && echo "  linux-firmware: $(find $SR/lib/firmware -type f | wc -l) files, $(du -sb $SR/lib/firmware | cut -f1) bytes in /lib/firmware" || { echo "FIRMWARE STAGING FAILED"; exit 1; }
+mkdir -p $SR/usr/share/licenses/bluetooth && cp drivers/bluetooth/NOTICE $SR/usr/share/licenses/bluetooth/NOTICE && sed -n '1,29p' drivers/bluetooth/firmware/rtlbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.rtlbtfw-BSD-2-Clause && cp assets/firmware/rtl_bt/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.rtl_bt.txt && sed -n '1,18p' drivers/bluetooth/firmware/mtkbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.btmtk-ISC && sed -n '1,29p' drivers/bluetooth/firmware/intelbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.iwmbtfw-BSD-2-Clause
+mkdir -p $SR/usr/share/licenses/wifi && cp drivers/net/wifi/mediatek/mt7921/NOTICE $SR/usr/share/licenses/wifi/NOTICE.mt7921 && cp drivers/net/wifi/mediatek/mt7921/LICENCE.BSD-3-Clause-Clear $SR/usr/share/licenses/wifi/LICENCE.mt76-BSD-3-Clause-Clear && cp drivers/net/wifi/realtek/rtw89/NOTICE $SR/usr/share/licenses/wifi/NOTICE.rtw89 && cp drivers/net/wifi/realtek/rtw89/LICENCE.BSD-3-Clause $SR/usr/share/licenses/wifi/LICENCE.rtw89-BSD-3-Clause
+LF=assets/firmware/linux-firmware; mkdir -p $SR/lib/firmware && for d in intel mediatek rtl_bt rtw88 amdgpu rtw89; do cp -a $LF/$d $SR/lib/firmware/; done && while read l t; do [ -n "$l" ] && mkdir -p $SR/lib/firmware/$(dirname $l) && ln -sfn $t $SR/lib/firmware/$l; done < $LF/links.txt && cp $LF/LICENSES/LICENCE.* $SR/usr/share/licenses/firmware/ && cp $LF/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.linux-firmware.txt && echo "  linux-firmware: $(find $SR/lib/firmware -type f | wc -l) files, $(du -sb $SR/lib/firmware | cut -f1) bytes in /lib/firmware" || { echo "FIRMWARE STAGING FAILED"; exit 1; }
 python3 tools/mksysroot.py $B/sysroot.bin =$SR
 
 echo "[4/6] link (elf_x86_64, base 0x100000)"
-OBJS="boot64.o isr64.o userspace.o ap_trampoline.o"
-BLOBS="rune_gfx.o rtw_fw.o rtw8822b_fw.o rtw8822c_fw.o rtlbt_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_abi2test_bin.o user_schedtest_bin.o user_sysfstest_bin.o user_swaptest_bin.o user_abi3test_bin.o user_contest_bin.o user_container_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o r3d_blob.o"
+OBJS="boot64.o isr64.o userspace.o ap_trampoline.o s3_wake.o"
+BLOBS="rune_gfx.o rtw_fw.o rtw8822b_fw.o rtw8822c_fw.o rtlbt_fw.o inst_boot.o inst_stage2.o inst_cfg.o inst_efi.o user_elf.o user_fork_elf.o user_app_elf.o user_thread_elf.o user_preempt_elf.o user_ipc_elf.o user_wmapp_elf.o user_compdemo_elf.o user_posix_elf.o user_mem_elf.o user_count_bin.o user_spin_bin.o user_sigdemo_bin.o user_upper_bin.o user_greet_bin.o user_pipetest_bin.o user_nvxbox_bin.o user_init_bin.o user_libc8_bin.o user_mhello_bin.o user_musltest_bin.o user_smptest_bin.o user_nettest_bin.o user_featest_bin.o user_afutest_bin.o user_kfeat_bin.o user_abi2test_bin.o user_schedtest_bin.o user_sysfstest_bin.o user_swaptest_bin.o user_abi3test_bin.o user_contest_bin.o user_container_bin.o user_sqlite3_bin.o user_gzip_bin.o user_bzip2_bin.o user_xz_bin.o user_zstd_bin.o user_kilo_bin.o user_fetch_bin.o user_qjs_bin.o user_play_bin.o user_libc_so_bin.o user_dyntest_bin.o lua_all.o doom_blob.o doom_wad.o wpf_data.o emoji_data.o quake_blob.o lq_pak0.o lq_pak1.o web_all.o web2_all.o web3_all.o web4_all.o web5_all.o web6_all.o wkx_all.o nvfw_gsp.o nvfw_bootloader.o nvfw_booter_load.o nvfw_booter_unload.o nvfw_acr_bl.o nvfw_ga102_bootloader.o nvfw_ga102_booter_load.o nvfw_ga102_booter_unload.o nvfw_ad102_booter_load.o nvfw_ad102_booter_unload.o nvfw_ad102_bootloader.o r3d_blob.o rtw8723d_fw.o"
 ld -m elf_x86_64 -nostdlib -no-pie -z noexecstack -T arch/x86_64/kernel64.ld \
    -o $B/kernel64.elf $(for o in $OBJS; do printf '%s ' $B/$o; done) $UNITOBJS $MODOBJS $NTFSOBJ $(for o in $BLOBS; do printf '%s ' $B/$o; done)
 

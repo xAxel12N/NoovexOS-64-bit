@@ -71,6 +71,7 @@ void gq_srec_begin(int scene,void* a,void* b,int max);
 int gq_srec_end(int* x,int* y,int* w,int* h);
 void gq_srec_invalidate(void);
 void gq_ext_mark(int s,int x,int y,int w,int h);
+extern void (*g_gq_mark_hook)(int s,int x,int y,int w,int h);
 extern int g_scene_quiet; extern u32 g_scene_wr;
 extern int g_sr_why, g_sr_full, g_sr_part, g_sr_none, g_sr_ops, g_sr_run;
 void gq_log_begin(int d);

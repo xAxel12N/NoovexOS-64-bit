@@ -170,14 +170,17 @@ static u64 lx_gap_scan(u64 cr3,u64 need,u64 from,u64 to){
         else { v+=0x1000ULL; run+=0x1000ULL; }
         if(run>=need)return start; }
     return 0; }
+static void lx_stk_excl(u64 st,u64* xb,u64* xe){ u64 lo=(u64)JS_STK_PAGES*0x1000ULL+0x100000ULL; *xb=st>lo?st-lo:0; *xe=st+0x101000ULL; }
+static u64 lx_gap_scan_x(u64 cr3,u64 need,u64 from,u64 to,u64 xb,u64 xe){ if(from<xb){ u64 r=lx_gap_scan(cr3,need,from,to<xb?to:xb); if(r)return r; } return lx_gap_scan(cr3,need,from>xe?from:xe,to); }
 static u64 g_gh_cr3[32], g_gh_v[32]; static int g_gh_i;
 static u64 lx_find_gap(u64 cr3,u64 pages){
     const u64 lo=0x40004000000ULL, hi=0x48000000000ULL; u64 need=pages<<12; cr3&=~0xFFFULL;
     int h=-1; for(int i=0;i<32;i++) if(g_gh_cr3[i]==cr3){ h=i; break; }
-    if(h<0){ h=g_gh_i; g_gh_i=(g_gh_i+1)&31; g_gh_cr3[h]=cr3; g_gh_v[h]=lo; }
+    if(h<0){ h=g_gh_i; g_gh_i=(g_gh_i+1)&31; g_gh_cr3[h]=cr3; g_gh_v[h]=lo+kaslr_gap_hint(); }
     u64 hint=g_gh_v[h]; if(hint<lo||hint>=hi)hint=lo;
-    u64 r=lx_gap_scan(cr3,need,hint,hi);
-    if(!r&&hint>lo)r=lx_gap_scan(cr3,need,lo,hi);
+    u64 st=jc_lead(&g_jp[g_jcur])->ustk, xb, xe; lx_stk_excl(st?st:USTK_V,&xb,&xe);
+    u64 r=lx_gap_scan_x(cr3,need,hint,hi,xb,xe);
+    if(!r&&hint>lo)r=lx_gap_scan_x(cr3,need,lo,hi,xb,xe);
     if(r)g_gh_v[h]=r+need;
     return r; }
 struct lx_mapname { u64 cr3,b,e; char nm[40]; };
@@ -314,11 +317,11 @@ static long lx_proc_maps(const char* pa,int flags){
     if(!(q[0]=='m'&&q[1]=='a'&&q[2]=='p'&&q[3]=='s'&&!q[4]))return -9999;
     if((flags&3)!=0)return -LX_EACCES;
     static struct lx_me me[400]; int n=0; u64 cr3=P->cr3&~0xFFFULL;
-    me[n].b=0x40000001000ULL; me[n].e=0x40000101000ULL; me[n].nm="[stack]"; me[n].pm="rw-p"; n++;
+    { u64 st=P->ustk?P->ustk:USTK_V; me[n].b=st-(u64)(JS_STK_PAGES-1)*0x1000ULL; me[n].e=st+0x1000ULL; } me[n].nm="[stack]"; me[n].pm="rw-p"; n++;
     me[n].b=0x40000400000ULL; me[n].e=0x40002000000ULL; me[n].nm=P->exe[0]?P->exe:"/proc/self/exe"; me[n].pm="r-xp"; n++;
     if(P->brk>0x40002000000ULL){ me[n].b=0x40002000000ULL; me[n].e=(P->brk+0xFFFULL)&~0xFFFULL; me[n].nm="[heap]"; me[n].pm="rw-p"; n++; }
     { extern u64 vdso_end(void), vdso_start(void); u64 ve=vdso_end(); if(ve){ me[n].b=vdso_start(); me[n].e=ve-0x1000ULL; me[n].nm="[vdso]"; me[n].pm="r-xp"; n++; me[n].b=ve-0x1000ULL; me[n].e=ve; me[n].nm="[vvar]"; me[n].pm="r--p"; n++; } }
-    me[n].b=0x40030000000ULL; me[n].e=0x40030040000ULL; me[n].nm="/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"; me[n].pm="r-xp"; n++;
+    if(P->ibase){ me[n].b=P->ibase; me[n].e=P->ibase+0x40000ULL; me[n].nm="/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"; me[n].pm="r-xp"; n++; }
     int cnt=g_mapn_i<2048?g_mapn_i:2048;
     for(int j=0;j<cnt&&n<400;j++){ struct lx_mapname* m=&g_mapn[(g_mapn_i-cnt+j)%2048]; if((m->cr3&~0xFFFULL)!=cr3||!m->e)continue; me[n].b=m->b; me[n].e=m->e; me[n].nm=m->nm; me[n].pm="r-xp"; n++; }
     for(int a=1;a<n;a++){ struct lx_me t=me[a]; int b=a-1; while(b>=0&&me[b].b>t.b){ me[b+1]=me[b]; b--; } me[b+1]=t; }

@@ -5,7 +5,7 @@ Branch p-btm, commit b048db3c, worktree /home/claude/wt/btm.
 ## Licence
 Fetched the real Linux drivers/bluetooth/btmtk.c and btmtk.h from raw.githubusercontent.com. Both start with `SPDX-License-Identifier: ISC`, `Copyright (C) 2021 MediaTek Inc.`, so the scout was right. Struct layouts and the WMT flow come from the fetched code, not from memory. The ISC header and the MediaTek copyright sit at the top of mtkbt_fw.c and mtkbt_fw.h, and there is a new entry in drivers/bluetooth/NOTICE. The USB id list was taken as facts from Linux btusb.c (GPL-2.0-or-later); no code was copied from it.
 
-## What it does (drivers/bluetooth/mtkbt_fw.c)
+## What it does (drivers/bluetooth/firmware/mtkbt_fw.c)
 - `mtkbt_match(vid,pid)`: MediaTek 0E8D:any, or one of the listed OEM MT7921/7920/7902/7922/7922A/7925 ids (13D3, 0489, 04CA, 35F5, 2C7C). Any other id returns 0 straight away, with no USB traffic and no log line. The host test checks this for 0BDA:C123.
 - Reads the chip id (0x70010200), firmware version (0x80021004) and flavour (0x70010020) with vendor control IN request 0x63. Chip id 0 on a known MT6639 board is treated as 0x6639. Supported chip ids: 0x7961, 0x7922, 0x7925, 0x7902, 0x6639. Any other chip id is logged and the device is left alone. MT7935 is not supported because it needs CBMCU firmware first.
 - Firmware name follows btmtk_fw_get_filename. The file is read from `/lib/firmware/<name>`, for example /lib/firmware/mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin. If the file is missing, one log line names the full path and nothing is sent. No firmware blob is committed.
@@ -19,12 +19,12 @@ Fetched the real Linux drivers/bluetooth/btmtk.c and btmtk.h from raw.githubuser
 - units.list: added drivers/bluetooth/mtkbt_fw.c.
 
 ## Files
-- drivers/bluetooth/mtkbt_fw.c, drivers/bluetooth/mtkbt_fw.h (new)
-- drivers/bluetooth/btusb.c, include/nvx/drivers/bluetooth/bt.h, units.list, drivers/bluetooth/NOTICE
+- drivers/bluetooth/firmware/mtkbt_fw.c, drivers/bluetooth/firmware/mtkbt_fw.h (new)
+- drivers/bluetooth/transport/btusb.c, include/nvx/drivers/bluetooth/bt.h, units.list, drivers/bluetooth/NOTICE
 - tools/tests/bluetooth/mtk_main.c (new), tools/tests/bluetooth/run.sh (now also builds and runs the MTK test)
 
 ## Testing
-- `/home/claude/ccheck.sh drivers/bluetooth/mtkbt_fw.c drivers/bluetooth/hci.c` is clean. drivers/usb/xhci.c (which includes btusb.c) has 47 warnings before and after, so no new ones.
+- `/home/claude/ccheck.sh drivers/bluetooth/firmware/mtkbt_fw.c net/bluetooth/hci.c` is clean. drivers/usb/xhci.c (which includes btusb.c) has 47 warnings before and after, so no new ones.
 - Host test mtk_main.c (ASan+UBSan): 46/46 checks pass. It covers id matching (Realtek, Intel and Broadcom ids are not matched), file names for all chips, the parser with every rejection case (truncation, overflow, zero or huge section count), the WMT status mapping, and a full simulated-device download. In the simulated download the device receives every section byte for byte with the correct flag sequence, a busy reply is retried, a section the device reports as already present is skipped, and the EP reset and function on are sent. Further cases: missing firmware (clear message, nothing sent), unsupported chip, a silent chip (bounded 2 s timeout), adapter gone, the MT6639 fallback, and a damaged file (rejected before anything is sent).
 - `python3 tools/check.py --only bt`: passes.
 

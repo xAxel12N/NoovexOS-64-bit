@@ -24,7 +24,7 @@ def strip_inc(s, inline=()):
         if re.match(r'\s*#include\s+<', l): continue
         out.append(l)
     return '\n'.join(out)
-hdr = ''.join(strip_inc(rd(h)) + '\n' for h in ['include/nvx/drivers/net/wifi/rtw_efuse.h', 'include/nvx/drivers/net/wifi/rtw8821ce.h', 'include/nvx/drivers/net/wifi/rtw_chip.h'])
+hdr = ''.join(strip_inc(rd(h)) + '\n' for h in ['include/nvx/drivers/net/wifi/rtw_efuse.h', 'include/nvx/drivers/net/wifi/rtw8821ce.h', 'include/nvx/drivers/net/wifi/rtw_chip.h', 'include/nvx/drivers/net/wifi/rtw_txpwr.h', 'include/nvx/drivers/net/wifi/rtw_ra.h', 'include/nvx/drivers/net/wifi/rtw_bw.h'])
 pre = r'''#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -36,16 +36,20 @@ __asm__(".section .rodata\n.globl _binary_rtw8821c_fw_bin_start\n.globl _binary_
 defs = r'''
 u8 rtw_phymap[RTW_EFUSE_PHY_SZ]; u8 rtw_logmap[RTW_EFUSE_LOG_SZ]; int rtw_efuse_valid=0;
 int g_rtw_rf_path=0; int g_chquiet=0; int g_wifi_txpwr=1, g_wifi_band5=0; u8 g_wifi_curch=0; u8 g_wifi_pwr[20]; int g_rtw_coex_done=0;
+u32 rtw_find_mmio(void){ return 0; }
 '''
-ef = rd('drivers/net/wifi/rtw88/rtw_efuse.c')
-core = rd('drivers/net/wifi/rtw88/rtw8821ce.c')
+ef = rd('drivers/net/wifi/realtek/rtw88/rtw_efuse.c')
+core = rd('drivers/net/wifi/realtek/rtw88/rtw8821ce.c')
 code = pre + hdr + defs
 code += '\n'.join(fn(ef, s) for s in ['u8  rtw_r8 (', 'u16 rtw_r16(', 'u32 rtw_r32(', 'void rtw_w8 (', 'void rtw_w16(', 'void rtw_w32(',
     'static int rtw_rf_path_ok(', 'static u32 rtw_rf_base(', 'static u32 rtw_rf_sipi(', 'static u32 rtw_mask_shift(', 'u32 rtw_rf_read(', 'void rtw_rf_write(',
     'void rtw_bb_write_mask(', 'u32 rtw_bb_read_mask(', 'void rtw_rf_write_a(', 'int rtw_efuse_phy_sz(', 'int rtw_efuse_log_sz(', 'int rtw_efuse_prot_sz(', 'void rtw_efuse_apply(']) + '\n'
-code += '\n'.join(fn(core, s) for s in ['static int rtw_rfe(void){', 'static int rtw_lte_wait(', 'u32 rtw_lte_read(', 'int rtw_lte_write(', 'int rtw_lte_mask(',
+code += '\n'.join(fn(core, s) for s in ['static int rtw_rfe(void){', 'static u32 rtw_lte_b(void){', 'static int rtw_lte_wait(', 'u32 rtw_lte_read(', 'int rtw_lte_write(', 'int rtw_lte_mask(',
     'int rtw_coex_wifi_only(', 'int rtw_rfe_type(', 'void rtw_set_txpwr(', 'void rtw_set_channel_2g(', 'int rtw_mac_trx_init(', 'u32 rtw_rf_read_a(', 'int rtw_apply_one(']) + '\n'
-code += strip_inc(rd('drivers/net/wifi/rtw88/chip.c')) + '\n'
-code += strip_inc(rd('drivers/net/wifi/rtw88/chips/rtw8821c.c'), inline=('drivers/net/wifi/rtw88/rtw_tables_cond.h',)) + '\n'
+code += strip_inc(rd('drivers/net/wifi/realtek/rtw88/chip.c')) + '\n'
+code += 'static char* scopy(char* p,const char* s){ while(*s)*p++=*s++; *p=0; return p; }\nstatic char* udec(char* p,u32 v){ char t[12]; int n=0; do{ t[n++]=(char)(48+v%10); v/=10; }while(v); while(n)*p++=t[--n]; *p=0; return p; }\n'
+code += strip_inc(rd('drivers/net/wifi/realtek/rtw88/rtw_bw.c')) + '\n'
+code += strip_inc(rd('drivers/net/wifi/realtek/rtw88/chips/rtw8821c.c'), inline=('drivers/net/wifi/realtek/rtw88/rtw_tables_cond.h',)) + '\n'
+code += strip_inc(rd('drivers/net/wifi/realtek/rtw88/rtw_txpwr.c'), inline=('drivers/net/wifi/realtek/rtw88/chips/rtw8821c_txpwr_tbl.h',)) + '\n'
 code += open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[3])), 'chip_ref_v1098.c')).read() + '\n'
 open(sys.argv[2], 'w').write(code + open(sys.argv[3]).read())

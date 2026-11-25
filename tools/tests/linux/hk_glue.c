@@ -59,3 +59,4 @@ int hk_shm_clear(void){ int n=0; for(int i=0;i<64;i++) if(g_lxshm[i].used){ lx_s
 nvol g_vol[VOL_MAX]; int g_vol_n;
 void vol_scan(int force){ (void)force; }
 int virtio_blk_probe(u64* out){ (void)out; return 0; }
+void hk_rng_seed(u64 s){ for(int i=0;i<32;i++){ s^=s<<13; s^=s>>7; s^=s<<17; g_csprng_key[i]=(u8)(s>>24); } g_csprng_ctr=0; g_csprng_ready=1; }

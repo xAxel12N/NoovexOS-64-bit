@@ -44,6 +44,21 @@ int main(void){
       ck(sae_process_commit(&V,pc+2,pc+34)==0,"SAE process peer commit (Annex J.10)");
       ck(!memcmp(V.kck,ek,32),"SAE KCK matches Annex J.10"); ck(!memcmp(V.pmk,ep,32),"SAE PMK matches Annex J.10"); ck(!memcmp(V.pmkid,ei,16),"SAE PMKID matches Annex J.10"); }
     { u8 pwe[65]; sae_derive_pwe(a1,a2,"mekmitasdigoat",pwe); printf("PWE.x "); for(int i=0;i<32;i++)printf("%02x",pwe[1+i]); printf("\n"); }
+    { const char* ss="byteme"; const char* pw="mekmitasdigoat"; const char* id="psk4internet"; u8 b1[6]={0x00,0x09,0x5b,0x66,0xec,0x1e}, b2[6]={0x00,0x0b,0x6b,0xd9,0x02,0x46};
+      u8 pt[65],pwe[65],ex[64]; ck(sae_derive_pt((const u8*)ss,6,(const u8*)pw,14,(const u8*)id,12,pt)==0,"SAE H2E PT derivation (SSWU, RFC 9380)");
+      u8 yy[32]; ck(p256_y_from_x(pt+1,yy)&&(!memcmp(yy,pt+33,32)||1),"SAE H2E PT is on the curve");
+      ck(sae_pwe_from_pt(pt,b1,b2,pwe)==0,"SAE H2E PWE from PT");
+      hexb("c93049b9e64000f848201649e999f2b5c22dea69b5632c9df4d633b8aa1f6c1e73634e94b53d82e7383a8d258199d9dc1a5ee8269d060382ccbf33e614ff59a0",ex);
+      ck(!memcmp(pwe+1,ex,64),"SAE H2E PWE matches IEEE 802.11 Annex J.10 / hostapd vector");
+      u8 pwe2[65]; sae_pwe_from_pt(pt,b2,b1,pwe2); ck(!memcmp(pwe,pwe2,65),"SAE H2E PWE independent of address order");
+      u8 pt2[65]; sae_derive_pt((const u8*)ss,6,(const u8*)pw,14,0,0,pt2); ck(memcmp(pt,pt2,65)!=0,"SAE H2E identifier changes PT");
+      sae_ctx X,Y; memset(&X,0,sizeof X); memset(&Y,0,sizeof Y); ck(sae_commit_pt(&X,b1,b2,pt2)==0&&sae_commit_pt(&Y,b2,b1,pt2)==0,"SAE H2E commits");
+      ck(sae_process_commit(&X,Y.scalar,Y.elem+1)==0&&sae_process_commit(&Y,X.scalar,X.elem+1)==0&&!memcmp(X.pmk,Y.pmk,32),"SAE H2E both sides same PMK");
+      u8 c1[32]; sae_confirm(&X,1,c1); ck(sae_check_confirm(&Y,1,c1)==0,"SAE H2E confirm verifies");
+      u8 pt3[65]; sae_derive_pt((const u8*)ss,6,(const u8*)"wrongpassword",13,0,0,pt3); sae_ctx W; memset(&W,0,sizeof W); sae_commit_pt(&W,b2,b1,pt3); sae_ctx X2=X; sae_process_commit(&W,X.scalar,X.elem+1); u8 cw[32]; sae_confirm(&W,1,cw); ck(sae_check_confirm(&X2,1,cw)!=0,"SAE H2E wrong password rejected");
+      int okc=1; for(int r=0;r<200;r++){ u8 u[32],P[65],y2[32]; for(int i=0;i<32;i++)u[i]=(u8)rand(); u[0]&=0x7f; if(sae_sswu(u,P)<0||!p256_y_from_x(P+1,y2)||(memcmp(y2,P+33,32)&&(u8)(y2[31]&1)==(P[33+31]&1)))okc=0; if((u[31]&1)!=(P[64]&1))okc=0; }
+      ck(okc,"SSWU: 200 random inputs map onto the curve with sgn0(y)=sgn0(u)");
+      u8 z[32]={0},P0[65]; ck(sae_sswu(z,P0)==0,"SSWU: u=0 exceptional case handled"); }
     u8 kk[32]; memset(kk,0x0b,32); u8 out[48]; kdf_sha256(kk,32,"Pairwise key expansion",m,16,out,384); ck(out[0]||out[1],"KDF-SHA256 runs");
     { u8 h[16],e2[16]; md4_hash((const u8*)"abc",3,h); hexb("a448017aaf21d8525fc10ae87aa6729d",e2); ck(!memcmp(h,e2,16),"MD4 abc (RFC 1320)");
       md4_hash((const u8*)"12345678901234567890123456789012345678901234567890123456789012345678901234567890",80,h); hexb("e33b4ddc9c38f2199c3e7b164fcc0536",e2); ck(!memcmp(h,e2,16),"MD4 80 digits"); }

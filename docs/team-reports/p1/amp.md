@@ -1,4 +1,4 @@
-Task amp: A-MPDU (frame aggregation) for the RTL8821CE (drivers/net/wifi/rtw88/, net/wifi/). Goal: faster downloads.
+Task amp: A-MPDU (frame aggregation) for the RTL8821CE (drivers/net/wifi/realtek/rtw88/, net/wifi/). Goal: faster downloads.
 1. RX (most important): answer ADDBA Request action frames from the AP with ADDBA Response (accept, buffer size 64, block-ack policy
    immediate), track per-TID BA sessions, handle DELBA, and add a per-TID RX reorder buffer (sequence window, timeout flush ~100 ms) so
    out-of-order MPDUs from an aggregate are delivered in order. Make sure the RX descriptor path accepts aggregated frames (check rtw88

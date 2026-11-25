@@ -50,7 +50,7 @@ static int chan_alloc(u32 c,u32 chid,u32 et,int priv,u64 inst,u64 userd,u64 mthd
     *(u64*)(p+0x08)=gpva; *(u32*)(p+0x10)=gpn; *(u32*)(p+0x14)=((chid%8)<<8)|((chid/8)<<12)|(1u<<21)|((priv?1u:0u)<<5); *(u32*)(p+0x1C)=HVAS; *(u32*)(p+0x80)=et;
     memdesc(p+0x90,inst,0x1000,2,1); memdesc(p+0xA8,userd,0x200,2,1); memdesc(p+0xC0,inst,0x200,2,1); memdesc(p+0xD8,mthd,G.mthd_size,mthd_as,mthd_as==1?0:1);
     *(u32*)(p+0xF4)=priv?0x15u:0x14u;
-    return rm_alloc(HC(c),HDEV,HCH(chid),0xC46F,p,360)==0; }
+    return rm_alloc(HC(c),HDEV,HCH(chid),nvgsp_cls_cur()->chan,p,360)==0; }
 
 static struct { u32 idx, id, global, init, ro; u64 size, align; u64 mem; } g_cb[10]; static int g_ncb=0;
 static int ctxbuf_info(void){
@@ -65,16 +65,20 @@ static int ctxbuf_info(void){
     return g_ncb>0; }
 static u64 g_va_next=0x200000000ULL;
 static u64 va_take(u64 size,u64 align){ if(align<0x1000)align=0x1000; u64 v=(g_va_next+align-1)&~(align-1); g_va_next=v+((size+0xFFFULL)&~0xFFFULL); return v; }
+static struct { u64 mem, va, size; } g_pcb[10]; static int g_npcb=0;
+static void promote_drop(nvvmm* vm){ for(int j=0;j<g_npcb;j++){ if(g_pcb[j].va)nvm_unmap(vm,g_pcb[j].va,g_pcb[j].size); if(g_pcb[j].mem)nvv_free(g_pcb[j].mem); g_pcb[j].mem=0; } nvm_tlb_flush(vm->pd3,0); }
 static int promote(u32 c,u32 chid,nvvmm* vm,int golden){
-    static u8 p[560]; for(int i=0;i<560;i++)p[i]=0; u32 n=0;
+    static u8 p[560]; for(int i=0;i<560;i++)p[i]=0; u32 n=0; int j=0;
     *(u32*)p=1; *(u32*)(p+12)=HC(c); *(u32*)(p+16)=HCH(chid);
     for(int i=0;i<g_ncb&&n<16;i++){ int alloc=golden||!g_cb[i].global; if(!alloc&&g_cb[i].id==11)continue;
         u8* e=p+48+n*32; u64 mem=g_cb[i].mem;
         if(alloc){ mem=nvv_alloc(g_cb[i].size,g_cb[i].align); if(!mem){ nvl_kv("no VRAM for context buffer",g_cb[i].id); return 0; } if(g_cb[i].global)g_cb[i].mem=mem; }
         if(!mem)continue;
+        int own=!golden&&j<10, reuse=own&&j<g_npcb&&g_pcb[j].va&&g_pcb[j].size==g_cb[i].size;
+        if(own){ if(!reuse)g_pcb[j].va=0; g_pcb[j].mem=alloc?mem:0; g_pcb[j].size=g_cb[i].size; j++; if(j>g_npcb)g_npcb=j; }
         *(u16*)(e+28)=(u16)g_cb[i].id; int initz=g_cb[i].init&&alloc; e[30]=(u8)initz;
         if(g_cb[i].id==10&&alloc)e[31]=1;
-        else { u64 va=va_take(g_cb[i].size,g_cb[i].align); if(!nvm_map(vm,va,mem,g_cb[i].size,0,1,(int)g_cb[i].ro))return 0; *(u64*)(e+8)=va; }
+        else { u64 va=reuse?g_pcb[j-1].va:va_take(g_cb[i].size,g_cb[i].align); if(own)g_pcb[j-1].va=va; if(!nvm_map(vm,va,mem,g_cb[i].size,0,1,(int)g_cb[i].ro))return 0; *(u64*)(e+8)=va; }
         if(initz){ *(u64*)e=mem; *(u64*)(e+16)=g_cb[i].size; *(u32*)(e+24)=4; }
         nvl_s("  promote id "); nvl_d(g_cb[i].id); nvl_s(" va "); nvl_x(*(u64*)(e+8)); nvl_s(" pa "); nvl_x(*(u64*)e); nvl_s(" size "); nvl_x(*(u64*)(e+16)); nvl_s(e[30]?" init":""); nvl_s(e[31]?" not-mapped":" mapped"); nvl_nl();
         n++; }
@@ -99,7 +103,7 @@ static int golden(void){
     if(!chan_alloc(0,0,1,1,gi,gi+0x1000,gi+0x2000,1,0,512))return nv_fail(12,"golden channel allocation failed");
     if(!ctxbuf_info())return nv_fail(12,"could not read the GR context buffer sizes");
     if(!promote(0,0,&gv,1))return nv_fail(12,"PROMOTE_CTX for the golden channel failed");
-    if(rm_alloc(HC(0),HCH(0),0x97000000u,0xC597,0,0))return nv_fail(12,"TURING_A on the golden channel failed");
+    if(rm_alloc(HC(0),HCH(0),0x97000000u,nvgsp_cls_cur()->threed,0,0))return nv_fail(12,"the 3D class object on the golden channel failed");
     rm_free(HC(0),0x97000000u); rm_free(HC(0),HCH(0));
     nvl_s("  golden context created"); nvl_nl(); return 1; }
 
@@ -116,7 +120,12 @@ static int fifo_info(void){
 static struct { u64 inst, userd; u8* mthd; u8* ring; u64 ringva; u32 chid, runl, et, put, token; } g_ch[2];
 static int g_2d_obj=0, g_2d_ok=0;
 static nvvmm g_uv;
+#define NV_CHID_LO 10
+#define NV_CHID_END 32
+static u32 g_chid_next=NV_CHID_LO; static int g_ch_live[2];
 static int g_nv_disabled=0; static char g_off_why[96]; static u64 g_off_t=0; static u32 g_on_count=0; static u32 g_off_count=0, g_tick_err=0, g_rc_other=0; static u64 g_tick_live=0;
+#define NV_RC_MAX 3
+static u32 g_rc_n=0, g_rc_fixed=0, g_rc_failed=0, g_pf_n=0; static int g_rc_last=-2;
 static int g_rc_dead=0; static volatile u32* g_hung_p[2]; static u32 g_hung_v[2]; static u32 g_hung_n=0; static u32 g_auto_tries=0; static u64 g_auto_at=0; static char g_auto_why[80];
 static void nv_auto_need(const char* why){ if(1||g_auto_at||g_auto_tries>=1){ (void)why; return; } g_auto_at=hr_ns()+10000000000ULL; char* q=g_auto_why; q=scopy(q,why); *q=0; }
 static int nv_gone(u32 want,u32* got){ u32 b=nvr32(0); if(b!=0xFFFFFFFFu&&(!want||b==want))return 0; hr_delay_us(1000); b=nvr32(0); if(got)*got=b; return b==0xFFFFFFFFu||(want&&b!=want); }
@@ -125,28 +134,36 @@ static u32* g_cepb=0; static volatile u32* g_cesem=0; static u64 g_cepb_va=0, g_
 static struct { int ok, on; u64 vram, va, len; u32 pitch, h; const void* sptr; u32 ssw, sh; u64 sva; u32 frames, fails, bad, rframes, rects; char why[80]; } g_sc;
 static void ch_kick(int k,u64 pbva,int n){
     u32* ring=(u32*)g_ch[k].ring; u32 put=g_ch[k].put; ring[put*2]=(u32)(pbva&0xFFFFFFFCULL); ring[put*2+1]=(u32)((pbva>>32)&0xFFu)|((u32)n<<10); cflush(ring,0x1000);
-    put=(put+1)%512; g_ch[k].put=put; nvp_wr32(g_ch[k].userd+0x8C,put); (void)nvp_rd32(g_ch[k].userd+0x8C); cpu_mb(); nvw32(0xBB0090,g_ch[k].token); }
+    put=(put+1)%512; g_ch[k].put=put; nvp_wr32(g_ch[k].userd+0x8C,put); (void)nvp_rd32(g_ch[k].userd+0x8C); cpu_mb(); nvw32(nvgsp_cls_cur()->doorbell,g_ch[k].token); }
 static void ce_kick(u64 pbva,int n){ ch_kick(1,pbva,n); }
+static int chan_up(nvvmm* vm,int k);
 static int user_chan(nvvmm* vm,int k,u32 chid,u32 et,u32 runl){
     g_ch[k].chid=chid; g_ch[k].et=et; g_ch[k].runl=runl; g_ch[k].put=0;
     g_ch[k].inst=nvv_alloc(0x1000,0x1000); g_ch[k].userd=nvv_alloc(0x1000,0x1000); g_ch[k].mthd=sa_contig(G.mthd_size?G.mthd_size:0x1000,0x1000); g_ch[k].ring=sa(0x1000,0x1000);
     if(!g_ch[k].inst||!g_ch[k].userd||!g_ch[k].mthd||!g_ch[k].ring)return 0;
     g_ch[k].ringva=va_take(0x1000,0x1000); if(!nvm_map(vm,g_ch[k].ringva,PA(g_ch[k].ring),0x1000,1,0,0))return 0; nvm_tlb_flush(vm->pd3,0);
+    return chan_up(vm,k); }
+static int chan_up(nvvmm* vm,int k){
+    u32 chid=g_ch[k].chid, et=g_ch[k].et, runl=g_ch[k].runl;
     nvm_inst_join(vm,g_ch[k].inst);
     if(!chan_alloc(1,chid,et,0,g_ch[k].inst,g_ch[k].userd,PA(g_ch[k].mthd),1,g_ch[k].ringva,512))return 0;
-    if(rm_ctrl(HC(1),HCH(chid),0xA06F0104u,&et,4))return 0;
+    g_ch_live[k]=1; if(rm_ctrl(HC(1),HCH(chid),0xA06F0104u,&et,4))return 0;
     u8 sch[2]={1,0}; if(rm_ctrl(HC(1),HCH(chid),0xA06F0103u,sch,2))return 0;
     g_ch[k].token=(runl<<16)|chid; u32 tok=0; if(rm_ctrl(HC(1),HCH(chid),0xC36F0108u,&tok,4)==0){ g_ch[k].token=tok; nvl_s("  channel "); nvl_d(chid); nvl_s(" work-submit token "); nvl_x(tok); nvl_s(" (computed "); nvl_x((runl<<16)|chid); nvl_s(")"); nvl_nl(); }
     return 1; }
 
+static u8 *g_ct_src, *g_ct_dst; static u32* g_ct_pb; static u64 g_ct_vs, g_ct_vd, g_ct_vp; static int g_ct_mapped=0;
 static int ce_test(nvvmm* vm){
     nvl_s("[15] copy-engine test (DMA 4 KB through the new channel)"); nvl_nl();
-    u8* src=sa(0x1000,0x1000); u8* dst=sa(0x1000,0x1000); u32* pb=(u32*)sa(0x1000,0x1000); if(!src||!dst||!pb)return 0;
-    for(int i=0;i<0x1000;i++){ src[i]=(u8)(i*7+3); dst[i]=0; }
-    u64 vs=va_take(0x1000,0x1000), vd=va_take(0x1000,0x1000), vp=va_take(0x1000,0x1000);
-    if(!nvm_map(vm,vs,PA(src),0x1000,1,0,0)||!nvm_map(vm,vd,PA(dst),0x1000,1,0,0)||!nvm_map(vm,vp,PA(pb),0x1000,1,0,0))return 0; nvm_tlb_flush(vm->pd3,0);
+    g_ct_src=g_ct_src?g_ct_src:sa(0x1000,0x1000); g_ct_dst=g_ct_dst?g_ct_dst:sa(0x1000,0x1000); g_ct_pb=g_ct_pb?g_ct_pb:(u32*)sa(0x1000,0x1000);
+    u8* src=g_ct_src; u8* dst=g_ct_dst; u32* pb=g_ct_pb; if(!src||!dst||!pb)return 0;
+    for(int i=0;i<0x1000;i++){ src[i]=(u8)(i*7+3); dst[i]=0; pb[i/4]=0; }
+    if(!g_ct_mapped){ g_ct_vs=va_take(0x1000,0x1000); g_ct_vd=va_take(0x1000,0x1000); g_ct_vp=va_take(0x1000,0x1000);
+        int mo=nvm_map(vm,g_ct_vs,PA(src),0x1000,1,0,0)&&nvm_map(vm,g_ct_vd,PA(dst),0x1000,1,0,0)&&nvm_map(vm,g_ct_vp,PA(pb),0x1000,1,0,0); nvm_tlb_flush(vm->pd3,0); if(!mo)return 0;
+        g_ct_mapped=1; }
+    u64 vs=g_ct_vs, vd=g_ct_vd, vp=g_ct_vp;
     int n=0; u32 sc=4u<<13;
-    pb[n++]=(1u<<29)|(1u<<16)|sc|(0x0000u>>2); pb[n++]=0xC5B5u;
+    pb[n++]=(1u<<29)|(1u<<16)|sc|(0x0000u>>2); pb[n++]=nvgsp_cls_cur()->ce;
     pb[n++]=(1u<<29)|(4u<<16)|sc|(0x0400u>>2); pb[n++]=(u32)(vs>>32); pb[n++]=(u32)vs; pb[n++]=(u32)(vd>>32); pb[n++]=(u32)vd;
     pb[n++]=(1u<<29)|(4u<<16)|sc|(0x0410u>>2); pb[n++]=0x1000; pb[n++]=0x1000; pb[n++]=0x1000; pb[n++]=1;
     pb[n++]=(1u<<29)|(1u<<16)|sc|(0x0300u>>2); pb[n++]=0x186u;
@@ -160,8 +177,9 @@ static int ce_test(nvvmm* vm){
 
 static int objects(void){
     if(G.state<3)return nv_fail(11,"GSP is not running - use nvgsp boot first");
+    const nvgsp_cls* C=nvgsp_cls_cur();
     { extern void nvd_halt(const char*); nvd_halt("the NVIDIA GPU was restarted"); }
-    g_rc_dead=0; g_hung_p[0]=0; g_hung_p[1]=0; g_nv_disabled=0; g_off_why[0]=0;
+    g_rc_dead=0; g_rc_n=0; g_rc_last=-2; g_npcb=0; g_ct_mapped=0; g_chid_next=NV_CHID_LO; g_ch_live[0]=0; g_ch_live[1]=0; g_hung_p[0]=0; g_hung_p[1]=0; g_nv_disabled=0; g_off_why[0]=0;
     g_cepb=0; g_cesem=0; g_sc.ok=0; g_sc.on=0; g_sc.sptr=0; g_ce_gen++; g_2d_obj=0; g_2d_ok=0; extern void nv2d_reset(void); nv2d_reset();
     nvl_s("[11] FIFO engines"); nvl_nl();
     if(!fifo_info())return nv_fail(11,"FIFO device info control failed");
@@ -181,19 +199,39 @@ static int objects(void){
     nvl_s("  copy engine for our channel: type "); nvl_d(cet); nvl_s(" runlist "); nvl_d(cel); nvl_s(cel==grl?" (shares the graphics runlist)":" (its own runlist)"); nvl_nl();
     if(!user_chan(&g_uv,0,8,1,grl))return nv_fail(14,"GR channel allocation failed");
     if(!promote(1,8,&g_uv,0))return nv_fail(14,"PROMOTE_CTX for the GR channel failed");
-    if(rm_alloc(HC(1),HCH(8),0xC5970001u,0xC597,0,0))return nv_fail(14,"TURING_A (3D) object failed");
-    nvl_s("  TURING_A (3D, class c597) created"); nvl_nl();
-    if(rm_alloc(HC(1),HCH(8),0xC5C00001u,0xC5C0,0,0))return nv_fail(14,"TURING_COMPUTE_A object failed");
-    nvl_s("  TURING_COMPUTE_A (class c5c0) created"); nvl_nl();
-    g_2d_obj=rm_alloc(HC(1),HCH(8),0x902D0001u,0x902D,0,0)==0; g_2d_ok=0;
+    if(rm_alloc(HC(1),HCH(8),0xC5970001u,C->threed,0,0))return nv_fail(14,C->threed==0xC597u?"TURING_A (3D) object failed":"AMPERE_B (3D) object failed");
+    nvl_s("  3D object created, class "); nvl_x(C->threed); nvl_nl();
+    if(rm_alloc(HC(1),HCH(8),0xC5C00001u,C->compute,0,0))return nv_fail(14,C->compute==0xC5C0u?"TURING_COMPUTE_A object failed":"AMPERE_COMPUTE_B object failed");
+    nvl_s("  compute object created, class "); nvl_x(C->compute); nvl_nl();
+    g_2d_obj=rm_alloc(HC(1),HCH(8),0x902D0001u,C->twod,0,0)==0; g_2d_ok=0;
     nvl_s(g_2d_obj?"  FERMI_TWOD_A (2D engine, class 902d) created":"  FERMI_TWOD_A (2D engine) could not be created - no 2D drawing"); nvl_nl();
     if(!user_chan(&g_uv,1,9,cet,cel))return nv_fail(14,"copy-engine channel allocation failed");
-    u32 cp[2]={1,cet}; if(rm_alloc(HC(1),HCH(9),0xC5B50001u,0xC5B5,cp,8))return nv_fail(14,"TURING_DMA_COPY_A object failed");
-    nvl_s("  TURING_DMA_COPY_A (class c5b5) created"); nvl_nl();
+    u32 cp[2]={1,cet}; if(rm_alloc(HC(1),HCH(9),0xC5B50001u,C->ce,cp,8))return nv_fail(14,C->ce==0xC5B5u?"TURING_DMA_COPY_A object failed":"AMPERE_DMA_COPY_B object failed");
+    nvl_s("  copy engine object created, class "); nvl_x(C->ce); nvl_nl();
     G.state=6;
     if(!ce_test(&g_uv))return nv_fail(15,"the copy engine did not copy the test buffer within 2 s");
     nvl_s("  copy engine copied 4096 bytes correctly - the GPU executes commands"); nvl_nl();
     G.state=7; return 1; }
+static u32 chid_take(u32 old){
+    for(u32 t=0;t<NV_CHID_END-NV_CHID_LO;t++){ u32 c=g_chid_next; g_chid_next=c+1>=NV_CHID_END?NV_CHID_LO:c+1; if(c!=old&&c!=g_ch[0].chid&&c!=g_ch[1].chid)return c; }
+    return old; }
+static int chan_rebuild(int k){
+    u32 old=g_ch[k].chid; nvl_s("  channel "); nvl_d(old); nvl_s(k?" (copy engine)":" (graphics)"); nvl_s(": freed and made again, like nouveau's robust channel handling"); nvl_nl();
+    if(g_ch_live[k]&&rm_free(HC(1),HCH(old)))return 0;
+    g_ch_live[k]=0;
+    if(k==0)promote_drop(&g_uv);
+    u32 chid=chid_take(old); g_ch[k].chid=chid; nvl_s("  new channel id "); nvl_d(chid); nvl_nl();
+    if(g_ch[k].inst)nvv_free(g_ch[k].inst);
+    if(g_ch[k].userd)nvv_free(g_ch[k].userd);
+    g_ch[k].inst=nvv_alloc(0x1000,0x1000); g_ch[k].userd=nvv_alloc(0x1000,0x1000); g_ch[k].put=0; g_hung_p[k]=0;
+    if(!g_ch[k].inst||!g_ch[k].userd)return 0;
+    for(int i=0;i<0x1000;i++)g_ch[k].ring[i]=0; cflush(g_ch[k].ring,0x1000);
+    if(!chan_up(&g_uv,k))return 0;
+    const nvgsp_cls* C=nvgsp_cls_cur();
+    if(k==0){ if(!promote(1,chid,&g_uv,0))return 0; if(rm_alloc(HC(1),HCH(chid),0xC5970001u,C->threed,0,0)||rm_alloc(HC(1),HCH(chid),0xC5C00001u,C->compute,0,0))return 0;
+        g_2d_obj=rm_alloc(HC(1),HCH(chid),0x902D0001u,C->twod,0,0)==0; return 1; }
+    u32 cp[2]={1,g_ch[1].et}; if(rm_alloc(HC(1),HCH(chid),0xC5B50001u,C->ce,cp,8))return 0;
+    g_ce_busy=0; return ce_test(&g_uv); }
 
 static int unload(void){ { extern void nvd_halt(const char*); nvd_halt("the NVIDIA driver was unloaded"); } nvgsp_mode_lost();
     g_cepb=0; g_cesem=0; g_sc.ok=0; g_sc.on=0; g_sc.sptr=0; g_ce_gen++; g_2d_obj=0; g_2d_ok=0; nv2d_reset();
@@ -230,7 +268,7 @@ static int ce_run(u64 src,u32 spitch,u64 dst,u32 dpitch,u32 len,u32 lines,int fi
     g_ce_busy=1;
     u32 seq=++g_ce_seq; if(!seq)seq=g_ce_seq=1; g_cesem[0]=0; cpu_mb();
     u32* pb=g_cepb; int n=0; u32 sc=4u<<13;
-    pb[n++]=(1u<<29)|(1u<<16)|sc|(0x0000u>>2); pb[n++]=0xC5B5u;
+    pb[n++]=(1u<<29)|(1u<<16)|sc|(0x0000u>>2); pb[n++]=nvgsp_cls_cur()->ce;
     pb[n++]=(1u<<29)|(3u<<16)|sc|(0x0240u>>2); pb[n++]=(u32)(g_cesem_va>>32); pb[n++]=(u32)g_cesem_va; pb[n++]=seq;
     pb[n++]=(1u<<29)|(4u<<16)|sc|(0x0400u>>2); pb[n++]=(u32)(src>>32); pb[n++]=(u32)src; pb[n++]=(u32)(dst>>32); pb[n++]=(u32)dst;
     pb[n++]=(1u<<29)|(4u<<16)|sc|(0x0410u>>2); pb[n++]=spitch; pb[n++]=dpitch; pb[n++]=len; pb[n++]=lines;
@@ -249,7 +287,7 @@ static int ce_rects(u64 src,u32 spitch,u64 dst,u32 dpitch,const dmg_rect* r,int 
         g_ce_busy=1;
         u32 seq=++g_ce_seq; if(!seq)seq=g_ce_seq=1; g_cesem[0]=0; cpu_mb();
         u32* pb=g_cepb; int k=0; u32 sc=4u<<13; int cnt=0;
-        pb[k++]=(1u<<29)|(1u<<16)|sc|(0x0000u>>2); pb[k++]=0xC5B5u;
+        pb[k++]=(1u<<29)|(1u<<16)|sc|(0x0000u>>2); pb[k++]=nvgsp_cls_cur()->ce;
         pb[k++]=(1u<<29)|(3u<<16)|sc|(0x0240u>>2); pb[k++]=(u32)(g_cesem_va>>32); pb[k++]=(u32)g_cesem_va; pb[k++]=seq;
         while(i<n&&k+12<=CE_PBCAP){
             const dmg_rect* q=&r[i]; int last=(i+1==n)||(k+24>CE_PBCAP);

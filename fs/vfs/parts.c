@@ -33,7 +33,7 @@ static int pio_cmd(int unit,u64 lba,int ident,u8* buf){
 int bd_read(int d,u64 lba,u8* buf){
     if(d<0||d>=g_bd_n)return -1; blkdev* b=&g_bd[d]; if(lba>=b->sectors)return -1;
     switch(b->kind){
-        case BK_MAIN: if(lba>0xFFFFFFFFULL)return -1; return gdisk_read((u32)lba,1,buf);
+        case BK_MAIN: return gdisk_read(lba,1,buf);
         case BK_IDE: return pio_cmd(b->unit,lba,0,buf);
         case BK_AHCI: return ahci_port_io(b->unit,lba,buf,0);
         case BK_USB: if(lba>0xFFFFFFFFULL)return -1; return usb_msd_read512((u32)lba,buf);

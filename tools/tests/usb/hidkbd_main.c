@@ -74,7 +74,18 @@ int main(void){
   clr(); { u8 r[17]={4,0x02,0x30}; rep(r,17); u8 z[17]={4}; rep(z,17); }
   chk("bitmap a+b with Shift -> \"AB\", released", !strcmp(kq,"AB")&&!kdown[0x1E]&&!kdown[0x30]&&!kdown[0x2A]);
   clr(); { u8 r[17]={4,0,0xF0,0xFF}; rep(r,17); u8 z[17]={4}; rep(z,17); }
-  chk("12 keys down: first 6 typed, no garbage", !strcmp(kq,"abcdef"));
+  chk("NKRO: 12 keys down in one report -> all 12 typed, no garbage", !strcmp(kq,"abcdefghijkl")&&!kdown[0x1E]&&!kdown[0x26]);
+  clr(); { u8 r[17]={4}; for(int u=4;u<4+20;u++)r[2+(u>>3)]|=(u8)(1u<<(u&7)); rep(r,17);
+    int dn=0; for(int u=4;u<4+20;u++){ u8 sc=hid2scan((u8)u); if(sc&&kdown[sc])dn++; }
+    chk("NKRO: 20 keys held -> 20 typed, 20 held in kdown", strlen(kq)==20&&dn==20);
+    r[2+(0x12>>3)]&=(u8)~(1u<<(0x12&7)); rep(r,17); chk("NKRO: release of the 15th key (o, outside the 6-key window) clears only it", !kdown[0x18]&&kdown[0x1E]&&kdown[0x32]&&strlen(kq)==20);
+    r[2+(0x04>>3)]&=(u8)~(1u<<(0x04&7)); rep(r,17); chk("NKRO: release of a windowed key (a) clears only it", !kdown[0x1E]&&kdown[0x30]&&kdown[0x13]);
+    r[2+(0x04>>3)]|=(u8)(1u<<(0x04&7)); rep(r,17); chk("NKRO: a pressed again while 18 others held -> typed once more", strlen(kq)==21&&kq[20]=='a'&&kdown[0x1E]);
+    u8 z[17]={4}; rep(z,17); int left=0; for(int s=0;s<256;s++)left+=kdown[s]; chk("NKRO: all released -> no key stuck", left==0&&!usbk_rep_code); }
+  clr(); { u8 r[17]={4,0x02}; r[2+(0x04>>3)]|=1<<(0x04&7); rep(r,17); r[1]=0; rep(r,17); r[2+(0x05>>3)]|=1<<(0x05&7); rep(r,17); u8 z[17]={4}; rep(z,17);
+    chk("NKRO: Shift released while a is held, then b -> \"Ab\"", !strcmp(kq,"Ab")&&!kdown[0x2A]); }
+  clr(); { u8 r[17]={4}; for(int u=4;u<12;u++)r[2+(u>>3)]|=(u8)(1u<<(u&7)); rep(r,17); memset(xhid_kprev,0,sizeof xhid_kprev); memset(kdown,0,sizeof kdown); u8 z[17]={4}; z[2+(0x2C>>3)]=1<<(0x2C&7); rep(z,17);
+    int left=0; for(int s=0;s<256;s++)left+=kdown[s]; chk("NKRO: device re-enumerated (window cleared) -> stale held keys dropped, new key typed", left==1&&kdown[0x39]&&kq[8]==' '); u8 e0[17]={4}; rep(e0,17); }
   clr(); { u8 r[17]={4,0,0x0E}; rep(r,17); }
   chk("bitmap bits for usages 1..3 are not phantom keys", !strcmp(kq,"")&&!usbk_rep_code);
   clr(); { u8 r[17]={4,0}; r[2+(0x28>>3)]=1<<(0x28&7); rep(r,17); u8 z[17]={4}; rep(z,17); }
@@ -82,7 +93,11 @@ int main(void){
 
   printf("== combo keyboard+mouse receiver (ID 1 kbd, 2 mouse, 3 consumer, 4 system) ==\n");
   k=load(RD_COMBO,sizeof RD_COMBO);
-  chk("keyboard, mouse and consumer layouts (system control ignored)", k==3&&kind(1)>=0&&kind(2)>=0&&kind(3)>=0);
+  chk("keyboard, mouse, consumer and system control layouts", k==4&&kind(1)>=0&&kind(2)>=0&&kind(3)>=0);
+  clr(); { u8 s1[]={4,0x02}, z[]={4,0}; rep(s1,2); rep(z,2); }
+  chk("system control sleep (ID 4, usage 0x82) -> hotkey 12", !strcmp(kq,"")&&g_hkn==1&&g_hk[0]==12);
+  clr(); { u8 s1[]={4,0x01}, z[]={4,0}; rep(s1,2); rep(z,2); }
+  chk("system control power (ID 4, usage 0x81) -> hotkey 32", g_hkn==1&&g_hk[0]==32);
   clr(); { u8 a[]={1,0,0,0x0B,0x0C,0,0,0,0}, z[]={1,0,0,0,0,0,0,0,0}; rep(a,9); rep(z,9); }
   chk("ID 1 types \"hi\"", !strcmp(kq,"hi"));
   clr(); { u8 c[]={3,0x0B,0}, z[]={3,0,0}; rep(c,3); rep(z,3); }

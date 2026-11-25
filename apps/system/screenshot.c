@@ -70,13 +70,14 @@ static long png_encode(const u32* px,int stride,int w,int h,u8** out){
     kfree(s.o); *out=o; return q; }
 
 static char* ss_2(char* p,int v){ *p++=(char)('0'+(v/10)%10); *p++=(char)('0'+v%10); return p; }
-static int ss_store(const char* name,const u8* d,long n){
+static int ss_store_in(const char* dn,const char* name,const u8* d,long n){
     dt_init(); extern char g_home[]; int home=dt_resolve_dir(g_home); if(home<0)home=dt_resolve_dir("/home"); if(home<0)home=dt_mkdir_at(0,"home"); if(home<0)return -1;
-    int pic=dt_child(home,"Pictures"); if(pic<0)pic=dt_mkdir_at(home,"Pictures"); if(pic<0)return -1;
+    int pic=dt_child(home,dn); if(pic<0)pic=dt_mkdir_at(home,dn); if(pic<0)return -1;
     int k=-1; for(int i=0;i<FS_N;i++) if(!FS[i].used){ k=i; break; } if(k<0)return -1;
     fs_newslot(k); int q=0; while(name[q]&&q<63){ FS[k].name[q]=name[q]; q++; } FS[k].name[q]=0;
     FS[k].used=1; FS[k].folder=0; FS[k].dir=pic; FS[k].mode=0100644u; FS[k].uid=g_uid; FS[k].gid=g_gid;
     if(fs_set(k,(const char*)d,n)){ FS[k].used=0; return -1; } g_fs_dirty[k]=1; if(disk_ok)fs_sync(k); return k; }
+static int ss_store(const char* name,const u8* d,long n){ return ss_store_in("Pictures",name,d,n); }
 static void ss_capture(int x,int y,int w,int h){
     if(x<0){ w+=x; x=0; } if(y<0){ h+=y; y=0; } if(x+w>(int)W)w=(int)W-x; if(y+h>(int)H)h=(int)H-y;
     if(w<2||h<2){ toast("Screenshot: nothing selected"); return; }
@@ -147,3 +148,6 @@ void ss_cmd(const char* a){
     if(!a||!*a){ ss_open(0,0); return; }
     if(a[0]=='s'){ ss_open(1,1); return; } if(a[0]=='w'){ ss_open(2,1); return; } if(a[0]=='a'){ ss_open(0,0); return; }
     if(a[0]=='l'){ extern void term_puts(const char*); term_puts(g_ss_last[0]?g_ss_last:"no screenshot yet"); term_puts("\n"); return; } }
+long pic_png_encode(const u32* px,int stride,int w,int h,u8** out){ return png_encode(px,stride,w,h,out); }
+int pic_store(const char* name,const u8* d,long n){ return ss_store(name,d,n); }
+int vid_store(const char* name,const u8* d,long n){ return ss_store_in("Videos",name,d,n); }

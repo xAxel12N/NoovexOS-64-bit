@@ -29,13 +29,24 @@ int jc_uok(u64 p,u64 n){ return p>=0x40000000000ULL && p+n<=0x48000000000ULL && 
 static int jc_umap_chk(u64 p,u64 n,int w);
 int jc_umapped(u64 p,u64 n){ return jc_umap_chk(p,n,0); }
 int jc_umapped_w(u64 p,u64 n){ return jc_umap_chk(p,n,1); }
+u32 g_ucopy_oom;
+static int jc_ufault(u64 cr3,u64 v,int w,int* again){
+    int r=vm_fault_user(cr3,v,w); if(r!=-2)return r;
+    extern int g_sw_self[64]; int c=cpu_id()&63, o=g_sw_self[c]; g_sw_self[c]=1;
+    for(int t=0;t<3&&r==-2;t++)r=vm_fault_user(cr3,v,w);
+    g_sw_self[c]=o;
+    if(!r){ *again=1; return 0; }
+    g_ucopy_oom++; if(g_ucopy_oom<=32){ extern void klog(const char*); char b[128],*q=b; q=scopy(q,"oom: user copy failed for pid "); q=udec(q,g_jcur>=0?(u32)g_jp[g_jcur].pid:0u); q=scopy(q,", free "); q=udec(q,pframe_free_count()); q=scopy(q," pages"); *q=0; klog(b); }
+    return r; }
 static int jc_umap_chk(u64 p,u64 n,int w){
     if(!n)return 1; if(!jc_uok(p,n))return 0;
     u64 cr3=cpu_get_pt()&~0xFFFULL;
+    for(int pass=0;pass<4;pass++){ int again=0;
     for(u64 v=p&~0xFFFULL;v<p+n;v+=0x1000ULL){ u64* e=vm_walk(cr3,v,0); if(!e||!vm_pte_used(*e)){ extern int lx_res_fault(u64,u64); if(lx_res_fault(cr3,v))return 0; e=vm_walk(cr3,v,0); if(!e)return 0; }
-        if(!(*e&1)||((*e&PTE_COW)&&!(*e&2)&&(w||!(*e&PTE_PRO)))){ if(vm_fault_user(cr3,v,(*e&1)?1:w))return 0; e=vm_walk(cr3,v,0); if(!e||(*e&5)!=5||(w&&!(*e&2)))return 0; continue; }
+        if(!(*e&1)||((*e&PTE_COW)&&!(*e&2)&&(w||!(*e&PTE_PRO)))){ if(jc_ufault(cr3,v,(*e&1)?1:w,&again))return 0; e=vm_walk(cr3,v,0); if(!e||(*e&5)!=5||(w&&!(*e&2)))return 0; continue; }
         if((*e&5)!=5)return 0;
-        if(w&&!(*e&2)){ if(!(*e&PTE_COW)||vm_fault_user(cr3,v,1))return 0; e=vm_walk(cr3,v,0); if(!e||(*e&7)!=7)return 0; } }
+        if(w&&!(*e&2)){ if(!(*e&PTE_COW)||jc_ufault(cr3,v,1,&again))return 0; e=vm_walk(cr3,v,0); if(!e||(*e&7)!=7)return 0; } }
+    if(!again)return 1; }
     return 1;
 }
 
@@ -56,7 +67,8 @@ void vf_unref(int vi){
     if(vi==g_con_vi){ v->ref=1; return; }
     if(v->dev==14)lxs_release(v->fs_idx);
     if(v->dev==25){ extern void lxm_vf_close(int,int) __attribute__((weak)); if(lxm_vf_close)lxm_vf_close(v->dev,v->fs_idx); }
-    { extern void un_close(int); extern void mfd_close(int); extern void evtm_close(int,int); if(v->dev==18)un_close(v->fs_idx); else if(v->dev==114||v->dev==115){ extern void pty_close(int,int); pty_close(v->dev,v->fs_idx); } else if(v->dev==116||v->dev==117){ extern void asnd_close(int,int); asnd_close(v->dev,v->fs_idx); } else if(v->dev==118){ extern void dx_close(int); dx_close(v->fs_idx); } else if(v->dev==19)mfd_close(v->fs_idx); else if(v->dev==20||v->dev==21)evtm_close(v->dev,v->fs_idx); else if(v->dev==22||v->dev==23||v->dev==113){ extern void lxabi_close(int,int); lxabi_close(v->dev,v->fs_idx); } }
+    if(v->dev==52){ extern void bpf_fd_close(int); bpf_fd_close(v->fs_idx); }
+    { extern void un_close(int); extern void mfd_close(int); extern void evtm_close(int,int); if(v->dev==18)un_close(v->fs_idx); else if(v->dev==114||v->dev==115){ extern void pty_close(int,int); pty_close(v->dev,v->fs_idx); } else if(v->dev==116||v->dev==117){ extern void asnd_close(int,int); asnd_close(v->dev,v->fs_idx); } else if(v->dev==118){ extern void dx_close(int); dx_close(v->fs_idx); } else if(v->dev==19)mfd_close(v->fs_idx); else if(v->dev==131){ extern void userial_vclose(int); userial_vclose(v->fs_idx); } else if(v->dev==20||v->dev==21)evtm_close(v->dev,v->fs_idx); else if(v->dev==22||v->dev==23||v->dev==113){ extern void lxabi_close(int,int); lxabi_close(v->dev,v->fs_idx); } else if(v->dev==120){ extern void perf_ev_close(int); perf_ev_close(v->fs_idx); } else if(v->dev==124){ extern void v4l_close(int); v4l_close(vi); } }
     { extern void lx_lock_vfclose(int); lx_lock_vfclose(vi); }
     if(v->dev==9&&g_fb0_open>0)g_fb0_open--; if(v->dev==10&&g_mouse_open>0)g_mouse_open--;
     if(v->dev==0&&v->fs_idx>=0&&v->fs_idx<FS_N&&g_fs_dirty[v->fs_idx]){ int k=v->fs_idx; g_fs_dirty[k]=0; if(FS[k].used&&!FS[k].orphan&&disk_ok)fs_wb_mark(k); }
@@ -90,7 +102,7 @@ int jc_pipe_write(struct vfile* v,const char* buf,int len){
     return c;
 }
 
-void jc_tty_out(const char* s,int n){ if(g_capture){ vt_capture(s,n); return; } vt_out(s,n); g_js_dirty=1; }
+void jc_tty_out(const char* s,int n){ if(g_capture){ vt_capture(s,n); return; } { extern int vtc_divert(const char*,int); if(vtc_divert(s,n)){ g_js_dirty=1; return; } } vt_out(s,n); g_js_dirty=1; }
 void vt_reply(const char* s){ while(*s&&g_tin_n<1023)g_tin[g_tin_n++]=*s++; }
 int jc_tty_read(char* buf,int len){
     if(g_jcur<0)return 0;
@@ -296,10 +308,10 @@ static u64 jc_build(const char* args,u64* entry,u64* rsp,u64* argc,u64* argv){
     if(!elf){ static int depth; char full[160], ip[96]; if(depth<2&&jc_script(nm,full,160,ip,96)){ static char na[2048]; int o=0; for(int q=0;ip[q]&&o<2000;q++)na[o++]=ip[q]; na[o++]=' '; for(int q=0;full[q]&&o<2040;q++)na[o++]=full[q]; const char* rest=args+k; for(int q=0;rest[q]&&o<2046;q++)na[o++]=rest[q]; na[o]=0; depth++; u64 r=jc_build(na,entry,rsp,argc,argv); depth--; return r; } g_xa_set=0; g_xe_set=0; return 0; }
     { int j=0; while(args[j]&&j<2047){ g_exec_args[j]=args[j]; j++; } g_exec_args[j]=0; }
     u64 cr3=elf_build_space(elf,len,entry); g_xa_set=0; g_xe_set=0; if(!cr3)return 0;
-    for(int p=1;p<JS_STK_PAGES;p++){ u64 v=USTK_V-(u64)p*0x1000ULL; u64* e=vm_walk(cr3,v,0); if(e&&vm_pte_used(*e))continue;
+    for(int p=1;p<JS_STK_PAGES;p++){ u64 v=g_ustk-(u64)p*0x1000ULL; u64* e=vm_walk(cr3,v,0); if(e&&vm_pte_used(*e))continue;
         if(p>=16){ u64* g=vm_walk(cr3,v-0x1000ULL,0); if(g&&vm_pte_used(*g))break; }
         if(vm_map_lazy(cr3,v)){ vm_free_user(cr3); return 0; } }
-    *rsp=g_arg_rsp?g_arg_rsp:USTK_V+0x1000ULL; *argc=(u64)g_arg_argc; *argv=g_arg_argv; return cr3;
+    *rsp=g_arg_rsp?g_arg_rsp:g_ustk+0x1000ULL; *argc=(u64)g_arg_argc; *argv=g_arg_argv; return cr3;
 }
 static void jc_fx_init(u8* fx){ for(int i=0;i<1024;i++)fx[i]=0; *(u16*)fx=0x037F; *(u32*)(fx+24)=0x1F80; *(u32*)(fx+28)=0xFFFF; }
 static void jc_ctx_fresh(regs_pt* c,u64 entry,u64 rsp,u64 argc,u64 argv){
@@ -313,7 +325,7 @@ int jc_create(const char* args,int ppid,int pgid){
     u64 entry,rsp,argc,argv; u64 cr3=jc_build(args,&entry,&rsp,&argc,&argv); if(!cr3)return -2;
     struct jproc* p=&g_jp[i]; u8* raw=(u8*)p; for(u32 q=0;q<sizeof(*p);q++)raw[q]=0;
     p->pid=g_next_pid++; p->start_tick=g_ticks; p->tg=i; p->tgid=p->pid; p->ppid=ppid; p->pgid=pgid?pgid:p->pid; p->sid=1; p->uid=g_uid; p->gid=g_gid; p->cwd=g_dcwd; p->umask=g_umask;
-    p->cr3=cr3; p->brk=0x40002000000ULL; p->mmnext=0x40004000000ULL; p->lx=g_elf_pie;
+    p->cr3=cr3; p->brk=0x40002000000ULL+kaslr_user_brk(); p->mmnext=0x40004000000ULL+kaslr_user_mmap(); p->lx=g_elf_pie; p->ebase=g_elf_base; p->ibase=g_elf_ibase; p->ustk=g_ustk;
     jc_ctx_fresh(&p->ctx,entry,rsp,argc,argv); p->argv_va=argv; p->argc_n=(int)argc;
     for(int f=0;f<FDMAX;f++)p->fd[f]=-1;
     int con=jc_con(); for(int f=0;f<3;f++){ p->fd[f]=con; vf_ref(con); }

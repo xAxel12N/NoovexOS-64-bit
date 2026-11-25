@@ -7,6 +7,24 @@
             p=b; p=scopy(p,"DNS "); p=ipstr(p,dns_ip); *p=0; tcol(GREY); term_puts(b); tcol(WHT); term_putc('\n');
             term_puts("try: dhcp   ping 10.0.2.2   dns example.com   http example.com\n"); }
         else { tcol(rgb(240,150,120)); term_puts("no network adapter found\n"); tcol(WHT); } }
+    else if(seq(cmd,"midi")){ extern int umidi_scan(void); extern int umidi_info(char*,int); extern int umidi_read(u8*,int); extern int umidi_write(const u8*,int); extern int umidi_present(void); extern int msynth_enable(int); extern int msynth_enabled(void); extern void msynth_note(int,int,int); extern void msynth_tick(void);
+        char b[220]; const char* a=arg; while(*a==' ')a++; const char* r=a; while(*r&&*r!=' ')r++; while(*r==' ')r++;
+        if(!a[0]||!strncmp(a,"list",4)||!strncmp(a,"scan",4)){ umidi_scan(); umidi_info(b,(int)sizeof b); term_puts(b); term_putc('\n'); term_puts(msynth_enabled()?"synth: on\n":g_snd_state==2?"synth: off - no audio output\n":"synth: off\n"); }
+        else if(!strncmp(a,"synth",5)){ if(!strncmp(r,"on",2)){ umidi_scan(); term_puts(msynth_enable(1)?"synth on - play the MIDI keyboard\n":"synth: no audio output\n"); } else if(!strncmp(r,"off",3)){ msynth_enable(0); term_puts("synth off\n"); } else term_puts(msynth_enabled()?"synth: on\n":"synth: off\n"); }
+        else if(!strncmp(a,"monitor",7)){ if(!umidi_scan()){ term_puts("no USB MIDI device\n"); }
+            else { term_puts("MIDI monitor - press Esc to stop (60 s max)\n"); extern u64 hr_ns(void); u64 t0=hr_ns(); int col=0;
+                while(hr_ns()-t0<60000000000ULL&&!kdown[0x01]&&umidi_present()){ u8 m[64]; int n=umidi_read(m,64); if(n<=0){ msynth_tick(); hr_delay_us(1000); continue; }
+                    for(int i=0;i<n;i++){ if(m[i]>=0x80&&m[i]<0xF8&&col){ term_putc('\n'); col=0; } char h[4],*p=h; p=hx(p,m[i],2); *p++=' '; *p=0; term_puts(h); col++; } }
+                term_putc('\n'); } }
+        else if(!strncmp(a,"send",4)){ u8 m[128]; int n=0, hv=-1; for(const char* p=r;*p&&n<128;p++){ int d=(*p>='0'&&*p<='9')?*p-'0':(*p>='a'&&*p<='f')?*p-'a'+10:(*p>='A'&&*p<='F')?*p-'A'+10:-1; if(d<0){ if(hv>=0){ m[n++]=(u8)hv; hv=-1; } continue; } if(hv<0)hv=d; else { m[n++]=(u8)(hv*16+d); hv=-1; } } if(hv>=0&&n<128)m[n++]=(u8)hv;
+            if(!n)term_puts("usage: midi send 90 3c 64\n"); else if(!umidi_scan())term_puts("no USB MIDI device\n"); else { int w=umidi_write(m,n); term_puts(w==n?"sent\n":"send failed\n"); } }
+        else if(!strncmp(a,"play",4)){ int note=-1; const char* p=r; static const int sc[7]={9,11,0,2,4,5,7}; char c=*p|32;
+            if(c>='a'&&c<='g'){ note=sc[c-'a']; p++; if(*p=='#'){ note++; p++; } else if(*p=='b'){ note--; p++; } int neg=0; if(*p=='-'){ neg=1; p++; } int o=4; if(*p>='0'&&*p<='9')o=*p-'0'; if(neg)o=-o; note+=(o+1)*12; }
+            else if(*p>='0'&&*p<='9'){ note=0; while(*p>='0'&&*p<='9')note=note*10+(*p++-'0'); }
+            if(note<0||note>127)term_puts("usage: midi play C4 | midi play 60\n");
+            else { u8 on[3]={0x90,(u8)note,100}, of[3]={0x80,(u8)note,0}; int dev=umidi_present(); if(dev)umidi_write(on,3); msynth_note(note,100,400); if(dev)umidi_write(of,3); char t[48],*q=t; q=scopy(q,"played note "); q=udec(q,(u32)note); q=scopy(q,dev?" (synth + device)\n":" (synth)\n"); *q=0; term_puts(t); } }
+        else term_puts("usage: midi [list|monitor|send <hex>|play <note>|synth on|off]\n"); }
+    else if(seq(cmd,"serial")){ extern void shell_serial(const char*); shell_serial(arg); }
     else if(seq(cmd,"usbnet")){ extern int usbnet_info(char*,int); extern int usbnet_prefer(int); extern int usbnet_scan(void); char b[220];
         if(seq(arg,"ecm")||seq(arg,"ncm")||seq(arg,"rndis")||seq(arg,"auto")){ int kd=seq(arg,"ecm")?1:seq(arg,"ncm")?2:seq(arg,"rndis")?3:0; int r=usbnet_prefer(kd); term_puts(r?"USB network adapter set up again\n":"no USB network adapter answered\n"); }
         else if(seq(arg,"scan")){ term_puts(usbnet_scan()?"USB network adapter found\n":"no USB network adapter found\n"); }
@@ -18,9 +36,36 @@
             tcol(GREY); term_puts("Bluetooth: looking for nearby devices, make them visible / put them in pairing mode...\n"); tcol(WHT);
             int r=bt_scan(secs); if(r<0){ bt_status_text(bb,(int)sizeof bb); term_puts(bb); } else { bt_list_text(bb,(int)sizeof bb); term_puts(bb); } }
         else if(seq(a,"list")){ bt_list_text(bb,(int)sizeof bb); term_puts(bb); }
-        else if(seq(a,"up")){ tcol(GREY); term_puts("Bluetooth: starting the adapter...\n"); tcol(WHT); bt_up(); bt_status_text(bb,(int)sizeof bb); term_puts(bb); }
+        else if(seq(a,"up")){ extern int btm_autoconnect(void); tcol(GREY); term_puts("Bluetooth: starting the adapter...\n"); tcol(WHT); if(bt_up())btm_autoconnect(); bt_status_text(bb,(int)sizeof bb); term_puts(bb); }
+        else if(seq(a,"devices")){ extern int btm_devices_text(char*,int); btm_devices_text(bb,(int)sizeof bb); term_puts(bb); }
+        else if((a[0]=='p'&&a[1]=='a'&&a[2]=='i'&&a[3]=='r'&&a[4]==' ')||(a[0]=='c'&&a[1]=='o'&&a[2]=='n'&&a[3]=='n'&&a[4]=='e'&&a[5]=='c'&&a[6]=='t'&&a[7]==' ')||(a[0]=='f'&&a[1]=='o'&&a[2]=='r'&&a[3]=='g'&&a[4]=='e'&&a[5]=='t'&&a[6]==' ')||(a[0]=='d'&&a[1]=='i'&&a[2]=='s'&&a[3]=='c'&&a[4]=='o'&&a[5]=='n'&&a[6]=='n'&&a[7]=='e'&&a[8]=='c'&&a[9]=='t'&&(a[10]==0||a[10]==' '))){
+            extern int btm_pair(const char*); extern int btm_connect(const char*); extern int btm_disconnect(const char*); extern int btm_forget(const char*); extern const char* btm_last(void);
+            const char* q=a; while(*q&&*q!=' ')q++; while(*q==' ')q++; int r;
+            if(a[0]=='p'){ tcol(GREY); term_puts("Bluetooth: pairing - confirm on the device or type the passkey shown, Esc cancels...\n"); tcol(WHT); r=btm_pair(q); }
+            else if(a[0]=='c'){ tcol(GREY); term_puts("Bluetooth: connecting...\n"); tcol(WHT); r=btm_connect(q); }
+            else if(a[0]=='d')r=btm_disconnect(q); else r=btm_forget(q);
+            tcol(r<0?rgb(240,150,120):GREEN); term_puts(btm_last()); term_putc('\n'); tcol(WHT); }
         else if(!a[0]||seq(a,"status")){ bt_status_text(bb,(int)sizeof bb); term_puts(bb); }
-        else term_puts("usage: bt [status|up|scan [seconds]|list]\n"); }
+        else term_puts("usage: bt [status|up|scan [seconds]|list|devices|pair <addr|n>|connect <addr|n>|disconnect [addr|n]|forget <addr|n>]\n"); }
+    else if(seq(cmd,"sshd")){ extern void sh_run_line(char*); const char* a=arg; while(*a==' ')a++;
+        int on=seq((char*)a,"on"), off=seq((char*)a,"off"), st=!a[0]||seq((char*)a,"status");
+        if(!on&&!off&&!st)term_puts("usage: sshd on|off|status  (SSH server: dropbear on port 22, password login for root is off)\n");
+        else if((on||off)&&!need_root("sshd")){}
+        else if(on){ extern int sysroot_exists(const char*); u32 so[10]; if(ux_stat2("/usr/bin/dropbearmulti",so,1)&&!sysroot_exists("/usr/bin/dropbearmulti")){ tcol(rgb(240,120,120)); term_puts("sshd: dropbear is not in this image\n"); tcol(WHT); }
+            else { char l1[]="service sshd enable", l2[]="service sshd start"; sh_run_line(l1); sh_run_line(l2); } }
+        else if(off){ char l1[]="service sshd disable", l2[]="service sshd stop"; sh_run_line(l1); sh_run_line(l2); }
+        else { char l1[]="service sshd status"; sh_run_line(l1); static const char* K[]={"/etc/dropbear/dropbear_ed25519_host_key","/etc/dropbear/dropbear_ecdsa_host_key","/etc/dropbear/dropbear_rsa_host_key",0};
+            extern int sysroot_exists(const char*); u32 so2[10]; int nk=0; for(int i=0;K[i];i++) if(!ux_stat2(K[i],so2,1)||sysroot_exists(K[i]))nk++; term_puts("host keys: "); term_puts(nk?"present in /etc/dropbear\n":"not created yet (made on the first start)\n"); } }
+    else if(seq(cmd,"firewall")){ char w1[12],w2[8],w3[8],w4[24]; const char* a=arg; int i=0,k;
+        for(k=0;k<4;k++){ char* d=k==0?w1:k==1?w2:k==2?w3:w4; int cap=k==0?12:k==3?24:8, n=0; while(a[i]==' ')i++; while(a[i]&&a[i]!=' '){ if(n<cap-1)d[n++]=a[i]; i++; } d[n]=0; }
+        int pr=fw_proto(w2), po=0; for(int j=0;w3[j]>='0'&&w3[j]<='9'&&po<=65535;j++)po=po*10+(w3[j]-'0');
+        static char fb[1024];
+        if(!w1[0]||seq(w1,"status")){ fw_status(fb,(int)sizeof fb); term_puts(fb); }
+        else if(seq(w1,"on")){ if(fw_set(1)<0)sh_err("firewall: ","could not save /etc/firewall.conf"); else term_puts("firewall: on\n"); }
+        else if(!need_root("firewall")){}
+        else if(seq(w1,"off")){ if(fw_set(0)<0)sh_err("firewall: ","could not save /etc/firewall.conf"); else { tcol(rgb(255,205,100)); term_puts("firewall: OFF - every inbound connection is allowed\n"); tcol(WHT); } }
+        else if((seq(w1,"allow")||seq(w1,"deny"))&&pr&&po>0&&po<=65535){ int r=w1[0]=='a'?fw_allow(pr,po,w4):fw_deny(pr,po); if(r<0)sh_err("firewall: ",w1[0]=='a'?"no room for the rule or it could not be saved":"no such rule"); else { fw_status(fb,(int)sizeof fb); term_puts(fb); } }
+        else term_puts("usage: firewall [status] | on | off | allow tcp|udp PORT [service] | deny tcp|udp PORT\n"); }
     else if(seq(cmd,"dhcp")){ tcol(GREY); term_puts("requesting a lease...\n"); tcol(WHT);
         int r=dhcp_renew();
         if(r==1){ char b[96],*p=b; p=scopy(p,"IP "); p=ipstr(p,my_ip); p=scopy(p,"/"); { u32 m=my_mask,c=0; while(m&0x80000000u){c++;m<<=1;} p=udec(p,c); } p=scopy(p,"  GW "); p=ipstr(p,gw_ip); p=scopy(p,"  DNS "); p=ipstr(p,dns_ip); *p=0; tcol(GREEN); term_puts(b); term_putc('\n'); tcol(WHT); }
@@ -42,7 +87,9 @@
             path[pi++]='/'; if(*s=='/')s++; while(*s&&*s!=' '&&pi<299)path[pi++]=*s++; path[pi]=0;
             tcol(GREY); term_puts(secure?"fetching https://":"fetching http://"); term_puts(host); term_puts("...\n"); tcol(WHT);
             g_tls_insecure=insecure; if(insecure&&secure){ tcol(rgb(240,200,120)); term_puts("warning: certificate checks are OFF for this request\n"); tcol(WHT); }
+            http_pump_begin();
             int n = secure ? https_fetch(host,path) : http_fetch(host,path);
+            http_pump_end();
             g_tls_insecure=0;
             if(n==-100){ tcol(rgb(240,120,120)); term_puts("DNS failed\n"); tcol(WHT); }
             else if(n<=0){ tcol(rgb(240,120,120));
@@ -56,10 +103,7 @@
             else { http_buf[n]=0; int bo=n; for(int i=0;i+3<n;i++) if(http_buf[i]=='\r'&&http_buf[i+1]=='\n'&&http_buf[i+2]=='\r'&&http_buf[i+3]=='\n'){ bo=i+4; break; }
                 tcol(GREEN); { int e=0; while(e<bo && http_buf[e]!='\r' && http_buf[e]!='\n'){ term_putc(http_buf[e]); e++; } } term_putc('\n'); tcol(GREY);
                 { char b[32],*p=b; p=scopy(p,"("); p=udec(p,(u32)n); p=scopy(p," bytes)"); *p=0; term_puts(b); term_putc('\n'); } tcol(WHT);
-                int shown=0,intag=0; char last=0;
-                for(int i=bo;i<n&&shown<1400;i++){ char c=http_buf[i]; if(c=='<'){intag=1;continue;} if(c=='>'){intag=0;continue;} if(intag)continue; if(c=='\r')continue;
-                    if(c==' '||c=='\n'||c=='\t'){ if(last==' '||last=='\n')continue; c=(c=='\n')?'\n':' '; } if(c<32&&c!='\n')continue; term_putc(c); last=c; shown++; }
-                term_putc('\n'); } } }
+                http_text_dump((const char*)http_buf+bo,n-bo,1400); } } }
     else if(seq(cmd,"parts")||seq(cmd,"lsblk")||seq(cmd,"partitions")){ parts_print(); }
     else if(cmd[0]=='p'&&cmd[1]=='r'&&cmd[2]=='i'&&cmd[3]=='n'&&cmd[4]=='t'&&(cmd[5]==0||cmd[5]==' '||(cmd[5]=='e'&&cmd[6]=='r'))){ extern char g_prn_status[]; extern u32 g_prn_ip; extern int prn_set(const char*); extern int prn_test_page(void); extern int prn_print_text(const char*,const char*);
         const char* a=arg; while(*a==' ')a++;
@@ -101,6 +145,7 @@
         if(g_uid!=0&&!seq(sub,"status")&&sub[0]){ sh_err("faceid: ","only root can do that (try sudo)"); return; }
         if(seq(sub,"enroll")||seq(sub,"verify")){ if(fid_begin(seq(sub,"enroll")?FID_ENROLL:FID_VERIFY,v)<0)sh_err("faceid: ",g_fid_msg); else term_puts("faceid: started - see faceid status\n"); }
         else if(seq(sub,"stop")){ fid_end(); term_puts("faceid: stopped\n"); }
+        else if(seq(sub,"admin")){ if(seq(v,"on")||seq(v,"off")){ if(fid_admin_set(seq(v,"on"))<0){ sh_err("faceid: ","could not save the setting"); return; } } term_puts(fid_admin_on()?"faceid: admin actions (sudo) may be approved by Face ID\n":"faceid: admin actions (sudo) always need the password\n"); }
         else if(seq(sub,"delete")){ if(fid_delete(v)<0)sh_err("faceid: ","could not delete"); else term_puts("faceid: deleted\n"); }
         else if(seq(sub,"feed")){ if(!v[0]){ fid_feed_set(0,0,0); term_puts("faceid: using the camera again\n"); return; }
             int f=k_find_file(v); if(f<0||!FS[f].data||FS[f].lazy){ sh_err("faceid: file not found: ",v); return; } const u8* d=(const u8*)fsd(f); int n=FS[f].len, i=2, w=0, h=0, mx2=0;
@@ -109,6 +154,12 @@
             if(w<16||h<16||w>1920||h>1200||mx2!=255||i+w*h*3>n){ sh_err("faceid: ","unsupported PPM size"); return; }
             u32* px=(u32*)kmalloc((u64)w*h*4); if(!px){ sh_err("faceid: ","out of memory"); return; } for(int q=0;q<w*h;q++){ const u8* s=d+i+q*3; px[q]=((u32)s[0]<<16)|((u32)s[1]<<8)|s[2]; } fid_feed_set(px,w,h); term_puts("faceid: test picture added (used instead of the camera)\n"); }
         else { static const char* SN[6]={"idle","starting","looking","success","failed","error"}; char b[200],*p=b; p=scopy(p,"faceid: "); p=scopy(p,SN[g_fid_state>=0&&g_fid_state<6?g_fid_state:0]); p=scopy(p,g_fid_mode==FID_ENROLL?"  (set up)":g_fid_mode==FID_VERIFY?"  (sign-in)":""); p=scopy(p,"  saved "); p=udec(p,(u32)g_fid_count); p=scopy(p,"  distance "); if(g_fid_dist>=0)p=udec(p,(u32)g_fid_dist); else p=scopy(p,"-"); p=scopy(p,"  face "); p=scopy(p,g_fid_face[2]?"seen":"none"); if(g_fid_hint){ p=scopy(p,"  ("); p=scopy(p,g_fid_hint); p=scopy(p,")"); } if(g_fid_msg[0]){ p=scopy(p,"  - "); p=scopy(p,g_fid_msg); } *p++='\n'; *p=0; term_puts(b); } }
+    else if(seq(cmd,"lsusb")&&usbreg_count()){ static char ub[6144]; const char* a=arg; while(*a==' ')a++;
+        if(a[0]=='-'&&a[1]=='t'){ usbreg_tree(ub,(int)sizeof ub); term_puts(ub); }
+        else { int nh=usbreg_hc_count(); if(nh>16)nh=16; for(int c=nh-1;c>=0;c--){ for(int dn=2;dn<128;dn++) for(int k=0;k<USBREG_MAX;k++){ usbreg_t* r=&g_usbreg[k]; if(!r->used||r->ctl!=c||r->devnum!=dn)continue; char l[160]; int n=usbreg_line(r,l,120); char* p=l+n; p=scopy(p,"  ("); p=scopy(p,usbreg_kind(r)); p=scopy(p,")"); *p=0; term_puts(l); term_putc('\n'); }
+            char l[80],*p=l; p=scopy(p,"Bus "); *p++=(char)('0'+(c+1)/100%10); *p++=(char)('0'+(c+1)/10%10); *p++=(char)('0'+(c+1)%10); p=scopy(p," Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub\n"); *p=0; term_puts(l); } } }
+    else if(seq(cmd,"scan")||(cmd[0]=='s'&&cmd[1]=='c'&&cmd[2]=='a'&&cmd[3]=='n'&&cmd[4]==' ')){ extern int escl_scan(int,int); extern char g_scan_status[]; const char* a=cmd[4]?cmd+5:""; int dpi=0; while(*a>='0'&&*a<='9')dpi=dpi*10+(*a++-'0'); while(*a==' ')a++; term_puts("scanning...\n"); escl_scan(dpi?dpi:300,a[0]!='g'); term_puts(g_scan_status); term_putc('\n'); }
+    else if(seq(cmd,"usbprinter")){ extern int uprn_scan(void); extern int uprn_info(char*,int); char b[512]; uprn_scan(); uprn_info(b,(int)sizeof b); term_puts(b); term_putc('\n'); }
     else if(seq(cmd,"usbdevs")||seq(cmd,"lsusb")){ int any=0; for(int k=0;k<g_usbdev_n;k++){ if(!g_usbdev[k].used)continue; any=1; char b[140],*p=b; p=scopy(p,g_usbdev[k].kind); p=scopy(p,"  "); p=scopy(p,g_usbdev[k].name[0]?g_usbdev[k].name:"(no name)"); p=scopy(p,"  "); p=hx(p,g_usbdev[k].vid,4); *p++=':'; p=hx(p,g_usbdev[k].pid,4); p=scopy(p,"  port "); p=udec(p,(u32)g_usbdev[k].port+1); if(g_usbdev[k].cam)p=scopy(p,"  (video streaming not supported yet)"); *p=0; term_puts(b); term_putc('\n'); } if(!any)term_puts("no USB devices found (keyboards, mice, cameras, printers)\n"); }
     else if(seq(cmd,"tracelog")){
         extern int g_lxtrace; extern int tracelog_start(void); extern void tracelog_stop(void); extern const char* tracelog_data(u32*); extern int g_tl_on;
@@ -121,6 +172,7 @@
                 int a1=fs_save_bin("tracelog.txt",(const u8*)d,(int)n,0); if(a1>=0&&disk_ok)nvx3_sync_all(); int a2=(msd_ok&&ufat_ok)?ufat_write_file("TRACELOG.TXT",d,(int)n):-1;
                 char b[160],*w=b; w=scopy(w,"tracelog: saved "); w=udec(w,n); w=scopy(w," bytes"); if(a1>=0)w=scopy(w," as tracelog.txt in Files"); if(a2==0)w=scopy(w,a1>=0?" and as TRACELOG.TXT on the USB stick":" as TRACELOG.TXT on the USB stick"); *w++='\n'; *w=0; term_puts(b); } }
         else { term_puts("usage: tracelog on [errors|exec|all] | save | off\n"); term_puts(g_tl_on?"tracelog is recording\n":"tracelog is off\n"); } }
+    else if(cmd[0]=='b'&&cmd[1]=='p'&&cmd[2]=='f'&&(cmd[3]==0||cmd[3]==' ')){ extern void bpf_cmd(const char*); bpf_cmd(cmd+3); }
     else if(cmd[0]=='l'&&cmd[1]=='x'&&cmd[2]=='t'&&cmd[3]=='r'&&cmd[4]=='a'&&cmd[5]=='c'&&cmd[6]=='e'){ extern int g_lxtrace; int n=0; const char* q=cmd+7; while(*q==' ')q++; while(*q>='0'&&*q<='9')n=n*10+(*q++-'0'); g_lxtrace=n?n:400; term_puts("syscall trace on (kernel log)\n"); }
     else if(seq(cmd,"disks")||seq(cmd,"disk")){
         gdisk_ensure();
@@ -166,7 +218,7 @@
             for(int sh=(ty==5?12:4);sh>=0;sh-=4)*p++=H[(c>>sh)&15]; *p=0; term_puts(b); term_puts("\n"); } }
     else if(seq(cmd,"recorder")||seq(cmd,"record")){ extern const char* snd_rec_name(void); if(g_state==ST_LIVE){ if(!g_user[0]){ g_user[0]='r';g_user[1]='o';g_user[2]='o';g_user[3]='t';g_user[4]=0; } g_state=ST_DESKTOP; } open_win(W_RECORDER); term_puts("Voice Recorder opened. Input: "); term_puts(snd_rec_name()); term_puts("\n"); }
     else if(seq(cmd,"screenshot")||seq(cmd,"scrot")){ extern void ss_cmd(const char*); if(g_state==ST_LIVE&&arg[0]!='l'){ term_puts("Type 'desktop' first, then use PrtSc or 'screenshot'.\n"); } else { ss_cmd(arg); if(arg[0]!='l')term_puts(arg[0]=='s'?"Screenshot of the whole screen taken.\n":arg[0]=='w'?"Screenshot of the window under the pointer taken.\n":"Screenshot tool opened: drag an area, or press S (screen) or W (window), Enter to take it, Esc to cancel.\n"); } }
-    else if(seq(cmd,"disktest")){ gdisk_ensure(); if(!g_dksectors){ term_puts("disktest: no disk\n"); return; } extern u32 g_nvme_cmds, g_nvme_multi; extern int gdisk_readn(u32,int,u8*);
+    else if(seq(cmd,"disktest")){ gdisk_ensure(); if(!g_dksectors){ term_puts("disktest: no disk\n"); return; } extern u32 g_nvme_cmds, g_nvme_multi; extern int gdisk_readn(u64,int,u8*);
         u8* b=(u8*)kmalloc(65536); if(!b){ term_puts("disktest: no memory\n"); return; } u32 tot=65536u; if(tot>g_dksectors)tot=g_dksectors; u32 c0=g_nvme_cmds, m0=g_nvme_multi; u64 t0=g_ticks; u32 n=0; int bad=0;
         for(u32 l=0;l<tot;l+=128){ int c=(int)(tot-l>128?128:tot-l); if(gdisk_readn(l,c,b)){ bad=1; break; } n+=(u32)c; } u64 dt=g_ticks-t0; if(!dt)dt=1; kfree(b);
         char o[160],*q=o; q=scopy(q,"disktest: read "); q=udec(q,n/2048); q=scopy(q," MB from "); q=scopy(q,(char*)gdisk_name()); q=scopy(q," in "); q=udec(q,(u32)(dt*10)); q=scopy(q," ms = "); q=udec(q,(u32)((u64)n*512/1024*100/dt/1024)); q=scopy(q," MB/s");
@@ -180,11 +232,15 @@
     else if(seq(cmd,"presentation")||seq(cmd,"slides")||seq(cmd,"pptx")){ int sl=-1; for(int z=0;z<FS_N;z++)if(FS[z].used&&fext_eq(FS[z].name,"pptx")){sl=z;break;} if(sl>=0){pptx_load(sl);open_win(W_PPTX);term_puts("opened Presentation.\n");} else term_puts("no .pptx file found (put one on a USB stick).\n"); }
     else if(seq(cmd,"reboot")||seq(cmd,"restart")){ term_puts("rebooting...\n"); blit_all(); power_reboot(); }
     else if(seq(cmd,"shutdown")||seq(cmd,"poweroff")||seq(cmd,"halt")){ term_puts("shutting down...\n"); blit_all(); power_off(); }
+    else if(seq(cmd,"s3")){ extern int s3_enable(int); extern const char* s3_status(void); int v=s3_enable(seq(arg,"on")?1:seq(arg,"off")?0:-1); const char* w=s3_status(); term_puts(v?"s3: suspend to RAM on":"s3: suspend to RAM off (light sleep is used)"); if(v&&w){ term_puts(" - not used here: "); term_puts(w); } term_puts("\n"); }
     else if(seq(cmd,"suspend")){ term_puts("sleeping - press a key (or the power button) to wake\n"); blit_all(); int r=power_sleep(); term_puts(r==1?"woke from ACPI S1 sleep\n":r==2?"woke from light sleep (S0 idle)\n":"woke up\n"); }
     else if(seq(cmd,"kcheck")){ kcheck_run(); }
     else if(seq(cmd,"memmap")){ memmap_run(); }
     else if(seq(cmd,"vminfo")){ extern void vminfo_run(void); vminfo_run(); }
     else if(seq(cmd,"tpinfo")){ if(arg[0]=='s')tpinfo_run(1); else if(arg[0]=='d'){ extern void tpinfo_dump(void); tpinfo_dump(); } else tpinfo_run(0); }
+    else if(seq(cmd,"fprint")){ extern int fprint_shell(const char*,const char*); extern int fprint_status_text(char*,int);
+        char w1[16]; int k=0; const char* q=arg; while(*q&&*q!=' '&&k<15)w1[k++]=*q++; w1[k]=0; while(*q==' ')q++;
+        if(!fprint_shell(w1,q)){ if(w1[0]&&!seq(w1,"status"))term_puts("usage: fprint [status|enroll [user]|cancel|verify [user]|delete [user]|list]\n"); else { char b[600]; fprint_status_text(b,(int)sizeof b); term_puts(b); } } }
     else if(seq(cmd,"touchpad")){ extern int g_tp_tap, g_tp_speed, g_tp_natural, g_tp_dwt, g_tp_zones, g_tp_kinetic;
         char w1[16]; int k=0; const char* q=arg; while(*q&&*q!=' '&&k<15)w1[k++]=*q++; w1[k]=0; while(*q==' ')q++;
         int on=(q[0]=='o'&&q[1]=='n')||q[0]=='1'||q[0]=='n';
@@ -200,7 +256,15 @@
         if(t<0) term_puts("usage: wallpaper porsche|crane|wireframe|peaks|earth|yosemite (or 0-5)\n"); else { g_theme=t; g_wallmode=0; build_bg(); term_puts("wallpaper changed\n"); sh_redraw(); } }
     else if(seq(cmd,"gpuinfo")){ extern void gpuinfo_run(void); gpuinfo_run(); }
     else if(seq(cmd,"gpu")){ extern int igpu_flip_on(void); extern void igpu_flip_off(const char*); extern void gpuinfo_run(void);
-        if(arg[0]=='f'&&arg[5]=='o'&&arg[6]=='f'){ igpu_flip_off("turned off by the user"); term_puts("tear-free drawing off\n"); }
+        if(arg[0]=='f'&&arg[1]=='e'&&arg[2]=='a'){ extern int nvset_cmd(const char*,char*,int); static char fb[1400]; const char* m=arg; while(*m&&*m!=' ')m++; nvset_cmd(m,fb,(int)sizeof fb); term_puts("NVIDIA features (gpu feature on|off|reset <name>):\n"); term_puts(fb); }
+        else if(arg[0]=='a'&&arg[1]=='d'&&arg[2]=='a'&&(arg[3]==' '||!arg[3])){ extern int nvada_cmd(const char*); extern int g_nv_ada_on; extern char g_nv_log[]; const char* m=arg+3; while(*m==' ')m++;
+            if(m[0]=='b'){ term_puts("gpu ada: working - this can take up to 30 seconds\n"); int r=nvada_cmd(m); term_puts(g_nv_log); term_puts(r>0?"gpu ada: done\n":"gpu ada: stopped - see the step above\n"); }
+            else { if(m[0]=='o'){ extern int nvset_set(int,int); extern int nvset_find(const char*); nvset_set(nvset_find("ada"),m[1]=='n'); nvada_cmd(m); } term_puts(g_nv_ada_on?"gpu ada: on - NVIDIA RTX 40 (Ada) GSP start is allowed: nvgsp all (full start), gpu ada boot (FWSEC-FRTS check only)\n":"gpu ada: off - NVIDIA RTX 40 (Ada) cards are left alone (gpu ada on|off|boot)\n"); } }
+        else if(arg[0]=='f'&&arg[5]=='o'&&arg[6]=='f'){ igpu_flip_off("turned off by the user"); term_puts("tear-free drawing off\n"); }
+        else if(arg[0]=='m'&&arg[1]=='o'){ extern int nvflip_setting(int); extern int g_nvflip_want; extern char* nvflip_why(void); const char* m=arg[7]?arg+8:"";
+            if(m[0]=='o'&&m[1]=='n'){ int r=nvflip_setting(1); term_puts(r?"gpu modeset on: native mode and tear-free page flips on the main screen\n":"gpu modeset on (saved), but the main screen stays on the firmware picture: "); if(!r){ term_puts(nvflip_why()); term_putc('\n'); } }
+            else if(m[0]=='o'&&m[1]=='f'){ nvflip_setting(0); term_puts("gpu modeset off: the main screen uses the firmware picture\n"); }
+            else { term_puts(g_nvflip_want?"gpu modeset: on":"gpu modeset: off"); term_puts(" (usage: gpu modeset on|off)\n"); } }
         else if(arg[0]=='b'&&arg[5]=='g'){ extern void igpu_blt_mode(int); igpu_blt_mode(1); term_puts("screen copies by the GPU blitter (if it is ready - see gpuinfo)\n"); }
         else if(arg[0]=='b'&&arg[5]=='c'){ extern void igpu_blt_mode(int); igpu_blt_mode(0); term_puts("screen copies by the CPU\n"); }
         else if(arg[0]=='f'&&arg[5]=='o'&&arg[6]=='n'){ term_puts(igpu_flip_on()==0?"tear-free drawing on\n":"tear-free drawing could not start - see gpuinfo\n"); }
@@ -215,10 +279,12 @@
         else if(arg[0]=='p'&&arg[1]=='r'){ extern int g_pres_eng; g_pres_eng=(arg[8]=='s'); term_puts(g_pres_eng?"screen copies by the shader\n":"screen copies by the blitter\n"); sh_redraw(); }
         else if(arg[0]=='p'&&arg[1]=='a'){ extern int g_gfx_srec; g_gfx_srec=!(arg[9]=='f'); term_puts(g_gfx_srec?"partial screen redraws on\n":"partial screen redraws off - the whole screen is rebuilt every frame\n"); sh_redraw(); }
         else if(arg[0]=='f'&&arg[1]=='x'){ extern int g_gfx_fx; g_gfx_fx=(arg[3]=='o'&&arg[4]=='n'); term_puts(g_gfx_fx?"effects on\n":"effects off\n"); sh_redraw(); }
+        else if(arg[0]=='a'&&arg[1]=='m'){ extern const char* nvd_ampere_cmd(const char*); term_puts(nvd_ampere_cmd(arg)); }
         else gpuinfo_run(); }
     else if(seq(cmd,"tpdump")){ extern void tpinfo_dump(void); tpinfo_dump(); }
     else if(seq(cmd,"memtest")){ memtest_run(); }
     else if(seq(cmd,"usbhid")){ usbhid_cmd(arg); }
+    else if(seq(cmd,"usbc")){ extern void ucsi_shell(const char*,void (*)(const char*)); ucsi_shell(arg,0); }
     else if(seq(cmd,"usbproto")){ extern int xhci_usbproto(int); int v=xhci_usbproto(seq(arg,"off")?0:seq(arg,"on")?1:-1); term_puts(v?"usbproto: on\n":"usbproto: off\n"); }
     else if(seq(cmd,"usbsim")){ extern int xhid_sim_biltema(void); int r=(arg&&arg[0]=='b')?xhid_sim_biltema():-9; term_puts(r>=0?"usbsim: QEMU usb-mouse now behaves like Biltema 248A:16BB (debug)\n":r==-9?"usage: usbsim biltema\n":"usbsim: no QEMU usb-mouse found\n"); }
     else if(seq(cmd,"usbinfo")){ char b[200],*p;

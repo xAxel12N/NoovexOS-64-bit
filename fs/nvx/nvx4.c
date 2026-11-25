@@ -168,7 +168,7 @@ static int n4_write_meta(int full){
         while(i<N4_METAB){ int ch=all; if(!ch){ const u64* a=(const u64*)(g_n4_img+(u64)i*N4_BS); const u64* b=(const u64*)(g_n4_shadow+(u64)i*N4_BS); for(u32 q=0;q<N4_BS/8;q++) if(a[q]!=b[q]){ ch=1; break; } }
             if(!ch){ i++; continue; }
             u32 j=i+1; while(j<N4_METAB&&j-i<64){ int c2=all; if(!c2){ const u64* a=(const u64*)(g_n4_img+(u64)j*N4_BS); const u64* b=(const u64*)(g_n4_shadow+(u64)j*N4_BS); for(u32 q=0;q<N4_BS/8;q++) if(a[q]!=b[q]){ c2=1; break; } } if(!c2)break; j++; }
-            if(n4_wr(base+i,j-i,g_n4_img+(u64)i*N4_BS)){ g_n4_stale[c]=1; g_n4_err="metadata write failed"; return -1; }
+            if(n4_wr(base+i,j-i,g_n4_img+(u64)i*N4_BS)){ g_n4_stale[0]=g_n4_stale[1]=1; g_n4_err="metadata write failed"; return -1; }
             i=j; }
         n4_barrier(); g_n4_stale[c]=0; }
     return 0;
@@ -177,6 +177,7 @@ static int n4_commit_raw(void);
 static int n4_commit(void){ extern volatile int g_disk_busy; __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=n4_commit_raw(); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
 static int n4_commit_raw(void){
     if(!g_n4)return -1; int bad=0; n4_step_drop();
+    for(int k=0;k<FS_N;k++) if((!FS[k].used||FS[k].orphan)&&(g_n4nx[k]||g_n4ind[k])){ n4_trim(k,0,0); if(g_n4ind[k])n4_pfree(g_n4ind[k],1); g_n4ind[k]=0; g_n4indd[k]=0; }
     for(int k=0;k<FS_N;k++) if(FS[k].used&&!FS[k].orphan&&n4_sync_file(k))bad=1;
     n4_barrier();
     n4_serialize();

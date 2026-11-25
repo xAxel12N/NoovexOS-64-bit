@@ -1,6 +1,7 @@
 #include "include/nvx/base.h"
 #include "include/nvx/core/crash.h"
 #include "include/nvx/core/klog.h"
+#include "include/nvx/core/kaslr.h"
 #include "include/nvx/assets/fontaa.h"
 #include "include/nvx/drivers/video/fb/framebuffer.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
@@ -41,7 +42,7 @@ int kpop(void);
 #define CX_CL_W 120
 #define CX_STK_MAX 80
 #define CX_STK_MAGIC 0x5AFE57AC4B0C0DE5ULL
-#define CX_VERS "NoovexOS 64 v11.10"
+#define CX_VERS "NoovexOS 64 v11.22"
 
 u8 g_ksyms[CX_KSYM_CAP] __attribute__((section(".data.ksyms"),aligned(16)))={'N','V','X','K','S','Y','M','1'};
 u64 __stack_chk_guard=0x00E4B79A5C3D2F17ULL;
@@ -75,14 +76,17 @@ typedef struct { u64 tsc; const char* s; const char* inw; volatile u32 seq; int 
 static crumb_t g_crumb[CRUMB_N];
 static volatile u32 g_crumb_n;
 volatile int g_crumb_serial=-1;
-static const char* volatile g_crumb_seen[4];
+#define CRUMB_SEEN 32
+static const char* volatile g_crumb_seen[CRUMB_SEEN];
 static volatile u32 g_crumb_sk;
 static inline u64 crumb_tsc(void){ return cpu_tsc(); }
 void crumb_serial_detect(void){ if(g_crumb_serial>=0)return; outb(0x3F8+7,0x5A); g_crumb_serial=(inb(0x3F8+7)==0x5A&&inb(0x3F8+5)!=0xFF)?1:0; }
+static int crumb_seen(const char* s){ for(int i=0;i<CRUMB_SEEN;i++) if(g_crumb_seen[i]==s) return 1; return 0; }
+static void crumb_mark(const char* s){ g_crumb_seen[__atomic_fetch_add(&g_crumb_sk,1,__ATOMIC_RELAXED)%CRUMB_SEEN]=s; }
 static void crumb_ser(const char* s){
-    for(int i=0;i<4;i++) if(g_crumb_seen[i]==s) return;
-    g_crumb_seen[__atomic_fetch_add(&g_crumb_sk,1,__ATOMIC_RELAXED)&3]=s;
+    if(crumb_seen(s)) return;
     if(!(inb(0x3F8+5)&0x20)) return;
+    crumb_mark(s);
     outb(0x3F8,'@'); int k=0; while(s[k]&&k<13){ outb(0x3F8,(u8)s[k]); k++; } outb(0x3F8,'\r'); outb(0x3F8,'\n');
 }
 void crumb(const char* s){
@@ -114,7 +118,7 @@ static int cx_ks_text(u64 a){
     if(cx_ks_ok())return a>=cx_ks_u32(16)&&a<cx_ks_u32(20);
     return a>=0x100000ULL&&a<0x06500000ULL; }
 int kname_find(u64 a,const char** name,u64* off){
-    if(!cx_ks_ok())return 0; u32 n=cx_ks_u32(8), so=cx_ks_u32(12);
+    if(!cx_ks_ok())return 0; a-=g_kaslr_text_slide; u32 n=cx_ks_u32(8), so=cx_ks_u32(12);
     if(!n||!cx_ks_text(a)||so>=CX_KSYM_CAP)return 0;
     u32 l=0,r=n; while(r-l>1){ u32 m=(l+r)/2; if(cx_ks_u32(24+m*8)<=a)l=m; else r=m; }
     u32 sa=cx_ks_u32(24+l*8); if(sa>a)return 0; u32 no=so+cx_ks_u32(24+l*8+4); if(no>=CX_KSYM_CAP)return 0;
@@ -502,6 +506,7 @@ static __attribute__((noinline)) void cx_smash(const char* s){ char b[16]; volat
 void crash_cmd(const char* a){
     void term_puts(const char*);
     while(*a==' ')a++;
+    { extern int kaslr_hide_addr(void); if(kaslr_hide_addr()){ term_puts("crash: root only (reports contain kernel addresses)\n"); return; } }
     if(cx_eq(a,"")){
         if(g_bkl_box_n){ term_puts("Last 'stuck' box this session (CPU waiting for the kernel lock):\n"); term_puts(g_bkl_box); term_puts("\n"); }
         int k=fs_find_name("crash-report.txt"); if(k>=0){ char* d=fsd(k); if(d){ term_puts(d); term_puts("\n"); return; } }

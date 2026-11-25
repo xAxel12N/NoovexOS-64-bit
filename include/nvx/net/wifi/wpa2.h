@@ -6,6 +6,7 @@
 extern u8 g_ptk[48];
 extern u8 g_pmk[32];
 extern int g_wpa_ok, g_wpa_mfp;
+extern int g_wpa_sae_h2e, g_wifi_h2e, g_wifi_h2e_fail;
 int wpa_rx_eapol(const u8* eap,int el);
 int wnd_send_eapol(const u8* eap,int el);
 

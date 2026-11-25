@@ -6,6 +6,8 @@
 #include "include/nvx/sys/linux/lxsock.h"
 #include "include/nvx/net/http/http.h"
 #include "include/nvx/drivers/storage/ahci.h"
+#include "include/nvx/sys/bpf/bpf_attach.h"
+#include "include/nvx/net/stack/firewall.h"
 #define LXS_BLOCK (-1000)
 
 #define LXS_LO 0x7F000001u
@@ -23,7 +25,8 @@ void lxs_lo_tx(const u8* f,int n){
     u32 k=lo_head%LO_SLOTS; u8* d=lo_buf+k*LO_FRAME; for(int i=0;i<n;i++)d[i]=f[i]; lo_len[k]=(u16)n; lo_head++;
 }
 
-static void lxs_mv(u8* d,const u8* s,int n){ int i=0; if(d+8<=s||d>=s+n){ for(;i+8<=n;i+=8)*(u64*)(d+i)=*(const u64*)(s+i); } for(;i<n;i++)d[i]=s[i]; }
+typedef u64 __attribute__((aligned(1),may_alias)) lxs_u64u;
+static void lxs_mv(u8* d,const u8* s,int n){ int i=0; if(d+8<=s||d>=s+n){ for(;i+8<=n;i+=8)*(lxs_u64u*)(d+i)=*(const lxs_u64u*)(s+i); } for(;i<n;i++)d[i]=s[i]; }
 static int lxs_route_mac(u32 dip,u8* mac){
     if(dip==0xFFFFFFFFu){ for(int i=0;i<6;i++)mac[i]=0xFF; return 1; }
     u32 route=((dip&my_mask)==(my_ip&my_mask))?dip:gw_ip;
@@ -147,13 +150,14 @@ static void lxs_frame(u8* f,int n){
     if(!lxs_is_lo(dip)&&dip!=0xFFFFFFFFu&&dip!=(my_ip|~my_mask))return;
     u8* p=ip+ihl; int plen=tot-ihl;
     if(ip[9]==1){ lxs_icmp_in(f,n,ip,ihl,p,plen,sip,dip); return; }
-    if(ip[9]==17){ if(plen<8)return; int ul=rd16(p+4); if(ul<8||ul>plen)return; lxs_udp_in(sip,rd16(p),rd16(p+2),p+8,ul-8); return; }
+    if(ip[9]==17){ if(plen<8)return; int ul=rd16(p+4); if(ul<8||ul>plen)return; if(!fw_allow_in(17,sip,rd16(p),rd16(p+2),lxs_in_lo))return; lxs_udp_in(sip,rd16(p),rd16(p+2),p+8,ul-8); return; }
     if(ip[9]!=6||plen<20)return;
     int thl=((p[12]>>4)&0xF)*4; if(thl<20||thl>plen)return;
     u16 sp=rd16(p), dp=rd16(p+2);
     for(int i=0;i<NLXS;i++){ struct lxsock* s=&g_lxs[i]; if(!s->used||s->type!=1||s->st==LXS_LISTEN||s->lport!=dp||s->rport!=sp||s->rip!=sip)continue;
         lxs_tcp_in(s,p,thl,plen-thl,rd32(p+4),rd32(p+8),p[13]); return; }
     if((p[13]&(TF_SYN|TF_ACK|TF_RST))!=TF_SYN)return;
+    if(!fw_allow_in(6,sip,sp,dp,lxs_in_lo))return;
     for(int i=0;i<NLXS;i++){ struct lxsock* L=&g_lxs[i]; if(!L->used||L->type!=1||L->st!=LXS_LISTEN||L->lport!=dp)continue;
         int pend=L->qn; for(int k=0;k<NLXS;k++) if(g_lxs[k].used&&g_lxs[k].st==LXS_SYNRCVD&&g_lxs[k].parent==i)pend++;
         if(pend>=L->backlog)return;
@@ -199,6 +203,7 @@ void lxs_pump(void){
 }
 void lxs_release(int i){
     struct lxsock* s=lxs_get(i); if(!s)return;
+    if(g_bpf_sock_any)bpf_sock_detach(i);
     if(s->st==LXS_LISTEN){
         for(int k=0;k<s->qn;k++){ g_lxs[s->q[k]].parent=-1; lxs_release(s->q[k]); }
         s->qn=0;
@@ -255,6 +260,7 @@ int lxs_send(int i,const u8* b,int n,u32 dip,u16 dport,int has_to){
         if(lxs_is_lo(real)){ for(int k=0;k<6;k++)m2[k]=0; mac=m2; }
         else { if(!nic_up())return -101; if(has_to||!s->have_mac){ if(!lxs_route_mac(real,m2))return -113; mac=m2; } }
         if(!s->lport)s->lport=lxs_eph(2);
+        fw_note_out(17,s->lport,real,tp);
         lxs_pump();
         udp_send(real,s->lport,tp,b,n,mac); return n; }
     lxs_pump();
@@ -271,7 +277,8 @@ int lxs_recv(int i,u8* b,int n,int peek,u32* from,u16* fport){
     lxs_pump();
     if(s->type==2||s->type==16){
         if(!s->rxn)return s->rd_shut?0:LXS_BLOCK;
-        u8* r=s->rx; int dl=rd16(r+6); if(from)*from=rd32(r); if(fport)*fport=rd16(r+4);
+        u8* r=s->rx; int dl=rd16(r+6);
+        if(g_bpf_sock_any){ int fl=bpf_sock_filter(i,r+8,dl); if(fl<=0){ int t=8+dl; lxs_mv(s->rx,s->rx+t,s->rxn-t); s->rxn-=t; return lxs_recv(i,b,n,peek,from,fport); } if(fl<dl){ int c=fl<n?fl:n; if(from)*from=rd32(r); if(fport)*fport=rd16(r+4); if(c>0)lxs_mv(b,r+8,c); if(!(peek&1)){ int t=8+dl; lxs_mv(s->rx,s->rx+t,s->rxn-t); s->rxn-=t; } return (peek&2)?fl:c; } } if(from)*from=rd32(r); if(fport)*fport=rd16(r+4);
         int c=dl<n?dl:n; if(c>0)lxs_mv(b,r+8,c);
         if(!(peek&1)){ int t=8+dl; lxs_mv(s->rx,s->rx+t,s->rxn-t); s->rxn-=t; }
         return (peek&2)?dl:c; }

@@ -1,7 +1,8 @@
 #include "include/nvx/base.h"
+#include "include/nvx/drivers/video/fb/deskscale.h"
 #include "include/nvx/drivers/video/fb/framebuffer.h"
 #include "include/nvx/graphics/theme/effects.h"
-static u32 g_glasstmp[MAXW];
+static u32 g_glasstmp[DESK_MAXW];
 static void glass_panel(int x,int y,int w,int h,int r,u32 tint,int tintamt,int blurR,int hairline){
     int x0=x<0?0:x, y0=y<0?0:y, x1=x+w>(int)W?(int)W:x+w, y1=y+h>(int)H?(int)H:y+h;
     if(x1<=x0||y1<=y0)return; int bw=x1-x0;

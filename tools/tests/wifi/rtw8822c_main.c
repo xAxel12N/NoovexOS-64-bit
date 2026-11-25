@@ -2,8 +2,8 @@
    RF registers behind the 8822C direct windows (0x3c00/0x4c00) and the SIPI ports (0x1808/0x4108), plus the
    few status bits the bring-up polls (power FSM, efuse, LTE coex, RFK ack, IQK done). */
 #include "include/nvx/drivers/net/wifi/rtw_chip.h"
-#include "drivers/net/wifi/rtw88/chips/rtw8822c.h"
-#include "drivers/net/wifi/rtw88/chips/rtw8822c_tables.h"
+#include "drivers/net/wifi/realtek/rtw88/chips/rtw8822c.h"
+#include "drivers/net/wifi/realtek/rtw88/chips/rtw8822c_tables.h"
 
 typedef struct { u32 a, v; u8 sz; } wrec;
 static wrec* rec; static int nrec, caprec;

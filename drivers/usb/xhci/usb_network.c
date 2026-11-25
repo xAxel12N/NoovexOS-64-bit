@@ -1,4 +1,5 @@
 #include "drivers/usb/usbnet_proto.h"
+#include "drivers/usb/class/ipheth.h"
 #include "include/drivers.h"
 #define UN_NRX 8
 #define UN_NTX 16
@@ -15,7 +16,10 @@ static struct { int ok, ctl, slot, kind, ctlif, dataif, in_ep, out_ep, in_dci, o
     u32 mem, inctx, devctx, ep0, dbuf, inring, outring, in_enq, in_cyc, out_enq, out_cyc, rxbase, txbase, e0_enq, e0_cyc, rndis_id, route, rxf, txf, err, drops; u16 seq, vid, pid; u8 mac[6]; usbloc_t L; } usn;
 static u8* usn_q; static int usn_qlen[UN_QN]; static int usn_qh, usn_qt;
 int g_usn_pref=0;
-static const char* usn_kname(int k){ return k==1?"CDC-ECM":k==2?"CDC-NCM":k==3?"RNDIS":"none"; }
+static int usn_iph_car, usn_iph_try; static u64 usn_iph_t;
+static struct featguard iph_fg={"iPhone USB tethering (ipheth)","feat-ipheth.cfg",1,0,3,0,0};
+static int ueth_match(u16 vid,u16 pid); static int ueth_parse(const u8* c,int n,int cfgval,int kind,usn_cand_t* best); static int ueth_init(int kind,u8* mac,u16 bcd); static int ueth_rx(const u8* b,int n); static int ueth_tx(u8* out,int cap,const u8* f,int len); static int ueth_link(void);
+static const char* usn_kname(int k){ return k==1?"CDC-ECM":k==2?"CDC-NCM":k==3?"RNDIS":k==4?"Realtek RTL815x":k==5?"ASIX AX88179":k==IPH_KIND?"Apple ipheth":"none"; }
 static void usn_q_put(const u8* f,int n){
     if(!usn_q||n<14||n>UN_QSZ){ usn.drops++; return; }
     int nt=(usn_qt+1)%UN_QN; if(nt==usn_qh){ usn.drops++; return; }
@@ -26,6 +30,8 @@ static void usn_rx_data(const u8* b,int n){
     if(usn.kind==1)usn_q_put(b,n);
     else if(usn.kind==2){ if(ncm_parse(b,n)<0)usn.err++; }
     else if(usn.kind==3){ if(rndis_parse(b,n)<=0)usn.err++; }
+    else if(usn.kind==4||usn.kind==5){ if(ueth_rx(b,n)<0)usn.err++; }
+    else if(usn.kind==IPH_KIND){ const u8* f; int fl=iph_rx(b,n,&f); if(fl<0)usn.err++; else { usn_q_put(f,fl); usn_iph_car=1; } }
 }
 static void usn_trb(u32 ring,u32* enq,u32* cyc,u32 buf,int len,int dci){
     volatile u32* tr=(volatile u32*)(u64)(ring+(*enq)*16);
@@ -86,23 +92,35 @@ static int usn_send(const u8* d,int len){
     u8* b=(u8*)(u64)(usn.txbase+(u32)(usn.txi*UN_TXSZ)); int n;
     if(usn.kind==2)n=ncm_build(b,UN_TXSZ-1,usn.seq++,d,len,usn.ndiv,usn.nrem);
     else if(usn.kind==3)n=rndis_wrap(b,UN_TXSZ-1,d,len);
+    else if(usn.kind==4||usn.kind==5)n=ueth_tx(b,UN_TXSZ-1,d,len);
+    else if(usn.kind==IPH_KIND)n=iph_tx(b,UN_TXSZ-1,d,len);
     else { for(int i=0;i<len;i++)b[i]=d[i]; n=len; }
     if(n<0){ usn.err++; return -1; }
-    if(usn.out_mps>0&&n%usn.out_mps==0){ b[n]=0; n++; if(usn.kind==2)usn_p16(b+8,(u16)n); }
+    if(usn.kind!=4&&usn.kind!=5&&usn.out_mps>0&&n%usn.out_mps==0){ b[n]=0; n++; if(usn.kind==2)usn_p16(b+8,(u16)n); }
     int prev=g_xcur; xhc_select(usn.ctl);
     usn.txout++; usn_trb(usn.outring,&usn.out_enq,&usn.out_cyc,(u32)(u64)b,n,usn.out_dci);
     xhc_select(prev);
     usn.txi=(usn.txi+1)%UN_NTX; usn.txf++;
     return len;
 }
+static void usn_iph_poll(void){
+    if(usn.kind!=IPH_KIND||hr_ns()-usn_iph_t<1000000000ULL)return;
+    usn_iph_t=hr_ns();
+    if(xh_wdepth>0||__sync_lock_test_and_set(&xh_poll_busy,1))return;
+    int prev=g_xcur; xhc_select(usn.ctl);
+    if(usn_ctrl(IPH_RT_IN,IPH_CMD_CARRIER,0,(u16)usn.dataif,IPH_CTRL_LEN,1)){ int c=iph_carrier((const u8*)(u64)usn.dbuf,IPH_CTRL_LEN); if(c!=usn_iph_car)klog(c?"usb-net: phone hotspot carrier on":"usb-net: phone hotspot carrier off - turn on Personal Hotspot and tap Trust on the phone"); usn_iph_car=c; }
+    xhc_select(prev);
+    __sync_lock_release(&xh_poll_busy);
+}
 static int usn_recv(u8* out,int max){
     if(!usn.ok)return 0;
+    usn_iph_poll();
     if(usn_qh==usn_qt)usn_events();
     if(usn_qh==usn_qt)return 0;
     int n=usn_qlen[usn_qh]; if(n>max)n=max; const u8* s=usn_q+usn_qh*UN_QSZ; for(int i=0;i<n;i++)out[i]=s[i];
     usn_qh=(usn_qh+1)%UN_QN; return n;
 }
-static int usn_link(void){ return usn.ok; }
+static int usn_link(void){ return usn.ok&&((usn.kind!=4&&usn.kind!=5)||ueth_link())&&(usn.kind!=IPH_KIND||usn_iph_car); }
 static int usn_parse(const u8* c,int n,int cfgval,usn_cand_t* best){
     int curif=-1, curalt=0, cls=0, sub=0, pro=0, kind=0, ctlif=-1, dataif=-1, imac=0, found=0;
     int dalt=-1, din=0, dout=0, dinm=0, doutm=0, ain=0, aout=0, ainm=0, aoutm=0;
@@ -116,7 +134,7 @@ static int usn_parse(const u8* c,int n,int cfgval,usn_cand_t* best){
             else if(cls==0x0A&&kind&&dataif<0)dataif=curif;
         }
         else if(ty==0x24&&bl>=5&&kind&&curif==ctlif){ int st=c[i+2]; if(st==6)dataif=c[i+4]; else if(st==0x0F&&bl>=4)imac=c[i+3]; }
-        else if(ty==5&&bl>=7&&cls==0x0A&&curif==dataif&&(c[i+3]&3)==2){ int a=c[i+2], m=c[i+4]|(c[i+5]<<8); if(a&0x80){ ain=a; ainm=m; } else { aout=a; aoutm=m; } }
+        else if(ty==5&&bl>=7&&cls==0x0A&&curif==dataif&&(c[i+2]&0x0F)&&(c[i+3]&3)==2){ int a=c[i+2], m=c[i+4]|(c[i+5]<<8); if(a&0x80){ ain=a; ainm=m; } else { aout=a; aoutm=m; } }
         i+=bl; }
     if(cls==0x0A&&curif==dataif&&ain&&aout&&dalt<0){ dalt=curalt; din=ain; dout=aout; dinm=ainm; doutm=aoutm; }
     if(kind&&dataif>=0&&dalt>=0&&din&&dout){
@@ -146,10 +164,10 @@ static int usn_mem(void){
     usn.rxbase=(usn.mem+0xE000u+0xFFFFu)&~0xFFFFu;
     return 1;
 }
-#define UFAIL(m) do{ xh_set_fail(m); usn.ok=0; return 0; }while(0)
+#define UFAIL(m) do{ xh_set_fail(m); usn.ok=0; if(usn_iph_try){ usn_iph_try=0; fg_fail(&iph_fg,m); } return 0; }while(0)
 static int usn_enum_loc(const usbloc_t* L){
     if(usn.ok||!usn_mem())return 0;
-    xhci_failstep[0]=0; xhci_failcc=0; usn.slot=0;
+    xhci_failstep[0]=0; xhci_failcc=0; usn.slot=0; usn_iph_try=0;
     int speed=L->speed; int mps0=(speed==3)?64:(speed>=4)?512:8;
     cur_ep0=usn.ep0; cur_dbuf=usn.dbuf; e0_enq=0; e0_cyc=1; ring_init(usn.ep0);
     u8 cc=0,sl=0; if(!xh_cmd_s(0,0,0,9,0,&cc,&sl)||!sl){ xhci_failcc=cc; UFAIL("Enable Slot"); }
@@ -163,26 +181,29 @@ static int usn_enum_loc(const usbloc_t* L){
     if(!xh_fix_mps0(usn.inctx,L,usn.ep0))UFAIL("GET device descriptor (8)");
     if(!xh_ctrl(0x80,6,0x0100,0,18,1,0))UFAIL("GET device descriptor");
     u8 dd[18]; { volatile u8* db=(volatile u8*)(u64)usn.dbuf; for(int i=0;i<18;i++)dd[i]=db[i]; }
-    usn.vid=(u16)(dd[8]|(dd[9]<<8)); usn.pid=(u16)(dd[10]|(dd[11]<<8)); int ncfg=dd[17]; if(ncfg<1)ncfg=1; if(ncfg>4)ncfg=4;
+    usn.vid=(u16)(dd[8]|(dd[9]<<8)); usn.pid=(u16)(dd[10]|(dd[11]<<8)); int ncfg=dd[17]; if(ncfg<1)ncfg=1; if(ncfg>8)ncfg=8;
     static u8 full[1024]; usn_cand_t best; for(int i=0;i<(int)sizeof best;i++)((u8*)&best)[i]=0;
-    int bestn=0; static u8 bestc[1024];
+    int bestn=0; static u8 bestc[1024]; int vk=ueth_match(usn.vid,usn.pid);
     for(int ci=0;ci<ncfg;ci++){
         if(!xh_ctrl(0x80,6,(u16)(0x0200|ci),0,9,1,0))continue;
         volatile u8* db=(volatile u8*)(u64)usn.dbuf; int wt=db[2]|(db[3]<<8), cv=db[5]; if(wt<9)continue; if(wt>1024)wt=1024;
         if(!xh_ctrl(0x80,6,(u16)(0x0200|ci),0,(u16)wt,1,0))continue;
         for(int i=0;i<wt;i++)full[i]=db[i];
-        if(usn_parse(full,wt,cv,&best)){ for(int i=0;i<wt;i++)bestc[i]=full[i]; bestn=wt; }
+        if(vk?(!best.kind&&ueth_parse(full,wt,cv,vk,&best)):usn_parse(full,wt,cv,&best)){ for(int i=0;i<wt;i++)bestc[i]=full[i]; bestn=wt; }
+        else if(!best.kind){ iph_cand_t ic2={0,0,0,0,0,0}; if(iph_find(full,wt,&ic2)&&fg_begin(&iph_fg)){ usn_iph_try=1; best.kind=IPH_KIND; best.cfgval=cv; best.ctlif=ic2.ifnum; best.dataif=ic2.ifnum; best.alt=ic2.alt; best.in_ep=ic2.in_ep; best.in_mps=ic2.in_mps; best.out_ep=ic2.out_ep; best.out_mps=ic2.out_mps; best.imac=0; for(int i=0;i<wt;i++)bestc[i]=full[i]; bestn=wt; } }
     }
     if(!best.kind)UFAIL("no network interface");
+    usbreg_probe(L,bestc,bestn);
     if(!xh_ctrl(0x00,9,(u16)best.cfgval,0,0,0,0))UFAIL("SET_CONFIGURATION");
     usn.kind=best.kind; usn.ctlif=best.ctlif; usn.dataif=best.dataif; usn.in_ep=best.in_ep; usn.out_ep=best.out_ep; usn.in_mps=best.in_mps?best.in_mps:512; usn.out_mps=best.out_mps?best.out_mps:512;
-    usn.ndiv=4; usn.nrem=0; usn.rxsz=usn.kind==1?2048:16384;
+    usn.ndiv=4; usn.nrem=0; usn.rxsz=(usn.kind==1||usn.kind==IPH_KIND)?2048:16384;
     if(usn.kind==2){
         if(xh_ctrl(0xA1,0x80,0,(u16)usn.ctlif,28,1,0)){ volatile u8* p=(volatile u8*)(u64)usn.dbuf; u32 inmax=(u32)p[4]|((u32)p[5]<<8)|((u32)p[6]<<16)|((u32)p[7]<<24); int dv=p[20]|(p[21]<<8), rm=p[22]|(p[23]<<8);
             if(dv>=4&&dv<=256){ usn.ndiv=dv; usn.nrem=rm%dv; }
             if(inmax>16384u){ volatile u8* w=(volatile u8*)(u64)usn.dbuf; w[0]=0; w[1]=0x40; w[2]=0; w[3]=0; if(!xh_ctrl(0x21,0x86,0,(u16)usn.ctlif,4,0,0)){ usn.rxsz=inmax>32768u?65536:32768; klog("usb-net: NCM device keeps its own block size, using bigger buffers"); } } }
     }
-    if(usn.kind!=3){ xh_ctrl(0x01,11,0,(u16)usn.dataif,0,0,0); if(best.alt)xh_ctrl(0x01,11,(u16)best.alt,(u16)usn.dataif,0,0,0); }
+    if(usn.kind==IPH_KIND)xh_ctrl(0x01,11,(u16)best.alt,(u16)usn.dataif,0,0,0);
+    else if(usn.kind!=3){ xh_ctrl(0x01,11,0,(u16)usn.dataif,0,0,0); if(best.alt)xh_ctrl(0x01,11,(u16)best.alt,(u16)usn.dataif,0,0,0); }
     else if(best.alt)xh_ctrl(0x01,11,(u16)best.alt,(u16)usn.dataif,0,0,0);
     usn.in_dci=(usn.in_ep&0x0F)*2+1; usn.out_dci=(usn.out_ep&0x0F)*2; int maxdci=usn.in_dci>usn.out_dci?usn.in_dci:usn.out_dci;
     ctx_zero(usn.inctx,(int)ctx_sz()*33/4);
@@ -194,10 +215,14 @@ static int usn_enum_loc(const usbloc_t* L){
     if(!xh_cmd_s(usn.inctx,0,0,12,(u32)usn.slot,&cc,&sl)){ xhci_failcc=cc; UFAIL("Configure Endpoint"); }
     usn.e0_enq=e0_enq; usn.e0_cyc=e0_cyc;
     int macok=0;
-    if(usn.kind==3){
+    if(usn.kind==4||usn.kind==5)macok=ueth_init(usn.kind,usn.mac,(u16)(dd[12]|(dd[13]<<8)));
+    else if(usn.kind==3){
         if(usn_rndis(2,0,0,0,0,0)<0)UFAIL("RNDIS initialise");
         u8 m[8]; if(usn_rndis(4,0x01010101u,0,0,m,8)==6){ for(int i=0;i<6;i++)usn.mac[i]=m[i]; macok=!(m[0]&1); }
         u8 flt[4]={0x0F,0,0,0}; if(usn_rndis(5,0x0001010Eu,flt,4,0,0)<0)UFAIL("RNDIS packet filter");
+    } else if(usn.kind==IPH_KIND){
+        if(usn_ctrl(IPH_RT_IN,IPH_CMD_MAC,0,(u16)usn.dataif,6,1)){ u8 m[6]; volatile u8* db=(volatile u8*)(u64)usn.dbuf; for(int i=0;i<6;i++)m[i]=db[i]; if(iph_mac_ok(m)){ for(int i=0;i<6;i++)usn.mac[i]=m[i]; macok=1; } }
+        usn_iph_car=0; usn_iph_t=0;
     } else {
         if(best.imac&&usn_ctrl(0x80,6,(u16)(0x0300|best.imac),0x0409,255,1)){ u8 s[64]; volatile u8* db=(volatile u8*)(u64)usn.dbuf; for(int i=0;i<64;i++)s[i]=db[i]; macok=usn_strmac(s,64,usn.mac); }
         usn_ctrl(0x21,0x43,0x000E,(u16)usn.ctlif,0,0);
@@ -207,10 +232,11 @@ static int usn_enum_loc(const usbloc_t* L){
     usn.ok=1; usn.rxon=1;
     usn_nrx=(int)(0x20000u/(u32)usn.rxsz); if(usn_nrx>UN_NRX)usn_nrx=UN_NRX;
     for(int i=0;i<usn_nrx;i++)usn_arm(usn.rxbase+(u32)(i*usn.rxsz));
-    usbdev_note(L->root,usn.vid,usn.pid,bestc,bestn,"USB network adapter");
-    struct nvx_nic n; n.name=usn.kind==1?"USB Ethernet (CDC-ECM)":usn.kind==2?"USB Ethernet (CDC-NCM)":"USB RNDIS (phone or gadget)"; for(int i=0;i<6;i++)n.mac[i]=usn.mac[i]; n.send=usn_send; n.recv=usn_recv; n.link=usn_link;
+    usbdev_note(L->root,usn.vid,usn.pid,bestc,bestn,usn.kind==IPH_KIND?"iPhone/iPad USB tethering":"USB network adapter");
+    struct nvx_nic n; n.name=usbnet_phone_name(usn.kind,usn.vid)?usbnet_phone_name(usn.kind,usn.vid):usn.kind==1?"USB Ethernet (CDC-ECM)":usn.kind==2?"USB Ethernet (CDC-NCM)":usn.kind==4?"USB Ethernet (Realtek RTL8152/8153)":usn.kind==5?"USB Ethernet (ASIX AX88179)":"USB RNDIS (phone or gadget)"; for(int i=0;i<6;i++)n.mac[i]=usn.mac[i]; n.send=usn_send; n.recv=usn_recv; n.link=usn_link;
     usn.nicidx=nic_add(&n);
     { char b[96],*p=b; p=scopy(p,"usb-net: "); p=scopy(p,usn_kname(usn.kind)); p=scopy(p," adapter "); p=hx(p,usn.vid,4); *p++=':'; p=hx(p,usn.pid,4); p=scopy(p," up"); *p=0; klog(b); }
+    if(usn_iph_try){ usn_iph_try=0; fg_ok(&iph_fg); }
     if(usn.nicidx>=0)nic_offer(usn.nicidx);
     return 1;
 }
@@ -232,6 +258,7 @@ static int usn_claimable(int c,int p){
     if(cam.ok&&cam.ctl==c&&cam.root==p)return 0;
     if(aud.ok&&aud.ctl==c&&aud.root==p)return 0;
     if(usn.ok&&usn.ctl==c&&usn.L.root==p)return 0;
+    if(umidi_owns(c,p))return 0;
     if(btu_owns(c,p))return 0;
     for(int k=0;k<USBDEV_MAX;k++) if(g_usbdev[k].used&&g_usbdev[k].ctl==c&&g_usbdev[k].port==p){ int cl=g_usbdev[k].cls; if(g_usbdev[k].hid||g_usbdev[k].cam||g_usbdev[k].prn)return 0; if(cl!=0&&cl!=2&&cl!=0x0A&&cl!=0xE0&&cl!=0xEF&&cl!=0xFF)return 0; }
     for(int h=0;h<XHUB_MAX;h++) if(xhub[h].used&&xhub[h].ctl==c&&xhub[h].root==p)return 0;
@@ -268,3 +295,4 @@ static int usn_active(void){ return usn.ok; }
 static void usn_remove_below(int root,u32 R,int dR){ if(usn.ok&&usn.ctl==g_xcur&&usn.L.root==root&&xh_under(usn.route,usn.depth,R,dR))usn_gone(); }
 static void usn_noslot(void){ if(!usn.ok&&usn.slot){ xh_disable_slot(usn.slot); usn.slot=0; } }
 void usn_reset_all(void){ if(usn.ok){ usn.ok=0; usn.rxon=0; usn.slot=0; if(usn.nicidx>=0)nic_drop(usn.nicidx); usn.nicidx=-1; klog("usb-net: controller reset, adapter released"); } }
+#include "drivers/usb/class/usbeth_vendor.c"

@@ -59,5 +59,19 @@ int act_run(ac_rep_fn rep){
     acct_create("zoe","Zoe","zoepass",0); fk_sync(); fk_boot(0); g_uid=0; g_gid=0;
     rep("accounts and passwords survive a restart (written to the disk)",disk_ok&&ac_has("/etc/passwd","zoe:x:")&&acct_check("zoe","zoepass")==1&&dt_resolve_dir("/home/zoe/Documents")>=0,0);
     { char o[160]; int n=sha512_crypt("Hello","$6$saltstring",o,160); rep("SHA-512 crypt matches the reference",n>0&&seq(o,"$6$saltstring$aQzKv7HhksN4CNT5HySRdxOEHxZvlWWP2je/lOgbrHx5iLYj3NJfVnC287n/dwkODYWL1.LZUdO9vX84fkCna/"),o); }
+    { char o[160]; int n=sha512_crypt("Hello world!","$6$rounds=10000$saltstringsaltstring",o,160); rep("SHA-512 crypt with rounds= matches the reference",n>0&&seq(o,"$6$rounds=10000$saltstringsaltst$OW1/O6BYHV6BcXZu8QVeXbDWra3Oeqh0sbHbbMCVNSnCM/UrjmM0Dp8vOuZeHBy/YTBmSK6H9qs/y3RnOaw5v.")&&sha512_crypt_rounds(o)==10000&&sha512_crypt_rounds("$6$abc$x")==5000,o); }
+    rep("new passwords use SHA-512 crypt with 100000 rounds",acct_set_password("zoe","zoepass2")==0&&ac_has("/etc/shadow","zoe:$6$rounds=100000$")&&acct_check("zoe","zoepass2")==1,g_acct_err);
+    { int st=0,wk=0; char o[160]; sha512_crypt("weakpw","$6$abcdefgh",o,160); char line[400]; char* q=line; q=scopy(q,"root:!:19000:0:99999:7:::\nzoe:"); q=scopy(q,o); q=scopy(q,":19000:0:99999:7:::\n"); *q=0; ac_put("/etc/shadow",line); acct_reload(); acct_hash_stats(&st,&wk);
+      int was=wk==1&&st==0; int ok=acct_check("zoe","weakpw")==1; acct_hash_stats(&st,&wk);
+      rep("old 5000-round hashes still work and are upgraded to 100000 rounds at the next sign-in, keeping the password age",was&&ok&&ac_has("/etc/shadow","zoe:$6$rounds=100000$")&&ac_has("/etc/shadow",":19000:0:99999:7:::")&&!ac_has("/etc/shadow",o)&&st==1&&wk==0&&acct_check("zoe","weakpw")==1,0); }
+    { extern volatile u64 g_ticks; u64 t0=g_ticks;
+      int a=acct_check("zoe","bad1")==0&&acct_check("zoe","bad2")==0&&acct_wait_secs("zoe")==0;
+      int b=acct_check("zoe","bad3")==0&&acct_wait_secs("zoe")==5&&acct_check("zoe","weakpw")==0&&acct_fail_count("zoe")==3;
+      g_ticks=t0+501; int c=acct_wait_secs("zoe")==0&&acct_check("zoe","bad4")==0&&acct_wait_secs("zoe")==10;
+      g_ticks=t0+501+1001; int d=acct_check("zoe","weakpw")==1&&acct_fail_count("zoe")==0&&acct_wait_secs("zoe")==0;
+      int e=acct_fail_delay(1)==0&&acct_fail_delay(2)==0&&acct_fail_delay(3)==5&&acct_fail_delay(4)==10&&acct_fail_delay(8)==160&&acct_fail_delay(9)==300&&acct_fail_delay(1000)==300;
+      for(int i=0;i<20;i++){ char nm[8]; nm[0]='u'; nm[1]=(char)('a'+i); nm[2]=0; acct_check(nm,"x"); } int f=acct_check("zoe","weakpw")==1;
+      g_ticks=t0+5000; acct_check("zoe","b1"); acct_check("zoe","b2"); acct_check("zoe","b3"); int g=acct_check("root","rootpw")==0||acct_wait_secs("root")==0; g_ticks=t0+5000+600; int h=acct_check("zoe","weakpw")==1;
+      rep("wrong passwords: 2 free tries, then 5 s doubling to 5 min, right password refused while waiting, success resets, per account",a&&b&&c&&d&&e&&f&&g&&h,g_acct_err); }
     return 0;
 }

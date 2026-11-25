@@ -940,9 +940,17 @@ static void paint_frags(box* b, float dx, float dy, float op, clipr* c, int phas
                 float th = s->fsize / 14;
                 if (th < 1) th = 1;
                 unsigned col = with_alpha(s->color, o2);
-                if (s->tdec & 1) rect(f->x + dx, f->base + dy + s->fsize * 0.12f, f->w, th, col, c);
-                if (s->tdec & 2) rect(f->x + dx, f->base + dy - s->fsize * 0.3f, f->w, th, col, c);
-                if (s->tdec & 4) rect(f->x + dx, f->base + dy - s->fsize * 0.85f, f->w, th, col, c);
+                float dw = text_width(s->face, s->fsize, f->s, f->n, s->lspace);
+                if (dw > f->w) dw = f->w;
+                if (i + 1 < b->nfr) {
+                    frag* g = &b->fr[i + 1];
+                    node* an = f->n_ ? f->n_->parent : 0;
+                    node* bn = g->n_ ? g->n_->parent : 0;
+                    if (g->kind == FK_TEXT && g->st && g->st->tdec == s->tdec && fabsf(g->y - f->y) < 1 && g->x <= f->x + f->w + 0.5f && (g->n_ == f->n_ || (an && an == bn))) dw = f->w;
+                }
+                if (s->tdec & 1) rect(f->x + dx, f->base + dy + s->fsize * 0.12f, dw, th, col, c);
+                if (s->tdec & 2) rect(f->x + dx, f->base + dy - s->fsize * 0.3f, dw, th, col, c);
+                if (s->tdec & 4) rect(f->x + dx, f->base + dy - s->fsize * 0.85f, dw, th, col, c);
             }
             if (G.find_n >= 0 && 0) {}
         } else if (f->kind == FK_MARKER) {

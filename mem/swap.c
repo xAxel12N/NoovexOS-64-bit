@@ -15,7 +15,8 @@ typedef struct { u64 pa; u64 used; int prev, next; u16 cls, cnt; int on; } zs_pg
 static zs_slot* g_zs_sc[ZS_SCH]; static u32 g_zs_nsl, g_zs_sfree=0xFFFFFFFFu;
 static zs_pg* g_zs_pc[ZS_PCH]; static int g_zs_npg, g_zs_pfree=-1;
 static int g_zs_part[ZS_NCL]; static int g_zs_init;
-u64 g_swap_total, g_swap_used, g_swap_bytes, g_swap_store, g_swap_outs, g_swap_ins, g_swap_same, g_swap_reject, g_swap_scans, g_swap_kicks;
+u64 g_swap_total, g_swap_used, g_swap_bytes, g_swap_store, g_swap_outs, g_swap_ins, g_swap_same, g_swap_reject, g_swap_scans, g_swap_kicks, g_swap_cycles;
+u64 swap_cycles(void){ return g_swap_cycles; }
 int g_swap_on=1; int g_swappiness=60;
 static zs_slot* zs_sl(u32 id){ return &g_zs_sc[id>>10][id&1023]; }
 static zs_pg* zs_pg_at(int i){ return &g_zs_pc[i>>10][i&1023]; }
@@ -36,6 +37,8 @@ static void zs_unlink(int i){ zs_pg* g=zs_pg_at(i); if(!g->on)return;
     if(g->next>=0)zs_pg_at(g->next)->prev=g->prev; g->on=0; g->prev=g->next=-1; }
 static void zs_link(int i){ zs_pg* g=zs_pg_at(i); if(g->on)return; g->prev=-1; g->next=g_zs_part[g->cls]; if(g->next>=0)zs_pg_at(g->next)->prev=i; g_zs_part[g->cls]=i; g->on=1; }
 static u64 g_zs_res[16]; static int g_zs_nres;
+static void zs_refill(void){ u32 fr=pframe_free_count(); while(g_zs_nres<16&&fr>64){ u64 f=pframe_alloc(); if(!f)break; g_zs_res[g_zs_nres++]=f; fr--; } }
+int swap_reserve_level(void){ return g_zs_nres; }
 static u64 zs_frame(void){ u64 f=pframe_alloc(); if(f||!g_zs_nres)return f; f=g_zs_res[--g_zs_nres]; u64* z=(u64*)f; for(int i=0;i<512;i++)z[i]=0; return f; }
 static int zs_store(const u8* b,int len,u64* loc){
     int cls=(len+63)/64-1; if(cls<0)cls=0; if(cls>=ZS_NCL)return 0; u32 sz=(u32)(cls+1)*64u, n=4096u/sz;
@@ -119,7 +122,7 @@ static u32 zs_batch(u64 cr3,u64** pts,u64* vas,u64* olds,int n){
     u32 got=0;
     for(int i=0;i<n;i++){ u64 o=olds[i], pa=o&PTE_ADDR; u32 id;
         int r=zs_put_page((const u8*)pa,&id);
-        if(r>0){ *pts[i]=PTE_LAZY|PTE_SWP|((u64)id<<12)|PTE_ANON|(o&PTE_PBITS); pframe_free(pa); got++; }
+        if(r>0){ *pts[i]=PTE_LAZY|PTE_SWP|((u64)id<<12)|PTE_ANON|(o&PTE_PBITS); if(g_zs_nres<4)g_zs_res[g_zs_nres++]=pa; else pframe_free(pa); got++; }
         else *pts[i]=r<0?((o&~0x40ULL)|PTE_NOZ):o; (void)vas; }
     return got; }
 static int zs_scan_space(u64 cr3,u64* pos,u32 want,u32* got,u32* budget){
@@ -142,25 +145,25 @@ static int zs_scan_space(u64 cr3,u64* pos,u32 want,u32* got,u32* budget){
     if(nb)*got+=zs_batch(cr3,pts,vas,olds,nb);
     return 1; }
 static u32 zs_reclaim(u32 want,int self_ok){
-    if(!g_swap_on||!pf_ready||!want)return 0; zs_setup(); if(g_swap_used>=g_swap_total)return 0;
-    u32 got=0, budget=200000; g_swap_scans++; u64 me=cpu_get_pt()&~0xFFFULL;
+    if(!g_swap_on||!pf_ready||!want){ g_swap_cycles++; return 0; } zs_setup(); if(g_swap_used>=g_swap_total){ g_swap_cycles++; return 0; }
+    zs_refill(); u32 got=0, budget=200000; g_swap_scans++; u64 me=cpu_get_pt()&~0xFFFULL;
     for(int steps=0;steps<JMAX+1&&got<want&&budget;steps++){
-        if(g_sc_j<0||g_sc_j>=JMAX){ g_sc_j=0; g_sc_va=0; }
+        if(g_sc_j<0||g_sc_j>=JMAX){ g_sc_j=0; g_sc_va=0; g_swap_cycles++; }
         struct jproc* p=&g_jp[g_sc_j];
         if(p->state==S_FREE||!p->cr3||p->tg!=g_sc_j||(!self_ok&&(p->cr3&~0xFFFULL)==me)){ g_sc_j++; g_sc_va=0; continue; }
         if(zs_scan_space(p->cr3,&g_sc_va,want,&got,&budget)){ g_sc_j++; g_sc_va=0; } }
     return got; }
 extern int g_sr_nolock[64];
-u32 swap_reclaim(u32 want){ return zs_reclaim(want,g_sr_nolock[cpu_id()&63]); }
+int g_sw_self[64];
+u32 swap_reclaim(u32 want){ int c=cpu_id()&63; return zs_reclaim(want,g_sr_nolock[c]||g_sw_self[c]); }
 static u32 zs_mem_reclaim(u32 want,int self_ok){
     extern u32 sysroot_pc_reclaim(u32); u32 n=sysroot_pc_reclaim(want); if(n>=want)return n;
     return n+zs_reclaim(want-n,self_ok); }
-u32 mem_reclaim(u32 want){ return zs_mem_reclaim(want,g_sr_nolock[cpu_id()&63]); }
+u32 mem_reclaim(u32 want){ int c=cpu_id()&63; return zs_mem_reclaim(want,g_sr_nolock[c]||g_sw_self[c]); }
 u32 swap_low_mark(void){ u32 t=pf_n+pframe_hi_count(); u32 lo=t/32; if(lo<2048)lo=2048; return lo; }
 void swap_poll(void){
     if(!pf_ready)return; static u64 last, wait; if(g_ticks==last||g_ticks<wait)return; last=g_ticks;
-    u32 fr=pframe_free_count(), lo=swap_low_mark();
-    while(g_zs_nres<16&&fr>64){ u64 f=pframe_alloc(); if(!f)break; g_zs_res[g_zs_nres++]=f; fr--; }
+    zs_refill(); u32 fr=pframe_free_count(), lo=swap_low_mark();
     if(fr>=lo)return;
     g_swap_kicks++; u32 want=lo*2-fr; if(want>256)want=256; if(!g_swappiness){ extern u32 sysroot_pc_reclaim(u32); sysroot_pc_reclaim(want); return; }
     if(!zs_mem_reclaim(want,1))wait=g_ticks+20; }

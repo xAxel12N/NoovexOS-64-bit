@@ -4,7 +4,7 @@ Commit 44c57f62 on branch p-iwx (worktree /home/claude/wt/iwx). I committed only
 
 ## What was done
 Ported from OpenBSD if_iwx.c rev 1.230 and if_iwxreg.h rev 1.75. Licence: ISC, plus the Intel dual BSD/GPLv2 parts, used under BSD-3. I checked the licence headers in the real files fetched from github openbsd/src. The full header is in every file, and there is an entry in drivers/net/wifi/iwx/NOTICE.
-- `drivers/net/wifi/iwx/iwx_cmd.h`: the wire structs I need (rx_packet, NVM_GET_INFO rsp v3/v4, mcc, scan_config, scan_req_umac_v14 and its parts, scan_complete, rx_mpdu_desc v1/v3, tx_cmd gen2/gen3), the command IDs, the API/capa bits (checked against if_iwxreg.h), and the API in both directions.
+- `drivers/net/wifi/intel/iwx/iwx_cmd.h`: the wire structs I need (rx_packet, NVM_GET_INFO rsp v3/v4, mcc, scan_config, scan_req_umac_v14 and its parts, scan_complete, rx_mpdu_desc v1/v3, tx_cmd gen2/gen3), the command IDs, the API/capa bits (checked against if_iwxreg.h), and the API in both directions.
 - `iwx_cmd.c`:
   - Synchronous host commands (`iwx_send_cmd_sync`). There is one wait slot, matched on the wide id and on non-unsolicited qid. Every wait has a ms timeout, a timeout is logged only once, and REPLY_ERROR maps to -2.
   - RX packet dispatch `iwx_rx_pkt`, handling ALIVE, RX_MPDU, SCAN_COMPLETE_UMAC and REPLY_ERROR.

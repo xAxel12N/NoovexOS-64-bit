@@ -43,7 +43,7 @@ static int is_step0(void){
     { extern int disk_ok; extern volatile int g_fs_wb_pending; disk_ok=0; g_fs_wb_pending=0; }
     g_is_klen=klen; g_is_bsz=INST_BOOTP;
     if(ip_mode==0){ g_is_bst=2048u; g_is_dst=g_is_bst+g_is_bsz; g_is_dsz=INST_DATAP; g_is_bslot=0; g_is_dslot=1;
-        if(g_dksectors>g_is_dst+INST_DATAP+4096u){ u32 avail=g_dksectors-g_is_dst-4096u; u32 cap=g_ip_fs==0?0x8000000u:g_ip_fs==3?4186112u:g_ip_fs==2?0x4000000u:0xFFFFF000u; g_is_dsz=avail<cap?avail:cap; } }
+        u64 dtot=g_dksectors<0xFFFFFFFFULL?g_dksectors:0xFFFFFFFFULL; if(dtot>(u64)g_is_dst+INST_DATAP+4096u){ u32 avail=(u32)(dtot-g_is_dst-4096u); u32 cap=g_ip_fs==0?0x8000000u:g_ip_fs==3?4186112u:g_ip_fs==2?0x4000000u:0xFFFFF000u; g_is_dsz=avail<cap?avail:cap; } }
     else { if(!ip_part_ok(ip_part))return is_fail("The chosen partition can't be used.","");
         g_is_bst=ip_pst[ip_part]; g_is_dst=g_is_bst+g_is_bsz; g_is_dsz=ip_psz[ip_part]-g_is_bsz; g_is_bslot=ip_part; g_is_dslot=ip_free_slot(ip_part); }
     if(g_is_dsz%dk_ratio())g_is_dsz-=g_is_dsz%dk_ratio();
@@ -68,13 +68,13 @@ static int is_step1(void){
     { u8* pe=mbr+446+g_is_dslot*16; for(int i=0;i<16;i++)pe[i]=0; pe[2]=2; pe[4]=g_ip_fs==1?0x07:g_ip_fs==2?0x0C:g_ip_fs==3?0x0E:NVX_PTYPE; pe[5]=0xFE; pe[6]=0xFF; pe[7]=0xFF; *(u32*)(pe+8)=g_is_dst/R; *(u32*)(pe+12)=g_is_dsz/R; }
     if(ip_mode==0){ *(u32*)(mbr+440)=0x4E565849u^(u32)g_ticks; } mbr[510]=0x55; mbr[511]=0xAA;
     if(gdisk_write(0,mbr))return is_fail("Writing the partition table failed.","The disk reported an error.");
-    if(ip_mode==0){ u8 z[512]; for(int i=0;i<512;i++)z[i]=0; for(u32 q=1;q<34u*R;q++)gdisk_write(q,z); if(g_dksectors>34u*R) for(u32 q=g_dksectors-34u*R;q<g_dksectors;q++)gdisk_write(q,z); }
+    if(ip_mode==0){ u8 z[512]; for(int i=0;i<512;i++)z[i]=0; for(u64 q=1;q<34u*R;q++)gdisk_write(q,z); if(g_dksectors>34u*R) for(u64 q=g_dksectors-34u*R;q<g_dksectors;q++)gdisk_write(q,z); }
     g_is_s2len=(u32)(_binary_inst_stage2_bin_end-_binary_inst_stage2_bin_start); g_is_s2s=(g_is_s2len+511)/512; if(R>1)g_is_s2s=0;
     for(u32 s=0;s<g_is_s2s;s++){ u8 sec[512]; for(int i=0;i<512;i++){ u32 o=s*512+i; sec[i]=o<g_is_s2len?_binary_inst_stage2_bin_start[o]:0; } if(gdisk_write(1+s,sec))return is_fail("Writing the boot loader failed.",""); }
     g_is_pos=0; ip_stage=4; ip_prog=140; return 1; }
 
 static int is_step_write(void){
-    extern int gdisk_writen(u32,int,const u8*);
+    extern int gdisk_writen(u64,int,const u8*);
     u32 end=g_is_pos+4096u; if(end>g_is_used)end=g_is_used;
     while(g_is_pos<end){ u32 c=end-g_is_pos; if(c>128)c=128; if(gdisk_writen(g_is_bst+g_is_pos,(int)c,g_is_img+(u64)g_is_pos*512))return is_fail("Writing the boot partition failed.","The disk reported an error."); g_is_pos+=c; }
     ip_prog=140+(int)((u64)g_is_pos*560/(g_is_used?g_is_used:1)); if(g_is_pos<g_is_used)return 0;
@@ -101,7 +101,7 @@ static int is_step_verify_head(void){
     g_is_pos=0; return 1; }
 
 static int is_step_verify(void){
-    extern int gdisk_readn(u32,int,u8*); static char e2[120];
+    extern int gdisk_readn(u64,int,u8*); static char e2[120];
     u8* vb=(u8*)kmalloc(128*512); if(!vb)return is_fail("Not enough memory to verify the installation.","");
     u32 end=g_is_pos+4096u; if(end>g_is_used)end=g_is_used;
     while(g_is_pos<end){ u32 c=end-g_is_pos; if(c>128)c=128;
@@ -151,7 +151,7 @@ long inst_syscall(u64 n,u64 a,u64 b,u64 c){
     switch(n){
       case 200: g_state=ST_APP; return 1;
       case 201: { if(!is_wok(a,sizeof(int)*4))return -1; int* o=(int*)a; o[0]=(int)W; o[1]=(int)H; o[2]=g_lockdown; o[3]=g_inst_src; return 0; }
-      case 202: { if(g_inst_clone){ extern int gdisk_usb_refresh(void); gdisk_usb_refresh(); } extern int gdisk_count(void); extern int gdisk_kind_of(int); extern u32 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_current(void);
+      case 202: { if(g_inst_clone){ extern int gdisk_usb_refresh(void); gdisk_usb_refresh(); } extern int gdisk_count(void); extern int gdisk_kind_of(int); extern u64 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_current(void);
           int cap=(int)b; if(cap<0||cap>8)cap=8; if(!is_wok(a,sizeof(inst_disk)*(u64)(cap?cap:1)))return -1; inst_disk* d=(inst_disk*)a; int k=gdisk_count(); if(k>cap)k=cap;
           for(int i=0;i<k;i++){ for(u32 q=0;q<sizeof(inst_disk);q++)((u8*)&d[i])[q]=0; d[i].sectors=gdisk_size_of(i); d[i].kind=gdisk_kind_of(i); d[i].cur=(i==gdisk_current()); is_cp(d[i].name,gdisk_name_of(i),48); d[i].ok=d[i].sectors>=2048u+ip_need()+2048u+is_clone_secs(); if(g_inst_clone&&d[i].kind!=DK_USB)d[i].ok=0; }
           return k; }

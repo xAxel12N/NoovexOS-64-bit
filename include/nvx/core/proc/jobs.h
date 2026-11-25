@@ -40,6 +40,7 @@ struct jproc {
     u32 aluid, asess; int nofc, nofm;
     char cmd[48];
     char exe[128];
+    u64 ebase, ibase, ustk;
     u8 fx[1024] __attribute__((aligned(64)));
 };
 struct jpipe { int used, r, w, n, cap, readers, writers; char* buf; };

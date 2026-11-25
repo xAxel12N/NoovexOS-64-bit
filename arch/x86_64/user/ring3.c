@@ -1,5 +1,6 @@
 #include "include/nvx/base.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
+#include "include/nvx/core/kaslr.h"
 #include "include/nvx/mem/pmm_vmm.h"
 #include "include/nvx/arch/x86_64/user/ring3.h"
 #include "include/nvx/arch/x86_64/interrupts/interrupts.h"
@@ -15,7 +16,7 @@ static int g_ufd[8]; static int g_ufd_off[8];   /* user fds + heap break + mmap 
 
 extern void lsys_entry(void);
 static void lsys_init(void){
-    lsys_kstack=(u64)(g_kstack+sizeof(g_kstack));
+    lsys_kstack=(u64)(g_kstack+sizeof(g_kstack))-kaslr_kstk_off();
     cpu_wrmsr(0xC0000080,cpu_rdmsr(0xC0000080)|1ULL);
     { extern void cpu_nx_init(void); cpu_nx_init(); }
     cpu_wrmsr(0xC0000081,(0x08ULL<<32)|(0x10ULL<<48));
@@ -27,6 +28,7 @@ static void gdt_set(int i,u32 base,u32 limit,u8 access,u8 flags){
     g_gdt[i]=(u64)(limit&0xFFFF) | ((u64)(base&0xFFFFFF)<<16) | ((u64)access<<40)
            | ((u64)((limit>>16)&0xF)<<48) | ((u64)(flags&0xF)<<52) | ((u64)((base>>24)&0xFF)<<56);
 }
+void us_cpu_reload(void){ g_gdt[5]&=~(1ULL<<41); gdt_flush(&g_gdtp); tss_flush(0x28); lsys_init(); }
 void us_init(void){
     if(g_us_ready)return;
     gdt_set(0,0,0,0,0);
@@ -39,7 +41,7 @@ void us_init(void){
       g_gdt[5]=(u64)(limit&0xFFFF) | ((u64)(base&0xFFFFFF)<<16) | ((u64)0x89<<40) | ((u64)((limit>>16)&0xF)<<48) | ((u64)((base>>24)&0xFF)<<56);
       g_gdt[6]=(base>>32)&0xFFFFFFFF; }
     for(int i=0;i<(int)sizeof(g_tss);i++)((u8*)&g_tss)[i]=0;
-    g_tss.rsp0=(u64)(g_kstack+sizeof(g_kstack));
+    g_tss.rsp0=(u64)(g_kstack+sizeof(g_kstack))-kaslr_kstk_off();
     g_tss.iomap=sizeof(g_tss);
     g_tss.ist[0]=(u64)(g_ist_nmi+sizeof(g_ist_nmi)); g_tss.ist[1]=(u64)(g_ist_df+sizeof(g_ist_df));
     g_gdtp.limit=sizeof(g_gdt)-1; g_gdtp.base=(u64)g_gdt;

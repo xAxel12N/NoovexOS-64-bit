@@ -31,8 +31,8 @@ int prop_click(int px,int py){
     if(in_rect(px,py,lx,ly+100,90,24)){ pr_set(0); return 1; }
     return 1;
 }
-int desk_hit(int px,int py){ (void)px;(void)py; return -1; for(int k=0;k<5;k++){ if(px>=g_apx[k]&&px<g_apx[k]+48&&py>=g_apy[k]&&py<g_apy[k]+72) return k; }
-    for(int s=0;s<FS_N;s++) if(FS[s].used&&FS[s].folder==2&&g_fpl[s]){ if(px>=g_fpx[s]&&px<g_fpx[s]+48&&py>=g_fpy[s]&&py<g_fpy[s]+72) return 100+s; } return -1; }
+int desk_hit(int px,int py){ extern int desk_file_on(int);
+    for(int s=0;s<FS_N;s++) if(FS[s].used&&g_fpl[s]&&desk_file_on(s)){ if(px>=g_fpx[s]-6&&px<g_fpx[s]+54&&py>=g_fpy[s]-6&&py<g_fpy[s]+74) return 100+s; } return -1; }
 void desk_open(int it){ if(it<0)return; if(it<100){ focus_win(DESK[it]); return; } int s=it-100; if(s<0||s>=FS_N||!FS[s].used)return; int kd=fkind(s); g_fsel=s; { extern int py_open_slot(int); if(py_open_slot(s))return; } if(fext_eq(FS[s].name,"pptx")){ pptx_load(s); open_win(W_PPTX); } else if(video_is_media_name(FS[s].name)) video_open_slot(s); else if(kd==1)g_imgview=s; else if(kd==2)browser_show_html(fsd(s),FS[s].len,FS[s].name); else editor_open(s); }
 static int desk_click(int px,int py){ int it=desk_hit(px,py); if(it>=0){ desk_open(it); return 1; } return 0; }
 /* ---- app launcher ---- */
@@ -57,7 +57,7 @@ void launcher_search(void){ g_lres_n=0;
 static void launcher_open_result(int idx){ if(idx<0||idx>=g_lres_n)return; g_launcher=0; int kind=g_lres_kind[idx],arg=g_lres_arg[idx];
     if(kind==0) open_win(arg);
     else if(kind==1){ g_setcat=arg; open_win(W_SETTINGS); }
-    else if(kind==2){ extern int py_open_slot(int); if(py_open_slot(arg))return; editor_open(arg); open_win(W_EDITOR); }
+    else if(kind==2){ extern int py_open_slot(int); if(arg<0||arg>=FS_N||!FS[arg].used){ toast("That file no longer exists"); return; } if(py_open_slot(arg))return; editor_open(arg); open_win(W_EDITOR); }
     else if(kind==3){ pyide_open(); }
     else if(kind==4){ app_launch(1001); }
     else if(kind==5){ app_launch(arg); }        /* open file in editor */
@@ -135,7 +135,7 @@ static int classic_menu_click(int px,int py){ int x,y,w,h; cm_geom(&x,&y,&w,&h);
     lgrp_refresh(); if(g_csub>=g_nvis)g_csub=-1;
     if(g_csub>=0){ int sx,sy,sw,sh; cm_sub_geom(g_csub,&sx,&sy,&sw,&sh); if(px>=sx&&px<sx+sw&&py>=sy&&py<sy+sh){ int cols=cm_cols(g_csub), n=g_lgn[g_lvis[g_csub]], rows=(n+cols-1)/cols; int r=(py-sy-3)/CM_IH, cc=(px-sx)/200; int k=cc*rows+r; if(r>=0&&r<rows&&cc>=0&&cc<cols&&k<n){ int app=cm_sub_app(g_csub,k); g_csub=-1; lapp_open(app); } return 1; } }
     if(px>=x&&px<x+w&&py>=y&&py<y+h){ for(int it=0;it<CM_NC+5;it++){ int iy=cm_item_y(it,y); if(py>=iy&&py<iy+CM_IH){
-            if(it==0){ g_launcher=0; open_win(W_ABOUT); } else if(it<=CM_NC){ g_csub=it-1; } else if(it==CM_NC+1){ g_launcher=0; open_win(W_SETTINGS); } else if(it==CM_NC+2){ g_launcher=0; open_win(W_ABOUT); } else if(it==CM_NC+3){ g_launcher=0; open_win(W_TERM); } else { g_launcher=0; launcher_power(0); } return 1; } } return 1; }
+            if(it==0){ g_launcher=0; open_win(W_ABOUT); } else if(it<=CM_NC){ g_csub=it-1; } else if(it==CM_NC+1){ g_launcher=0; open_win(W_SETTINGS); } else if(it==CM_NC+2){ g_launcher=0; extern void help_open(void); help_open(); } else if(it==CM_NC+3){ g_launcher=0; extern void run_open(void); run_open(); } else { g_launcher=0; extern void pm_open_menu(void); pm_open_menu(); } return 1; } } return 1; }
     g_launcher=0; g_csub=-1; return 1; }
 static void launcher_draw(void){ if(g_dstyle==1){ classic_menu_draw(); return; } if(!g_gm_ready)gmetrics(); int px,py,pw,ph; launcher_geom(&px,&py,&pw,&ph);
     u32 tx=rgb(240,242,250), sub=rgb(178,182,206), ic=rgb(206,210,230), dark=rgb(44,34,78);
@@ -245,12 +245,12 @@ static void qs_draw(void){ if(g_dstyle==1){ cqs_draw(); if(g_fpop)fpop_draw(); r
 static void rename_draw(void){ int pw=360, ph=140, px=((int)W-pw)/2, py=(int)H/2-90;
     if(g_gfx) gq_blend(g_rt,0,0,(int)W,(int)H,rgb(10,12,20),110); else { (void)SCENE; for(u32 y=0;y<H;y++)for(u32 x=0;x<W;x++){ u32*p=&g_scene[(u64)y*SW+x]; *p=mix(*p,rgb(10,12,20),110); } }
     shadow_soft(px,py,pw,ph,14); fill_round(px,py,pw,ph,14,15,rgb(250,251,254));
-    dstr(px+24,py+20,g_renmode==2?"New folder":g_renmode==3?"New file":g_renmode==1?"Rename folder":"Rename",INK,2);
-    fill_round(px+24,py+56,pw-48,34,8,15,rgb(238,241,246)); int cx2=px+36; for(int k=0;k<g_renlen;k++){ dchar(cx2,py+66,g_renbuf[k],rgb(40,46,64),1); cx2+=8; } if((g_ticks/50)&1) fill_rect(cx2+1,py+65,2,15,ACC);
-    dstr(px+24,py+ph-24,g_renmode>=2?"Enter = create    Esc = cancel":"Enter = rename    Esc = cancel",rgb(120,128,146),1); }
-static void snap_preview_draw(void){ if(!g_snap)return; int wy=32, wh=(int)H-32-86, hw=((int)W-18)/2, hh=(wh-6)/2; int x=6,y=wy,w=hw,h=wh;
-    if(g_snap==3){ x=6;y=wy;w=(int)W-12;h=wh; } else if(g_snap==1){ x=6;y=wy;w=hw;h=wh; } else if(g_snap==2){ x=(int)W-6-hw;y=wy;w=hw;h=wh; }
-    else if(g_snap==4){ x=6;y=wy;w=hw;h=hh; } else if(g_snap==5){ x=(int)W-6-hw;y=wy;w=hw;h=hh; } else if(g_snap==6){ x=6;y=wy+hh+6;w=hw;h=hh; } else { x=(int)W-6-hw;y=wy+hh+6;w=hw;h=hh; }
+    dstr(px+24,py+20,(g_renmode==2||g_renmode==11)?"New folder":g_renmode==3?"New file":g_renmode==1?"Rename folder":"Rename",INK,2);
+    fill_round(px+24,py+56,pw-48,34,8,15,rgb(238,241,246)); int cx2=px+36; { extern int g_rensel; int sel=g_rensel&&g_renlen>0; if(sel)fill_round(px+34,py+63,g_renlen*8+4,20,3,15,ACC); for(int k=0;k<g_renlen;k++){ dchar(cx2,py+66,g_renbuf[k],sel?rgb(255,255,255):rgb(40,46,64),1); cx2+=8; } } if((g_ticks/50)&1) fill_rect(cx2+1,py+65,2,15,ACC);
+    dstr(px+24,py+ph-24,(g_renmode>=2&&g_renmode!=10)?"Enter = create    Esc = cancel":"Enter = rename    Esc = cancel",rgb(120,128,146),1); }
+static void snap_preview_draw(void){ extern int g_snap_o; if(!g_snap||g_snap_o)return; extern void out_snap_rect(int,int,int,int,int,int,int,int*,int*,int*,int*); int bx,wy,bw,wh; out_snap_rect(0,0,0,0,0,(int)W,(int)H,&bx,&wy,&bw,&wh); int hw=(bw-6)/2, hh=(wh-6)/2, rx=bx+bw-hw; int x=bx,y=wy,w=hw,h=wh;
+    if(g_snap==3){ x=bx;y=wy;w=bw;h=wh; } else if(g_snap==1){ x=bx;y=wy;w=hw;h=wh; } else if(g_snap==2){ x=rx;y=wy;w=hw;h=wh; }
+    else if(g_snap==4){ x=bx;y=wy;w=hw;h=hh; } else if(g_snap==5){ x=rx;y=wy;w=hw;h=hh; } else if(g_snap==6){ x=bx;y=wy+hh+6;w=hw;h=hh; } else { x=rx;y=wy+hh+6;w=hw;h=hh; }
     if(g_gfx){ gfx_round(x,y,w,h,12,15,rgb(120,170,250),90); fill_rect(x,y,w,1,rgb(150,190,255)); fill_rect(x,y+h-1,w,1,rgb(150,190,255)); fill_rect(x,y,1,h,rgb(150,190,255)); fill_rect(x+w-1,y,1,h,rgb(150,190,255)); return; }
     for(int j=0;j<h;j++)for(int i=0;i<w;i++){ if(cut(i,j,w,h,12,15))continue; int dx=x+i,dy=y+j; if((u32)dx<W&&(u32)dy<H){ u32*p=&SCENE[(u64)dy*SW+dx]; *p=mix(*p,rgb(120,170,250),90); } }
     for(int i=0;i<w;i++){ putpx(x+i,y,rgb(150,190,255)); putpx(x+i,y+h-1,rgb(150,190,255)); } for(int j=0;j<h;j++){ putpx(x,y+j,rgb(150,190,255)); putpx(x+w-1,y+j,rgb(150,190,255)); } }
@@ -264,18 +264,18 @@ static void compose_build(void){
     if(g_gfx) gfx_frame_begin();
     if(g_gfx) gq_copy(gs_scene,0,0,(int)W,(int)H,gs_bg,0,0,256,0); else memcpy(SCENE,BG,(u64)W*H*4);
     if(g_gfx) gfx_wall_light();
-    desk_draw();
+    desk_draw(); { extern void desk_files_draw(void); desk_files_draw(); }
     int order[NWIN],n=0; for(int i=0;i<NWIN;i++) if(WN[i].open&&!WN[i].min&&i!=anim_hide&&WN[i].ws==g_ws)order[n++]=i;
     for(int a=0;a<n;a++)for(int b=a+1;b<n;b++) if(WN[order[b]].z<WN[order[a]].z){int t=order[a];order[a]=order[b];order[b]=t;}
     if(drag>=0&&g_snap) snap_preview_draw();
-    for(int a=0;a<n;a++){ extern void draw_app_marked(int); if(g_gfx) gfx_window(order[a]); else draw_app_marked(order[a]); }
+    for(int a=0;a<n;a++){ extern void draw_app_marked(int); extern int out1_skip_win(int); if(out1_skip_win(order[a]))continue; if(g_gfx) gfx_window(order[a]); else draw_app_marked(order[a]); }
     if(g_gfx) gfx_ghosts();
     marq_draw();
     draw_dock();
     { extern void xover_draw(void); xover_draw(); }
     if(g_launcher) launcher_draw(); if(g_qs) qs_draw(); if(g_clockpop) clockpop_draw();
-    if(g_ctx) ctx_draw(); { extern void xtray_pop_draw(int); xtray_pop_draw(g_dstyle!=1); } img_viewer_draw(); if(g_alttab) alttab_draw(); if(g_rename) rename_draw(); if(g_prop) prop_draw();
-    if(g_wifipop) wifi_panel_draw(); if(g_notifpanel) notif_panel_draw(); toast_frame(); notif_toast_draw(); ws_overlay_draw(); toast_draw(); { extern void ss_draw(void); ss_draw(); } { extern void pm_draw(void); pm_draw(); } { extern void acct_dlg_draw(void); acct_dlg_draw(); }
+    { extern int out_ctx_on2(void); if(g_ctx&&!out_ctx_on2()) ctx_draw(); } { extern void xtray_pop_draw(int); xtray_pop_draw(g_dstyle!=1); } img_viewer_draw(); if(g_alttab) alttab_draw(); if(g_rename) rename_draw(); if(g_prop) prop_draw();
+    if(g_wifipop) wifi_panel_draw(); if(g_notifpanel) notif_panel_draw(); toast_frame(); notif_toast_draw(); ws_overlay_draw(); toast_draw(); { extern void ss_draw(void); ss_draw(); } { extern void run_draw(void); run_draw(); } { extern void pm_draw(void); pm_draw(); } { extern void acct_dlg_draw(void); acct_dlg_draw(); }
     night_tint(0,(int)H);
     if(g_gfx) g_dmg_ok=gfx_scene_end(&g_dmx,&g_dmy,&g_dmw,&g_dmh); else g_dmg_ok=0;
 }
@@ -298,5 +298,6 @@ static void blit_region_fb(int x,int y,int w,int h){
 }
 int desk_popups_clear(void){
     if(drag>=0||g_resize>=0||g_fdrag||g_ddrag>=0||g_marq) return 0;
+    { extern int g_run_on; if(g_run_on) return 0; }
     if(g_launcher||g_qs||g_clockpop||g_ctx||g_submenu||g_imgview>=0||g_alttab||g_rename||g_prop||g_wifipop||g_notifpanel||g_toast_cur>=0||toast_t) return 0;
     return 1; }

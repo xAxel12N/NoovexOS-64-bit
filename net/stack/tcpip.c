@@ -4,6 +4,7 @@
 #include "include/nvx/drivers/storage/ahci.h"
 #include "include/nvx/net/stack/tcpip.h"
 #include "include/nvx/sys/linux/lxsock.h"
+#include "include/nvx/arch/x86_64/time/hrtimer.h"
 int (*g_bcastf)(void)=0; static u16 nd_bcast_flag(void){ return g_bcastf?(u16)(g_bcastf()):0x8000; }
 void (*g_tx)(const u8*,int)=0; int (*g_rx)(u8*,int)=0;
 const u8* (*g_mac)(void)=0; int (*g_linkok)(void)=0;
@@ -23,7 +24,18 @@ int arp_auto_reply(const u8* f,int n){
 }
 extern void (*g_wait_pump)(void);
 extern volatile int g_net_rx;
-static int nd_poll(u8* rx,int max,int ticks){ for(int k=0;k<ticks;k++){ if(g_wait_pump)g_wait_pump(); u16 a=pit_read(); for(;;){ int n=nd_rx(rx,max); if(n>0&&!arp_auto_reply(rx,n))return n; u16 b=pit_read(); if(((u16)(a-b))>=1193)break; } } return 0; }
+static u64 nd_now_ns(void){
+    if(hr_precise())return hr_ns();
+    static u64 acc; static u16 last; static int init;
+    u16 c=pit_read(); if(!init){ init=1; last=c; }
+    u32 d=c<=last?(u32)(last-c):((u32)last+11932u>(u32)c?(u32)last+11932u-(u32)c:0); if(d>11932u)d=11932u;
+    acc+=(u64)d*838ULL; last=c; return acc;
+}
+static int nd_poll(u8* rx,int max,int ticks){
+    for(int k=0;k<ticks;k++){ if(g_wait_pump)g_wait_pump(); u64 end=nd_now_ns()+1000000ULL;
+        do{ int n=nd_rx(rx,max); if(n>0&&!arp_auto_reply(rx,n))return n; }while(nd_now_ns()<end); }
+    return 0;
+}
 static void net_pass(u8* f,int n);
 static int g_net_busy=0;
 void net_idle_poll(void){ extern int sock_any_open(void); if(g_net_busy||sock_any_open())return; g_net_busy=1; static u8 rx[1600]; for(int i=0;i<32;i++){ int n=nd_rx(rx,1600); if(n<=0)break; if(arp_auto_reply(rx,n))continue; net_pass(rx,n); } g_net_busy=0; }
@@ -31,7 +43,7 @@ int arp_resolve(u32 ip,u8* outmac){
     if(ip==gw_ip&&gw_known){ for(int i=0;i<6;i++)outmac[i]=gw_mac[i]; return 1; }
     u8 rx[1600];
     for(int round=0;round<4;round++){ arp_request(ip);
-        for(int tries=0;tries<(round?250:20);tries++){ int n=nd_poll(rx,1600,1); if(n>0&&rd16(rx+12)==0x0800){ net_pass(rx,n); continue; }
+        for(int tries=0;tries<(round?250:20);tries++){ int n=nd_poll(rx,1600,1); if(n>=14&&rd16(rx+12)==0x0800){ net_pass(rx,n); continue; }
             if(n>=42&&rd16(rx+12)==0x0806&&rd16(rx+20)==2){ if(rd32(rx+28)==ip){ for(int i=0;i<6;i++)outmac[i]=rx[22+i];
                 if(ip==gw_ip){ for(int i=0;i<6;i++)gw_mac[i]=outmac[i]; gw_known=1; } netlog("ARP reply received"); return 1; } } } }
     netlog("ARP no reply"); return 0;
@@ -44,10 +56,10 @@ int do_ping(u32 tip){
     ip[0]=0x45; ip[1]=0; be16(ip+2,28); be16(ip+4,0x1234); be16(ip+6,0); ip[8]=64; ip[9]=1;
     be32(ip+12,my_ip); be32(ip+16,tip); u16 ick=cksum(ip,20); ip[10]=ick>>8; ip[11]=(u8)ick;
     u8* ic=ip+20; ic[0]=8; ic[1]=0; be16(ic+4,0xABCD); be16(ic+6,1); u16 cck=cksum(ic,8); ic[2]=cck>>8; ic[3]=(u8)cck;
-    nd_tx(f,o+28); u8 rx[1600]; u16 t0=pit_read();
+    nd_tx(f,o+28); u8 rx[1600]; u64 t0=nd_now_ns();
     for(int tries=0;tries<150;tries++){ int n=nd_poll(rx,1600,1);
-        if(n>=34&&rd16(rx+12)==0x0800){ u8* rip=rx+14; if(rip[9]==1){ u8* ric=rip+(rip[0]&0x0F)*4;
-            if(ric[0]==0&&rd16(ric+4)==0xABCD){ u16 t1=pit_read(); ping_ms=(u16)(((u16)(t0-t1))/1193); netlog("ICMP reply received"); return 1; } } } }
+        if(n>=34&&rd16(rx+12)==0x0800){ u8* rip=rx+14; int rihl=(rip[0]&0x0F)*4; if(rip[9]==1&&rihl>=20&&14+rihl+8<=n){ u8* ric=rip+rihl;
+            if(ric[0]==0&&rd16(ric+4)==0xABCD){ u64 t1=nd_now_ns(); ping_ms=(u16)((t1-t0)/1000000ULL); netlog("ICMP reply received"); return 1; } } } }
     netlog("ICMP no reply"); return 0;
 }
 static u16 udp_cksum(u32 sip,u32 dip,const u8* udp,int udplen){
@@ -94,16 +106,16 @@ static int dhcp_parse(const u8* d,int dlen,u32 xid,u8* mtype,u32* yi,u32* sid,u3
     return 1;
 }
 
-int g_dhcp_pump=0;   /* v11.10: set by the Wi-Fi manager so the screen keeps updating while it waits for an address */
+int g_dhcp_pump=0;   /* v11.22: set by the Wi-Fi manager so the screen keeps updating while it waits for an address */
 static int dhcp_wait(u32 xid,u8 want,u32* yi,u32* sid,u32* mk,u32* gw,u32* dn,int ms){
-    u8 rx[1600];
-    for(int t=0;t<ms;t++){
-        if(g_dhcp_pump&&(t&15)==15){ extern void ui_pump(void); ui_pump(); }
+    u8 rx[1600]; u64 t0=nd_now_ns(), lim=(u64)ms*1000000ULL; int t=0;
+    while(nd_now_ns()-t0<lim){
+        if(g_dhcp_pump&&(++t&15)==0){ extern void ui_pump(void); ui_pump(); }
         int n=nd_poll(rx,1600,1);
         if(n<282)continue;
         if(rd16(rx+12)!=0x0800)continue;
         const u8* ip=rx+14; if(ip[9]!=17)continue;
-        int ihl=(ip[0]&0x0F)*4; const u8* udp=ip+ihl;
+        int ihl=(ip[0]&0x0F)*4; if(ihl<20||14+ihl+8>n)continue; const u8* udp=ip+ihl;
         if(rd16(udp+0)!=67||rd16(udp+2)!=68)continue;
         int ul=(int)rd16(udp+4); if(ul<8)continue;
         int dlen=ul-8; if(dlen>n-14-ihl-8)dlen=n-14-ihl-8;
@@ -174,12 +186,12 @@ int dhcp_config(void){
     return 0;
 }
 
-/* v11.10: DHCP that never blocks - one step per main-loop pass. Frames that are not our DHCP answer go to the stack. */
+/* v11.22: DHCP that never blocks - one step per main-loop pass. Frames that are not our DHCP answer go to the stack. */
 extern volatile u64 g_ticks;
 static int da_st=0, da_try=0, da_ren=0; static u64 da_rnext=0; static u32 da_xid, da_yi, da_sid, da_mk, da_gw, da_dn; static u64 da_t;
 static int dhcp_frame(const u8* rx,int n,u32 xid,u8 want,u32* yi,u32* sid,u32* mk,u32* gw,u32* dn){
     if(n<282||rd16(rx+12)!=0x0800)return 0; const u8* ip=rx+14; if(ip[9]!=17)return 0;
-    int ihl=(ip[0]&0x0F)*4; const u8* udp=ip+ihl; if(rd16(udp+0)!=67||rd16(udp+2)!=68)return 0;
+    int ihl=(ip[0]&0x0F)*4; if(ihl<20||14+ihl+8>n)return 0; const u8* udp=ip+ihl; if(rd16(udp+0)!=67||rd16(udp+2)!=68)return 0;
     int ul=(int)rd16(udp+4); if(ul<8)return 0; int dlen=ul-8; if(dlen>n-14-ihl-8)dlen=n-14-ihl-8;
     u8 mt=0; if(!dhcp_parse(udp+8,dlen,xid,&mt,yi,sid,mk,gw,dn))return 0; return mt==want; }
 static u8 da_stash[1600]; static int da_stashn=0;
@@ -212,7 +224,7 @@ void dhcp_lease_tick(void){
 int g_netdev_wifi=0;
 extern volatile u64 g_ticks; static u64 g_dhcp_last=0; static int g_dhcp_retry=0;
 void dhcp_retry_reset(void){ g_dhcp_retry=0; }
-/* v11.10: read-only link check for status lines and windows - never starts the wired adapter or runs DHCP */
+/* v11.22: read-only link check for status lines and windows - never starts the wired adapter or runs DHCP */
 int nic_up_passive(void){ extern int nic_init, net_ok; if(g_netdev_wifi)return g_linkok&&g_linkok(); return nic_init&&net_ok; }
 int nic_up(void){
     if(g_netdev_wifi)return g_linkok&&g_linkok();
@@ -233,7 +245,7 @@ static int dns_build_query(const char* host,u16 txid,u8* q,int cap){
     if(cap<17)return -1;
     { int hl=0; while(host[hl]&&hl<256)hl++; if(hl>253)return -1; }
     int qp=12; be16(q+0,txid); be16(q+2,0x0100); be16(q+4,1); be16(q+6,0); be16(q+8,0); be16(q+10,0);
-    const char* p=host; while(*p){ const char* s=p; int l=0; while(*p&&*p!='.'){p++;l++;} if(l>63)l=63; if(qp+1+l+5>cap)return -1; q[qp++]=(u8)l; for(int i=0;i<l;i++)q[qp++]=(u8)s[i]; if(*p=='.')p++; }
+    const char* p=host; while(*p){ const char* s=p; int l=0; while(*p&&*p!='.'){p++;l++;} if(l==0||l>63)return -1; if(qp+1+l+5>cap)return -1; q[qp++]=(u8)l; for(int i=0;i<l;i++)q[qp++]=(u8)s[i]; if(*p=='.')p++; }
     if(qp+5>cap)return -1;
     q[qp++]=0; be16(q+qp,1); qp+=2; be16(q+qp,1); qp+=2;
     return qp;
@@ -252,12 +264,11 @@ static int dns_try(const char* host,u32 dns,u32* out_ip){
     u64 dt0=g_ticks; int rs=0;
     for(int tries=0;tries<20000&&g_ticks-dt0<150;tries++){ if((rs==0&&g_ticks-dt0>=50)||(rs==1&&g_ticks-dt0>=100)){ rs++; udp_send(dns,sport,53,q,qp,dmac); netlog("DNS query resent"); } int n=nd_poll(rx,1600,1);
         if(n<42)continue; if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=17||rd32(ip+12)!=dns){ net_pass(rx,n); continue; }
-        int ihl=(ip[0]&0x0F)*4; u8* udp=ip+ihl; if(rd16(udp+0)!=53||rd16(udp+2)!=sport){ net_pass(rx,n); continue; } u8* d=udp+8;
+        int ihl=(ip[0]&0x0F)*4; if(ihl<20||14+ihl+8>n){ net_pass(rx,n); continue; } u8* udp=ip+ihl; if(rd16(udp+0)!=53||rd16(udp+2)!=sport){ net_pass(rx,n); continue; } u8* d=udp+8; int dl=n-(int)(d-rx); if(dl>512+1024)dl=512+1024;
         if(!seen){ netlog("DNS reply arrived"); seen=1; dns_seen_any=1; }
-        if(rd16(d+0)!=txid){ if(!ltx){netlog("DNS txid mismatch");ltx=1;} continue; } if(!(rd16(d+2)&0x8000))continue; if(rd16(d+4)!=1)continue;
+        if(dl<12+qsec)continue; if(rd16(d+0)!=txid){ if(!ltx){netlog("DNS txid mismatch");ltx=1;} continue; } if(!(rd16(d+2)&0x8000))continue; if(rd16(d+4)!=1)continue;
         int qm=1; for(int i=0;i<qsec;i++)if(d[12+i]!=q[12+i]){qm=0;break;} if(!qm){ if(!lqn){netlog("DNS qname mismatch");lqn=1;} continue; }
         int anc=rd16(d+6); if(anc==0){ netlog("DNS no answer"); return 2; }
-        int dl=n-(int)(d-rx); if(dl>512+1024)dl=512+1024;
         int off=12; off=dns_skipname(d,off,dl); off+=4;
         for(int a=0;a<anc&&a<64;a++){ off=dns_skipname(d,off,dl); if(off+10>dl)break; u16 type=rd16(d+off); off+=2; off+=2; u32 ttl=rd32(d+off); off+=4; u16 rdl=rd16(d+off); off+=2; if(off+rdl>dl)break;
             if(type==1&&rdl==4){ *out_ip=rd32(d+off); g_dns_ttl=ttl; netlog("DNS resolved"); return 1; } off+=rdl; }
@@ -314,7 +325,7 @@ int tcp_get(u32 dip,u16 dport,const char* req,int reqlen,u8* out,int maxout){
     for(int att=0;att<4&&!est;att++){ tcp_send(dip,sp,dport,dmac,snd,0,TF_SYN,0,0);
         for(int k=0;k<300;k++){ int n=nd_poll(rx,1600,1);
             if(n<54)continue; if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
-            int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=dport||rd16(t+2)!=sp)continue; u8 fl=t[13];
+            int ihl=(ip[0]&0x0F)*4; if(ihl<20||14+ihl+20>n)continue; u8* t=ip+ihl; if(rd16(t+0)!=dport||rd16(t+2)!=sp)continue; u8 fl=t[13];
             if((fl&(TF_SYN|TF_ACK))==(TF_SYN|TF_ACK)&&rd32(t+8)==snd+1){ rcv=rd32(t+4)+1; snd+=1; est=1; break; }
             if(fl&TF_RST){ netlog("TCP RST"); return -4; } } }
     if(!est){ netlog("TCP no SYN-ACK"); return -3; }
@@ -325,8 +336,8 @@ int tcp_get(u32 dip,u16 dport,const char* req,int reqlen,u8* out,int maxout){
     int outlen=0,done=0,idle=0,rexmit=0; g_net_rx=0;
     while(!done&&outlen<maxout){ int n=nd_poll(rx,1600,1);
         if(n<=0){ if(++idle>6000)break; if(outlen==0&&(idle%450)==0&&rexmit<3){ tcp_send(dip,sp,dport,dmac,getseq,rcv,TF_PSH|TF_ACK,(const u8*)req,reqlen); rexmit++; } continue; }
-        if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
-        int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=dport||rd16(t+2)!=sp)continue;
+        if(n<54||rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
+        int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(ihl<20||14+ihl+20>n||rd16(t+0)!=dport||rd16(t+2)!=sp)continue;
         int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0;
         u32 seq=rd32(t+4); u8 fl=t[13];
         if(fl&TF_RST){ done=1; break; }

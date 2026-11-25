@@ -5,8 +5,11 @@ int fx_view=0, fx_prev=1, fx_sort=0, fx_sdesc=0, fx_scroll=0;
 int fx_seldir=-1;                          /* selected folder node (files use g_fsel) */
 static char fx_filter[32]; static int fx_flen=0;
 static u64 fx_lastt=0; static int fx_lastid=-99999;
-static int fx_clip=-1, fx_clipcut=0;
-static int fx_confirm=0, fx_confirm_dir=-1;
+static int fx_clip=-1, fx_clipcut=0, fx_clipdir=-1;
+static int fx_confirm=0, fx_confirm_dir=-1, fx_confirm_kind=0;
+static int fx_tscroll=0, fx_ttotal=0, fx_tfollow=0, fx_tcury=-1, fx_tx=0, fx_ty0=0, fx_tw0=0, fx_th0=0;
+int g_rensel=0;
+int fx_clip_has(void){ return (fx_clip>=0&&FS[fx_clip].used)||(fx_clipdir>0&&fx_clipdir<DN_MAX&&DT[fx_clipdir].used); }
 static int fx_rk[FX_MAXROWS], fx_rid[FX_MAXROWS], fx_rn=0;
 static int fx_hx[FX_MAXROWS], fx_hy[FX_MAXROWS], fx_hw[FX_MAXROWS], fx_hh[FX_MAXROWS], fx_hrow[FX_MAXROWS], fx_hn2=0;
 static int fx_bx[FX_MAXB], fx_by[FX_MAXB], fx_bw[FX_MAXB], fx_bh[FX_MAXB], fx_bid[FX_MAXB], fx_bval[FX_MAXB], fx_bn=0;
@@ -186,6 +189,7 @@ static void fx_open_row(int r){ if(r<0||r>=fx_rn)return; if(fx_rk[r]==0)fx_go(fx
 static int fx_trash(void){ dt_init(); int t=dt_child(0,".trash"); if(t<0){ t=dt_mkdir_at(0,".trash"); if(t>0){ DT[t].mode=040700u; DT[t].uid=g_uid; DT[t].gid=g_uid; dt_save(); } } return t; }
 static int fx_trash_id(void){ return dt_child(0,".trash"); }
 static int fx_in_trash(int d){ int t=fx_trash_id(); if(t<0)return 0; for(int g=0;d>0&&g<64;g++){ if(d==t)return 1; d=DT[d].parent; } return 0; }
+int fx_trash_view(void){ return !fx_mode&&fx_dir>=0&&fx_in_trash(fx_dir); }
 static int fx_under(int x,int d){ for(int g=0;x>=0&&g<64;g++){ if(x==d)return 1; if(x==0)break; x=DT[x].parent; } return 0; }
 static int fx_info_slot(int t){ for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==t&&seq(FS[k].name,".trashinfo"))return k; return -1; }
 static char g_fx_ib[8192];
@@ -233,27 +237,27 @@ static int fx_mkpath(const char* path){ dt_init(); int d=0; const char* p=path; 
     dt_save(); return d; }
 static void fx_trash_file(int k){
     int t=fx_trash(); if(t<0){ toast("Trash is not available"); return; } if(fx_info_text(t)>7600){ toast("The Trash index is full - empty the Trash"); return; }
-    char od[192]; dt_path(FS[k].dir,od); char on[64]; scopy(on,FS[k].name); char nn[64]; fx_unique(t,on,nn,64);
-    FS[k].dir=t; scopy(FS[k].name,nn); fx_info_add(t,'F',nn,od,on);
+    char od[192]; dt_path(FS[k].dir,od); char on[64]; scopy(on,FS[k].name)[0]=0; char nn[64]; fx_unique(t,on,nn,64);
+    FS[k].dir=t; scopy(FS[k].name,nn)[0]=0; fx_info_add(t,'F',nn,od,on);
     if(disk_ok){ nvx3_sync(k); nvx3_flush_meta(); }
     if(zip_slot==k)zip_slot=-1; if(view_slot==k)view_slot=-1; if(fx_clip==k)fx_clip=-1; if(g_fsel==k)g_fsel=-1;
 }
 static void fx_trash_folder(int d){
     int t=fx_trash(); if(t<0||d<=0||d==t){ toast("Trash is not available"); return; } if(fx_info_text(t)>7600){ toast("The Trash index is full - empty the Trash"); return; }
-    char od[192]; dt_path(DT[d].parent,od); char on[64]; scopy(on,DT[d].name); char nn[64]; fx_unique(t,on,nn,64);
-    DT[d].parent=t; scopy(DT[d].name,nn); fx_info_add(t,'D',nn,od,on); fx_resync_tree(d); if(fx_seldir==d)fx_seldir=-1;
+    char od[192]; dt_path(DT[d].parent,od); char on[64]; scopy(on,DT[d].name)[0]=0; char nn[64]; fx_unique(t,on,nn,64);
+    DT[d].parent=t; scopy(DT[d].name,nn)[0]=0; fx_info_add(t,'D',nn,od,on); fx_resync_tree(d); if(fx_seldir==d)fx_seldir=-1;
 }
 static void fx_restore_sel(void){
     int t=fx_trash_id(); if(t<0)return; char od[192], on[64];
     if(g_fsel>=0&&FS[g_fsel].used&&FS[g_fsel].dir==t){ int k=g_fsel;
-        if(!fx_info_find(t,'F',FS[k].name,od,on)){ extern char g_home[]; scopy(od,g_home); scopy(on,FS[k].name); }
+        if(!fx_info_find(t,'F',FS[k].name,od,on)){ extern char g_home[]; scopy(od,g_home)[0]=0; scopy(on,FS[k].name)[0]=0; }
         int d=dt_resolve_dir(od); if(d<0)d=fx_mkpath(od); if(d<0)d=0; char nn[64]; fx_unique(d,on,nn,64);
-        fx_info_drop(t,'F',FS[k].name); FS[k].dir=d; scopy(FS[k].name,nn); if(disk_ok){ nvx3_sync(k); nvx3_flush_meta(); } g_fsel=-1;
+        fx_info_drop(t,'F',FS[k].name); FS[k].dir=d; scopy(FS[k].name,nn)[0]=0; if(disk_ok){ nvx3_sync(k); nvx3_flush_meta(); } g_fsel=-1;
         char b[208],*p=b; p=scopy(p,"Restored to "); p=scopy(p,od); *p=0; toast(b); return; }
     if(fx_seldir>0&&DT[fx_seldir].used&&DT[fx_seldir].parent==t){ int d0=fx_seldir;
-        if(!fx_info_find(t,'D',DT[d0].name,od,on)){ extern char g_home[]; scopy(od,g_home); scopy(on,DT[d0].name); }
+        if(!fx_info_find(t,'D',DT[d0].name,od,on)){ extern char g_home[]; scopy(od,g_home)[0]=0; scopy(on,DT[d0].name)[0]=0; }
         int d=dt_resolve_dir(od); if(d<0)d=fx_mkpath(od); if(d<0)d=0; char nn[64]; fx_unique(d,on,nn,64);
-        fx_info_drop(t,'D',DT[d0].name); DT[d0].parent=d; scopy(DT[d0].name,nn); fx_resync_tree(d0); fx_seldir=-1;
+        fx_info_drop(t,'D',DT[d0].name); DT[d0].parent=d; scopy(DT[d0].name,nn)[0]=0; fx_resync_tree(d0); fx_seldir=-1;
         char b[208],*p=b; p=scopy(p,"Restored to "); p=scopy(p,od); *p=0; toast(b); return; }
     toast("Select an item in Trash to restore");
 }
@@ -262,7 +266,7 @@ static void fx_delete_file(int k){ if(k<0||!FS[k].used)return; if(!perm_file(k,2
 static int fx_rmtree(int d){ if(d<=0||!DT[d].used)return 0; int n=0;
     for(int i=0;i<DN_MAX;i++) if(DT[i].used&&i!=d&&DT[i].parent==d)n+=fx_rmtree(i);
     for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==d){ fx_delete_file(k); n++; }
-    if(g_dcwd==d)g_dcwd=DT[d].parent>=0?DT[d].parent:0; DT[d].used=0; return n+1; }
+    if(g_dcwd==d)g_dcwd=DT[d].parent>=0?DT[d].parent:0; if(fx_clipdir==d)fx_clipdir=-1; DT[d].used=0; return n+1; }
 static int fx_dir_empty(int d){ for(int i=0;i<DN_MAX;i++) if(DT[i].used&&i!=d&&DT[i].parent==d)return 0; for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==d)return 0; return 1; }
 static void fx_empty_trash(void){ int t=fx_trash_id(); if(t<0)return; int n=0;
     for(int i=0;i<DN_MAX;i++) if(DT[i].used&&i!=t&&DT[i].parent==t){ n+=fx_rmtree(i); }
@@ -272,18 +276,44 @@ void fx_delete_sel(void){
     int intr=fx_in_trash(fx_dir), t=fx_trash_id();
     if(!intr){
         if(g_fsel>=0&&FS[g_fsel].used){ if(!perm_file(g_fsel,2)){ toast("Permission denied"); return; } fx_trash_file(g_fsel); toast("Moved to Trash"); return; }
-        if(fx_seldir>0&&DT[fx_seldir].used){ if(fx_seldir==t){ toast("Use Empty Trash instead"); return; } if(!perm_dir(DT[fx_seldir].parent)){ toast("Permission denied"); return; } fx_trash_folder(fx_seldir); toast("Moved to Trash"); return; }
+        if(fx_seldir>0&&DT[fx_seldir].used){ if(fx_seldir==t){ toast("Use Empty Trash instead"); return; } if(!perm_dir(DT[fx_seldir].parent)){ toast("Permission denied"); return; }
+            if(fx_dir_empty(fx_seldir)){ fx_trash_folder(fx_seldir); toast("Moved to Trash"); } else { fx_confirm=1; fx_confirm_dir=fx_seldir; fx_confirm_kind=1; } return; }
         return; }
     if(g_fsel>=0&&FS[g_fsel].used){ if(FS[g_fsel].dir==t)fx_info_drop(t,'F',FS[g_fsel].name); fx_delete_file(g_fsel); toast("Deleted permanently"); return; }
-    if(fx_seldir>0&&DT[fx_seldir].used){ if(DT[fx_seldir].parent==t)fx_info_drop(t,'D',DT[fx_seldir].name); if(fx_dir_empty(fx_seldir)){ DT[fx_seldir].used=0; fx_seldir=-1; dt_save(); toast("Folder deleted permanently"); }
-        else { fx_confirm=1; fx_confirm_dir=fx_seldir; } return; }
+    if(fx_seldir>0&&DT[fx_seldir].used){ if(fx_dir_empty(fx_seldir)){ if(DT[fx_seldir].parent==t)fx_info_drop(t,'D',DT[fx_seldir].name); if(fx_clipdir==fx_seldir)fx_clipdir=-1; DT[fx_seldir].used=0; fx_seldir=-1; dt_save(); toast("Folder deleted permanently"); }
+        else { fx_confirm=1; fx_confirm_dir=fx_seldir; fx_confirm_kind=0; } return; }
     toast("Select a file or folder first"); }
 void fx_start_input(int mode,const char* init,int slot,int node){
-    g_rename=1; g_renmode=mode; g_renslot=slot; g_rennode=node; g_renlen=0;
+    g_rename=1; g_renmode=mode; g_renslot=slot; g_rennode=node; g_renlen=0; g_rensel=(mode==2||mode==3||mode==11);
     if(init) while(init[g_renlen]&&g_renlen<63){ g_renbuf[g_renlen]=init[g_renlen]; g_renlen++; } g_renbuf[g_renlen]=0; }
 void fx_rename_sel(void){ if(g_fsel>=0&&FS[g_fsel].used)fx_start_input(0,FS[g_fsel].name,g_fsel,-1); else if(fx_seldir>0&&DT[fx_seldir].used)fx_start_input(1,DT[fx_seldir].name,-1,fx_seldir); else toast("Select a file or folder first"); }
+static int fx_copy_file_to(int k,int dir,const char* nm){
+    int d=-1; for(int s=0;s<FS_N;s++) if(!FS[s].used){ d=s; break; } if(d<0)return -1;
+    fs_newslot(d); if(fs_set(d,fsd(k),FS[k].len))return -2;
+    int m=0; while(nm[m]&&m<63){ FS[d].name[m]=nm[m]; m++; } FS[d].name[m]=0;
+    FS[d].used=1; FS[d].folder=FS[k].folder; FS[d].dir=dir; FS[d].mode=FS[k].mode?FS[k].mode:0100644u; FS[d].uid=g_uid; FS[d].gid=g_uid;
+    fx_persist(d); return d; }
+static int fx_copy_tree(int src,int dstparent,const char* name,int depth){
+    if(depth>32)return -1; int nd=dt_mkdir_at(dstparent,name); if(nd<0)return -1;
+    DT[nd].mode=DT[src].mode?DT[src].mode:0040755u; DT[nd].uid=g_uid; DT[nd].gid=g_uid;
+    for(int k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==src&&!seq(FS[k].name,".trashinfo")){ int r=fx_copy_file_to(k,nd,FS[k].name); if(r<0)return r; }
+    for(int i=1;i<DN_MAX;i++) if(DT[i].used&&i!=src&&DT[i].parent==src&&i!=nd){ if(fx_copy_tree(i,nd,DT[i].name,depth+1)<0)return -1; }
+    return nd; }
+static void fx_paste_dir(void){
+    int s=fx_clipdir; if(!perm_dir(fx_dir)||(fx_clipcut&&!perm_dir(DT[s].parent))){ toast("Permission denied"); return; }
+    if(fx_under(fx_dir,s)){ toast("A folder cannot be pasted into itself"); return; }
+    if(fx_clipcut){ if(DT[s].parent==fx_dir){ fx_clipdir=-1; return; }
+        if(fx_exists(fx_dir,DT[s].name,-1,s)){ toast("A folder with that name already exists here"); return; }
+        int t=fx_trash_id(); if(t>0&&DT[s].parent==t)fx_info_drop(t,'D',DT[s].name);
+        DT[s].parent=fx_dir; fx_resync_tree(s); dt_save(); fx_seldir=s; g_fsel=-1; fx_clipdir=-1; toast("Moved"); return; }
+    char nm[64]; fx_unique(fx_dir,DT[s].name,nm,64);
+    int nd=fx_copy_tree(s,fx_dir,nm,0); dt_save(); if(disk_ok)nvx3_flush_meta();
+    if(nd<0){ toast(nd==-2?"Not enough memory":"No free folder or file slots"); return; }
+    fx_seldir=nd; g_fsel=-1; toast("Pasted"); }
 static void fx_paste(void){
-    if(fx_clip<0||!FS[fx_clip].used){ toast("Clipboard is empty"); return; } if(fx_mode){ toast("Open a folder first"); return; }
+    if(fx_mode){ toast("Open a folder first"); return; }
+    if(fx_clipdir>0&&fx_clipdir<DN_MAX&&DT[fx_clipdir].used){ fx_paste_dir(); return; }
+    if(fx_clip<0||!FS[fx_clip].used){ toast("Clipboard is empty"); return; }
     if(!perm_dir(fx_dir)||(fx_clipcut&&!perm_dir(FS[fx_clip].dir))){ toast("Permission denied"); return; }
     if(fx_clipcut){ if(FS[fx_clip].dir==fx_dir){ fx_clip=-1; return; } if(fx_exists(fx_dir,FS[fx_clip].name,fx_clip,-1)){ toast("A file with that name already exists here"); return; }
         FS[fx_clip].dir=fx_dir; fx_persist(fx_clip); g_fsel=fx_clip; fx_clip=-1; toast("Moved"); return; }
@@ -299,6 +329,7 @@ void fx_rename_commit(void){
     char n[64]; int L=g_renlen; if(L>63)L=63; for(int i=0;i<L;i++)n[i]=g_renbuf[i]; n[L]=0;
     while(L>0&&n[L-1]==' ')n[--L]=0;
     if(!fx_name_ok(n)){ toast("Invalid name"); g_rename=0; g_renmode=0; return; }
+    if(g_renmode==10||g_renmode==11){ extern void fxv_input_done(int,const char*); int m=g_renmode; g_rename=0; g_renmode=0; fxv_input_done(m,n); return; }
     { int pd=g_renmode==0?(g_renslot>=0&&FS[g_renslot].used?FS[g_renslot].dir:-1):g_renmode==1?(g_rennode>0&&DT[g_rennode].used?DT[g_rennode].parent:-1):fx_dir;
       if(pd>=0&&!perm_dir(pd)){ toast("Permission denied"); g_rename=0; g_renmode=0; return; } }
     if(g_renmode==0){ int k=g_renslot; if(k>=0&&FS[k].used){ if(seq(FS[k].name,n)){}

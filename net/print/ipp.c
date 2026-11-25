@@ -4,6 +4,7 @@
 #include "include/nvx/mem/heap.h"
 #include "include/nvx/assets/fontaa.h"
 #include "include/nvx/net/stack/sockets.h"
+#include "drivers/usb/class/ippusb_proto.h"
 
 #define PW 2480
 #define PH 3508
@@ -12,6 +13,7 @@
 u32 g_prn_ip=0; char g_prn_model[96]; int g_prn_pwg=-1, g_prn_urf=0, g_prn_pdf=0; char g_prn_status[96]="No printer set"; int g_prn_pages=0; u32 g_prn_bytes=0;
 extern int parse_ip(const char*s,u32*out);
 extern int sock_send_rel(int sid,const u8* buf,int len);
+int g_prn_usb=0; int uprn_scan(void); int uprn_has_ipp(void); int uprn_http(const u8* req,int len,u8* resp,int cap,int* blen,int* boff); const char* uprn_name(void);
 
 static u8* pb; static u32 pn, pcap;
 static void put8(u8 v){ if(pn<pcap)pb[pn++]=v; }
@@ -45,11 +47,11 @@ static void render_row(u8* row,const char* text,int cols,int page,int y,int line
         for(int col=0;col<8;col++){ int a=g[col]; if(a<8)continue; u8 v=(u8)(255-a); int px=PMARG+c*24+col*3; row[px]=v; row[px+1]=v; row[px+2]=v; } } }
 
 int prn_print_text(const char* title,const char* text){
-    if(!g_prn_ip){ scopy(g_prn_status,"No printer set - use: printer <ip address>")[0]=0; return -1; }
+    if(!g_prn_ip&&!g_prn_usb){ scopy(g_prn_status,"No printer set - use: printer <ip address> or printer usb")[0]=0; return -1; }
     int cols=(PW-2*PMARG)/24, lines_per=(PH-2*PMARG)/LINEH; int nl=line_count(text,cols); int pages=(nl+lines_per-1)/lines_per; if(pages<1)pages=1; if(pages>30)pages=30;
     pcap=600000u+(u32)pages*900000u; pb=(u8*)kmalloc(pcap); if(!pb){ scopy(g_prn_status,"Not enough memory for the print job")[0]=0; return -2; }
-    pn=0; char ipstr[20],*q=ipstr; for(int k=3;k>=0;k--){ q=udec(q,(g_prn_ip>>(8*(3-k)))&0xFF); if(k)*q++='.'; } *q=0;
-    char uri[64],*u=uri; u=scopy(u,"ipp://"); u=scopy(u,ipstr); u=scopy(u,":631/ipp/print"); *u=0;
+    pn=0; char ipstr[20],*q=ipstr; if(g_prn_usb)q=scopy(q,"localhost"); else for(int k=3;k>=0;k--){ q=udec(q,(g_prn_ip>>(8*(3-k)))&0xFF); if(k)*q++='.'; } *q=0;
+    char uri[64],*u=uri; u=scopy(u,"ipp://"); u=scopy(u,ipstr); u=scopy(u,g_prn_usb?"/ipp/print":":631/ipp/print"); *u=0;
     u32 hpos=pn; for(int i=0;i<200;i++)put8(' ');
     u32 body=pn;
     put16(0x0200); put16(0x0002); put32(1); put8(0x01);
@@ -67,6 +69,11 @@ int prn_print_text(const char* title,const char* text){
     u32 blen=pn-body; char hdr[200],*h=hdr; h=scopy(h,"POST /ipp/print HTTP/1.1\r\nHost: "); h=scopy(h,ipstr); h=scopy(h,":631\r\nContent-Type: application/ipp\r\nContent-Length: "); h=udec(h,blen); h=scopy(h,"\r\nConnection: close\r\n\r\n"); int hl=(int)(h-hdr);
     u32 start=body-(u32)hl; for(int i=0;i<hl;i++)pb[start+i]=(u8)hdr[i]; (void)hpos;
     g_prn_bytes=blen; g_prn_pages=pages; scopy(g_prn_status,"Sending to printer...")[0]=0;
+    if(g_prn_usb){ static u8 ur[4096]; int bl=0, bo=0; int http=uprn_http(pb+start,(int)(pn-start),ur,(int)sizeof ur,&bl,&bo); kfree(pb); char* p=g_prn_status;
+        if(http==200&&bl>=4){ u16 st=(u16)((ur[bo+2]<<8)|ur[bo+3]); if(st<0x0100){ p=scopy(p,"Printed "); p=udec(p,(u32)pages); p=scopy(p,pages==1?" page over USB":" pages over USB"); *p=0; klog("printer: USB job accepted"); return 0; }
+            p=scopy(p,"Printer refused the job (IPP status 0x"); p=hx(p,st,4); p=scopy(p,")"); *p=0; return -7; }
+        if(http<0){ p=scopy(p,"USB printer did not answer (error "); p=udec(p,(u32)-http); p=scopy(p,")"); *p=0; return -5; }
+        p=scopy(p,"USB printer answered HTTP "); p=udec(p,(u32)http); *p=0; return -8; }
     int sid=sock_alloc(); if(sid<0){ kfree(pb); return -4; }
     int r=sock_connect(sid,g_prn_ip,631); if(r){ sock_close(sid); kfree(pb); char* p=g_prn_status; p=scopy(p,"Printer did not answer on port 631 (error "); p=udec(p,(u32)-r); p=scopy(p,")"); *p=0; return -5; }
     if(sock_send_rel(sid,pb+start,(int)(pn-start))<0){ sock_close(sid); kfree(pb); scopy(g_prn_status,"Sending the job failed (no answer from the printer)")[0]=0; return -6; }
@@ -104,7 +111,20 @@ static int prn_query(const char* ipstr){
         if(vl==15&&v[12]=='p'&&v[13]=='d'&&v[14]=='f')g_prn_pdf=1;
         i+=vl; }
     return 0; }
-int prn_set(const char* ip){ u32 v; if(!parse_ip(ip,&v))return -1; g_prn_ip=v; g_prn_model[0]=0; char* p=g_prn_status;
+static int prn_set_usb(void){
+    char* p=g_prn_status; g_prn_usb=0;
+    if(!uprn_scan()){ scopy(p,"No USB printer found")[0]=0; return -2; }
+    if(!uprn_has_ipp()){ p=scopy(p,uprn_name()[0]?uprn_name():"USB printer"); p=scopy(p," - no IPP over USB, only raw printing"); *p=0; return -3; }
+    static u8 rq[1024]; char hdr[160],*h=hdr; u8 body[512]; int bl=upp_ipp_getattrs(body,(int)sizeof body,"ipp://localhost/ipp/print",2); if(bl<0)return -4;
+    h=scopy(h,"POST /ipp/print HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/ipp\r\nContent-Length: "); h=udec(h,(u32)bl); h=scopy(h,"\r\n\r\n"); int hl=(int)(h-hdr);
+    for(int i=0;i<hl;i++)rq[i]=(u8)hdr[i]; for(int i=0;i<bl;i++)rq[hl+i]=body[i];
+    static u8 rb[16384]; int rl=0, ro=0; int http=uprn_http(rq,hl+bl,rb,(int)sizeof rb,&rl,&ro);
+    if(http!=200){ p=scopy(p,"USB printer did not answer IPP ("); if(http<0){ p=scopy(p,"error "); p=udec(p,(u32)-http); } else { p=scopy(p,"HTTP "); p=udec(p,(u32)http); } p=scopy(p,")"); *p=0; return -5; }
+    struct uppinfo pi; upp_ipp_parse(rb+ro,rl,&pi); g_prn_usb=1; g_prn_ip=0;
+    int k=0; for(;pi.model[k]&&k<95;k++)g_prn_model[k]=pi.model[k]; g_prn_model[k]=0; g_prn_pwg=pi.pwg; g_prn_urf=pi.urf; g_prn_pdf=pi.pdf;
+    p=scopy(p,g_prn_model[0]?g_prn_model:uprn_name()); p=scopy(p," on USB");
+    p=scopy(p,g_prn_pwg?" - ready (PWG raster)":g_prn_urf?" - AirPrint only (Apple raster), not supported yet":" - no supported page format"); *p=0; return 0; }
+int prn_set(const char* ip){ if(ip[0]=='u'&&ip[1]=='s'&&ip[2]=='b'&&!ip[3])return prn_set_usb(); u32 v; if(!parse_ip(ip,&v))return -1; g_prn_usb=0; g_prn_ip=v; g_prn_model[0]=0; char* p=g_prn_status;
     int r=prn_query(ip);
     if(r){ p=scopy(p,"Printer "); p=scopy(p,ip); p=scopy(p," did not answer IPP on port 631"); *p=0; return -2; }
     p=scopy(p,g_prn_model[0]?g_prn_model:"IPP printer"); p=scopy(p," at "); p=scopy(p,ip);

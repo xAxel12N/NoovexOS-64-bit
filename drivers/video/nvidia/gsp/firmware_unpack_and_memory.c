@@ -5,6 +5,9 @@ extern const u8 _binary_nvfw_bootloader_xz_start[], _binary_nvfw_bootloader_xz_e
 extern const u8 _binary_nvfw_booter_load_xz_start[], _binary_nvfw_booter_load_xz_end[];
 extern const u8 _binary_nvfw_booter_unload_xz_start[], _binary_nvfw_booter_unload_xz_end[];
 extern const u8 _binary_nvfw_acr_bl_xz_start[], _binary_nvfw_acr_bl_xz_end[];
+extern const u8 _binary_nvfw_ga102_gsp_xz_start[] __attribute__((weak)), _binary_nvfw_ga102_gsp_xz_end[] __attribute__((weak));
+extern const u8 _binary_nvfw_ga102_bootloader_xz_start[], _binary_nvfw_ga102_bootloader_xz_end[];
+extern const u8 _binary_nvfw_ga102_booter_load_xz_start[], _binary_nvfw_ga102_booter_load_xz_end[], _binary_nvfw_ga102_booter_unload_xz_start[], _binary_nvfw_ga102_booter_unload_xz_end[];
 
 typedef struct { u8* d; u32 n; const char* src; } nvblob;
 static nvblob g_fw_gsp, g_fw_bl, g_fw_bload, g_fw_bunload, g_fw_acr;
@@ -33,8 +36,17 @@ static void cflush(const void* p,u64 n){ for(u64 a=(u64)p&~63ULL;a<(u64)p+n;a+=6
 static int blob_get(nvblob* b,const char* file,const u8* s,const u8* e,u32 cap){
     if(b->d)return 1;
     int k=fs_find_name(file); if(k>=0&&FS[k].len>0){ b->n=(u32)FS[k].len; b->d=(u8*)kmalloc(b->n+16); if(!b->d)return 0; const u8* q=(const u8*)fsd(k); for(u32 i=0;i<b->n;i++)b->d[i]=q[i]; b->src="from Files"; return 1; }
+    if(!s||!e||e<=s)return 0;
     b->d=(u8*)kmalloc(cap); if(!b->d)return 0; long n=xzk_decode_into(s,(long)(e-s),b->d,(long)cap); if(n<=0){ kfree(b->d); b->d=0; return 0; } b->n=(u32)n; b->src="built in"; return 1; }
+static int fw_load_gen(const nvgsp_gen* g){
+    static const u8* const GA[8]={ _binary_nvfw_ga102_booter_load_xz_start,_binary_nvfw_ga102_booter_load_xz_end,_binary_nvfw_ga102_booter_unload_xz_start,_binary_nvfw_ga102_booter_unload_xz_end,_binary_nvfw_ga102_bootloader_xz_start,_binary_nvfw_ga102_bootloader_xz_end,_binary_nvfw_ga102_gsp_xz_start,_binary_nvfw_ga102_gsp_xz_end };
+    const u8* const* b=g->blob[0]?g->blob:GA;
+    if(!blob_get(&g_fw_bload,g->booter_load,b[0],b[1],0x20000))return 0;
+    if(!blob_get(&g_fw_bunload,g->booter_unload,b[2],b[3],0x20000))return 0;
+    if(!blob_get(&g_fw_bl,g->bootloader,b[4],b[5],0x10000))return 0;
+    return blob_get(&g_fw_gsp,g->gsp,b[6],b[7],g->gsp_cap); }
 static int fw_load(void){
+    if(nvgsp_gen_hooked())return fw_load_gen(g_nvgen);
     if(!blob_get(&g_fw_acr,"bl.bin",_binary_nvfw_acr_bl_xz_start,_binary_nvfw_acr_bl_xz_end,0x10000))return 0;
     if(!blob_get(&g_fw_bload,"booter_load-535.113.01.bin",_binary_nvfw_booter_load_xz_start,_binary_nvfw_booter_load_xz_end,0x20000))return 0;
     if(!blob_get(&g_fw_bunload,"booter_unload-535.113.01.bin",_binary_nvfw_booter_unload_xz_start,_binary_nvfw_booter_unload_xz_end,0x20000))return 0;
@@ -95,7 +107,11 @@ static int ev_handle(u32 fn,u8* p,u32 n);
 #define HOLDN 4
 static struct { u32 fn, n; int r; u8 d[0x4000]; } g_hold[HOLDN]; static int g_holdn;
 static void msgq_drain_events(void){ static u8 b[0x10000]; for(int k=0;k<8;k++){ u32 fn=0,n=0; int r=msg_one(&fn,b,sizeof(b),&n,0); if(r==0)break; if(fn>=0x1000){ if(r>0)ev_handle(fn,b,n); continue; } if(fn&&g_holdn<HOLDN){ int h=g_holdn++; g_hold[h].fn=fn; g_hold[h].r=r; g_hold[h].n=n<sizeof(g_hold[h].d)?n:(u32)sizeof(g_hold[h].d); for(u32 i=0;i<g_hold[h].n;i++)g_hold[h].d[i]=b[i]; G.held++; } } }
+static int nvev_post(const u8* p,u32 n);
+static int nvev_rgline(const u8* p,u32 n);
 static int ev_handle(u32 fn,u8* p,u32 n){
+    if(fn==0x1003)return nvev_post(p,n);
+    if(fn==0x1007)return nvev_rgline(p,n);
     if(fn==0x1002){ G.seq_count++; seq_run((const u32*)p,n); return 1; }
     if((fn==0x1006||fn==0x1004)&&G.err_count>=16){ G.err_count++; return 1; }
     if(fn==0x1006&&n>=12){ G.err_count++; nvl_s("  GSP error log: Xid "); nvl_d(*(u32*)p); nvl_s(" chid "); nvl_d(*(u32*)(p+8)); nvl_s(": "); char t[100]; u32 i=0; for(;i<99&&i+12<n&&p[12+i];i++)t[i]=(char)p[12+i]; t[i]=0; nvl_s(t); nvl_nl(); return 1; }
@@ -111,11 +127,11 @@ static int rpc_wait(u32 want,u8* out,u32 cap,u32* olen,u32 ms){
         ev_handle(fn,g_evbuf,n); } }
 
 static u32 g_gsp_boots=0;
+static int gsp_running(void){ return nvgsp_gen_hooked()?g_nvgen->riscv_active():(int)(nvr32(0x111240)&1u); }
 static void seq_fail(const char* why){ char* q=G.seq_err; q=scopy(q,why); *q=0; nvl_s("  sequencer: "); nvl_s(why); nvl_nl(); }
 static int seq_resume(void){
     nvl_s("  sequencer: CORE_RESUME - GSP reset, LibOS arguments, SEC2 restarted to bring GSP-RM back"); nvl_nl();
-    nvm32(NVF_GSP+0x3C0,1u,1u); hr_delay_us(10); nvm32(NVF_GSP+0x3C0,1u,0u);
-    if(!nv_poll(NVF_GSP+0x10C,6u,0u,10)){ nvf_dump(NVF_GSP,"GSP falcon"); seq_fail("CORE_RESUME: GSP falcon memory scrubbing did not finish"); return 0; }
+    if(nvgsp_gen_hooked()?!g_nvgen->gsp_reset():(nvm32(NVF_GSP+0x3C0,1u,1u),hr_delay_us(10),nvm32(NVF_GSP+0x3C0,1u,0u),!nv_poll(NVF_GSP+0x10C,6u,0u,10))){ nvf_dump(NVF_GSP,"GSP falcon"); seq_fail("CORE_RESUME: GSP falcon memory scrubbing did not finish"); return 0; }
     nvw32(NVF_GSP+0x040,(u32)PA(G.libos)); nvw32(NVF_GSP+0x044,(u32)(PA(G.libos)>>32));
     if(nvr32(NVF_SEC2+0x100)&0x40u)nvw32(NVF_SEC2+0x130,2u); else nvw32(NVF_SEC2+0x100,2u);
     int done=nv_poll(0x1180F8,0x04000000u,0x04000000u,2000);
@@ -125,7 +141,7 @@ static int seq_resume(void){
     if(m0){ nvf_dump(NVF_SEC2,"SEC2"); seq_fail("CORE_RESUME: SEC2 returned an error code in mailbox 0"); return 0; }
     nvw32(0x110080,G.app_ver);
     nvl_kv("resume: GSP RISC-V status (0x111240)",nvr32(0x111240));
-    if(!(nvr32(0x111240)&1u)){ nvf_dump(NVF_GSP,"GSP falcon"); seq_fail("CORE_RESUME: the GSP RISC-V core is not running after SEC2 restarted it"); return 0; }
+    if(!gsp_running()){ nvf_dump(NVF_GSP,"GSP falcon"); seq_fail("CORE_RESUME: the GSP RISC-V core is not running after SEC2 restarted it"); return 0; }
     G.resumes++; nvl_s("  sequencer: GSP-RM resumed"); nvl_nl(); return 1; }
 static void seq_run(const u32* p,u32 n){
     if(n<40)return; u32 cnt=p[1]; const u32* c=p+10; u32 i=0; u32 save[8]; for(int k=0;k<8;k++)save[k]=p[2+k]; u32 words=(n-40)/4; if(cnt>words)cnt=words;
@@ -179,7 +195,7 @@ static int prepare(void){
     nvl_s("  gsp "); nvl_d(g_fw_gsp.n); nvl_s(" bytes ("); nvl_s(g_fw_gsp.src); nvl_s("), booter_load "); nvl_d(g_fw_bload.n); nvl_s(" ("); nvl_s(g_fw_bload.src); nvl_s("), bootloader "); nvl_d(g_fw_bl.n); nvl_s(", acr bl "); nvl_d(g_fw_acr.n); nvl_nl();
     const u8* img=0; u64 isz=0; const u8* sg=0; u64 ssz=0;
     if(!elf_sect(g_fw_gsp.d,g_fw_gsp.n,".fwimage",&img,&isz))return nv_fail(3,"no .fwimage section in the GSP firmware");
-    const char* sname=(G.chip==0x167||G.chip==0x168)?".fwsignature_tu11x":".fwsignature_tu10x";
+    const char* sname=g_nvgen&&g_nvgen->sig_section?g_nvgen->sig_section:(G.chip==0x167||G.chip==0x168)?".fwsignature_tu11x":".fwsignature_tu10x";
     if(!elf_sect(g_fw_gsp.d,g_fw_gsp.n,sname,&sg,&ssz))return nv_fail(3,"signature section for this chip is missing");
     nvl_kv(".fwimage size",isz); nvl_s("  signature section "); nvl_s(sname); nvl_nl();
     G.elf_size=isz; u64 pages=(isz+0xFFFULL)>>12;
@@ -194,7 +210,8 @@ static int prepare(void){
     const u8* bf=g_fw_bl.d; if(g_fw_bl.n<0x80||*(const u32*)bf!=0x10DEu)return nv_fail(3,"GSP bootloader file damaged");
     u32 bho=*(const u32*)(bf+0x0C), bdo=*(const u32*)(bf+0x10), bds=*(const u32*)(bf+0x14);
     G.app_ver=*(const u32*)(bf+bho+0x1C); u32 mco=*(const u32*)(bf+bho+0x30), mdo=*(const u32*)(bf+bho+0x28), mfo=*(const u32*)(bf+bho+0x20);
-    G.boot=sa(0x1000,0x1000); if(!G.boot||bds>0x1000||bdo+bds>g_fw_bl.n)return nv_fail(3,"GSP bootloader payload too large"); for(u32 i=0;i<bds;i++)G.boot[i]=bf[bdo+i];
+    u32 bsz=nvgsp_gen_hooked()?((bds+0xFFFu)&~0xFFFu):0x1000u; if(!bsz||bsz>0x10000u)return nv_fail(3,"GSP bootloader payload too large");
+    { static u8* kb=0; static u32 kc=0; if(!kb||kc<bsz){ kb=sa(bsz,0x1000); kc=kb?bsz:0; } G.boot=kb; } if(!G.boot||bds>bsz||bdo+bds>g_fw_bl.n)return nv_fail(3,"GSP bootloader payload too large"); for(u32 i=0;i<bsz;i++)G.boot[i]=i<bds?bf[bdo+i]:0;
     nvl_kv("bootloader payload",bds); nvl_kv("bootloader appVersion",G.app_ver);
     for(int k=0;k<3;k++){ G.log[k]=sa_contig(0x10000,0x1000); if(!G.log[k])return nv_fail(3,"no physically contiguous memory for the GSP log buffers"); for(int p=0;p<16;p++)*(u64*)(G.log[k]+8+p*8)=PA(G.log[k]+((u64)p<<12)); }
     { static u8 *ks=0,*kr=0,*kl=0,*km=0,*kf=0; if(!ks)ks=sa(0x81000,0x1000); if(!kr)kr=sa(0x1000,0x1000); if(!kl)kl=sa(0x1000,0x1000); if(!km)km=sa(0x1000,0x1000); if(!kf)kf=sa(0x1000,0x1000); G.shm=ks; G.rmargs=kr; G.libos=kl; G.meta=km; G.flush=kf; }
@@ -208,15 +225,15 @@ static int prepare(void){
     G.cmd_seq=0; G.rpc_seq=0; G.rx_seq=0;
     static u8 tmp[1024]; int n=build_sysinfo(tmp); if(!cmdq_push(72,tmp,(u32)n,1))return nv_fail(3,"could not queue SET_SYSTEM_INFO");
     n=build_registry(tmp); if(!cmdq_push(73,tmp,(u32)n,1))return nv_fail(3,"could not queue SET_REGISTRY");
-    if(!nv_fb_layout(G.elf_size,0x1000))return nv_fail(2,"VRAM size register looks wrong");
+    if(!nv_fb_layout(G.elf_size,bsz))return nv_fail(2,"VRAM size register looks wrong");
     u8* m=G.meta; nvfb_layout* L=&g_nvl;
     *(u64*)(m+0x00)=0xDC3AAE21371A60B3ULL; *(u64*)(m+0x08)=1; *(u64*)(m+0x10)=PA(G.r3l0); *(u64*)(m+0x18)=G.elf_size;
-    *(u64*)(m+0x20)=PA(G.boot); *(u64*)(m+0x28)=0x1000; *(u64*)(m+0x30)=mco; *(u64*)(m+0x38)=mdo; *(u64*)(m+0x40)=mfo;
+    *(u64*)(m+0x20)=PA(G.boot); *(u64*)(m+0x28)=nvgsp_gen_hooked()?bds:0x1000u; *(u64*)(m+0x30)=mco; *(u64*)(m+0x38)=mdo; *(u64*)(m+0x40)=mfo;
     *(u64*)(m+0x48)=PA(G.sig); *(u64*)(m+0x50)=0x1000; *(u64*)(m+0x58)=L->nonwpr_addr; *(u64*)(m+0x60)=L->nonwpr_addr; *(u64*)(m+0x68)=L->nonwpr_size;
     *(u64*)(m+0x70)=L->wpr2_addr; *(u64*)(m+0x78)=L->heap_addr; *(u64*)(m+0x80)=L->heap_size; *(u64*)(m+0x88)=L->elf_addr; *(u64*)(m+0x90)=L->boot_addr;
     *(u64*)(m+0x98)=L->frts_addr; *(u64*)(m+0xA0)=L->frts_size; *(u64*)(m+0xA8)=L->vga_addr&~0x1FFFFULL; *(u64*)(m+0xB0)=L->fb_size;
     *(u64*)(m+0xB8)=L->vga_addr; *(u64*)(m+0xC0)=L->vga_size;
-    cflush(G.elf,pages<<12); cflush(G.r3l2,(u64)G.r3l2_pages<<12); cflush(G.r3l1,0x1000); cflush(G.r3l0,0x1000); cflush(G.sig,0x1000); cflush(G.boot,0x1000);
+    cflush(G.elf,pages<<12); cflush(G.r3l2,(u64)G.r3l2_pages<<12); cflush(G.r3l1,0x1000); cflush(G.r3l0,0x1000); cflush(G.sig,0x1000); cflush(G.boot,bsz);
     cflush(G.shm,0x81000); cflush(G.rmargs,0x1000); cflush(G.libos,0x1000); cflush(G.meta,0x1000);
     nvl_kv("radix3 level 0",PA(G.r3l0)); nvl_kv("GspFwWprMeta",PA(G.meta)); nvl_kv("LibOS arguments",PA(G.libos)); nvl_kv("message queues",PA(G.shm));
     return 1; }
@@ -240,7 +257,14 @@ static int probe(void){
         u64 sz=m?(~m)+1:0; if(w)G.bar3_len=sz; else G.bar1_len=sz; }
     { u32 c=pci_cfg(g_nv_bus,g_nv_slot,g_nv_fn,0x04); pci_cfgw(g_nv_bus,g_nv_slot,g_nv_fn,0x04,(c&0xFFFFu)|0x406u); }
     nvl_kv("PCI device",g_nv_dev); nvl_kv("BOOT0",g_nv_boot0); nvl_kv("chipset",G.chip); nvl_kv("BAR0",g_nv_bar0); nvl_kv("BAR1 (VRAM aperture)",G.bar1); nvl_kv("BAR1 size",G.bar1_len); nvl_kv("BAR3 (instance aperture)",G.bar3); nvl_kv("BAR3 size",G.bar3_len);
-    if(G.chip<0x162||G.chip>0x168)return nv_fail(1,"this driver supports Turing (TU102-TU117) only");
+    g_nvgen=0;
+    if(G.chip>=0x172&&G.chip<=0x177){ const nvgsp_gen* g=nvgsp_gen_for(G.chip); if(!g)return nv_fail(1,"unknown Ampere chip");
+        if(!nvd_ampere())return nv_fail(1,"Ampere (RTX 30) support is untested and off - run gpu ampere on to try it");
+        g_nvgen=g; nvl_s("  "); nvl_s(g->name); nvl_s(" - untested hardware path (gpu ampere on); firmware nvidia/"); nvl_s(g->fw_dir); nvl_s("/gsp 535.113.01"); nvl_nl(); }
+    else if(G.chip>=0x192&&G.chip<=0x197){ const nvgsp_gen* g=nvgsp_gen_for(G.chip); if(!g)return nv_fail(1,"unknown Ada chip (AD102/AD103/AD104/AD106/AD107 are known)");
+        if(!nvgsp_gen_pci_ok(g_nv_dev))return nv_fail(1,"Ada (RTX 40) support is untested and off - run gpu ada on to try it");
+        g_nvgen=g; nvl_s("  "); nvl_s(g->name); nvl_s(" - untested hardware path (gpu ada on); booters nvidia/ad102/gsp, GSP-RM shared with ga102 (as linux-firmware links ad10x/gsp to ga102) 535.113.01"); nvl_nl(); }
+    else if(G.chip<0x162||G.chip>0x168)return nv_fail(1,"this driver supports Turing (TU102-TU117), and with gpu ampere/gpu ada on RTX 30/40, only");
     if(G.chip==0x167){ nvl_s("  TU117 boots with the TU116 booter (linux-firmware links tu117/gsp to tu116/gsp)"); nvl_nl(); }
     if(G.chip<0x167){ nvl_s("  TU102/TU104/TU106 need nvidia/tu102/gsp/booter_load-535.113.01.bin in Files (the built-in booter is TU116)"); nvl_nl(); }
     nvl_s("[2] VRAM"); nvl_nl();
@@ -270,7 +294,8 @@ static int gsp_pre(void){
         nvl_s("  WPR2 cleared"); nvl_nl(); }
     r=nv_run_fwsec(g_fw_acr.d,g_fw_acr.n,0x15); if(r<=0)return r;
     nvl_s("  WPR2 is set up"); nvl_nl();
-    nvm32(0x1103C0,1u,1u); hr_delay_us(10); nvm32(0x1103C0,1u,0u); nv_poll(0x11010C,6u,0u,10);
+    if(nvgsp_gen_hooked()){ if(!g_nvgen->gsp_reset()){ nvf_dump(NVF_GSP,"GSP falcon"); return nv_fail(5,"GSP falcon reset before booter did not finish"); } }
+    else { nvm32(0x1103C0,1u,1u); hr_delay_us(10); nvm32(0x1103C0,1u,0u); nv_poll(0x11010C,6u,0u,10); }
     nvw32(0x110040,(u32)PA(G.libos)); nvw32(0x110044,(u32)(PA(G.libos)>>32));
     nvl_s("[5] booter_load on SEC2"); nvl_nl();
     r=nv_booter(g_fw_bload.d,g_fw_bload.n,PA(G.meta),0); if(r<=0)return r;
@@ -279,8 +304,8 @@ static int gsp_pre(void){
 static int gsp_post(void){
     nvl_s("[6] starting GSP-RM"); nvl_nl();
     nvw32(0x110080,G.app_ver);
-    nvl_kv("GSP RISC-V status (0x111240)",nvr32(0x111240));
-    if(!(nvr32(0x111240)&1u)){ nvf_dump(NVF_GSP,"GSP falcon"); return nv_fail(6,"GSP RISC-V core is not running after booter"); }
+    nvl_kv("GSP RISC-V status (0x111240)",nvr32(0x111240)); if(nvgsp_gen_hooked())nvl_kv("GSP RISC-V status (0x111388)",nvr32(0x111388));
+    if(!gsp_running()){ nvf_dump(NVF_GSP,"GSP falcon"); return nv_fail(6,"GSP RISC-V core is not running after booter"); }
     nvl_s("[7] waiting for GSP_INIT_DONE"); nvl_nl(); G.seq_err[0]=0; G.resumes=0;
     u64 t0=hr_ns(); int got=0;
     while(hr_ns()-t0<15000000000ULL){ u32 fn=0,n=0; int m=msg_one(&fn,g_evbuf,sizeof(g_evbuf),&n,500); if(m==0)continue; if(m<0&&m!=-2)break; if(fn==0x1001){ got=1; break; } if(m>0)ev_handle(fn,g_evbuf,n); }

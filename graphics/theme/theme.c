@@ -2,6 +2,8 @@
 #include "include/nvx/drivers/video/fb/framebuffer.h"
 #include "include/nvx/graphics/theme/theme.h"
 #include "include/nvx/apps/games/doom.h"
+#include "include/nvx/graphics/ui/hwcursor.h"
+#include "include/nvx/graphics/ui/curshape.h"
 /* =========================================================================
    Theming + blend helpers
    ========================================================================= */
@@ -73,8 +75,12 @@ static void draw_rz_cursor(int f){ int ux=0, uy=0;
     if((f&3)&&!(f&12)){ ux=1; uy=0; } else if((f&12)&&!(f&3)){ ux=0; uy=1; } else if(((f&1)&&(f&4))||((f&2)&&(f&8))){ ux=1; uy=1; } else { ux=1; uy=-1; }
     rz_arrow(ux,uy,rgb(18,20,26),1); rz_arrow(ux,uy,rgb(255,255,255),0); }
 void draw_cursor(void){
-    if(g_doom_mcap) return;   /* hidden while DOOM has the mouse */
+    if(!g_hwcur_drawing)g_cur_shape=cur_shape_pick();
+    if(hwcur_step()) return;
+    { extern int g_quake_mcap; if(g_doom_mcap||g_quake_mcap) return; }
+    if(g_cur_shape==CUR_WAIT&&cur_shape_draw(mx,my,g_cur_shape))return;
     { extern int g_rz_hover; if(g_rz_hover){ draw_rz_cursor(g_rz_hover); return; } }
+    if(cur_shape_draw(mx,my,g_cur_shape))return;
     if(g_cursor==0) arrow_at(mx,my,2,rgb(18,20,26),rgb(255,255,255));
     else if(g_cursor==1) arrow_at(mx,my,3,rgb(18,20,26),rgb(255,255,255));
     else if(g_cursor==2) arrow_at(mx,my,2,rgb(120,130,150),rgb(255,255,255));

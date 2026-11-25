@@ -80,7 +80,7 @@ static void aec_setup(void){
     if(inb(g_aec.cmd)==0xFF){ klog("acpi: EC ports read 0xFF, not using the EC"); return; }
     g_aec.ok=1; aec_flush(); if(aec_wait(0)){ g_aec.ok=0; klog("acpi: EC stuck busy"); return; }
     klog(g_aec.from_ecdt?"acpi: embedded controller found (ECDT)":"acpi: embedded controller found (namespace)"); }
-static int acpi_pci_loc(anode* n,int* bus,int* dev,int* fn,int depth){
+int acpi_pci_loc(anode* n,int* bus,int* dev,int* fn,int depth){
     if(!n||n==g_aroot||depth>8)return -1;
     if(aml_hid_is(n,"PNP0A08")||aml_hid_is(n,"PNP0A03")){ anode* b=aml_child(n,"_BBN"); u64 v=0; if(b&&aml_eval_int(b,&v))v=0; *bus=(int)(v&0xFF); *dev=-1; *fn=-1; return 0; }
     anode* a=aml_child(n,"_ADR"); if(!a)return acpi_pci_loc(n->parent,bus,dev,fn,depth+1);
@@ -237,6 +237,8 @@ static void acpi_on_notify(anode* n,u32 v){
     if(n==g_acad){ g_acb_dirty|=1; return; }
     if(g_bl.ok&&(n==g_bl.out||n==g_bl.bus)){ if(v==0x86||v==0x87){ bl_step(v==0x86?1:-1); { extern void osd_show(int,int,const char*); extern void klog_key(u32); klog_key(0x30000u|v); osd_show(2,g_bl.cur<0?0:g_bl.cur,"Brightness"); } return; } if(v==0x85){ bl_step(1); { extern void osd_show(int,int,const char*); osd_show(2,g_bl.cur<0?0:g_bl.cur,"Brightness"); } return; } if(v==0x80||v==0x82){ extern void hk_push(int); hk_push(15); return; } if(v==0x88||v==0x89||v==0x8A)return; }
     { extern int laptop_notify(anode*,u32); if(laptop_notify(n,v))return; }
+    { extern int wmi_notify(anode*,u32); if(wmi_notify(n,v))return; }
+    { extern int acpi_hotkeys_notify(anode*,u32); if(acpi_hotkeys_notify(n,v))return; }
     { extern void klog_key(u32); klog_key(0x40000u|(v&0xFFFF)); }
     g_acs.unhandled++; }
 void acpi_drain_notify(void){ anode* n; u32 v; for(int k=0;k<32&&aml_notify_pop(&n,&v);k++)acpi_on_notify(n,v); if(g_acb_dirty){ int full=(g_acb_dirty&2)!=0; g_acb_dirty=0; acpi_battery_update(full); } }

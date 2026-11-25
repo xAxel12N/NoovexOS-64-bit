@@ -15,18 +15,20 @@ extern int mx, my; extern void toast(const char*);
 static short* rc_buf=0; static u32 rc_cap=0, rc_len=0, rc_play=0; static u8* rc_pk=0; static u32 rc_npk=0, rc_pkcap=0; static int rc_pkacc=0, rc_pkn=0;
 static int rc_rec=0, rc_playing=0, rc_saved=0, rc_n=0; static char rc_last[40]=""; static u64 rc_draw_ns=0;
 static int rbx[10], rby[10], rbw[10], rbh[10], rid[10], rn=0;
-static int rc_gx=0, rc_gw=1; static int rc_tried=0, rc_micerr=0, rc_req=0;
+static int rc_gx=0, rc_gw=1; static int rc_tried=0, rc_micerr=0, rc_req=0, rc_silent=0; static u64 rc_t0=0, rc_last_ns=0, rc_got=0;
 static void rhit(int x,int y,int w,int h,int id){ if(rn<10){ rbx[rn]=x; rby[rn]=y; rbw[rn]=w; rbh[rn]=h; rid[rn]=id; rn++; } }
 static int rc_alloc(void){
     if(rc_buf)return 1; u32 secs[3]={600,180,60};
     for(int k=0;k<3;k++){ u32 n=secs[k]*RC_RATE; rc_buf=(short*)kmalloc((unsigned long)n*2u); if(rc_buf){ rc_cap=n; break; } }
     if(!rc_buf)return 0; rc_pkcap=rc_cap/RC_BLK+4; rc_pk=(u8*)kmalloc(rc_pkcap); if(!rc_pk){ kfree(rc_buf); rc_buf=0; return 0; } return 1; }
 static void rc_pump(void){
-    if(!g_cap_on)return; u8 t[8192];
-    for(int g=0;g<32;g++){ int n=snd_cap_read(t,(int)sizeof(t)); if(n<=0)break; if(!rc_rec)continue;
+    if(!g_cap_on)return; u8 t[8192]; u64 now=hr_ns();
+    for(int g=0;g<32;g++){ int n=snd_cap_read(t,(int)sizeof(t)); if(n<=0)break; rc_last_ns=now; rc_got+=(u64)n; if(!rc_rec)continue;
         for(int i=0;i+3<n;i+=4){ if(rc_len>=rc_cap){ rc_rec=0; toast("Recording is full"); break; }
             int a=(short)(t[i]|(t[i+1]<<8)), b=(short)(t[i+2]|(t[i+3]<<8)); int m=(a+b)/2; rc_buf[rc_len++]=(short)m;
-            int am=m<0?-m:m; if(am>rc_pkacc)rc_pkacc=am; if(++rc_pkn>=RC_BLK){ if(rc_npk<rc_pkcap)rc_pk[rc_npk++]=(u8)(rc_pkacc*255/32768); rc_pkacc=0; rc_pkn=0; } } } }
+            int am=m<0?-m:m; if(am>rc_pkacc)rc_pkacc=am; if(++rc_pkn>=RC_BLK){ if(rc_npk<rc_pkcap)rc_pk[rc_npk++]=(u8)(rc_pkacc*255/32768); rc_pkacc=0; rc_pkn=0; } } }
+    int silent=rc_got==0?now-rc_t0>=1000000000ULL:now-rc_last_ns>=1000000000ULL;
+    if(silent!=rc_silent){ rc_silent=silent; rc_draw_ns=0; } }
 static void rc_feed(void){
     if(!rc_playing)return; if(!snd_init()){ rc_playing=0; return; } g_snd.start(); u8 t[4096];
     for(int g=0;g<16&&rc_play<rc_len;g++){ int fr=g_snd.free_bytes()/4; if(fr<=0)break; if(fr>1024)fr=1024; u32 left=rc_len-rc_play; if((u32)fr>left)fr=(int)left;
@@ -38,7 +40,7 @@ int recorder_tick(void){
     if(!WN[W_RECORDER].open){ rc_req=0; settle=0; return 0; }
     if(drag>=0||g_resize>=0)settle=1;
     else if(settle)settle=0;
-    else if(rc_req){ rc_req=0; if(snd_rec_avail()&&!g_cap_on)rc_micerr=!snd_rec_start(); rc_draw_ns=0; return 1; }
+    else if(rc_req){ rc_req=0; if(snd_rec_avail()&&!g_cap_on){ rc_micerr=!snd_rec_start(); rc_t0=rc_last_ns=hr_ns(); rc_got=0; rc_silent=0; } rc_draw_ns=0; return 1; }
     rc_pump(); rc_feed();
     u64 now=hr_ns(); if((g_cap_on||rc_playing)&&now-rc_draw_ns>=40000000ULL){ rc_draw_ns=now; return 1; } return 0; }
 static void rc_save(void){
@@ -56,10 +58,12 @@ static void rc_save(void){
 static void rc_start_rec(void){
     if(!snd_rec_avail()){ toast("No microphone found"); return; }
     if(!rc_alloc()){ toast("Not enough memory to record"); return; }
+    int was=g_cap_on;
     if(!snd_rec_start()){ rc_micerr=1; toast("The microphone did not start"); return; }
-    rc_micerr=0;
+    rc_micerr=0; rc_t0=hr_ns(); if(!was){ rc_last_ns=rc_t0; rc_got=0; rc_silent=0; }
     rc_playing=0; rc_len=0; rc_npk=0; rc_pkacc=0; rc_pkn=0; rc_saved=0; rc_rec=1; }
-static void rc_stop_rec(void){ if(!rc_rec)return; rc_rec=0; rc_save(); }
+static void rc_stop_rec(void){ if(!rc_rec)return; rc_rec=0; if(!rc_len){ toast("Nothing was recorded - the microphone delivered no sound"); return; } rc_save(); }
+static u32 rc_shown(void){ if(!rc_rec)return rc_playing?rc_play:rc_len; u64 el=(hr_ns()-rc_t0)/1000000ULL*(RC_RATE/1000); u32 e=el>0xFFFFFFFFULL?0xFFFFFFFFu:(u32)el; return e>rc_len?e:rc_len; }
 static char* rc_time(char* p,u32 samples){ u32 s=samples/RC_RATE; u32 m=s/60; s%=60; p=udec(p,m); *p++=':'; if(s<10)*p++='0'; p=udec(p,s); *p++='.'; p=udec(p,(samples%RC_RATE)/(RC_RATE/10)); *p=0; return p; }
 static void rc_button(int x,int y,int w,int h,const char* t,u32 bg,u32 fg,int id){ int hov=mx>=x&&mx<x+w&&my>=y&&my<y+h; fill_round(x,y,w,h,h/2,15,hov?mix(bg,rgb(0,0,0),20):bg); dstr_ctr(x+w/2,y+h/2-6,t,fg,1); rhit(x,y,w,h,id); }
 void recorder_draw(int i){
@@ -69,8 +73,8 @@ void recorder_draw(int i){
     fill_rect(wx,wy,ww,wh,rgb(243,244,248));
     char b[80],*p;
     int cx=wx+ww/2;
-    p=b; p=rc_time(p,rc_rec?rc_len:rc_playing?rc_play:rc_len); dstr_ctr(cx,wy+22,b,rgb(26,30,42),3);
-    dstr_ctr(cx,wy+70,!snd_rec_avail()?"No microphone found":rc_micerr&&!g_cap_on?"The microphone did not start - press the red button to try again":rc_rec?"Recording...":rc_playing?"Playing":rc_len?"Ready - press Play to listen":"Press the red button to record",rc_rec?rgb(210,50,50):rgb(110,118,138),1);
+    p=b; p=rc_time(p,rc_shown()); dstr_ctr(cx,wy+22,b,rgb(26,30,42),3);
+    dstr_ctr(cx,wy+70,!snd_rec_avail()?"No microphone found":rc_micerr&&!g_cap_on?"The microphone did not start - press the red button to try again":g_cap_on&&rc_silent?"The microphone is not delivering any sound":rc_rec?"Recording...":rc_playing?"Playing":rc_len?"Ready - press Play to listen":"Press the red button to record",g_cap_on&&rc_silent?rgb(200,120,40):rc_rec?rgb(210,50,50):rgb(110,118,138),1);
     int gx=wx+24, gy=wy+96, gw=ww-48, gh=120; fill_round(gx,gy,gw,gh,10,15,rgb(255,255,255)); fill_rect(gx+10,gy+gh/2,gw-20,1,rgb(230,232,238));
     rc_gx=gx+10; rc_gw=gw-20;
     if(rc_npk){ u32 n=rc_npk; int cols=gw-20; for(int c=0;c<cols;c++){ u32 k0, k1; if(n<=(u32)cols){ k0=(u32)c*n/(u32)cols; k1=k0+1; } else { u32 start=rc_rec&&n>(u32)cols*4u?n-(u32)cols*4u:0; u32 span=n-start; k0=start+(u32)c*span/(u32)cols; k1=start+(u32)(c+1)*span/(u32)cols; }
@@ -104,4 +108,4 @@ void recorder_click(int px,int py){
         else if(id==9){ int x0=rbx[k]+10, w0=rbw[k]-20; int pc=(px-x0)*1000/(w0>0?w0:1); if(pc<0)pc=0; if(pc>1000)pc=1000; rc_play=(u32)((u64)rc_len*(u32)pc/1000u); rc_playing=1; }
         return; } }
 void recorder_key(int c){ if(c==' '){ if(rc_rec)rc_stop_rec(); else rc_start_rec(); } else if(c=='p'||c=='P'){ if(!rc_rec&&rc_len){ if(rc_playing)rc_playing=0; else { if(rc_play>=rc_len)rc_play=0; rc_playing=1; } } } }
-void recorder_closed(void){ if(rc_rec)rc_stop_rec(); rc_playing=0; snd_rec_stop(); rc_tried=0; rc_micerr=0; }
+void recorder_closed(void){ if(rc_rec)rc_stop_rec(); rc_playing=0; snd_rec_stop(); rc_tried=0; rc_micerr=0; rc_silent=0; rc_got=0; }

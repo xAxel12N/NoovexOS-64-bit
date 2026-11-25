@@ -5,7 +5,7 @@ FreeBSD main sys/dev/iwx/if_iwx.c, Linux master 23c6230 (2026-11-14) drivers/net
 linux-firmware WHENCE (gitlab main) + LICENCE.iwlwifi_firmware.
 
 ## 1. What NoovexOS already has (do not re-propose)
-- No Intel Wi-Fi code at all. Only Wi-Fi driver: `drivers/net/wifi/rtw88/` (8821CE/8822BE/8822CE, ~20k lines incl. tables).
+- No Intel Wi-Fi code at all. Only Wi-Fi driver: `drivers/net/wifi/realtek/rtw88/` (8821CE/8822BE/8822CE, ~20k lines incl. tables).
 - Intel Wi-Fi is already on the list: `docs/PORTING-WORKLIST.md` row 16 "Intel Wi-Fi AX200-AX211, OpenBSD iwx(4), ISC, XL".
   Earlier scout notes: `docs/team-reports/atlas.md` rows 8-9, `docs/team-reports/vega.md` row 2. This report refines them; it does not add a new idea.
 - `net/wifi/` (902 lines): `wifi_mgr.c` (saved networks, auto-connect, DHCP, portal), `wifi_netdev.c` (software CCMP data path, PN replay, A-MSDU check),
@@ -13,7 +13,7 @@ linux-firmware WHENCE (gitlab main) + LICENCE.iwlwifi_firmware.
 - IMPORTANT CORRECTION: there is NO real mac80211-like driver interface yet. The stack is hard-wired to rtw88:
   `wifi_mgr.c` has 53 `rtw_*` calls (`rtw_find_mmio`, `rtw_r32/w32`, RCR bit 7 beacon filter at 0x608, ...), `wifi_netdev.c` 14 (reads ring pointers 0x3A8/0x3B4 directly),
   `wpa2.c` 12 (builds the rtw TX descriptor itself). Auth/assoc (`rtw_mgmt_xchg`, `rtw_wpa2_join`, `rtw_assoc`) and even the EAPOL 4-way state machine
-  (`wpa_rx_eapol_p`) live in `drivers/net/wifi/rtw88/rtw_sec.c`. Firmware is embedded with `ld -r -b binary` (build.sh:35-37).
+  (`wpa_rx_eapol_p`) live in `drivers/net/wifi/realtek/rtw88/rtw_sec.c`. Firmware is embedded with `ld -r -b binary` (build.sh:35-37).
 - No PCI MSI/MSI-X in the kernel (xHCI is poll-based). iwx supports legacy INTx + ICT table and MSI-X, so a polled CSR_INT/ICT loop is fine.
 
 ## 2. Candidates (license proof, size, firmware, mapping)

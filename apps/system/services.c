@@ -194,6 +194,7 @@ void svc_tick(void) {
         s->tick();
         s->us += nwk_us() - t; s->runs++;
     }
+    { extern void svcu_tick(void); svcu_tick(); }
 }
 int svc_count(void) { return SVC_N; }
 u64 svc_us(int i) { return (i >= 0 && i < SVC_N) ? S[i].us : 0; }

@@ -26,8 +26,8 @@ Config (REQUIRED for rtl8723d and rtl8822b; optional for the rest, appended if p
 ## Done (branch q-rbt, commit b2907422, worktree /home/claude/wt/rbt)
 - Source verified: FreeBSD freebsd-src main usr.sbin/bluetooth/rtlbtfw/{rtlbt_fw.c,rtlbt_fw.h,main.c}, all SPDX BSD-2-Clause
   (same copyright holders already in our header). NOTICE updated.
-- drivers/bluetooth/rtlbt_fw.h: rtlbt_ic_t gains `flags`; RTLBT_F_SIMPLE/CONFIG/MSFT/EMB, RTLBT_FWDIR, RTLBT_FWMAX (2 MiB); rtlbt_usb_listed().
-- drivers/bluetooth/rtlbt_fw.c: IC table 2 -> 15 entries. NOTE: the FreeBSD table has 15 entries, not 16 (8723A, 8723B, 8723D, 8821A,
+- drivers/bluetooth/firmware/rtlbt_fw.h: rtlbt_ic_t gains `flags`; RTLBT_F_SIMPLE/CONFIG/MSFT/EMB, RTLBT_FWDIR, RTLBT_FWMAX (2 MiB); rtlbt_usb_listed().
+- drivers/bluetooth/firmware/rtlbt_fw.c: IC table 2 -> 15 entries. NOTE: the FreeBSD table has 15 entries, not 16 (8723A, 8723B, 8723D, 8821A,
   8821C, 8761A, 8761BU, 8822C, 8822B, 8852A, 8852B, 8852C, 8851B, 8922A, 8852BT). 58-entry USB id table (count verified = 58).
   Non-embedded chips load /lib/firmware/rtl_bt/<fw> via vfs_open/vfs_read (bounded 2 MiB, freed on every path); missing fw ->
   "Realtek: firmware file missing: <path>", return -1, nothing sent. Config appended if present; CONFIG flag (8723D, 8822B) makes a
@@ -35,7 +35,7 @@ Config (REQUIRED for rtl8723d and rtl8822b; optional for the rest, appended if p
   so its 8723A path is dead; behaviour follows Linux btrtl). MSFT flag is stored only (no MSFT extension use yet).
 - Owner 0BDA:C123 / 8821C, 8822C: flagged EMB, same blob names, same HCI command sequence (FC61, 1001, FC6D, [FC61], FC20..., 1001),
   same messages; never touches /lib/firmware (tested). build.sh:38 untouched.
-- drivers/bluetooth/btusb.c: vendor-class (0xFF) claim now also for rtlbt_usb_listed(vid,pid) (was Broadcom vendors only); class 0xE0
+- drivers/bluetooth/transport/btusb.c: vendor-class (0xFF) claim now also for rtlbt_usb_listed(vid,pid) (was Broadcom vendors only); class 0xE0
   path unchanged; sub/proto 1/1 + alt 0 still required in btu_parse.
 - tools/tests/bluetooth/hci_main.c: +21 checks (table/flags, 58 ids, disk loading with a host stub, optional/required config,
   wrong ROM, wrong chip file, 8723A raw, embedded chips never load from disk).

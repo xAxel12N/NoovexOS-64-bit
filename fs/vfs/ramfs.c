@@ -82,7 +82,7 @@ int dev_id(const char* nm){
     if(nm[0]=='/'&&nm[1]=='d'&&nm[2]=='e'&&nm[3]=='v'&&nm[4]=='/'){ const char* d=nm+5;
         if(seq((char*)d,"null"))return 1; if(seq((char*)d,"zero"))return 2;
         if(seq((char*)d,"random")||seq((char*)d,"urandom"))return 3; if(seq((char*)d,"full"))return 4;
-        if(seq((char*)d,"tty")||seq((char*)d,"console"))return 5;
-        if(seq((char*)d,"fb0"))return 9; if(seq((char*)d,"dsp")||seq((char*)d,"audio"))return 12; if(seq((char*)d,"kmsg"))return 13; if(seq((char*)d,"media"))return 15; if(seq((char*)d,"input/mouse")||seq((char*)d,"input/mice"))return 10; if(seq((char*)d,"nvxxin"))return 16; if(seq((char*)d,"nvxface"))return 17; if(seq((char*)d,"nvxtray"))return 40; if(seq((char*)d,"nvxclip"))return 41; if(seq((char*)d,"nvxwin"))return 42; }
+        { extern int vtc_dev_tty(const char*); if(seq((char*)d,"tty")||seq((char*)d,"console")||vtc_dev_tty(d))return 5; }
+        if(seq((char*)d,"fb0"))return 9; if(seq((char*)d,"dsp")||seq((char*)d,"audio"))return 12; if(seq((char*)d,"kmsg"))return 13; if(seq((char*)d,"media"))return 15; if(seq((char*)d,"input/mouse")||seq((char*)d,"input/mice"))return 10; if(seq((char*)d,"input/event0"))return 43; if(seq((char*)d,"nvxxin"))return 16; if(seq((char*)d,"nvxface"))return 17; if(seq((char*)d,"nvxtray"))return 40; if(seq((char*)d,"nvxclip"))return 41; if(seq((char*)d,"nvxwin"))return 42; }
     return 0;
 }

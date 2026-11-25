@@ -33,7 +33,7 @@ static int vf_flush(void){
     return 0;
 }
 static int vf_rsec(u32 rel){ if(g_vfat_secno==rel)return 0; if(vf_rs(rel,1,g_vfat_sec)){ g_vfat_secno=0xFFFFFFFFu; return -1; } g_vfat_secno=rel; return 0; }
-static int vf_wsec(u32 rel){ if(vf_ws(rel,1,g_vfat_sec))return -1; g_vfat_secno=rel; return 0; }
+static int vf_wsec(u32 rel){ if(vf_ws(rel,1,g_vfat_sec)){ g_vfat_secno=0xFFFFFFFFu; return -1; } g_vfat_secno=rel; return 0; }
 static u32 vf_alloc1(u32 prev){
     if(!g_vfat.free_cnt)return 0;
     u32 n=g_vfat.clusters, s=g_vfat.next_free; if(!vf_valid(s))s=2;
@@ -94,6 +94,7 @@ static int vf_next(u32 dc,int* idx,vf_ent* e){
 static int vf_ieq(const char* a,const char* b){ while(*a&&*b){ char x=*a,y=*b; if(x>='a'&&x<='z')x-=32; if(y>='a'&&y<='z')y-=32; if(x!=y)return 0; a++; b++; } return *a==*b; }
 static u32 vf_rootdc(void){ return g_vfat.type==32?g_vfat.rootclus:0; }
 static int vf_find(u32 dc,const char* name,vf_ent* e){ int i=0; for(;;){ int r=vf_next(dc,&i,e); if(r<=0)return -1; if(vf_ieq(e->name,name))return 0; } }
+static int vf_dotleaf(const char* l){ return l[0]=='.'&&(!l[1]||(l[1]=='.'&&!l[2])); }
 static int vf_walk(const char* path,vf_ent* e,u32* parent,char* leaf){
     u32 dc=vf_rootdc(); const char* p=path; while(*p=='/')p++;
     if(!*p){ if(parent)*parent=dc; if(leaf)leaf[0]=0; return 1; }
@@ -155,7 +156,7 @@ static int vf_mkent(u32 dc,const char* name,u8 attr,u32 clus,u32 size){
 }
 static int vf_setent(const vf_ent* e,u32 clus,u32 size){ if(vf_rsec(e->sec))return -1; u8* d=g_vfat_sec+e->off; u16 t,dt; vf_now(&t,&dt);
     vf_w16(d+20,clus>>16); vf_w16(d+26,clus&0xFFFF); vf_w32(d+28,size); vf_w16(d+22,t); vf_w16(d+24,dt); vf_w16(d+18,dt); return vf_wsec(e->sec); }
-static int vf_killent(u32 dc,const vf_ent* e){ for(int i=e->first_idx;i<=e->idx;i++){ u32 sec; int off; if(vf_loc(dc,i,&sec,&off)||vf_rsec(sec))return -1; g_vfat_sec[off]=0xE5; if(vf_wsec(sec))return -1; } return 0; }
+static int vf_killent(u32 dc,const vf_ent* e){ for(int i=e->idx;i>=e->first_idx;i--){ u32 sec; int off; if(vf_loc(dc,i,&sec,&off)||vf_rsec(sec))return i==e->idx?-1:0; g_vfat_sec[off]=0xE5; if(vf_wsec(sec))return i==e->idx?-1:0; } return 0; }
 static u32 vf_writechain(const char* buf,long len){
     if(len<=0)return 0; u32 n=(u32)((len+g_vfat.cbytes-1)/g_vfat.cbytes); if(n>g_vfat.free_cnt){ g_vf_err=4; return 0xFFFFFFFFu; }
     u32 first=0, prev=0, rs=0, rn=0; long done=0, roff=0;
@@ -199,14 +200,14 @@ int vf_mount(nvxblk_rd rd,nvxblk_wr wr,unsigned long long base,unsigned long lon
     g_vfat.next_free=2; if(g_vfat.type==32&&g_vfat.fsinfo){ u8 f[512]; if(vf_rs(g_vfat.fsinfo,1,f)==0&&vf_r32(f)==0x41615252u){ u32 h=vf_r32(f+492); if(vf_valid(h))g_vfat.next_free=h; } }
     g_vfat.mounted=1; return 0;
 }
-static u8* g_vf_mark;
+static u8* g_vf_mark; static int g_vf_markbad;
 static void vf_mark_chain(u32 c){ int g=0; while(vf_valid(c)&&g++<0x400000){ if(g_vf_mark[c>>3]&(u8)(1u<<(c&7)))break; g_vf_mark[c>>3]|=(u8)(1u<<(c&7)); u32 n=vf_get(c); if(vf_iseoc(n)||n<2)break; c=n; } }
-static void vf_mark_dir(u32 dc,int depth){ if(depth>16)return; if(dc)vf_mark_chain(dc); int i=0; vf_ent e;
-    for(;;){ int r=vf_next(dc,&i,&e); if(r<=0)break; if(e.sname[0]=='.')continue; if(!vf_valid(e.clus))continue;
+static void vf_mark_dir(u32 dc,int depth){ if(depth>16){ g_vf_markbad=1; return; } if(dc)vf_mark_chain(dc); int i=0; vf_ent e;
+    for(;;){ int r=vf_next(dc,&i,&e); if(r<0)g_vf_markbad=1; if(r<=0||g_vf_markbad)break; if(e.sname[0]=='.')continue; if(!vf_valid(e.clus))continue;
         if(e.attr&0x10)vf_mark_dir(e.clus,depth+1); else vf_mark_chain(e.clus); } }
 int vf_reclaim(void){
     if(!g_vfat.mounted||g_vfat.ro)return -1; u32 n=g_vfat.clusters+2; g_vf_mark=(u8*)kmalloc(n/8+1); if(!g_vf_mark)return -1; vf_zero(g_vf_mark,n/8+1);
-    vf_mark_dir(vf_rootdc(),0); int freed=0;
+    g_vf_markbad=0; vf_mark_dir(vf_rootdc(),0); if(g_vf_markbad){ kfree(g_vf_mark); g_vf_mark=0; return -1; } int freed=0;
     for(u32 c=2;c<n;c++) if(vf_get(c)!=0&&!(g_vf_mark[c>>3]&(u8)(1u<<(c&7)))){ vf_set(c,0); g_vfat.free_cnt++; freed++; }
     kfree(g_vf_mark); g_vf_mark=0;
     if(freed){ for(u32 s=0;s<g_vfat.fatsz;s++)g_vfat.fdirty[s]=1; if(vf_flush())return -1; }
@@ -235,14 +236,14 @@ long vf_read(const char* path,char* buf,long cap){
 }
 long vf_write(const char* path,const char* buf,long len){
     if(!g_vfat.mounted||g_vfat.ro||len<0)return -1; vf_ent e; u32 parent; char leaf[256]; int r=vf_walk(path,&e,&parent,leaf);
-    if(r==1||r==-2||(r==0&&(e.attr&0x10))){ g_vf_err=10+r; return -1; }
+    if(r==1||r==-2||(r==0&&(e.attr&0x10))||(r==-1&&vf_dotleaf(leaf))){ g_vf_err=10+r; return -1; }
     u32 c=vf_writechain(buf,len); if(c==0xFFFFFFFFu){ vf_flush(); return -1; }
     if(r==0){ u32 old=e.clus; if(vf_setent(&e,c,(u32)len)){ vf_flush(); return -1; } if(vf_valid(old))vf_freechain(old); }
     else if(vf_mkent(parent,leaf,0x20,c,(u32)len)){ if(c)vf_freechain(c); vf_flush(); return -1; }
     return vf_flush()?-1:len;
 }
 int vf_mkdir(const char* path){
-    if(!g_vfat.mounted||g_vfat.ro)return -1; vf_ent e; u32 parent; char leaf[256]; int r=vf_walk(path,&e,&parent,leaf); if(r!=-1)return -1;
+    if(!g_vfat.mounted||g_vfat.ro)return -1; vf_ent e; u32 parent; char leaf[256]; int r=vf_walk(path,&e,&parent,leaf); if(r!=-1||vf_dotleaf(leaf))return -1;
     u32 c=vf_alloc1(0); if(!c)return -1; if(vf_zclus(c)){ vf_freechain(c); return -1; }
     u16 t,dt; vf_now(&t,&dt); vf_zero(g_vfat.cbuf,g_vfat.cbytes);
     for(int k=0;k<2;k++){ u8* d=g_vfat.cbuf+k*32; for(int i=0;i<11;i++)d[i]=' '; d[0]='.'; if(k)d[1]='.'; d[11]=0x10; u32 cc=k?(parent==vf_rootdc()?0:parent):c;
@@ -252,12 +253,26 @@ int vf_mkdir(const char* path){
     return vf_flush();
 }
 int vf_delete(const char* path){
-    if(!g_vfat.mounted||g_vfat.ro)return -1; vf_ent e; u32 parent; char leaf[256]; if(vf_walk(path,&e,&parent,leaf)!=0)return -1;
-    if(e.attr&0x10){ int i=0; vf_ent x; for(;;){ int r=vf_next(e.clus,&i,&x); if(r<=0)break; if(!(x.sname[0]=='.'&&(x.sname[1]==' '||(x.sname[1]=='.'&&x.sname[2]==' '))))return -1; } }
+    if(!g_vfat.mounted||g_vfat.ro)return -1; vf_ent e; u32 parent; char leaf[256]; if(vf_walk(path,&e,&parent,leaf)!=0||vf_dotleaf(leaf))return -1;
+    if(e.attr&0x10){ int i=0; vf_ent x; for(;;){ int r=vf_next(e.clus,&i,&x); if(r<0)return -1; if(!r)break; if(!(x.sname[0]=='.'&&(x.sname[1]==' '||(x.sname[1]=='.'&&x.sname[2]==' '))))return -1; } }
     if(vf_killent(parent,&e)){ vf_flush(); return -1; }
     if(vf_valid(e.clus))vf_freechain(e.clus);
     return vf_flush();
 }
+int vf_rename(const char* from,const char* to){
+    if(!g_vfat.mounted||g_vfat.ro)return -1; vf_ent e,x; u32 p1,p2; char l1[256],l2[256];
+    if(vf_walk(from,&e,&p1,l1)!=0||vf_walk(to,&x,&p2,l2)!=-1||!l2[0]||vf_dotleaf(l1)||vf_dotleaf(l2))return -1; int mv=(e.attr&0x10)&&p1!=p2;
+    if(mv){ if(!vf_valid(e.clus))return -1; u32 c=p2; for(int g=0;c&&c!=vf_rootdc();g++){ if(g>4096||c==e.clus)return -1; u32 sec; int off; if(vf_loc(c,1,&sec,&off)||vf_rsec(sec))return -1; u8* d=g_vfat_sec+off; if(d[0]!='.'||d[1]!='.')return -1; c=((u32)vf_r16(d+20)<<16)|vf_r16(d+26); if(g_vfat.type!=32)c&=0xFFFF; } }
+    if(vf_mkent(p2,l2,e.attr,e.clus,e.size)){ vf_flush(); return -1; }
+    if(vf_find(p1,l1,&x)||vf_killent(p1,&x)){ vf_ent y; if(!vf_find(p2,l2,&y))vf_killent(p2,&y); vf_flush(); return -1; }
+    if(mv){ u32 sec; int off; u32 pc=p2==vf_rootdc()?0:p2; if(vf_loc(e.clus,1,&sec,&off)||vf_rsec(sec)){ vf_flush(); return -1; } u8* d=g_vfat_sec+off;
+        if(d[0]=='.'&&d[1]=='.'){ vf_w16(d+20,pc>>16); vf_w16(d+26,pc&0xFFFF); if(vf_wsec(sec)){ vf_flush(); return -1; } } }
+    return vf_flush(); }
+int vf_dirty(int set){
+    if(!g_vfat.mounted)return -1; int f32=g_vfat.type==32, bo=f32?65:37; u32 bit=f32?0x08000000u:0x8000u, full=f32?0x0FFFFFFFu:0xFFFFu; u8* p=g_vfat.fat+(f32?4:2);
+    u32 v=f32?(vf_r32(p)&0x0FFFFFFFu):vf_r16(p); int was=(v|bit)==full&&!(v&bit); u8 b[512]; int bok=!vf_rs(0,1,b)&&b[510]==0x55&&b[511]==0xAA; if(bok&&(b[bo]&1))was=1;
+    if(set<0||g_vfat.ro)return was; if((v|bit)==full){ v=set?(v&~bit):(v|bit); if(f32)vf_w32(p,(vf_r32(p)&0xF0000000u)|v); else vf_w16(p,v); g_vfat.fdirty[0]=1; }
+    if(bok){ b[bo]=(u8)(set?(b[bo]|1):(b[bo]&~1)); if(vf_ws(0,1,b))return -1; } return vf_flush()?-1:was; }
 int vf_ls(const char* path,nvxntfs_lscb cb,void* ctx){
     if(!g_vfat.mounted)return -1; vf_ent e; u32 dc; int r=vf_walk(path,&e,0,0);
     if(r==1)dc=vf_rootdc(); else if(r==0&&(e.attr&0x10)){ dc=e.clus; if(!dc)dc=vf_rootdc(); } else return -1;

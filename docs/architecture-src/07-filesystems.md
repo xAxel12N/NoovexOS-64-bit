@@ -827,3 +827,50 @@ Device nodes. `/dev` lists the fixed nodes and then one block node per disk and 
 Hotplug. Netlink protocol 15 (`NETLINK_KOBJECT_UEVENT`) sockets bound to group 1 get kernel-format messages (`add@/devices/...`, then `ACTION=`, `DEVPATH=`, `SUBSYSTEM=`, `SEQNUM=`, `MAJOR=`, `MINOR=`, `DEVNAME=` as NUL-separated strings); group 2 gets the libudev format (`libudev` header with magic `0xfeedcafe`), so programs that use libudev's monitor see devices without a udev daemon. `sx_poll` (main loop, only while a listener exists) rescans every 500 ms, compares the snapshot with the last state it announced (so reads of `/sys` in between cannot hide a change) and sends `remove` for devices that are gone, `add` for new ones (a USB stick, a disk, a network interface) and `change` when a device's state changed. `recvfrom` reports the sender as pid 0 with the group; `SO_PASSCRED` adds `SCM_CREDENTIALS` (uid 0), which libudev checks.
 
 Tests. `sysfstest` (`usr/musl/sysfstest.c`, 34 checks, QEMU group of `tools/check.py`): the tree, links with `readlink`, `lstat`, `stat` and `realpath`, attribute files, ENOENT for missing paths, a disk node (size, first sector, seek to the end, EROFS) and a `change` event over netlink.
+
+## 7.14 ext4 read and write (`fs/ext4/`) (v11.15)
+
+| File | Content |
+|---|---|
+| `fs/ext4/ext4.c` | Superblock, group descriptors, inodes, extents, directories, allocation |
+| `fs/ext4/journal.c` | JBD2 journal: replay and write transactions |
+| `fs/ext4/ext4_vfs.c` | Glue: `ext4k_*` calls for the kernel and the disk callbacks |
+| `fs/ext4/ext4.h`, `journal.h` | Types and the public calls |
+
+The core works on three callbacks: read sectors, write sectors and flush (`ext4_mount_fl`). It has the usual calls: `ext4_lookup`, `ext4_pread`, `ext4_pwrite`, `ext4_truncate`, `ext4_create`, `ext4_mkdir_p`, `ext4_unlink`, `ext4_rmdir`, `ext4_rename`, `ext4_readdir`, `ext4_stat`.
+
+### Journal
+
+Every change runs inside a transaction (`ext4_jtx_begin`, `ext4_jtx_add`, `ext4_jtx_commit`). Metadata blocks are written to the journal first, with CRC32C checksums, then a commit block, then a flush, and only then to their real place. On mount, `ext4_jneeds_recovery` and `ext4_jreplay` replay committed transactions. On a read-only mount replay is skipped and the file system stays read-only with the old view. If a transaction does not fit, it is aborted cleanly (`ext4_jtx_abort`) and the call returns "no space".
+
+### When the mount is read-only
+
+The mount falls back to read-only in each of these cases:
+- the disk has no flush callback, or reports no cache flush;
+- an unknown incompatible or read-only-compatible feature (this includes fast commit);
+- no extents, or a block size above 4 KiB;
+- the journal needs recovery on a read-only mount, or replay found bad blocks;
+- the file system was not cleanly unmounted or has errors set;
+- an orphan list is present;
+- an allocation would free or reuse a metadata block (backup superblocks and descriptor copies are protected). This sets read-only at once.
+
+### Which disks
+
+- The main disk (`ext4k_mount`). `EXT4_RW_VERIFIED` in `ext4.h` is the compile-time switch for write support.
+- Other disks (`ext4k_mount_disk`): read-write only when the `SYSF_EXT4_RW` feature (section 11.22) is on and the disk supports cache flush (AHCI, NVMe, virtio, USB). Otherwise it logs "disk reports no cache flush, mounting read-only".
+
+Host tests: `tools/tests/ext4/gate.py` (every write image must pass `e2fsck -f`, including power-cut cases), `jtest.py` (journal), `fuzz.py`.
+
+## 7.15 Volumes in Files: ext4, FAT and exFAT (`fs/vfs/volfs.c`, `fs/fat/exfat.c`) (v11.17)
+
+`volfs` lets Files open a volume on a disk other than the system disk: an SD card, a USB stick or a second fixed disk. One volume is open at a time.
+
+- `volfs_open(vi)` reads the volume type and mounts it with the right driver: ext4 (`ext4k_mount_blk`), FAT16/FAT32 (`vfat`, with its state swapped in and out so the boot-media reader is not disturbed) or exFAT (`xf_mount`).
+- The other calls are `volfs_ls`, `volfs_read`, `volfs_write`, `volfs_mkdir`, `volfs_delete`, `volfs_rename`, `volfs_eject`. `volfs_why(err)` gives the text for a toast.
+- Write access (`vfs_canwrite`): an SD card is writable unless its write-protect switch is set. USB sticks and fixed disks need the `SYSF_VOLWRITE` feature, and a fixed disk must also support cache flush and use 512-byte sectors.
+- After each change on an SD card, `sdhci_adma_settle` reports the DMA result to its feature guard.
+- The whole feature is behind `SYSF_VOLFILES`, exFAT is behind `SYSF_EXFAT`.
+
+exFAT (`fs/fat/exfat.c`) reads and writes files and directories, using the allocation bitmap and the FAT chain or contiguous clusters (the NoFatChain flag). Directory entry sets with a wrong checksum are skipped, and new sets get a checksum (`xf_csum`). The volume is marked dirty before the first change and clean after a flush (`xf_mark`). A volume with the dirty or media-failure flag set opens read-only (`xf_unclean`).
+
+In Files, `apps/system/file_explorer/volume_view.c` shows the volume, with copy, rename and delete. The toast says whether it opened read-only. Host tests: `tools/tests/mmc/volfs_test.py`, `exfat_verify.py`.

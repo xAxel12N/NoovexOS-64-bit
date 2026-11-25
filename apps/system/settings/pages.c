@@ -1,22 +1,36 @@
-void settings_wheel(int sc){ if(g_stpg!=P_APPS)return; g_st_appscroll+=sc>0?-2:2; int n=progfiles_count(); if(g_st_appscroll>n-3)g_st_appscroll=n-3; if(g_st_appscroll<0)g_st_appscroll=0; }
-void settings_page_name(const char* n){ static const char* NM[21]={"focus","system","personalization","network","devices","apps","accounts","time","privacy","update","display","graphics","advanced","background","sound","mouse","installed","nvidia","screens","recovery","about"}; static const int PG[21]={P_FOCUS,0,1,2,3,4,5,6,7,P_UPDATE,P_DISPLAY,P_GRAPHICS,P_GFXADV,P_BACKGROUND,P_SOUND,P_MOUSE,P_APPS,P_NVIDIA,P_SCREENS,P_RECOVERY,P_ABOUT};
-    for(int k=0;k<21;k++){ int j=0; while(NM[k][j]&&n[j]==NM[k][j])j++; if(!NM[k][j]&&(!n[j]||n[j]==' ')){ g_stpg=PG[k]; return; } } }
+static int g_st_scroll, g_st_smax, g_st_spg=-1, g_st_vt, g_st_vb, g_st_tky, g_st_tkh;
+static void st_scroll_to(int v){ if(v>g_st_smax)v=g_st_smax; if(v<0)v=0; g_st_scroll=v; }
+static void st_page_view(int cy,int vt,int vb,int xr){
+    if(g_stpg!=g_st_spg){ g_st_spg=g_stpg; g_st_scroll=0; g_st_smax=0; }
+    if(g_stpg==P_APPS||g_stpg==P_FOCUS){ g_st_scroll=0; g_st_smax=0; }
+    g_st_vt=vt; g_st_vb=vb; fb_clip_y(vt,vb); st_page(g_stpg,cy-g_st_scroll); int end=g_clip_maxy+g_st_scroll; fb_clip_off();
+    int m=end+16-vb; if(g_stpg==P_APPS||g_stpg==P_FOCUS||m<0)m=0; g_st_smax=m; if(g_st_scroll>m)g_st_scroll=m;
+    if(!m){ return; }
+    int vh=vb-vt, th=vh*vh/(vh+m); if(th<30)th=30; int ty=vt+(vh-th)*g_st_scroll/m, bx=xr-9;
+    fill_round(bx,vt+2,6,vh-4,3,15,ST_CL?rgb(236,233,226):rgb(236,236,240)); fill_round(bx,ty+2,6,th-4,3,15,ST_CL?rgb(128,128,128):(in_rect(mx,my,bx-6,vt,18,vh)?rgb(150,150,158):rgb(190,190,196)));
+    g_st_tky=ty; g_st_tkh=th; st_hit(bx-6,vt,18,vh,1998); }
+static void st_scroll_click(int py){ int vh=g_st_vb-g_st_vt; if(py<g_st_tky)st_scroll_to(g_st_scroll-(vh-40)); else if(py>=g_st_tky+g_st_tkh)st_scroll_to(g_st_scroll+(vh-40)); else if(vh>g_st_tkh)st_scroll_to((py-g_st_vt-g_st_tkh/2)*g_st_smax/(vh-g_st_tkh)); }
+void settings_wheel(int sc){ if(g_stpg!=P_APPS){ if(sc)st_scroll_to(g_st_scroll-(sc>0?48:-48)); return; } g_st_appscroll+=sc>0?-2:2; int n=progfiles_count(); if(g_st_appscroll>n-3)g_st_appscroll=n-3; if(g_st_appscroll<0)g_st_appscroll=0; }
+void settings_page_name(const char* n){ static const char* NM[35]={"focus","system","personalization","network","devices","apps","accounts","time","privacy","update","display","graphics","advanced","background","sound","mouse","installed","nvidia","screens","recovery","about","bluetooth","wifi","wifi-advanced","advanced-system","services","ssh","cron","filesystems","midi","consoles","security","graphics-switches","printers","gamepads"}; static const int PG[35]={P_FOCUS,0,1,2,3,4,5,6,7,P_UPDATE,P_DISPLAY,P_GRAPHICS,P_GFXADV,P_BACKGROUND,P_SOUND,P_MOUSE,P_APPS,P_NVIDIA,P_SCREENS,P_RECOVERY,P_ABOUT,P_BT,P_WIFI,P_WIFIADV,P_UXHUB,P_UXSVC,P_UXSSH,P_UXCRON,P_UXDISK,P_UXMIDI,P_UXVT,P_UXSEC,P_NVIDIA,P_UXPRN,P_UXPAD};
+    for(int k=0;k<35;k++){ int j=0; while(NM[k][j]&&n[j]==NM[k][j])j++; if(!NM[k][j]&&(!n[j]||n[j]==' ')){ g_stpg=PG[k]; return; } } }
 static char g_st_q[40]; static int g_st_qn=0, g_st_qf=0;
 static int st_lc(int c){ return (c>='A'&&c<='Z')?c+32:c; }
 static int st_norm(const char* s,char* o,int cap){ int n=0; for(int i=0;s&&s[i]&&n<cap-1;i++){ int c=st_lc((u8)s[i]); if((c>='a'&&c<='z')||(c>='0'&&c<='9'))o[n++]=(char)c; } o[n]=0; return n; }
 static int st_has(const char* h,const char* q){ if(!h)return 0; char a[128], b[48]; int na=st_norm(h,a,128), nb=st_norm(q,b,48); if(!nb)return 0; for(int i=0;i+nb<=na;i++){ int k=0; while(k<nb&&a[i+k]==b[k])k++; if(k==nb)return 1; } return 0; }
 static int st_add(stile* out,int n,int cap,stile t){ if(n>=cap)return n; for(int d=0;d<n;d++) if(out[d].pg==t.pg)return n; out[n]=t; return n+1; }
 static int st_search(stile* out,int cap){
-    static const stile EX[4]={{P_GFXADV,15,"Advanced graphics","GPU details, screen copy, frame check"},{P_NVIDIA,15,"NVIDIA graphics","Driver status and switches"},{P_SCREENS,3,"Screen and monitors","Screen mode and monitors"},{P_ACCOUNT,11,"Your account","User name and Noovex account"}};
+    static const stile EX[]={{P_GFXADV,15,"Advanced graphics","GPU details, screen copy, frame check, Intel blitter"},{P_NVIDIA,15,"NVIDIA graphics","Switches: tear-free flips, cursor, card memory, 2D, RTX 30/40, DisplayPort"},{P_SCREENS,3,"Screen and monitors","Screen mode and monitors, two screens, extend, mirror"},{P_ACCOUNT,11,"Your account","User name and Noovex account"},{P_WIFIADV,2,"Wi-Fi advanced","Channel width, power saving, roaming, country, WPA3, speed test"},{P_UXHUB,12,"Advanced system","Services, SSH, scheduled tasks, file systems, MIDI, terminals"},{P_UXSVC,12,"Services","Start, stop, enable, restart, logs, daemons"},{P_UXSSH,2,"Remote login","SSH server, sshd"},{P_UXCRON,13,"Scheduled tasks","Cron, crontab, run every day"},{P_UXDISK,5,"File systems","ext4 read-write, mounts, Linux disks"},{P_UXMIDI,10,"MIDI","USB MIDI keyboard, synth"},{P_UXVT,6,"Terminals","Text consoles, Ctrl+Alt+F1, tty"},{P_UXSEC,12,"Security features","Address randomisation, KASLR, perf counters, eBPF"},{P_UXPRN,5,"Printers & Scanners","USB printer, IPP over USB, print a test page, scan"},{P_UXPAD,10,"Game controllers","Xbox, PlayStation, Switch Pro, USB gamepad, joystick"}};
+    enum { NEX=(int)(sizeof EX/sizeof EX[0]) };
     int n=0; g_st_q[g_st_qn]=0;
     for(int pass=0;pass<3;pass++){
         for(int c=0;c<9;c++){ int m; const stile* t=cat_tiles(c,&m); for(int k=0;k<m;k++){ if(pass==0&&st_has(t[k].t,g_st_q))n=st_add(out,n,cap,t[k]); if(pass==2&&st_has(t[k].d,g_st_q))n=st_add(out,n,cap,t[k]); } }
-        for(int k=0;k<4;k++){ if(pass==0&&st_has(EX[k].t,g_st_q))n=st_add(out,n,cap,EX[k]); if(pass==2&&st_has(EX[k].d,g_st_q))n=st_add(out,n,cap,EX[k]); }
+        for(int k=0;k<NEX;k++){ if(pass==0&&st_has(EX[k].t,g_st_q))n=st_add(out,n,cap,EX[k]); if(pass==2&&st_has(EX[k].d,g_st_q))n=st_add(out,n,cap,EX[k]); }
         for(int c=0;c<9;c++){ stile t={c,CATI[c],CATN[c],CATD[c]}; if(pass==1&&st_has(t.t,g_st_q))n=st_add(out,n,cap,t); if(pass==2&&st_has(t.d,g_st_q))n=st_add(out,n,cap,t); } }
     return n; }
 void settings_clear_search(void){ g_st_qn=0; g_st_q[0]=0; g_st_qf=0; }
 int settings_key(int c){
     if(settings_focus_key(c))return 1;
+    if(st_ux_key(c))return 1;
     if(c==27){ if(!g_st_qn&&!g_st_qf)return 0; g_st_qn=0; g_st_q[0]=0; g_st_qf=0; return 1; }
     if(c=='\b'){ if(g_st_qn>0)g_st_qn--; g_st_q[g_st_qn]=0; g_st_qf=1; return 1; }
     if(c=='\n'){ if(!g_st_qn)return 0; stile r[1]; if(st_search(r,1)){ g_stpg=r[0].pg; g_st_qn=0; g_st_q[0]=0; g_st_qf=0; } return 1; }
@@ -50,9 +64,9 @@ static void settings_draw_classic(int i){
     { int hy=top; const char* t=g_st_qn?"Search":pg_title(g_stpg); int tx=x0+8;
       if(!g_st_qn&&pg_parent(g_stpg)>=0){ int hov=in_rect(mx,my,x0+4,hy,30,24); ui_bevel(x0+4,hy,30,24,0); fill_rect(x0+6,hy+2,26,20,hov?rgb(226,222,214):ST_FACE); st_chev(x0+15,hy+7,0,1); st_hit(x0+4,hy,30,24,1999); tx=x0+44; }
       st_bold(tx,hy+4,t,0); fill_rect(x0+4,hy+30,pw-8,1,rgb(128,128,128)); fill_rect(x0+4,hy+31,pw-8,1,rgb(255,255,255)); }
-    st_w0=pw-32; if(st_w0>720)st_w0=720; st_x0=x0+(pw-st_w0)/2; int cy=top+40; st_ybot=Y+wh-10;
+    st_w0=pw-36; if(st_w0>720)st_w0=720; st_x0=x0+(pw-st_w0)/2; int cy=top+40; st_ybot=Y+wh-10;
     if(g_st_qn){ stile r[24]; int n=st_search(r,24); int maxn=(st_ybot-cy-24)/56; if(n>maxn)n=maxn; if(n)st_tiles(&cy,r,n); else pdstr(st_x0+10,cy+20,"No results found",ST_FG,1); g_round_off=0; return; }
-    st_page(g_stpg,cy); g_round_off=0; }
+    st_page_view(cy,top+34,Y+wh-5,x0+pw); g_round_off=0; }
 void settings_draw(int i){
     { static int seen=1; if(g_setcat!=seen){ static const int MP[9]={0,P_BACKGROUND,P_WIFI,P_DISPLAY,P_POWER,P_STORAGE,P_TERMINAL,P_ABOUT,3}; seen=g_setcat; if(g_setcat>=0&&g_setcat<9)g_stpg=MP[g_setcat]; } }
     st_hn=0; if(g_stpg<0)g_stpg=0; if(!g_gm_ready)gmetrics();
@@ -85,10 +99,10 @@ void settings_draw(int i){
         if(n)st_tiles(&cy,r,n);
         else { int cx=st_x0+st_w0/2, yy=cy+90; u32 bgc=rgb(236,236,240); fill_circle(cx,yy,40,bgc); fill_circle(cx-5,yy-5,14,ST_DIM); fill_circle(cx-5,yy-5,10,bgc); for(int t=0;t<12;t++)fill_rect(cx+4+t,yy+4+t,4,4,ST_DIM); st_bold_ctr(cx,yy+56,"No results found",ST_FG); pdstr_ctr(cx,yy+80,"Try a different search",ST_DIM,1); }
         return; }
-    st_page(g_stpg,cy); }
+    st_page_view(cy,Y+HB,Y+wh-8,x0+pw); }
 static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_setcat; g_setcat=cat;
     if(g_setcat==0){
-        int y=st_card(cy,64,"Clock"); st_rowtext(y,"Show seconds","Adds seconds to the clock in the top bar"); st_toggle(X1-44,y+20,g_showsec,1); cy=y+64+28;
+        int y=st_card(cy,64,"Clock"); st_rowtext(y,"Show seconds","Adds seconds to the clock on the taskbar"); st_toggle(X1-44,y+20,g_showsec,1); cy=y+64+28;
         y=st_card(cy,128,"Power"); st_rowtext(y,"Restart","Restart the computer now"); st_btn(X1-110,y+16,110,"Restart",2,1); st_sep(y+64);
         st_rowtext(y+64,"Crash test","Triggers a kernel panic screen (for testing)"); st_btn(X1-110,y+80,110,"Crash",3,2); cy=y+128+28;
         y=st_card(cy,64,"Build"); { char b[64],*p=b; p=scopy(p,"NoovexOS 64 v"); p=scopy(p,(char*)g_buildsig.version); *p=0; st_rowtext(y,b,g_sig_ok?"Integrity check passed at boot":"Integrity check reported a mismatch at boot"); }
@@ -136,8 +150,14 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
         cy=y+ch+28;
         if(cy+200<WN[W_SETTINGS].y+WN[W_SETTINGS].h){ int R=44; y=st_card(cy,R*2,"Wi-Fi options");
             fr_label(y,"Connect automatically"); st_toggle(st_x0+220,y+10,g_wm_auto,1461); pdstr(st_x0+300,y+16,"Use 5 GHz",ST_FG,1); st_toggle(st_x0+400,y+10,g_wm_5g,1462); st_sep(y+R);
-            fr_label(y+R,"Power saving (test)"); st_toggle(st_x0+220,y+R+10,g_wm_ps,1463); pdstr(st_x0+300,y+R+16,"Fast speeds",ST_FG,1); st_toggle(st_x0+400,y+R+10,g_wifi_ra,1464);
+            fr_label(y+R,"Power saving (test)"); st_toggle(st_x0+220,y+R+10,g_wm_ps,1463); pdstr(st_x0+300,y+R+16,"Fast speeds",ST_FG,1); st_toggle(st_x0+400,y+R+10,g_wifi_ra,1464); st_btn(X1-110,y+R+5,110,"Advanced",1000+P_WIFIADV,0);
             cy=y+R*2+28; }
+        if(g_wm_state==WM_CONNECTED&&cy+150<WN[W_SETTINGS].y+WN[W_SETTINGS].h){ extern int wifi_stats_hist(signed char*,int); extern int wst_graph_y(int,int); signed char hs[120]; int GH=72, n=wifi_stats_hist(hs,120);
+            y=st_card(cy,GH+28,"Signal (last 2 minutes)"); int gx=st_x0+20, gw=st_w0-200, gy=y+14; fill_rect(gx,gy,gw,GH,rgb(245,247,250));
+            for(int d=-50;d>=-90;d-=20){ int ly=gy+wst_graph_y(d,GH); fill_rect(gx,ly,gw,1,rgb(222,226,234)); char t[8],*p=t; *p++='-'; p=udec(p,(u32)(-d)); *p=0; pdstr(gx+gw+6,ly-6,t,rgb(150,158,176),1); }
+            int bw=gw/120; if(bw<1)bw=1; for(int i=0;i<n;i++){ if(hs[i]<=-127)continue; int ty=wst_graph_y(hs[i],GH); int x=gx+gw-(n-i)*bw; if(x<gx)continue; fill_rect(x,gy+ty,bw,GH-ty,hs[i]>=-60?rgb(40,150,90):hs[i]>=-75?ACC:rgb(220,120,60)); }
+            { char t[48],*p=t; if(g_wifi_rssi>-127){ *p++='-'; p=udec(p,(u32)(-g_wifi_rssi)); p=scopy(p," dBm"); } else p=scopy(p,"no signal"); *p=0; pdstr(X1-120,gy+8,t,INK,1); p=t; p=udec(p,(u32)wifi_rate_mbps()); p=scopy(p," Mbit/s"); *p=0; pdstr(X1-120,gy+30,t,rgb(130,138,156),1); }
+            cy=y+GH+28+28; }
         { int left=(WN[W_SETTINGS].y+WN[W_SETTINGS].h-cy-40)/40; int n=g_wnet_n<left?g_wnet_n:left; if(n>0){ y=st_card(cy,n*40,"Saved networks");
             for(int i=0;i<n;i++){ int yy=y+i*40; if(i)st_sep(yy); pdstr(st_x0+20,yy+13,g_wnets[i].ssid,INK,1); char t[40],*p=t; p=scopy(p,"priority "); p=udec(p,(u32)g_wnets[i].prio); if(g_wnets[i].hidden)p=scopy(p,", hidden"); if(g_wnets[i].eap)p=scopy(p,", enterprise"); if(g_wnets[i].autoc!=1)p=scopy(p,", manual"); *p=0; pdstr(st_x0+260,yy+13,t,rgb(130,138,156),1);
                 st_btn(X1-250,yy+3,40,"+",1500+i,0); st_btn(X1-204,yy+3,40,"-",1520+i,0); st_btn(X1-158,yy+3,70,g_wnets[i].autoc==1?"Auto":"Manual",1540+i,0); st_btn(X1-82,yy+3,82,"Forget",1400+i,2); } } }
@@ -167,10 +187,20 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
         st_rowtext(y+128,"Performance overlay","Show an FPS counter in the top-right corner"); st_toggle(X1-44,y+148,g_fps_overlay,70);
     } else if(g_setcat==4){
         { extern int g_lid_action, g_pbtn_action; extern anode* g_lid; static const char* LA[3]={"Turn off screen","Sleep","Do nothing"}; static const char* PA[3]={"Show menu","Sleep","Shut down"};
-          int rows=g_lid?2:1; int y=st_card(cy,64*rows,"Lid and power button"); int ry=y;
+          extern int sleep_enabled(void); extern const char* sleep_status_text(void);
+          extern int s3_enable(int); extern const char* s3_status(void); extern int g_acpi_have_s3; int s3row=g_acpi_have_s3&&sleep_enabled();
+          int rows=(g_lid?3:2)+s3row; int y=st_card(cy,64*rows,"Lid and power button"); int ry=y;
+          st_rowtext(ry,"Sleep",sleep_status_text()); st_toggle(X1-44,ry+20,sleep_enabled(),3770); st_sep(ry+64); ry+=64;
+          if(s3row){ int on=s3_enable(-1); const char* w=s3_status(); st_rowtext(ry,"Deep sleep (S3 suspend to RAM)",on?(w?w:"On - uses less power, the computer restarts its devices on wake"):"Off - light sleep is used (test first: some computers do not wake from S3)"); st_toggle(X1-44,ry+20,on,3771); st_sep(ry+64); ry+=64; }
           if(g_lid){ st_rowtext(ry,"When I close the lid","The screen comes back when you open it"); { int w=st_segw(LA,3); st_seg(X1-w,ry+17,LA,3,g_lid_action,360); } st_sep(ry+64); ry+=64; }
           st_rowtext(ry,"When I press the power button","Press it twice to shut down from the menu"); { int w=st_segw(PA,3); st_seg(X1-w,ry+17,PA,3,g_pbtn_action,363); }
           cy=y+64*rows+28; }
+        { extern int ucsi_state(void); extern int ucsi_count(void); extern int ucsi_row(int,char*,int,char*,int); extern void ucsi_tick(int); extern int ucsi_enabled(void); extern const char* ucsi_status(void); extern int ucsi_gpu_text(char*,int);
+          ucsi_tick(0); if(ucsi_state()){ int n=ucsi_count(); int rows=1+n+(n?1:0); int y=st_card(cy,64*rows,"USB-C ports"); int ry=y;
+            st_rowtext(ry,"Port status from the firmware (UCSI)",ucsi_status()); st_toggle(X1-44,ry+20,ucsi_enabled(),3774); ry+=64;
+            for(int i=0;i<n;i++){ char t[96],d[128]; ucsi_row(i,t,sizeof t,d,sizeof d); st_sep(ry); st_rowtext(ry,t,d); ry+=64; }
+            if(n){ char g[200]; ucsi_gpu_text(g,sizeof g); st_sep(ry); st_rowtext(ry,"USB-C monitors",g); }
+            cy=y+64*rows+28; } }
         battery_tick(); int y=bat_present?st_card(cy,150,0):cy;
         if(bat_present){ char b[16],*p=b; p=udec(p,(u32)bat_pct); *p++='%'; *p=0; pdstr(st_x0+24,y+22,b,INK,3);
             pdstr(st_x0+24,y+72,bat_charging?"Plugged in, charging":"On battery",bat_charging?rgb(40,150,90):rgb(150,110,70),1);
@@ -220,7 +250,7 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
 
     } else if(g_setcat==8){
         extern int g_lap_kind, g_lap_kbd, g_lap_kbdmax, g_lap_chg, g_lap_chg_ok, g_lap_tp_off; extern const char* g_lap_name; extern char g_prn_status[]; extern u32 g_prn_ip; extern char g_prn_model[];
-        extern int g_syn_ready, g_etp_ready; extern int net_ok; extern u32 my_ip; extern int g_wnd_up; extern int g_snd_state; extern int gdisk_count(void); extern u32 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_current(void);
+        extern int g_syn_ready, g_etp_ready; extern int net_ok; extern u32 my_ip; extern int g_wnd_up; extern int g_snd_state; extern int gdisk_count(void); extern u64 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_current(void);
         static const char* TABS[7]={"Input","USB","Storage","Network","Media","Printers","Laptop"};
         if(!st_notabs){ int w=st_segw(TABS,7); st_seg(st_x0,cy,TABS,7,g_devtab,140); cy+=52; }
         char b[160],*p; const char* rt[24]; char rd[24][96]; u32 rc[24]; int n=0;
@@ -230,11 +260,13 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
         if(g_devtab==0){
             DROW("Keyboard",OK); scopy(rd[n-1],"Built-in keyboard, PS/2 controller i8042")[0]=0;
             DROW("Touchpad",g_lap_tp_off?WARN:OK); p=rd[n-1]; p=scopy(p,g_tp.ok?(g_tp.mode==1?"Precision touchpad, HID over I2C":g_tp.proto==1?"ELAN touchpad, I2C":"HID touchpad over I2C"):g_syn_ready?"Synaptics touchpad, PS/2 absolute mode":g_etp_ready?"ELAN touchpad, PS/2":"PS/2 pointing device"); if(g_lap_tp_off)p=scopy(p,"  (switched off)"); *p=0;
-            for(int k=0;k<g_usbdev_n&&n<24;k++) if(g_usbdev[k].used&&g_usbdev[k].hid){ DROW(g_usbdev[k].kind,OK); p=rd[n-1]; p=scopy(p,g_usbdev[k].name[0]?g_usbdev[k].name:"USB HID device"); p=scopy(p,", USB"); *p=0; } }
+            for(int k=0;k<g_usbdev_n&&n<24;k++) if(g_usbdev[k].used&&g_usbdev[k].hid){ DROW(g_usbdev[k].kind,OK); p=rd[n-1]; p=scopy(p,g_usbdev[k].name[0]?g_usbdev[k].name:"USB HID device"); p=scopy(p,", USB"); *p=0; }
+            { extern int hidpp_info(int,char*,int,char*,int); static char hk[8][16]; char ht[96]; for(int k=0;k<8&&n<24;k++){ int r=hidpp_info(k,hk[k],16,ht,96); if(!r)break; DROW(hk[k],r==1?OK:OFF); scopy(rd[n-1],ht)[0]=0; } } }
         else if(g_devtab==1){
             for(int k=0;k<pci_n&&n<24;k++) if(pci_cls[k]==0x0C&&pci_sub[k]==0x03){ DROW("USB controller",OK); p=rd[n-1]; p=hx(p,pci_ven[k],4); *p++=':'; p=hx(p,pci_dev[k],4); p=scopy(p,"  PCI bus "); p=udec(p,pci_bus[k]); *p=0; }
             for(int k=0;k<g_usbdev_n&&n<24;k++) if(g_usbdev[k].used){ DROW(g_usbdev[k].kind,g_usbdev[k].cam?WARN:OK); p=rd[n-1]; p=scopy(p,g_usbdev[k].name[0]?g_usbdev[k].name:"(no name)"); p=scopy(p,"  "); p=hx(p,g_usbdev[k].vid,4); *p++=':'; p=hx(p,g_usbdev[k].pid,4); p=scopy(p,"  port "); p=udec(p,(u32)g_usbdev[k].port+1); if(g_ticks-g_usbdev[k].t<1000)p=scopy(p,"  NEW"); *p=0; }
-            if(msd_ok){ DROW("USB drive",OK); scopy(rd[n-1],ufat_ok?"Mass storage, FAT file system mounted":"Mass storage, no FAT file system")[0]=0; } }
+            if(msd_ok){ DROW("USB drive",OK); scopy(rd[n-1],ufat_ok?"Mass storage, FAT file system mounted":"Mass storage, no FAT file system")[0]=0; }
+            if(!n){ DROW("No USB controller found",WARN); scopy(rd[0],"No xHCI, EHCI, OHCI or UHCI controller is on the PCI bus")[0]=0; } }
         else if(g_devtab==2){
             for(int k=0;k<gdisk_count()&&n<24;k++){ DROW(gdisk_name_of(k),k==gdisk_current()?OK:OFF); p=rd[n-1]; u64 mb=(u64)gdisk_size_of(k)*512ULL/1048576ULL; if(mb>=1024){ p=udec(p,(u32)(mb/1024)); p=scopy(p," GB"); } else { p=udec(p,(u32)mb); p=scopy(p," MB"); } if(k==gdisk_current())p=scopy(p,"  (in use)"); *p=0; }
             for(int k=0;k<pci_n&&n<24;k++) if(pci_cls[k]==0x01){ DROW(pci_sub[k]==0x08?"NVMe controller":pci_sub[k]==0x06?"SATA controller":pci_sub[k]==0x04?"RAID / Intel RST controller":pci_sub[k]==0x01?"IDE controller":"Storage controller",OK); p=rd[n-1]; p=hx(p,pci_ven[k],4); *p++=':'; p=hx(p,pci_dev[k],4); *p=0; }
@@ -258,12 +290,18 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
         int y=st_card(cy,n*44+8,0);
         for(int r=0;r<n;r++){ int ry=y+6+r*44; if(r)st_sep(ry); fill_circle(st_x0+28,ry+22,4,rc[r]); pdstr(st_x0+44,ry+5,rt[r],ST_FG,1); pdstr(st_x0+44,ry+23,rd[r],ST_DIM,1); }
         cy=y+n*44+8+24;
+        if(g_devtab==1&&usbreg_count()){ int ui[USBREG_MAX], un=usbreg_order(ui,USBREG_MAX); if(un>12)un=12; int uy=st_card(cy,un*44+8,"USB device tree");
+            for(int r=0;r<un;r++){ usbreg_t* u=&g_usbreg[ui[r]]; int ry=uy+6+r*44, ix=st_x0+28+u->depth*18; char ud[128]; usbreg_card(ui[r],ud,sizeof ud); if(r)st_sep(ry); fill_circle(ix,ry+22,4,usbreg_drv_at(u->ctl,u->root,u->route,u->depth)?OK:OFF); pdstr(ix+16,ry+5,u->prod[0]?u->prod:usbreg_kind(u),ST_FG,1); pdstr(ix+16,ry+23,ud,ST_DIM,1); }
+            cy=uy+un*44+8+24; }
+        if(g_devtab==0)st_logi_card(&cy);
         if(g_devtab==5&&g_prn_ip){ st_btn(st_x0,cy,150,"Print test page",134,1); cy+=48; }
-        if(g_devtab==6&&g_lap_kind){ static const char* KL[4]={"Off","Low","Medium","High"}; static const char* KL3[3]={"Off","Low","High"};
-            y=st_card(cy,128,0);
+        extern int g_hka_osd, g_hka_events;
+        if(g_devtab==6&&(g_lap_kind||g_lap_kbdmax||g_hka_events)){ static const char* KL[4]={"Off","Low","Medium","High"}; static const char* KL3[3]={"Off","Low","High"};
+            y=st_card(cy,192,0);
             st_rowtext(y,"Keyboard light",g_lap_kbdmax?0:"Not available on this laptop");
             if(g_lap_kbdmax==2){ int w=st_segw(KL3,3); st_seg(X1-w,y+17,KL3,3,g_lap_kbd<0?0:g_lap_kbd,130); } else if(g_lap_kbdmax>=3){ int w=st_segw(KL,4); st_seg(X1-w,y+17,KL,4,g_lap_kbd<0?0:g_lap_kbd,130); } else if(g_lap_kbdmax==1){ st_toggle(X1-44,y+20,g_lap_kbd>0,135); }
-            st_sep(y+64); st_rowtext(y+64,"Battery charge limit",g_lap_chg_ok?(g_lap_kind==2?"Conservation mode":"Stop charging at 80%"):"Not available on this laptop"); if(g_lap_chg_ok)st_toggle(X1-44,y+84,g_lap_chg,136); }
+            st_sep(y+64); st_rowtext(y+64,"Battery charge limit",g_lap_chg_ok?(g_lap_kind==2?"Conservation mode":"Stop charging at 80%"):"Not available on this laptop"); if(g_lap_chg_ok)st_toggle(X1-44,y+84,g_lap_chg,136);
+            st_sep(y+128); st_rowtext(y+128,"Hotkey indicator","Show volume, brightness and radio changes on screen"); st_toggle(X1-44,y+148,g_hka_osd,137); }
         #undef DROW
     } else {
         int y=st_card(cy,110,0); draw_logo(st_x0+62,y+22,54,ACC,256); st_bold(st_x0+120,y+34,"NoovexOS 64",ST_FG);
@@ -280,26 +318,38 @@ static void old_leaf(int cat,int cy){ int X1=st_x0+st_w0-24; int g_setcat_sv=g_s
 
 static int st_defer_id=0;
 static void st_heavy(int id){
+        if(id>=3400&&id<3460){ st_gfx_heavy(id); return; }
         if(id==134){ extern int prn_test_page(void); prn_test_page(); return; }
         if(id==333){ char m[120]; if(nvgsp_off()){ nvgsp_on(m,120); toast(m); } else { nvgsp_all_off("turned off in Settings"); toast("NVIDIA drawing off - the CPU draws"); } return; }
         if(id==335){ nvgsp_monitors(); return; }
+        if(id==332){ extern int g_nvd_on; extern int nvd_desktop(void); extern char g_nvd_why[]; extern void gfx_stop(const char*); if(g_nvd_on)gfx_stop("turned off in Settings"); else if(nvd_desktop())toast(g_nvd_why); return; }
+        if(id==1460){ extern void wifi_user_power(int); if(g_wm_state==WM_OFF){ wifi_user_power(1); if(wifi_up()==0)wifi_radio_on(); } else { wifi_user_power(0); wifi_radio_off(); } return; }
+        if(id>=2800&&id<2900){ st_bt_heavy(id); return; }
+        if(id>=3090&&id<3100){ st_wa_heavy(id); return; }
+        if(id>=3600&&id<3800){ st_ux_heavy(id); return; }
         if(id==336){ extern int nvgsp_cmd(const char*); int r=nvgsp_cmd("mode"); nvgsp_mode_t mi; nvgsp_mode_info(&mi); toast(r>0?"Second screen on":(mi.why&&mi.why[0]?mi.why:"The second screen could not be turned on - see nvgsp-log.txt")); return; }
         if(id==337){ extern int nvgsp_cmd(const char*); int r=nvgsp_cmd("mode off"); toast(r>0?"Second screen off":"The second screen did not turn off - see nvgsp-log.txt"); return; }
         if(id>=2300&&id<2300+PF_MAX){ const pf_app* a=progfiles_get(id-2300); if(!a||a->kind!=PF_PACKAGE)return; extern int acct_is_admin(int); extern void apt_cmd(const char*); if(g_uid!=0&&!acct_is_admin(g_uid)){ toast("Only an administrator can uninstall apps"); return; }
             char cmd[80],*p=cmd; p=scopy(p,"remove -y "); p=scopy(p,a->pkg); *p=0; char nm[48]; { int k=0; for(;a->name[k]&&k<47;k++)nm[k]=a->name[k]; nm[k]=0; } int u=g_uid; g_uid=0; apt_cmd(cmd); g_uid=u; extern void progfiles_sync(int); progfiles_sync(1); { char t[96],*r=t; r=scopy(r,nm); r=scopy(r," was uninstalled"); *r=0; toast(t); } return; }
 }
-int settings_defer_tick(void){ int id=st_defer_id; if(!id)return 0; st_defer_id=0; st_heavy(id); return 1; }
+int settings_defer_tick(void){ int id=st_defer_id; if(!id)return 0; st_defer_id=0; extern const char* volatile g_in_what; extern volatile int g_in_win; void in_mark(const char*,int,const char*,int); void in_unmark(const char*,int); const char* pw=g_in_what; int pn=g_in_win; char t[16],*p=t; p=scopy(p,"id "); p=udec(p,(u32)id); *p=0; in_mark("Settings action (deferred)",W_SETTINGS,t,-1); st_heavy(id); in_unmark(pw,pn); return 1; }
 void settings_click(int px,int py){
     for(int h=st_hn-1;h>=0;h--) if(in_rect(px,py,st_hx[h],st_hy[h],st_hw[h],st_hh[h])){ int id=st_hid[h];
-        if(id==134||id==333||(id>=335&&id<=337)||(id>=2300&&id<2300+PF_MAX)){ if(!st_defer_id){ st_defer_id=id; toast("Working..."); } return; }
+        if(id==134||id==332||id==333||(id>=335&&id<=337)||(id==1460&&g_wm_state==WM_OFF)||(id>=2300&&id<2300+PF_MAX)||(id>=2800&&id<2900)||(id>=3090&&id<3100)){ if(!st_defer_id){ st_defer_id=id; toast("Working..."); } return; }
+        if(id>=3400&&id<3460){ if(st_gfx_click(id)==2&&!st_defer_id){ st_defer_id=id; toast("Working..."); } return; }
         if(id>=1200&&id<1400){ st_focus_click(id); return; }
+        if(((id>=3000&&id<3090)||(id>=3100&&id<3300))&&st_wa_click(id))return;
+        if(id>=3600&&id<3800){ int d=st_ux_click(id); if(d&&!st_defer_id){ st_defer_id=d; toast("Working..."); } return; }
         if(id>=600&&id<700){ extern int acct_ui_click(int); acct_ui_click(id); return; }
+        if(id>=2950&&id<2970){ st_logi_click(id); return; }
         if(id>=140&&id<147){ g_devtab=id-140; return; }
         if(id>=130&&id<134){ extern void laptop_kbd_set(int); laptop_kbd_set(id-130); return; }
         if(id==135){ extern int g_lap_kbd; extern void laptop_kbd_set(int); laptop_kbd_set(g_lap_kbd>0?0:1); return; }
+        if(id==137){ extern int g_hka_osd; g_hka_osd=!g_hka_osd; return; }
         if(id==136){ extern int g_lap_chg; extern void laptop_charge_set(int); laptop_charge_set(!g_lap_chg); return; }
         if(id==500){ if(g_fedit){ if(g_fedit==1)g_fedit=0; else fe_commit(); } if(g_wifi_entry){ extern void wifi_entry_cancel(void); wifi_entry_cancel(); } g_st_qf=1; return; }
         g_st_qf=0;
+        if(id==1998){ st_scroll_click(py); return; }
         if(id>=100&&id<109){ g_stpg=id-100; g_wifi_entry=0; g_st_qn=0; g_st_q[0]=0; return; }
         if(id==1999){ int pp=pg_parent(g_stpg); if(pp>=0)g_stpg=pp; return; }
         if(id>=1000&&id<1200){ g_stpg=id-1000; g_st_qn=0; g_st_q[0]=0; return; }
@@ -317,9 +367,9 @@ void settings_click(int px,int py){
         if(id==334){ extern void nvd_run_request(void); nvd_run_request(); toast("Starting the NVIDIA GPU..."); return; }
         if(id==322){ extern void snd_rec_gain(int); int pc=(px-st_mlx)*100/(st_mlw>0?st_mlw:1); snd_rec_gain(pc); return; }
         if(id==323){ open_win(W_RECORDER); return; }
-        if(id==320){ int pc=(px-st_blx)*100/(st_blw>0?st_blw:1); if(pc<0)pc=0; if(pc>100)pc=100; g_snd_vol=pc; if(g_snd_state)g_snd.volume(pc); return; }
-        if(id==321){ static int sv=50; if(g_snd_vol){ sv=g_snd_vol; g_snd_vol=0; } else g_snd_vol=sv?sv:50; if(g_snd_state)g_snd.volume(g_snd_vol); return; }
-        if(id==1){ g_showsec^=1; return; } if(id==4){ extern int g_kbd_layout; extern void kbd_set_layout(int); kbd_set_layout((g_kbd_layout+1)%6); return; } if(id==5){ extern int g_krep_speed; extern void kbd_set_repeat(int); kbd_set_repeat((g_krep_speed+1)%3); return; } if(id==2){ power_reboot(); return; } if(id==3){ panic(0,"Crash test triggered from Settings."); return; }
+        if(id==320){ int pc=(px-st_blx)*100/(st_blw>0?st_blw:1); if(pc<0)pc=0; if(pc>100)pc=100; g_snd_vol=pc; snd_set_volume(pc); return; }
+        if(id==321){ static int sv=50; if(g_snd_vol){ sv=g_snd_vol; g_snd_vol=0; } else g_snd_vol=sv?sv:50; snd_set_volume(g_snd_vol); return; }
+        if(id==1){ extern void power_prefs_save(void); g_showsec^=1; power_prefs_save(); return; } if(id==4){ extern int g_kbd_layout; extern void kbd_set_layout(int); kbd_set_layout((g_kbd_layout+1)%6); return; } if(id==5){ extern int g_krep_speed; extern void kbd_set_repeat(int); kbd_set_repeat((g_krep_speed+1)%3); return; } if(id==2){ power_reboot(); return; } if(id==3){ panic(0,"Crash test triggered from Settings."); return; }
         if(id>=10&&id<10+NWALL){ g_theme=id-10; g_wallmode=0; build_bg(); return; }
         if(id==19){ g_wallmode=2; build_bg(); return; }
         if(id>=20&&id<25){ g_accent=id-20; ACC=ACV[g_accent]; ACC2=mix(ACC,rgb(0,0,0),60); build_bg(); return; }

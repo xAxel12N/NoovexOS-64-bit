@@ -14,6 +14,8 @@
 #include "include/nvx/apps/internet/browser.h"
 #include "include/nvx/apps/system/settings.h"
 #include "include/nvx/net/http/cookies.h"
+#include "include/nvx/shell/terminal.h"
+#include "include/nvx/graphics/theme/theme.h"
 /* ---- HTTP client ---- */
 u8 http_buf[262144];
    /* defined later */
@@ -33,16 +35,56 @@ static int ck_header(const char* host,char* out){
     int o=0; const char* p="Cookie: "; while(*p)out[o++]=*p++; for(int i=0;tmp[i];i++)out[o++]=tmp[i]; out[o++]='\r'; out[o++]='\n'; out[o]=0; return o;
 }
 int parse_ip(const char*s,u32*out){ u32 ip=0; int oct=0,val=0,any=0; for(;;s++){ if(*s>='0'&&*s<='9'){val=val*10+(*s-'0');any=1;} else if(*s=='.'||*s==0){ if(!any)return 0; ip=(ip<<8)|(u32)(val&0xFF); oct++; val=0; any=0; if(*s==0)break; } else return 0; } if(oct!=4)return 0; *out=ip; return 1; }
-int http_fetch_to(const char*host,const char*path,u8*buf,int cap){
+static int htd_tag_is(const char* t,const char* name){ int i=0; while(name[i]){ if(!ci_eq(t[i],name[i]))return 0; i++; } return !(t[i]>='a'&&t[i]<='z')&&!(t[i]>='A'&&t[i]<='Z')&&!(t[i]>='0'&&t[i]<='9'); }
+static int htd_block(const char* t){ static const char* const B[]={"p","div","br","li","tr","h1","h2","h3","h4","h5","h6","ul","ol","table","section","article","header","footer","nav","blockquote","pre","hr","dt","dd","form","title",0}; for(int i=0;B[i];i++)if(htd_tag_is(t,B[i]))return 1; return 0; }
+static int htd_skip_to(const char* b,int n,int i,const char* end){ int el=0; while(end[el])el++; for(;i<n;i++){ if(b[i]!='<'||i+1>=n||b[i+1]!='/')continue; int k=0; while(k<el&&i+2+k<n&&ci_eq(b[i+2+k],end[k]))k++; if(k==el){ while(i<n&&b[i]!='>')i++; return i+1; } } return n; }
+static int htd_entity(const char* b,int n,int i,char* out){ static const char* const E[]={"amp;","&","lt;","<","gt;",">","quot;","\"","apos;","'","#39;","'","nbsp;"," ","#160;"," ","copy;","(c)","mdash;","-","ndash;","-","hellip;","...",0}; for(int k=0;E[k];k+=2){ int l=0; while(E[k][l]&&i+1+l<n&&b[i+1+l]==E[k][l])l++; if(!E[k][l]){ *out=E[k+1][0]; return 1+l; } } return 0; }
+void http_text_dump(const char* b,int n,int limit){
+    int shown=0,title=0; char last='\n';
+    for(int i=0;i<n&&shown<limit;){ char c=b[i];
+        if(c=='<'){
+            if(i+3<n&&b[i+1]=='!'&&b[i+2]=='-'&&b[i+3]=='-'){ i+=4; while(i+2<n&&!(b[i]=='-'&&b[i+1]=='-'&&b[i+2]=='>'))i++; i+=3; continue; }
+            const char* t=b+i+1; int close=0; if(*t=='/'){ close=1; t++; }
+            if(!close&&htd_tag_is(t,"style")){ i=htd_skip_to(b,n,i+1,"style"); continue; }
+            if(!close&&htd_tag_is(t,"script")){ i=htd_skip_to(b,n,i+1,"script"); continue; }
+            if(!close&&htd_tag_is(t,"head")){ int j=i+1; int ti=-1; for(;j<n;j++){ if(b[j]=='<'&&!(j+1<n&&b[j+1]=='/')&&htd_tag_is(b+j+1,"title")){ ti=j; break; } if(b[j]=='<'&&j+1<n&&b[j+1]=='/'&&htd_tag_is(b+j+2,"head"))break; } if(ti<0){ i=htd_skip_to(b,n,i+1,"head"); if(i>=n)i=n; continue; } }
+            if(!close&&htd_tag_is(t,"title")){ title=1; tcol(ACC); }
+            if(close&&htd_tag_is(t,"title")){ title=0; tcol(GREY); term_putc('\n'); term_putc('\n'); last='\n'; }
+            int blk=htd_block(t);
+            while(i<n&&b[i]!='>')i++; i++;
+            if(blk&&!title&&last!='\n'){ term_putc('\n'); last='\n'; }
+            continue; }
+        if(c=='&'){ char e; int l=htd_entity(b,n,i,&e); if(l){ c=e; i+=l; if(c==' '&&(last==' '||last=='\n')){ continue; } term_putc(c); last=c; shown++; continue; } }
+        i++;
+        if(c=='\r')continue;
+        if(c==' '||c=='\n'||c=='\t'){ if(last==' '||last=='\n')continue; c=' '; }
+        if((unsigned char)c<32)continue;
+        term_putc(c); last=c; shown++; }
+    if(title)tcol(GREY);
+    if(last!='\n')term_putc('\n');
+}
+int http_split_port(const char* host0,char* hn,int cap,u16 def,u16* port){
+    int hi=0; for(;host0[hi]&&host0[hi]!=':'&&hi<cap-1;hi++)hn[hi]=host0[hi]; hn[hi]=0; *port=def;
+    if(host0[hi]!=':')return 0;
+    u32 pv=0; int j=hi+1; for(;host0[j]>='0'&&host0[j]<='9'&&pv<65536;j++)pv=pv*10+(u32)(host0[j]-'0');
+    if(pv>0&&pv<65536)*port=(u16)pv; return 1;
+}
+static void (*g_hp_saved)(void)=0; static int g_hp_on=0; static u64 g_hp_t=0;
+int g_http_cmd_busy=0;
+static void http_pump(void){ extern void busy_pump(void); extern void desk_nested_step(void); busy_pump(); if(g_ticks-g_hp_t>=3){ g_hp_t=g_ticks; desk_nested_step(); } }
+void http_pump_begin(void){ if(g_hp_on)return; g_hp_on=1; g_http_cmd_busy=1; g_hp_saved=g_wait_pump; g_hp_t=g_ticks; g_wait_pump=http_pump; }
+void http_pump_end(void){ if(!g_hp_on)return; g_wait_pump=g_hp_saved; g_hp_on=0; g_http_cmd_busy=0; }
+int http_fetch_to(const char*host0,const char*path,u8*buf,int cap){
+    char hn[128]; u16 port; http_split_port(host0,hn,(int)sizeof hn,80,&port); const char* host=hn;
     u32 ip; if(parse_ip(host,&ip)){} else { int r=dns_query(host,&ip); if(r<=0) return -100; }
     char req[960]; int r=0; const char* g="GET "; while(*g)req[r++]=*g++;
     for(int i=0;path[i]&&r<380;i++)req[r++]=path[i];
     const char* h1=" HTTP/1.0\r\nHost: "; for(int i=0;h1[i]&&r<440;i++)req[r++]=h1[i];
-    for(int i=0;host[i]&&r<500;i++)req[r++]=host[i];
+    for(int i=0;host0[i]&&r<500;i++)req[r++]=host0[i];
     const char* h2="\r\nConnection: close\r\nUser-Agent: Noovex64\r\n"; for(int i=0;h2[i]&&r<560;i++)req[r++]=h2[i];
     { char ch[400]; g_ck_http=1; ck_header(host,ch); g_ck_http=0; for(int i=0;ch[i]&&r<940;i++)req[r++]=ch[i]; }
     req[r++]='\r'; req[r++]='\n';
-    int n=tcp_get(ip,80,req,r,buf,cap-1);
+    int n=tcp_get(ip,port,req,r,buf,cap-1);
     if(n>0){ int he=n; for(int i=0;i+3<n;i++)if(buf[i]=='\r'&&buf[i+1]=='\n'&&buf[i+2]=='\r'&&buf[i+3]=='\n'){he=i+2;break;} g_ck_http=1; ck_parse(host,buf,he); g_ck_http=0; }
     return n;
 }
@@ -89,8 +131,8 @@ int tcps_wr(void* c,const u8* buf,int len){ (void)c; int off=0;
 }
 int tcps_rd(void* c,u8* buf,int max){ (void)c; if(ts_fin)return 0; u8 rx[1600];
     for(int idle=0; idle<2500; ){ int n=net_poll(rx,1600,1); if(n<=0){ idle++; continue; }
-        if(rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; } int ihl=(ip[0]&0x0F)*4; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue;
-        int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; if(ihl<20||thl<20||14+ihl+thl>n)continue; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0; u32 seq=rd32(t+4); u8 fl=t[13];
+        if(n<54||rd16(rx+12)!=0x0800)continue; u8*ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; } int ihl=(ip[0]&0x0F)*4; if(ihl<20||14+ihl+20>n)continue; u8*t=ip+ihl; if(rd16(t+0)!=ts_dport||rd16(t+2)!=ts_sp)continue;
+        int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; if(thl<20||14+ihl+thl>n)continue; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0; u32 seq=rd32(t+4); u8 fl=t[13];
         if(fl&TF_RST){ ts_fin=1; return 0; }
         if(dl>0){ if(seq==ts_rcv){ int cp=dl; if(cp>max)cp=max; for(int i=0;i<cp;i++)buf[i]=t[thl+i]; ts_rcv+=(u32)cp;
                 tcp_send(ts_dip,ts_sp,ts_dport,ts_dmac,ts_snd,ts_rcv,TF_ACK,0,0);
@@ -110,15 +152,13 @@ void tls_prepare(void){
 }
 i64 tls_clock_now(void){ i64 s=(i64)(k_realtime_ms()/1000ULL); return s>1704067200LL?s:0; }
 int https_fetch_to(const char*host0,const char*path,u8*buf,int cap){
-    char hn[128]; u16 port=443; int hi=0; for(;host0[hi]&&host0[hi]!=':'&&hi<127;hi++)hn[hi]=host0[hi]; hn[hi]=0;
-    if(host0[hi]==':'){ u32 pv=0; for(int j=hi+1;host0[j]>='0'&&host0[j]<='9'&&pv<65536;j++)pv=pv*10+(u32)(host0[j]-'0'); if(pv>0&&pv<65536)port=(u16)pv; }
-    const char* host=hn;
+    char hn[128]; u16 port; http_split_port(host0,hn,(int)sizeof hn,443,&port); const char* host=hn;
     u32 ip; if(parse_ip(host,&ip)){} else { int r=dns_query(host,&ip); if(r<=0){ netlog("HTTPS: DNS lookup failed"); return -100; } }
     if(!tcps_open(ip,port)){ netlog("HTTPS: TCP connect failed"); return -2; }
     char req[960]; int r=0; const char* g="GET "; while(*g)req[r++]=*g++;
     for(int i=0;path[i]&&r<380;i++)req[r++]=path[i];
     const char* h1=" HTTP/1.0\r\nHost: "; for(int i=0;h1[i]&&r<440;i++)req[r++]=h1[i];
-    for(int i=0;host[i]&&r<500;i++)req[r++]=host[i];
+    for(int i=0;host0[i]&&r<500;i++)req[r++]=host0[i];
     const char* h2="\r\nConnection: close\r\nUser-Agent: Noovex64\r\n"; for(int i=0;h2[i]&&r<560;i++)req[r++]=h2[i];
     { char ch[400]; ck_header(host,ch); for(int i=0;ch[i]&&r<940;i++)req[r++]=ch[i]; }
     req[r++]='\r'; req[r++]='\n';
@@ -140,10 +180,10 @@ int https_request(const char*host,const char*path,const char*method,const char*x
     u32 ip; if(parse_ip(host,&ip)){} else { if(dns_query(host,&ip)<=0) return -100; }
     if(!tcps_open(ip,443)) return -2;
     char* req=(char*)g_httpreq; int r=0;
-    for(const char* m=method;*m;m++)req[r++]=*m; req[r++]=' ';
+    for(const char* m=method;*m&&r<16;m++)req[r++]=*m; req[r++]=' ';
     for(int i=0;path[i]&&r<640;i++)req[r++]=path[i];
     const char* h1=" HTTP/1.0\r\nHost: "; for(int i=0;h1[i];i++)req[r++]=h1[i];
-    for(int i=0;host[i];i++)req[r++]=host[i];
+    for(int i=0;host[i]&&r<920;i++)req[r++]=host[i];
     const char* h2="\r\nConnection: close\r\nUser-Agent: Noovex64\r\nAccept: application/json\r\n"; for(int i=0;h2[i];i++)req[r++]=h2[i];
     if(xhdr)for(int i=0;xhdr[i]&&r<1100;i++)req[r++]=xhdr[i];
     if(blen>0){ const char* cl="Content-Length: "; for(int i=0;cl[i];i++)req[r++]=cl[i];
@@ -196,10 +236,18 @@ static int nvx_userinfo_from_token(const char* tok){
     g_nvx_signedin=1; nvx_settings_load(); nvx_files_pull();   /* pull saved settings + cloud files */
     return 0;
 }
+static char* nvx_jesc(char* p,const char* s){
+    static const char hx[]="0123456789abcdef";
+    for(int i=0;s[i]&&i<64;i++){ u8 c=(u8)s[i];
+        if(c=='"'||c=='\\'){ *p++='\\'; *p++=(char)c; }
+        else if(c<0x20||c==0x7F){ *p++='\\'; *p++='u'; *p++='0'; *p++='0'; *p++=hx[c>>4]; *p++=hx[c&15]; }
+        else *p++=(char)c; }
+    return p;
+}
 /* direct sign-in via the OAuth password grant (no browser) */
 int nvx_signin(const char* email,const char* pwd){
-    char body[420],*p=body; p=scopy(p,"{\"grant_type\":\"password\",\"username\":\"");p=scopy(p,email);
-    p=scopy(p,"\",\"password\":\"");p=scopy(p,pwd);p=scopy(p,"\",\"client_id\":\"" NVX_CID "\",\"client_secret\":\"" NVX_SECRET "\"}");*p=0;
+    char body[1024],*p=body; p=scopy(p,"{\"grant_type\":\"password\",\"username\":\"");p=nvx_jesc(p,email);
+    p=scopy(p,"\",\"password\":\"");p=nvx_jesc(p,pwd);p=scopy(p,"\",\"client_id\":\"" NVX_CID "\",\"client_secret\":\"" NVX_SECRET "\"}");*p=0;
     int n=https_request(NVX_HOST,"/api/public/oauth/token","POST","Content-Type: application/json\r\n",body,(int)(p-body),http_buf,(int)sizeof(http_buf));
     if(n<=0){ scopy(su_msg,"no network / TLS error"); return -1; }
     int he=0; for(int i=0;i+3<n;i++)if(http_buf[i]=='\r'&&http_buf[i+1]=='\n'&&http_buf[i+2]=='\r'&&http_buf[i+3]=='\n'){he=i+4;break;}
@@ -208,8 +256,8 @@ int nvx_signin(const char* email,const char* pwd){
 }
 /* create a new Noovex account, then sign in */
 int nvx_register(const char* uname,const char* pwd){
-    char body[440],*p=body; p=scopy(p,"{\"username\":\"");p=scopy(p,uname);
-    p=scopy(p,"\",\"password\":\"");p=scopy(p,pwd);p=scopy(p,"\",\"client_id\":\"" NVX_CID "\"}");*p=0;
+    char body[1024],*p=body; p=scopy(p,"{\"username\":\"");p=nvx_jesc(p,uname);
+    p=scopy(p,"\",\"password\":\"");p=nvx_jesc(p,pwd);p=scopy(p,"\",\"client_id\":\"" NVX_CID "\"}");*p=0;
     int n=https_request(NVX_HOST,"/api/public/register","POST","Content-Type: application/json\r\n",body,(int)(p-body),http_buf,(int)sizeof(http_buf));
     if(n<=0){ scopy(su_msg,"no network / TLS error"); return -1; }
     int he=0; for(int i=0;i+3<n;i++)if(http_buf[i]=='\r'&&http_buf[i+1]=='\n'&&http_buf[i+2]=='\r'&&http_buf[i+3]=='\n'){he=i+4;break;}

@@ -50,7 +50,7 @@ static void clampc(void){ if(tcx<0)tcx=0; if(tcx>=tcols)tcx=tcols-1; if(tcy<0)tc
 static int P(int i,int d){ return (i<np&&pr[i]>0)?pr[i]:d; }
 static void alt_enter(void){
     if(g_vt_alt)return; int n=TRMAX*TCMAX;
-    if(!altch){ altch=(char*)kmalloc((unsigned long)n); altco=(u32*)kmalloc((unsigned long)n*4); altbg=(u32*)kmalloc((unsigned long)n*4); if(!altch||!altco||!altbg)return; }
+    if(!altch)altch=(char*)kmalloc((unsigned long)n); if(!altco)altco=(u32*)kmalloc((unsigned long)n*4); if(!altbg)altbg=(u32*)kmalloc((unsigned long)n*4); if(!altch||!altco||!altbg)return;
     for(int r=0;r<TRMAX;r++)for(int c=0;c<TCMAX;c++){ altch[r*TCMAX+c]=TCH[r][c]; altco[r*TCMAX+c]=TCO[r][c]; altbg[r*TCMAX+c]=TBG[r][c]; }
     altx=tcx; alty=tcy; g_vt_alt=1;
     for(int r=0;r<trows;r++)clear_row(r,0,tcols);
@@ -104,8 +104,8 @@ static void csi(char f){
     case '@': { int n=P(0,1), x=tcx>=tcols?tcols-1:tcx; if(n>tcols-x)n=tcols-x;
         for(int c=tcols-1;c>=x+n;c--){ TCH[tcy][c]=TCH[tcy][c-n]; TCO[tcy][c]=TCO[tcy][c-n]; TBG[tcy][c]=TBG[tcy][c-n]; } clear_row(tcy,x,x+n); break; }
     case 'X': { int x=tcx>=tcols?tcols-1:tcx; clear_row(tcy,x,x+P(0,1)); break; }
-    case 'S': scroll_up(top,b,P(0,1)); break;
-    case 'T': scroll_dn(top,b,P(0,1)); break;
+    case 'S': { int n=P(0,1); if(n>b-top+1)n=b-top+1; if(top<=b)scroll_up(top,b,n); break; }
+    case 'T': { int n=P(0,1); if(n>b-top+1)n=b-top+1; if(top<=b)scroll_dn(top,b,n); break; }
     case 'b': { int n=P(0,1); if(n>1000)n=1000; for(int i=0;i<n;i++)put(lastc); break; }
     case 'm': sgr(); break;
     case 'r': { int t=P(0,1)-1, bb=P(1,trows)-1; if(t<0)t=0; if(bb>=trows)bb=trows-1; if(t<bb){ top=t; bot=bb; } else { top=0; bot=-1; } tcx=0; tcy=0; break; }

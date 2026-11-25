@@ -1,0 +1,29 @@
+NoovexOS NVIDIA display (drivers/video/nvidia/gsp)
+
+flip_emit.c
+  Port of the Turing display method sequences from Linux nouveau
+  drivers/gpu/drm/nouveau/dispnv50 (wndwc37e.c, wndwc57e.c, headc57d.c,
+  corec37d.c, disp.c) and nvkm/engine/disp r535.c.
+  SPDX-License-Identifier: MIT
+  Copyright 2018 Red Hat Inc.
+  The full MIT text is kept at the top of flip_emit.c.
+  Method numbers follow NVIDIA's clc57d.h / clc57e.h / clc37e.h class headers
+  (MIT, Copyright (c) 1993-2020 NVIDIA CORPORATION).
+
+flip.c, display_modes.c
+  Own code (NoovexOS project, GPLv3 like the rest of the OS), using the
+  method emitters above and GSP-RM controls as nouveau r535 does.
+
+dp_sst.c
+  Port of nv50_sor_dp_watermark_sst() from Linux nouveau
+  drivers/gpu/drm/nouveau/dispnv50/disp.c (DP SST watermark, hblank and
+  vblank symbol computation).
+  SPDX-License-Identifier: MIT
+  Copyright 2011 Red Hat Inc.
+  The full MIT text is kept at the top of dp_sst.c.
+
+disp_events.c
+  Own code (GPLv3). GSP-RM event subscription (NV01_EVENT_KERNEL_CALLBACK_EX,
+  NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION, POST_EVENT 0x1003) and Turing
+  head-timing status 0x611800 follow the facts used by nouveau r535
+  (nvkm/subdev/gsp/rm/r535/device.c, gsp.c; nvkm/engine/disp/tu102.c, MIT).

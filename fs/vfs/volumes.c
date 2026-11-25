@@ -6,8 +6,9 @@
 #include "include/nvx/drivers/usb/xhci.h"
 #include "include/nvx/arch/x86_64/time/hrtimer.h"
 #include "include/nvx/fs/vfs/volumes.h"
+#include "drivers/mmc/mmc_blk.h"
 
-extern int gdisk_count(void); extern int gdisk_read_on(int i,u32 lba,int cnt,u8* buf); extern u32 gdisk_ratio_of(int i); extern u32 gdisk_size_of(int i);
+extern int gdisk_count(void); extern int gdisk_read_on(int i,u64 lba,int cnt,u8* buf); extern u32 gdisk_ratio_of(int i); extern u64 gdisk_size_of(int i);
 extern const char* gdisk_name_of(int i); extern int gdisk_current(void); extern int usb_msd_read(u32 lba,int cnt,u8* out); extern u32 msd_lastlba; extern int ufat_ok;
 
 nvol g_vol[VOL_MAX]; int g_vol_n=0; u32 g_vol_scans=0, g_vol_ms=0;
@@ -15,8 +16,9 @@ static u8* vb; static u8 vpop[256]; static int vpop_ok=0;
 #define VB_SECS 128
 
 static int vrd(int disk,u64 lba,int cnt,u8* buf){
-    if(lba+(u64)cnt>0xFFFFFFFFULL)return -1;
-    if(disk>=0)return gdisk_read_on(disk,(u32)lba,cnt,buf);
+    if(disk>=0)return gdisk_read_on(disk,lba,cnt,buf);
+    if(disk<=VOL_SD_DISK0)return mmcblk_read(VOL_SD_DISK0-disk,lba,cnt,buf);
+    if(lba+(u64)cnt>0x100000000ULL)return -1;
     while(cnt>0){ int c=cnt>8?8:cnt; if(usb_msd_read((u32)lba,c,buf))return -1; lba+=(u64)c; buf+=c*512; cnt-=c; } return 0; }
 static u16 r16(const u8* p){ return (u16)(p[0]|(p[1]<<8)); }
 static u32 r32(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
@@ -89,10 +91,10 @@ static int vprobe(nvol* v,int disk,u64 st,u64 sz){
     return 0; }
 static int vguid_is(const u8* g,u32 a){ return r32(g)==a; }
 static void vadd(int disk,int kind,int part,u64 st,u64 sz){
-    if(g_vol_n>=VOL_MAX||!sz)return; nvol* v=&g_vol[g_vol_n]; v->disk=disk; v->kind=kind; v->part=part; v->start=(u32)st; v->psz=sz; v->letter=0;
+    if(g_vol_n>=VOL_MAX||!sz)return; nvol* v=&g_vol[g_vol_n]; v->disk=disk; v->kind=kind; v->part=part; v->start=st; v->psz=sz; v->letter=0;
     if(!vprobe(v,disk,st,sz))return;
     if(kind!=VOL_USB&&disk==gdisk_current()&&disk_ok&&v->fs[0]=='N'&&v->fs[1]=='V')return;
-    if(disk>=0){ char* p=scopy(v->dev,(char*)gdisk_name_of(disk)); p=scopy(p,", partition "); p=udec(p,(u32)part); *p=0; } else { char* p=scopy(v->dev,"USB mass storage"); if(part){ p=scopy(p,", partition "); p=udec(p,(u32)part); } *p=0; }
+    if(disk>=0){ char* p=scopy(v->dev,(char*)gdisk_name_of(disk)); p=scopy(p,", partition "); p=udec(p,(u32)part); *p=0; } else { char* p=scopy(v->dev,kind==VOL_SD?g_mmcblk[VOL_SD_DISK0-disk].model:"USB mass storage"); if(part){ p=scopy(p,", partition "); p=udec(p,(u32)part); } *p=0; }
     g_vol_n++; }
 static void vscan_disk(int disk,int kind,u64 dsz){
     u8 m[512]; if(vrd(disk,0,1,vb))return; for(int i=0;i<512;i++)m[i]=vb[i];
@@ -110,17 +112,20 @@ static void vscan_disk(int disk,int kind,u64 dsz){
                     if(x[446+4]&&r32(x+446+12)){ vadd(disk,kind,5+g,cur+(u64)r32(x+446+8)*R,(u64)r32(x+446+12)*R); any=1; } if(!x[462+4])break; cur=eb+(u64)r32(x+462+8)*R; } continue; }
             if(ty==0xEF||ty==0x82||ty==0x27||ty==0x12||ty==0x84)continue; vadd(disk,kind,e+1,st,sz); any=1; } if(pn)return; }
     if(!any)vadd(disk,kind,0,0,dsz); }
-static int g_vs_msd=-1; static u32 g_vs_lba=0, g_vs_gen=0;
+static int g_vs_msd=-1; static u32 g_vs_lba=0, g_vs_gen=0, g_vs_sdgen=0;
 void vol_scan(int force){
     extern int msd_autoinit_safe(void); extern u32 g_usbdev_gen;
-    if(force||!g_vol_scans)msd_autoinit_safe();
-    int usbnow=msd_ok?1:0; if(!force&&g_vol_scans&&usbnow==g_vs_msd&&msd_lastlba==g_vs_lba&&g_usbdev_gen==g_vs_gen)return;
+    if(force||!g_vol_scans){ msd_autoinit_safe(); mmc_poll_hosts(); } mmcblk_sync_hosts();
+    int usbnow=msd_ok?1:0; if(!force&&g_vol_scans&&usbnow==g_vs_msd&&msd_lastlba==g_vs_lba&&g_usbdev_gen==g_vs_gen&&g_mmcblk_gen==g_vs_sdgen)return;
     if(!vb)vb=(u8*)kmalloc(VB_SECS*512+512); if(!vb)return; if(!vpop_ok){ u64 bp=0; vzero_bits(vb,0,0,&bp); }
     u64 t0=hr_ns(); g_vol_n=0;
     nvol* c=&g_vol[g_vol_n++]; c->kind=VOL_SYS; c->disk=disk_ok?gdisk_current():-2; c->part=0; c->start=0; vcp(c->label,disk_ok?"NoovexOS":"Live RAM disk",36); vcp(c->fs,disk_ok?"NVX4":"RAM",12); vcp(c->dev,disk_ok?"NoovexOS system disk":"memory",28); c->total=0; c->freeb=0; c->has_free=1;
     int nd=gdisk_count(); for(int i=0;i<nd&&g_vol_n<VOL_MAX;i++)vscan_disk(i,VOL_FIXED,gdisk_size_of(i));
     if(msd_ok&&g_vol_n<VOL_MAX)vscan_disk(-1,VOL_USB,(u64)msd_lastlba+1);
+    for(int i=0;i<MMCBLK_MAX&&g_vol_n<VOL_MAX;i++) if(mmcblk_present(i))vscan_disk(VOL_SD_DISK0-i,VOL_SD,g_mmcblk[i].sectors);
     char L='C'; for(int i=0;i<g_vol_n;i++)g_vol[i].letter=L<='Z'?L++:'?';
-    g_vs_msd=usbnow; g_vs_lba=msd_lastlba; g_vs_gen=g_usbdev_gen; g_vol_scans++; g_vol_ms=(u32)((hr_ns()-t0)/1000000ULL); }
+    g_vs_msd=usbnow; g_vs_lba=msd_lastlba; g_vs_gen=g_usbdev_gen; g_vs_sdgen=g_mmcblk_gen; g_vol_scans++; g_vol_ms=(u32)((hr_ns()-t0)/1000000ULL); }
 void vol_name(const nvol* v,char* out,int cap){ char b[64],*p=b;
-    if(v->label[0])p=scopy(p,(char*)v->label); else p=scopy(p,v->kind==VOL_USB?"USB Drive":"Local Disk"); p=scopy(p," ("); *p++=v->letter; p=scopy(p,":)"); *p=0; vcp(out,b,cap); }
+    if(v->label[0])p=scopy(p,(char*)v->label); else p=scopy(p,v->kind==VOL_USB?"USB Drive":v->kind==VOL_SD?"SD Card":"Local Disk"); p=scopy(p," ("); *p++=v->letter; p=scopy(p,":)"); *p=0; vcp(out,b,cap); }
+int vol_mount_ext4(int i){ extern int ext4k_mount_disk(int,unsigned long long,unsigned long long,int); if(i<0||i>=g_vol_n)return -1; nvol* v=&g_vol[i];
+    if(v->disk<0||v->kind==VOL_SYS||!(v->fs[0]=='e'&&v->fs[1]=='x'&&v->fs[2]=='t'))return -1; return ext4k_mount_disk(v->disk,v->start,v->psz,0); }

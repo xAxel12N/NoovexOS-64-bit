@@ -16,7 +16,7 @@ static void estack_guard(u8* s) {
 extern int g_web_nest;
 int web_df_ok(u64 sp) { u64 lo = (u64)g_estack; return g_in_engine && g_estack && !g_web_nest && sp >= lo && sp < lo + 0x10000; }
 
-const char* WEB_UA = "Mozilla/5.0 (X11; NoovexOS x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Noovex/11.10";
+const char* WEB_UA = "Mozilla/5.0 (X11; NoovexOS x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Noovex/11.22";
 
 int web_init(void) {
     if (g_web_ok) return 1;
@@ -130,6 +130,12 @@ void nwk_error(const char* s) {
 int web_err_count(void) { return g_errn; }
 int web_err_total(void) { return g_errh; }
 void nwk_error_mark(const char* url) { char b[1200]; int k = 0; const char* p = "Page "; while (*p) b[k++] = *p++; for (int i = 0; url[i] && k < 1199; i++) b[k++] = url[i]; b[k] = 0; int i = g_errh % ERR_N; for (int j = 0; j <= k; j++) g_err[i][j] = b[j]; g_err_t[i] = nwk_ms(); g_errh++; if (g_errn < ERR_N) g_errn++; }
+void web_err_rewind(int total) {
+    if (total < 0 || total > g_errh) return;
+    int drop = g_errh - total;
+    if (drop > g_errn) drop = g_errn;
+    g_errn -= drop; g_errh = total;
+}
 int web_err_get(int idx, char* out, int cap, unsigned long* t) {
     if (idx < 0 || idx >= g_errn) return -1;
     int i = (g_errh - g_errn + idx) % ERR_N, k = 0;

@@ -5,6 +5,7 @@
 #include "include/nvx/arch/x86_64/interrupts/interrupts.h"
 #include "include/nvx/graphics/theme/theme.h"
 #include "include/nvx/arch/x86_64/cpu/cpu_init.h"
+#include "include/nvx/arch/x86_64/cpu/harden.h"
 #include "include/nvx/drivers/acpi/acpi_dev.h"
 int g_ioapic_n=0, g_ioapic_masked=0;
 static void ioapic_mask_one(u64 base){ if(!base||base>=0x100000000ULL)return; volatile u32* sel=(volatile u32*)base; volatile u32* win=(volatile u32*)(base+0x10);
@@ -22,6 +23,35 @@ void apic_virtual_wire(void){
     volatile u32* a=(volatile u32*)b; a[0x80/4]=0; a[0xF0/4]=0x1FF; a[0x350/4]=0x700; a[0x360/4]=0x400; a[0x320/4]|=0x10000;
     klog("boot: local APIC set to virtual-wire mode");
 }
+static u32 s3_lap[10], s3_ioa[4][1+2*120]; static u64 s3_ioab[4], s3_apicmsr; static int s3_nioa, s3_ioan[4];
+static const u16 s3_lapr[10]={0x80,0xF0,0x320,0x330,0x340,0x350,0x360,0x370,0x3E0,0xD0};
+static u32 lap_rd(u64 m,u32 off){ if(m&(1u<<10)){ u32 a,d; __asm__ volatile("rdmsr":"=a"(a),"=d"(d):"c"(0x800+(off>>4))); return a; } return *(volatile u32*)((m&0xFFFFFF000ULL)+off); }
+static void lap_wr(u64 m,u32 off,u32 v){ if(m&(1u<<10)){ if(off==0xD0)return; __asm__ volatile("wrmsr"::"a"(v),"d"(0),"c"(0x800+(off>>4))); return; } *(volatile u32*)((m&0xFFFFFF000ULL)+off)=v; }
+static int ioa_ok(u64 b){ if(!b||b>=0x100000000ULL)return 0; volatile u32* sel=(volatile u32*)b; volatile u32* win=(volatile u32*)(b+0x10); *sel=1; u32 v=*win; return !(v==0xFFFFFFFFu||(v&0xFF)<0x10||(v&0xFF)>0x2F); }
+void apic_s3_save(void){
+    u32 lo,hi; __asm__ volatile("rdmsr":"=a"(lo),"=d"(hi):"c"(0x1B)); s3_apicmsr=((u64)hi<<32)|lo;
+    if((lo&(1u<<11))&&((lo&(1u<<10))||((s3_apicmsr&0xFFFFFF000ULL)&&(s3_apicmsr&0xFFFFFF000ULL)<0x100000000ULL))) for(int i=0;i<10;i++)s3_lap[i]=lap_rd(s3_apicmsr,s3_lapr[i]);
+    s3_nioa=0; const u8* m=acpi_find_table("APIC",0); u64 bs[4]; int nb=0;
+    if(m){ u32 len=*(const u32*)(m+4); if(len>4096)len=4096; for(u32 o=44;o+2<=len&&nb<4;){ u8 t=m[o], l=m[o+1]; if(l<2)break; if(t==1&&l>=12)bs[nb++]=*(const u32*)(m+o+4); o+=l; } }
+    if(!nb)bs[nb++]=0xFEC00000ULL;
+    for(int k=0;k<nb;k++){ u64 b=bs[k]; if(!ioa_ok(b))continue; volatile u32* sel=(volatile u32*)b; volatile u32* win=(volatile u32*)(b+0x10);
+        *sel=1; int n=(int)((*win>>16)&0xFF)+1; if(n>120)n=120; u32* r=s3_ioa[s3_nioa]; *sel=0; r[0]=*win;
+        for(int i=0;i<n;i++){ *sel=0x10u+2u*(u32)i; r[1+2*i]=*win; *sel=0x11u+2u*(u32)i; r[2+2*i]=*win; }
+        s3_ioab[s3_nioa]=b; s3_ioan[s3_nioa]=n; s3_nioa++; } }
+int apic_s3_restore(void){
+    int bad=0; u64 m=s3_apicmsr;
+    if(m&(1u<<11)){ u32 lo,hi; __asm__ volatile("rdmsr":"=a"(lo),"=d"(hi):"c"(0x1B));
+        u64 cur=((u64)hi<<32)|lo; u64 want=(cur&~0xFFFFFF000ULL)|(m&0xFFFFFF000ULL)|(1u<<11);
+        if((cur|want)!=cur||(cur&0xFFFFFF000ULL)!=(m&0xFFFFFF000ULL)){ cur=want&~(u64)(1u<<10); __asm__ volatile("wrmsr"::"a"((u32)cur),"d"((u32)(cur>>32)),"c"(0x1B)); }
+        if(m&(1u<<10)){ cur|=(1u<<10); __asm__ volatile("wrmsr"::"a"((u32)cur),"d"((u32)(cur>>32)),"c"(0x1B)); }
+        lap_wr(m,0xF0,s3_lap[1]|0x100); lap_wr(m,0x80,s3_lap[0]); lap_wr(m,0xD0,s3_lap[9]); lap_wr(m,0x3E0,s3_lap[8]);
+        for(int i=3;i<8;i++){ lap_wr(m,s3_lapr[i],s3_lap[i]); } lap_wr(m,0x380,0); lap_wr(m,0x320,s3_lap[2]|0x10000u);
+        lap_wr(m,0x280,0); lap_wr(m,0x280,0); lap_wr(m,0xB0,0); lap_wr(m,0xF0,s3_lap[1]);
+        if((lap_rd(m,0x350)&0x700)!=(s3_lap[5]&0x700))bad|=1; }
+    for(int k=0;k<s3_nioa;k++){ u64 b=s3_ioab[k]; if(!ioa_ok(b)){ bad|=2; continue; } volatile u32* sel=(volatile u32*)b; volatile u32* win=(volatile u32*)(b+0x10); const u32* r=s3_ioa[k];
+        *sel=0; *win=r[0];
+        for(int i=0;i<s3_ioan[k];i++){ *sel=0x10u+2u*(u32)i; *win=r[1+2*i]|0x10000u; *sel=0x11u+2u*(u32)i; *win=r[2+2*i]; *sel=0x10u+2u*(u32)i; *win=r[1+2*i]; } }
+    return bad; }
 void lapic_eoi_any(void){ u32 lo,hi; __asm__ volatile("rdmsr":"=a"(lo),"=d"(hi):"c"(0x1B)); if(!(lo&(1u<<11)))return;
     if(lo&(1u<<10)){ __asm__ volatile("wrmsr"::"a"(0),"d"(0),"c"(0x80B)); return; }
     u64 b=(((u64)hi<<32)|lo)&0xFFFFFF000ULL; if(!b||b>=0x100000000ULL)return; *(volatile u32*)(b+0xB0)=0; }
@@ -44,6 +74,7 @@ void arch_fpu_init(void){
     { u32 a,b,c,d; cpuid(1,&a,&b,&c,&d); g_ssse3=(c>>9)&1; }
     fpu_xsave_setup();
     __asm__ volatile("fninit"); u32 mx=0x1F80; __asm__ volatile("ldmxcsr %0"::"m"(mx));
+    harden_cpu();
 }
 void arch_idt_init(void){
     for(int i=0;i<48;i++) set_gate(i,isr_stubs[i]);

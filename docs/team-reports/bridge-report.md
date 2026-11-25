@@ -4,7 +4,7 @@ Branch `bridge` (worktree /home/claude/wt/bridge), commits 8e919747 and 6c0459c7
 Source: Linux rtw88 rtw8822b.c, rtw8822be.c and rtw8822b_table.c, plus the parts of mac.c, phy.c, coex.c, bf.c and fw.c the chip depends on. All of these are GPL-2.0 OR BSD-3-Clause, and the SPDX line is kept in each ported file. I never had hardware for this chip, so the port follows rtw88 line by line.
 
 ## Files
-- `drivers/net/wifi/rtw88/chips/rtw8822b.c`: defines `const rtw_chip rtw8822b_chip`. Settings: name "RTL8822BE", 10ec:b822, PCIe, 2 paths, WCPU 3081, txff 262144 (2048 pages), rxff 24576, 8 reserved driver pages, descriptors 48/24/16. Page table {64,64,64,64,1} and rqpn {vo 2, vi 2, be 1, bk 1, mg 0, hi 3} are the rtw88 PCIe entries (index 1). Tables mac/bb/agc and rf_a/rf_b; no agc_btg. Firmware comes from `_binary_rtw8822b_fw_bin_*`. rf_base {0x2800,0x2C00}, rf_sipi {0xC90,0xE90}.
+- `drivers/net/wifi/realtek/rtw88/chips/rtw8822b.c`: defines `const rtw_chip rtw8822b_chip`. Settings: name "RTL8822BE", 10ec:b822, PCIe, 2 paths, WCPU 3081, txff 262144 (2048 pages), rxff 24576, 8 reserved driver pages, descriptors 48/24/16. Page table {64,64,64,64,1} and rqpn {vo 2, vi 2, be 1, bk 1, mg 0, hi 3} are the rtw88 PCIe entries (index 1). Tables mac/bb/agc and rf_a/rf_b; no agc_btg. Firmware comes from `_binary_rtw8822b_fw_bin_*`. rf_base {0x2800,0x2C00}, rf_sipi {0xC90,0xE90}.
   - `power_on` / `power_off`: card_enable_flow / card_disable_flow, using the full rtw88 command tables with interface and cut masks. Its own parser (`pwr_run`) follows `rtw_sub_pwr_seq_parser`: it polls for up to 20000 x 50 us, and on PCIe it toggles BIT_PFM_WOWL and retries. It also does the 3081 RPWM toggle, and if the chip is already on it cycles it off and on, as `rtw_mac_power_on` does.
   - `efuse_parse`: rtw8822b_efuse layout. MAC at 0xD0 (PCIe), rfe 0xCA (full byte), xtal 0xB9 (0xFF becomes 0), thermal 0xBA, country 0xCB/0xCC, tx power at 0x10 + 42*path. It returns -2 if rfe is not 2, 3 or 5 (the same check as rtw_check_supported_rfe).
   - `mac_init`: rtw8822b_mac_init.
@@ -14,7 +14,7 @@ Source: Linux rtw88 rtw8822b.c, rtw8822be.c and rtw8822b_table.c, plus the parts
   - `calibrate`: rtw8822b_do_iqk. Sends H2C_PKT_IQK (0x0E, clear 0, segment 0, total length 9) through `rtw_h2c_pkt_send`, polls RF-A 0x08 for 0xABCDE (300 x 20 ms), clears it, and reads 0x1BF0. Results go to `rtw8822b_iqk_rf08` / `_fail` / `_reload` (globals, for debugging).
   - `coex_wifi_only`: __rtw_coex_init_hw_config(wifi_only) with the 8822B ops (rfe_type and scoreboard, cfg_init, wl_pri_mask, ant_path WONLY: GNT via LTE indirect, control owner, BBSW ant switch to WLG, coex table 1 only when share_ant). The LTE indirect access is done locally in the chip file using rtw_r32/rtw_w32 (0x1700/0x1704/0x1708).
   - `rfe_setup(band5)`: rtw8822b_set_channel_rfe_efem (rfe 2) or _ifem (rfe 3, 5).
-- `drivers/net/wifi/rtw88/chips/rtw8822b_tables.c/.h`: the raw conditional {addr,data} pair arrays (same format as rtw_cmac/rtw_cbb...): `rtw8822b_cmac` 125 pairs, `cbb` 1492, `cagc` 10151, `crf_a` 5089, `crf_b` 4452, each with an `_n` pair count.
+- `drivers/net/wifi/realtek/rtw88/chips/rtw8822b_tables.c/.h`: the raw conditional {addr,data} pair arrays (same format as rtw_cmac/rtw_cbb...): `rtw8822b_cmac` 125 pairs, `cbb` 1492, `cagc` 10151, `crf_a` 5089, `crf_b` 4452, each with an `_n` pair count.
 - `tools/wifi-tables/rtw_condgen.py`: the converter (`rtw_condgen.py <chip>_table.c <prefix> out.c out.h`). It checks that IF/ENDIF are balanced and works for other rtw88 chips too.
 - `assets/firmware/rtw8822b_fw.bin`: from linux-firmware (git.kernel.org). 161240 bytes, sha256 a72da690597bfa99d8eb6fc2ab090d18d8ad92ac2befd35db1c9e3662d8d8418, license LICENCE.rtlwifi_firmware.txt (the same terms as rtw8821c_fw.bin).
 - `build.sh`: `ld -r -b binary` makes `$B/rtw8822b_fw.o`, and it is added to BLOBS right after rtw_fw.o. I checked that ld exports `_binary_rtw8822b_fw_bin_start/_end`.
@@ -32,7 +32,7 @@ Source: Linux rtw88 rtw8822b.c, rtw8822be.c and rtw8822b_table.c, plus the parts
 6. I assume `rtw_rf_write(path, addr, mask, val)` and `rtw_rf_read(..., mask)` shift `val` into the mask, like rtw88 rtw_write_rf / rtw_read_rf.
 7. The chip keeps private state between calls: cut/paths (filled in by power_on/phy_init), the raw 42-byte per-path tx power block and share_ant (filled in by efuse_parse), and the current channel/bw. Reason: rtw_efuse_info cannot hold the 5G diffs. If you want that state in the contract, add `u8 txpwr_raw[2][42]` and `share_ant` to rtw_efuse_info.
 8. Registry: Forge's `rtw_chip_find`/`rtw_chip_select` needs `extern const rtw_chip rtw8822b_chip;`. **I did not add the chip files to units.list**, so my branch still builds without Forge's core. When the core with rtw_rf_read/rtw_rf_write/rtw_h2c_pkt_send/g_rtw_efuse is merged, add:
-   `drivers/net/wifi/rtw88/chips/rtw8822b.c` and `drivers/net/wifi/rtw88/chips/rtw8822b_tables.c` (about 230 KB of rodata).
+   `drivers/net/wifi/realtek/rtw88/chips/rtw8822b.c` and `drivers/net/wifi/realtek/rtw88/chips/rtw8822b_tables.c` (about 230 KB of rodata).
    Without the core they fail to link because the contract symbols are undefined.
 
 ## Not ported (left out on purpose)

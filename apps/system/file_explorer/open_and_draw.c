@@ -8,8 +8,11 @@
             else { fs_newslot(k); int j=0; for(;n[j]&&j<63;j++)FS[k].name[j]=n[j]; FS[k].name[j]=0; FS[k].used=1; FS[k].folder=0; FS[k].dir=fx_dir; FS[k].mode=0100644u; FS[k].uid=g_uid; FS[k].gid=g_uid;
                 fx_persist(k); g_fsel=k; fx_seldir=-1; toast("File created"); } } }
     g_rename=0; g_renmode=0; }
-static int tpc_sel=-1, tpc_props=-1, tpc_li=-1; static u64 tpc_lt=0;
+static int tpc_sel=-1, tpc_props=-1, tpc_li=-1, tpc_e4=-1; static u64 tpc_lt=0;
+static int tpc_ext(const nvol* v){ return v->kind!=VOL_SYS&&v->fs[0]=='e'&&v->fs[1]=='x'&&v->fs[2]=='t'; }
 static void tpc_open(int i); void fx_vol_request(void);
+int fxv_active(void); void fxv_enter(int vi); void fxv_leave(void); void fxv_do(int id,int val); void fxv_draw(int x0,int y0,int w,int h);
+static int tpc_browse(const nvol* v){ if(v->kind==VOL_SYS)return 0; if(tpc_ext(v))return v->disk>=0||v->kind!=VOL_FIXED; if(v->fs[0]=='e'&&v->fs[1]=='x'&&v->fs[2]=='F')return 1; return v->fs[0]=='F'&&v->fs[1]=='A'&&v->fs[2]=='T'&&!(v->fs[3]=='1'&&v->fs[4]=='2'); }
 void fx_do(int id,int val){
     switch(id){
     case 70: if(tpc_sel>=0)tpc_props=tpc_sel; break;
@@ -18,43 +21,59 @@ void fx_do(int id,int val){
     case 73: tpc_props=-1; break;
     case 74: open_win(W_SETTINGS); break;
     case 75: { extern u64 g_click_t; if(val==tpc_li&&g_click_t-tpc_lt<45){ tpc_open(val); tpc_lt=0; } else { tpc_sel=val; tpc_li=val; tpc_lt=g_click_t; } } break;
-    case 76: if(val>=0&&val<g_vol_n){ fx_mode=1; g_fsel=-1; fx_seldir=-1; tpc_sel=val; tpc_open(val); } break;
-    case 1: fx_back(); break; case 2: fx_fwd(); break; case 3: fx_up(); break;
+    case 76: fxv_leave(); if(val>=0&&val<g_vol_n){ fx_mode=1; g_fsel=-1; fx_seldir=-1; tpc_sel=val; tpc_open(val); } break;
+    case 1: if(fxv_active()){ fxv_do(110,0); break; } fx_back(); break; case 2: fx_fwd(); break; case 3: if(fxv_active()){ fxv_do(110,0); break; } fx_up(); break;
     case 4: if(fx_mode)fx_mode=0; fx_start_input(2,"New folder",-1,-1); break;
     case 5: if(fx_mode)fx_mode=0; fx_start_input(3,"untitled.txt",-1,-1); break;
     case 6: fx_rename_sel(); break; case 7: fx_delete_sel(); break;
     case 60: fx_restore_sel(); break; case 61: fx_empty_trash(); break;
-    case 8: if(g_fsel>=0){ fx_clip=g_fsel; fx_clipcut=0; toast("Copied"); } else toast("Select a file to copy"); break;
-    case 9: if(g_fsel>=0){ fx_clip=g_fsel; fx_clipcut=1; toast("Cut - paste it in another folder"); } else toast("Select a file to cut"); break;
+    case 8: if(g_fsel>=0){ fx_clip=g_fsel; fx_clipdir=-1; fx_clipcut=0; toast("Copied"); } else if(fx_seldir>0&&fx_seldir!=fx_trash_id()){ fx_clipdir=fx_seldir; fx_clip=-1; fx_clipcut=0; toast("Folder copied"); } else toast("Select a file or folder to copy"); break;
+    case 9: if(g_fsel>=0){ fx_clip=g_fsel; fx_clipdir=-1; fx_clipcut=1; toast("Cut - paste it in another folder"); } else if(fx_seldir>0&&fx_seldir!=fx_trash_id()){ fx_clipdir=fx_seldir; fx_clip=-1; fx_clipcut=1; toast("Cut - paste it in another folder"); } else toast("Select a file or folder to cut"); break;
     case 10: fx_paste(); break; case 11: if(fx_view!=val){ fx_view=val; fx_scroll=0; } break; case 50: if(g_uid!=0){ toast("Installing needs administrator rights - run: sudo noovexos_install"); break; } ip_open(ST_DESKTOP); break; case 12: fx_prev=!fx_prev; break;
     case 13: case 14: case 15: { int s=id-13; if(fx_sort==s)fx_sdesc=!fx_sdesc; else { fx_sort=s; fx_sdesc=0; } } break;
     case 16: fx_flen=0; fx_filter[0]=0; break;
-    case 20: if(val==-2){ fx_vol_request(); fx_mode=1; g_fsel=-1; fx_seldir=-1; } else if(val==-3){ g_files_usb=1; } else fx_go(val); break;
+    case 20: fxv_leave(); if(val==-2){ fx_vol_request(); fx_mode=1; g_fsel=-1; fx_seldir=-1; } else if(val==-3){ g_files_usb=1; } else fx_go(val); break;
     case 40: fx_go(val); break;
     case 93: if(val>=0&&val<DN_MAX)fx_exp[val]^=1; break;
+    case 94: { int vis=fx_th0; if(fx_ttotal>vis&&vis>0){ int y=val-fx_ty0; fx_tscroll=(y*fx_ttotal)/vis-vis/2; if(fx_tscroll<0)fx_tscroll=0; if(fx_tscroll>fx_ttotal-vis)fx_tscroll=fx_ttotal-vis; } } break;
+    default: if(id>=110&&id<=121)fxv_do(id,val); break;
     }
 }
 
 /* ---- drawing ---- */
-static short fx_kid[DN_MAX], fx_sib[DN_MAX]; static int fx_tlast=-1, fx_ty, fx_tbot, fx_tx0, fx_tw;
-static void fx_dots_v(int x,int y0,int y1){ for(int y=y0;y<y1;y+=2)putpx(x,y,rgb(128,128,128)); }
-static void fx_dots_h(int x0,int x1,int y){ for(int x=x0;x<x1;x+=2)putpx(x,y,rgb(128,128,128)); }
+static short fx_kid[DN_MAX], fx_sib[DN_MAX]; static int fx_tlast=-1, fx_ty, fx_ttop, fx_tbot, fx_tx0, fx_tw, fx_tdraw;
+static void fx_dots_v(int x,int y0,int y1){ if(!fx_tdraw)return; if(y0<fx_ttop)y0=fx_ttop; if(y1>fx_tbot)y1=fx_tbot; for(int y=y0;y<y1;y+=2)putpx(x,y,rgb(128,128,128)); }
+static void fx_dots_h(int x0,int x1,int y){ if(!fx_tdraw||y<fx_ttop||y>=fx_tbot)return; for(int x=x0;x<x1;x+=2)putpx(x,y,rgb(128,128,128)); }
 static void fx_tree_node(int d,int depth){
-    if(fx_ty+18>fx_tbot)return; int rh=18, x=fx_tx0+4+depth*16, y=fx_ty; int kids=fx_kid[d]>=0;
+    int rh=18, x=fx_tx0+4+depth*16, y=fx_ttop+fx_ty-fx_tscroll; int kids=fx_kid[d]>=0; int vis=fx_tdraw&&y>=fx_ttop&&y+rh<=fx_tbot;
+    if(d==fx_dir&&!fx_mode)fx_tcury=fx_ty;
     if(depth>0){ fx_dots_v(x-8,y,y+rh/2); fx_dots_h(x-8,x+(kids?0:4),y+rh/2); }
-    if(kids){ fill_rect(x,y+4,9,9,rgb(128,128,128)); fill_rect(x+1,y+5,7,7,rgb(255,255,255)); fill_rect(x+2,y+8,5,1,rgb(0,0,0)); if(!fx_exp[d])fill_rect(x+4,y+6,1,5,rgb(0,0,0)); fx_btn(x-2,y+2,13,13,93,d); }
-    fx_icon(x+13,y+1,16,0); const char* nm=d==0?"/":DT[d].name; char nb[40]; int room=(fx_tx0+fx_tw-(x+33))/8; if(room<1)room=1; if(room>38)room=38; fx_fit(nb,nm,room);
-    int on=(!fx_mode&&fx_dir==d), tw=slen(nb)*8+4;
-    if(on)fill_rect(x+32,y+1,tw,16,rgb(132,53,26)); else if(in_rect(mx,my,x+32,y+1,tw,16))fill_rect(x+32,y+1,tw,16,rgb(227,223,219));
-    dstr(x+34,y+2,nb,on?rgb(255,255,255):rgb(0,0,0),1); fx_btn(x+13,y,tw+20,rh,20,d);
-    fx_ty+=rh; int top=fx_ty;
-    if(kids&&fx_exp[d]){ int last=y+rh; for(int c=fx_kid[d];c>=0;c=fx_sib[c]){ last=fx_ty; fx_tree_node(c,depth+1); if(fx_ty+18>fx_tbot)break; } fx_dots_v(x+4,top-4,last+rh/2); } }
+    if(vis){
+        if(kids){ fill_rect(x,y+4,9,9,rgb(128,128,128)); fill_rect(x+1,y+5,7,7,rgb(255,255,255)); fill_rect(x+2,y+8,5,1,rgb(0,0,0)); if(!fx_exp[d])fill_rect(x+4,y+6,1,5,rgb(0,0,0)); fx_btn(x-2,y+2,13,13,93,d); }
+        int istrash=(d>0&&DT[d].parent==0&&seq(DT[d].name,".trash"));
+        fx_icon(x+13,y+1,16,0); if(istrash){ fill_rect(x+16,y+6,10,9,rgb(120,124,132)); fill_rect(x+15,y+4,12,2,rgb(96,100,108)); fill_rect(x+19,y+2,4,2,rgb(96,100,108)); fill_rect(x+18,y+8,1,5,rgb(200,204,212)); fill_rect(x+21,y+8,1,5,rgb(200,204,212)); fill_rect(x+24,y+8,1,5,rgb(200,204,212)); }
+        const char* nm=d==0?"/":istrash?"Trash":DT[d].name; char nb[40]; int room=(fx_tx0+fx_tw-(x+33))/8; if(room<1)room=1; if(room>38)room=38; fx_fit(nb,nm,room);
+        int on=(!fx_mode&&fx_dir==d), tw=slen(nb)*8+4;
+        if(on)fill_rect(x+32,y+1,tw,16,rgb(132,53,26)); else if(in_rect(mx,my,x+32,y+1,tw,16))fill_rect(x+32,y+1,tw,16,rgb(227,223,219));
+        dstr(x+34,y+2,nb,on?rgb(255,255,255):rgb(0,0,0),1); fx_btn(x+13,y,tw+20,rh,20,d); }
+    fx_ty+=rh; int top=fx_ttop+fx_ty-fx_tscroll;
+    if(kids&&fx_exp[d]){ int last=y+rh; for(int c=fx_kid[d];c>=0;c=fx_sib[c]){ last=fx_ttop+fx_ty-fx_tscroll; fx_tree_node(c,depth+1); } fx_dots_v(x+4,top-4,last+rh/2); } }
 static void fx_tree(int x,int y,int w,int h){
     for(int i=0;i<DN_MAX;i++){ fx_kid[i]=-1; fx_sib[i]=-1; }
-    for(int i=DN_MAX-1;i>0;i--){ if(!DT[i].used)continue; int p=DT[i].parent; if(p<0||p>=DN_MAX||p==i||!DT[p].used)continue; if(DT[i].name[0]=='.'&&DT[i].name[1]=='t')continue; if(p==0&&DT[i].name[0]>='A'&&DT[i].name[0]<='Z')continue; fx_sib[i]=fx_kid[p]; fx_kid[p]=(short)i; }
+    for(int i=DN_MAX-1;i>0;i--){ if(!DT[i].used)continue; int p=DT[i].parent; if(p<0||p>=DN_MAX||p==i||!DT[p].used)continue; if(p==0&&seq(DT[i].name,".trash"))continue; if(p==0&&DT[i].name[0]>='A'&&DT[i].name[0]<='Z')continue; fx_sib[i]=fx_kid[p]; fx_kid[p]=(short)i; }
     for(int i=DN_MAX-1;i>0;i--){ if(!DT[i].used||DT[i].parent!=0||DT[i].name[0]<'A'||DT[i].name[0]>'Z')continue; fx_sib[i]=fx_kid[0]; fx_kid[0]=(short)i; }
-    if(fx_tlast!=fx_dir){ fx_tlast=fx_dir; fx_exp[0]=1; int c=fx_dir, g=0; while(c>0&&c<DN_MAX&&g++<64){ c=DT[c].parent; if(c>=0&&c<DN_MAX)fx_exp[c]=1; } }
-    fx_ty=y+2; fx_tbot=y+h; fx_tx0=x; fx_tw=w; fx_tree_node(0,0); }
+    { int t=fx_trash_id(); if(t>0&&t<DN_MAX){ fx_sib[t]=-1; if(fx_kid[0]<0)fx_kid[0]=(short)t; else { int c=fx_kid[0], g=0; while(fx_sib[c]>=0&&g++<DN_MAX)c=fx_sib[c]; fx_sib[c]=(short)t; } } }
+    if(fx_tlast!=fx_dir){ fx_tlast=fx_dir; fx_exp[0]=1; int c=fx_dir, g=0; while(c>0&&c<DN_MAX&&g++<64){ c=DT[c].parent; if(c>=0&&c<DN_MAX)fx_exp[c]=1; } fx_tfollow=1; }
+    fx_ttop=y+2; fx_tbot=y+h; fx_tx0=x; fx_tw=w; fx_tx=x; fx_ty0=y; fx_tw0=w; fx_th0=h;
+    fx_tdraw=0; fx_ty=0; fx_tcury=-1; fx_tree_node(0,0); fx_ttotal=fx_ty+4;
+    int vis=fx_tbot-fx_ttop, maxs=fx_ttotal-vis; if(maxs<0)maxs=0;
+    if(fx_tfollow){ if(fx_tcury>=0){ if(fx_tcury<fx_tscroll)fx_tscroll=fx_tcury; if(fx_tcury+18>fx_tscroll+vis)fx_tscroll=fx_tcury+18-vis; } fx_tfollow=0; }
+    if(fx_tscroll>maxs)fx_tscroll=maxs; if(fx_tscroll<0)fx_tscroll=0;
+    if(maxs>0)fx_tw=w-11;
+    fx_tdraw=1; fx_ty=0; fx_tree_node(0,0);
+    if(maxs>0){ int sx=x+w-9, th=vis*vis/fx_ttotal; if(th<20)th=20; if(th>vis)th=vis; int ty=fx_ttop+(vis-th)*fx_tscroll/maxs;
+        fill_rect(sx,fx_ttop,9,vis,rgb(232,228,220)); fill_rect(sx+1,ty,7,th,rgb(212,208,200)); fill_rect(sx+1,ty,7,1,rgb(255,255,255)); fill_rect(sx+1,ty,1,th,rgb(255,255,255)); fill_rect(sx+1,ty+th-1,7,1,rgb(128,128,128)); fill_rect(sx+7,ty,1,th,rgb(128,128,128));
+        fx_btn(sx,fx_ttop,9,vis,94,0); } }
 static void fx_toolbtn2(int x,int y,int w,int h,const char* lbl,int g,int id,int on,int enabled){
     int hov=enabled&&in_rect(mx,my,x,y,w,h);
     u32 bg=on?FXC(mix(ACC,rgb(255,255,255),196),rgb(190,186,178)):hov?FXC(rgb(232,236,244),rgb(227,223,219)):FXC(rgb(247,248,250),rgb(212,208,200));
@@ -67,7 +86,7 @@ static void fx_toolbtn2(int x,int y,int w,int h,const char* lbl,int g,int id,int
 static void fx_toolbtn(int x,int y,int w,int h,const char* lbl,int id,int on,int enabled){ fx_toolbtn2(x,y,w,h,lbl,0,id,on,enabled); }
 extern u32 g_nvx_secs;
 static long fx_disk_total(void){ if(disk_ok&&g_nvx_secs)return (long)g_nvx_secs*512L; if(disk_ok&&g_disk_sectors)return (long)g_disk_sectors*512L; return (long)(g_ram_mb?g_ram_mb:16)*1048576L; }
-static void fx_disk_list(int x,int y){ extern int gdisk_count(void); extern u32 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int g_gdisk_probed;
+static void fx_disk_list(int x,int y){ extern int gdisk_count(void); extern u64 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int g_gdisk_probed;
     if(!g_gdisk_probed)return; int n=gdisk_count(); if(n<=0)return; char b[200],*p=b; p=scopy(p,"Physical disks: ");
     for(int i=0;i<n&&i<5;i++){ if(i)p=scopy(p,",  "); p=scopy(p,(char*)gdisk_name_of(i)); p=scopy(p," "); u64 mb=(u64)gdisk_size_of(i)*512ULL/1048576ULL; if(mb>=1024){ p=udec(p,(u32)(mb/1024)); *p++='.'; p=udec(p,(u32)((mb%1024)*10/1024)); p=scopy(p," GB"); } else { p=udec(p,(u32)mb); p=scopy(p," MB"); } }
     *p=0; dstr(x,y,b,rgb(110,118,140),1); }
@@ -83,6 +102,8 @@ static void tpc_icon(int x,int y,int kind,int big){
     if(kind==VOL_USB){ int bw=s*3/4, bh=s*3/8, bx=x+(s-bw)/2+s/10, by=y+s/2-bh/2+s/8;
         fill_round(bx-s/6,by+bh/4,s/6+1,bh/2,1,15,rgb(176,182,192)); if(big){ fill_rect(bx-s/6+2,by+bh/4+3,3,3,rgb(120,126,138)); fill_rect(bx-s/6+2,by+bh/2+2,3,3,rgb(120,126,138)); }
         fill_round(bx,by,bw,bh,big?4:2,15,rgb(70,78,92)); fill_rect(bx+2,by+1,bw-4,big?3:1,rgb(110,118,134)); fill_circle(bx+bw-(big?7:3),by+bh-(big?6:3),big?2:1,rgb(110,220,140)); return; }
+    if(kind==VOL_SD){ int bw=s*5/8, bh=s*13/16, bx=x+(s-bw)/2, by=y+(s-bh)/2, nc=bw/3;
+        fill_round(bx,by,bw,bh,big?4:1,15,rgb(46,92,170)); fill_rect(bx+bw-nc,by,nc,nc,rgb(255,255,255)); if(big){ for(int k=0;k<4;k++)fill_rect(bx+5+k*6,by+4,3,9,rgb(230,196,90)); fill_rect(bx+5,by+bh-16,bw-10,10,rgb(236,240,248)); } return; }
     int bw=s*7/8, bh=big?20:7, bx=x+(s-bw)/2, by=y+s-bh-(big?6:2);
     fill_round(bx,by,bw,bh,big?4:2,15,rgb(150,156,166)); fill_round(bx,by,bw,bh-(big?5:2),big?4:2,15,rgb(214,218,224)); fill_rect(bx+2,by+1,bw-4,1,rgb(240,242,245));
     fill_rect(bx+(big?5:2),by+bh-(big?4:2),bw-(big?18:7),1,rgb(120,126,136)); fill_circle(bx+bw-(big?7:3),by+bh-(big?3:2),big?2:1,rgb(80,200,120));
@@ -94,7 +115,10 @@ static void tpc_bar(int x,int y,int w,int h,u64 used,u64 total,int known){
 static int tpc_cols(int w){ int c=(w-24)/262; return c<1?1:c; }
 static void tpc_open(int i){ if(i<0||i>=g_vol_n)return; nvol* v=&g_vol[i];
     if(v->kind==VOL_SYS){ fx_mode=0; fx_go(0); return; }
+    if(tpc_browse(v)){ fxv_enter(i); if(fxv_active()){ if(tpc_ext(v))tpc_e4=i; tpc_props=-1; return; } }
     if(v->kind==VOL_USB&&ufat_ok&&(v->fs[0]=='F')){ g_files_usb=1; return; }
+    if(tpc_browse(v)&&!tpc_ext(v)){ tpc_props=i; return; }
+    if(tpc_ext(v)){ if(vol_mount_ext4(i)){ tpc_e4=-1; toast("Could not open this ext4 disk"); } else { tpc_e4=i; toast(g_ext4.ro?"ext4 disk opened read-only - it cannot be changed":"ext4 disk opened read-write"); } }
     tpc_props=i; }
 static int tpc_isin(int sx,int sy,int r2o,int r2i,int dx,int dy){ int d=dx*dx+dy*dy; (void)sx; (void)sy; return d<=r2o&&d>=r2i; }
 static long long tpc_pa(long long ux,long long uy){ if(ux>=0&&uy>=0)return (ux+uy)?(ux*65536)/(ux+uy):0; if(ux>=0&&uy<0)return 65536+((-uy)*65536)/(ux-uy); if(ux<0&&uy<0)return 131072+((-ux)*65536)/(-ux-uy); return 196608+(uy*65536)/(uy-ux); }
@@ -118,8 +142,9 @@ static void tpc_dialog(int wx,int wy,int ww,int wh){
     int x=bx+16, y=by+16; tpc_icon(x,y-4,v->kind,1);
     fill_rect(x+70,y+6,bw-102,24,rgb(122,122,122)); fill_rect(x+71,y+7,bw-104,22,rgb(255,255,255)); dstr(x+76,y+10,v->label[0]?v->label:"",rgb(30,30,30),1); y+=52;
     fill_rect(x,y,bw-32,1,rgb(222,222,222)); y+=12;
-    int c2=x+110; dstr(x,y,"Type:",rgb(30,30,30),1); dstr(c2,y,v->kind==VOL_USB?"USB Drive":"Local Disk",rgb(30,30,30),1); y+=22;
+    int c2=x+110; dstr(x,y,"Type:",rgb(30,30,30),1); dstr(c2,y,v->kind==VOL_USB?"USB Drive":v->kind==VOL_SD?"SD Card":"Local Disk",rgb(30,30,30),1); y+=22;
     dstr(x,y,"File system:",rgb(30,30,30),1); dstr(c2,y,v->fs[0]?v->fs:"Unknown",rgb(30,30,30),1); y+=22;
+    if(tpc_ext(v)){ int op=tpc_e4==tpc_props&&ext4k_mounted(); dstr(x,y,"Access:",rgb(30,30,30),1); dstr(c2,y,!op?"Not open":g_ext4.ro?"Read-only (no cache flush or not allowed)":"Read-write",op&&g_ext4.ro?rgb(176,80,0):rgb(30,30,30),1); y+=22; }
     dstr(x,y,"Location:",rgb(30,30,30),1); { char d[30]; fx_fit(d,v->dev,(bw-140)/8); dstr(c2,y,d,rgb(30,30,30),1); } y+=26;
     fill_rect(x,y,bw-32,1,rgb(222,222,222)); y+=12;
     u64 used=v->has_free&&v->total>=v->freeb?v->total-v->freeb:0; u32 cu=rgb(38,129,214), cf=rgb(214,214,214);
@@ -143,6 +168,7 @@ int files_vol_tick(void){
     if(!fx_vs_req&&g_usbdev_gen==fx_vs_gen&&fx_vs_ns&&now-fx_vs_ns<3000000000ULL)return 0;
     fx_vs_req=0; fx_vs_ns=now; fx_vs_gen=g_usbdev_gen; u32 sc=g_vol_scans; vol_scan(0); return g_vol_scans!=sc; }
 static void fx_draw_thispc(int x0,int y0,int w,int h){
+    if(fxv_active()){ fxv_draw(x0,y0,w,h); return; }
     if(g_vol_n>0&&g_vol[0].kind==VOL_SYS)tpc_usage_c(&g_vol[0]); if(tpc_sel>=g_vol_n)tpc_sel=-1; if(tpc_props>=g_vol_n)tpc_props=-1;
     fill_rect(x0,y0,w,h,rgb(255,255,255));
     int y=y0+14; dstr(x0+20,y,"v",rgb(96,96,96),1); tpc_bold(x0+36,y,"Devices and drives",rgb(31,31,31)); fill_rect(x0+36+18*8+12,y+8,w-(36+18*8+12)-24,1,rgb(229,229,229));
@@ -161,7 +187,7 @@ static void fx_draw_thispc(int x0,int y0,int w,int h){
 }
 static void fx_tpc_cmdbar(int wx,int wy,int ww){
     int y=wy+42, x=wx+10; int has=tpc_sel>=0&&tpc_sel<g_vol_n; int wide=ww>=760;
-    fx_toolbtn2(x,y,wide?92:34,28,wide?"Properties":0,6,70,0,has); x+=wide?96:38;
+    fx_toolbtn2(x,y,wide?112:34,28,wide?"Properties":0,6,70,0,has); x+=wide?116:38;
     fx_toolbtn2(x,y,wide?66:34,28,wide?"Open":0,4,71,0,has); x+=wide?74:44; fill_rect(x-5,y+6,1,16,FXC(rgb(220,224,232),rgb(128,128,128)));
     fx_toolbtn2(x,y,wide?82:34,28,wide?"Refresh":0,3,72,0,1); x+=wide?90:44; fill_rect(x-5,y+6,1,16,FXC(rgb(220,224,232),rgb(128,128,128)));
     fx_toolbtn2(x,y,wide?120:34,28,wide?"Open Settings":0,0,74,0,1);
@@ -203,7 +229,7 @@ static void fx_draw(int i){ extern int g_round_off; g_round_off=(g_dstyle==1); f
 static void fx_draw_body(int i){
     fx_init(); if(fx_dir<0||!DT[fx_dir].used){ extern int g_home_dir; if(g_home_dir>0&&g_home_dir<DN_MAX&&DT[g_home_dir].used)fx_go(g_home_dir); else fx_go(0); }
     if(g_fsel>=0&&(!FS[g_fsel].used||FS[g_fsel].dir!=fx_dir))g_fsel=-1; if(fx_seldir>=0&&(!DT[fx_seldir].used||DT[fx_seldir].parent!=fx_dir))fx_seldir=-1;
-    win_frame(i,g_dstyle==1?"File Manager":"File Explorer");
+    win_frame(i,"Files");
     int wx=WN[i].x, wy=WN[i].y+TITLEH, ww=WN[i].w, wh=WN[i].h-TITLEH; fx_bn=0; fx_hn2=0;
     fill_rect(wx+1,wy,ww-2,wh-1,rgb(255,255,255)); fill_rect(wx+1,wy,ww-2,76,FXC(rgb(247,248,250),rgb(212,208,200)));
     /* row 1: navigation + path + filter */
@@ -232,7 +258,8 @@ static void fx_draw_body(int i){
         fill_rect(x-5,y+6,1,16,FXC(rgb(220,224,232),rgb(128,128,128)));
         fx_toolbtn2(x,y,wide?82:34,28,wide?"Rename":0,6,6,0,have); x+=wide?86:38; fx_toolbtn2(x,y,wide?82:34,28,wide?"Delete":0,7,7,0,have); x+=wide?90:44;
         fill_rect(x-5,y+6,1,16,FXC(rgb(220,224,232),rgb(128,128,128)));
-        fx_toolbtn2(x,y,wide?66:34,28,wide?"Copy":0,8,8,0,g_fsel>=0); x+=wide?70:38; fx_toolbtn2(x,y,wide?58:34,28,wide?"Cut":0,9,9,0,g_fsel>=0); x+=wide?62:38; fx_toolbtn2(x,y,wide?70:34,28,wide?"Paste":0,10,10,0,fx_clip>=0&&FS[fx_clip].used);
+        int canclip=g_fsel>=0||(fx_seldir>0&&fx_seldir!=fx_trash_id());
+        fx_toolbtn2(x,y,wide?66:34,28,wide?"Copy":0,8,8,0,canclip); x+=wide?70:38; fx_toolbtn2(x,y,wide?58:34,28,wide?"Cut":0,9,9,0,canclip); x+=wide?62:38; fx_toolbtn2(x,y,wide?70:34,28,wide?"Paste":0,10,10,0,fx_clip_has());
         int rx=wx+ww-10; if(ww>=700){ rx-=34; fx_toolbtn2(rx,y,34,28,0,13,12,fx_prev,1); }
         rx-=34; fx_toolbtn2(rx,y,34,28,0,11,40001,fx_view==1,1); fx_bid[fx_bn-1]=11; fx_bval[fx_bn-1]=1;
         rx-=36; fx_toolbtn2(rx,y,34,28,0,12,40000,fx_view==0,1); fx_bid[fx_bn-1]=11; fx_bval[fx_bn-1]=0; }
@@ -258,8 +285,8 @@ static void fx_draw_body(int i){
             fill_round(wx+14,y+8,18,12,3,15,rgb(120,130,150)); fill_rect(wx+17,y+11,12,3,rgb(200,206,218)); dstr(wx+38,y+6,"This PC",on?INK:rgb(72,80,98),1); fx_btn(wx+6,y,sbw-10,26,20,-2); y+=28; }
         for(int vi=0;vi<g_vol_n&&y+26<=bot-4;vi++){ nvol* v=&g_vol[vi]; int on=fx_mode&&tpc_sel==vi; if(on)fill_round(wx+6,y,sbw-10,24,6,15,FXC(rgb(229,243,255),rgb(210,192,182))); else if(in_rect(mx,my,wx+6,y,sbw-10,24))fill_round(wx+6,y,sbw-10,24,6,15,FXC(rgb(233,236,242),rgb(227,223,219)));
             tpc_icon(wx+22,y+4,v->kind,0); char nm[48]; vol_name(v,nm,48); char nf[24]; fx_fit(nf,nm,(sbw-50)/8); dstr(wx+44,y+5,nf,rgb(72,80,98),1); fx_btn(wx+6,y,sbw-10,24,76,vi); y+=26; }
-        if(fx_clip>=0&&FS[fx_clip].used&&y<bot-44){ y=bot-40; fill_round(wx+8,y,sbw-14,32,6,15,rgb(236,240,248)); dstr(wx+14,y+2,fx_clipcut?"Cut:":"Copied:",rgb(120,128,146),1);
-            char cb[24]; fx_fit(cb,FS[fx_clip].name,(sbw-24)/8); dstr(wx+14,y+16,cb,INK,1); } }
+        if(fx_clip_has()&&y<bot-44){ y=bot-40; fill_round(wx+8,y,sbw-14,32,6,15,rgb(236,240,248)); dstr(wx+14,y+2,fx_clipcut?"Cut:":"Copied:",rgb(120,128,146),1);
+            char cb[24]; fx_fit(cb,fx_clipdir>0&&DT[fx_clipdir].used?DT[fx_clipdir].name:FS[fx_clip].name,(sbw-24)/8); dstr(wx+14,y+16,cb,INK,1); } }
     /* main area (+ preview) */
     int pvw=(fx_prev&&!fx_mode&&ww>=700)?(ww>=900?280:230):0;
     fx_mainx=wx+sbw+2; fx_mainy=top; fx_mainw=ww-sbw-3-pvw; fx_mainh=bot-top;
@@ -279,7 +306,7 @@ static void fx_draw_body(int i){
             { int sr=fx_selrow(); if(sr>=0){ if(sr<fx_scroll)fx_scroll=sr; if(sr>=fx_scroll+vis)fx_scroll=sr-vis+1; } }
             int y=y0+32; { extern void gfx_scroll_area(int,int,int,int,int,int); gfx_scroll_area(W_FILES,x0,y0+32,mw,vis*rh,fx_scroll*rh); }
             for(int r=fx_scroll;r<fx_rn&&r<fx_scroll+vis;r++){ int isd=(fx_rk[r]==0), id=fx_rid[r];
-                int sel=isd?(id==fx_seldir):(id==g_fsel); int cut=(!isd&&fx_clipcut&&id==fx_clip);
+                int sel=isd?(id==fx_seldir):(id==g_fsel); int cut=fx_clipcut&&(isd?id==fx_clipdir:id==fx_clip);
                 if(sel)fill_round(x0+6,y,mw-12,rh-2,6,15,FXC(mix(ACC,rgb(255,255,255),200),rgb(210,192,182))); else if(in_rect(mx,my,x0+6,y,mw-12,rh-2))fill_round(x0+6,y,mw-12,rh-2,6,15,FXC(rgb(240,243,249),rgb(227,223,219)));
                 const char* nm=isd?DT[id].name:FS[id].name; char nb[64]; fx_fit(nb,nm,(cType-x0-56)/8);
                 fx_icon_item(x0+14,y+4,20,isd,id); dstr(x0+42,y+7,nb,cut?rgb(150,158,176):INK,1);
@@ -327,10 +354,10 @@ static void fx_draw_body(int i){
     if(fx_confirm&&fx_confirm_dir>0&&DT[fx_confirm_dir].used){
         { u32* S=SCENE; int y0=wy<0?0:wy, y1=wy+wh-1>(int)H?(int)H:wy+wh-1, x0=wx+1<0?0:wx+1, x1=wx+ww-1>(int)W?(int)W:wx+ww-1; for(int y=y0;y<y1;y++)for(int x=x0;x<x1;x++){ u32*pp=&S[(u64)y*SW+x]; *pp=mix(*pp,rgb(20,24,34),90); } }
         int dw=380, dh=150, dx=wx+(ww-dw)/2, dy=wy+(wh-dh)/2; shadow_soft(dx,dy,dw,dh,12); fill_round(dx,dy,dw,dh,12,15,rgb(255,255,255));
-        dstr(dx+22,dy+20,"Delete folder?",INK,2);
+        int totrash=fx_confirm_kind==1; dstr(dx+22,dy+20,totrash?"Move folder to Trash?":"Delete folder?",INK,2);
         char b[80],*p=b; p=scopy(p,"\""); char nb[30]; fx_fit(nb,DT[fx_confirm_dir].name,28); p=scopy(p,nb); p=scopy(p,"\" and everything in it"); *p=0; dstr(dx+22,dy+56,b,rgb(90,100,120),1);
-        dstr(dx+22,dy+74,"will be permanently deleted.",rgb(90,100,120),1);
+        dstr(dx+22,dy+74,totrash?"will be moved to the Trash.":"will be permanently deleted.",rgb(90,100,120),1);
         int by=dy+dh-44; fill_round(dx+dw-212,by,94,30,7,15,in_rect(mx,my,dx+dw-212,by,94,30)?rgb(228,231,238):rgb(240,242,246)); dstr_ctr(dx+dw-165,by+8,"Cancel",INK,1);
-        fill_round(dx+dw-110,by,90,30,7,15,in_rect(mx,my,dx+dw-110,by,90,30)?rgb(200,60,60):rgb(220,72,72)); dstr_ctr(dx+dw-65,by+8,"Delete",rgb(255,255,255),1);
+        fill_round(dx+dw-110,by,90,30,7,15,in_rect(mx,my,dx+dw-110,by,90,30)?(totrash?ACC2:rgb(200,60,60)):(totrash?ACC:rgb(220,72,72))); dstr_ctr(dx+dw-65,by+8,totrash?"Move":"Delete",rgb(255,255,255),1);
         fx_bn=0; fx_btn(dx+dw-212,by,94,30,90,0); fx_btn(dx+dw-110,by,90,30,91,0); fx_hn2=0; }
 }

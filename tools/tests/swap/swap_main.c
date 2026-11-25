@@ -7,7 +7,7 @@ static long g_frames, g_fail_at = -1;
 static u64 pframe_alloc(void){ if(g_fail_at>=0&&g_frames>=g_fail_at)return 0; void* p=aligned_alloc(4096,4096); if(!p)return 0; memset(p,0,4096); g_frames++; return (u64)p; }
 static void pframe_free(u64 pa){ free((void*)pa); g_frames--; }
 static void* kmalloc(unsigned long n){ return malloc(n); }
-static u32 pf_n=100000; static u32 pframe_hi_count(void){ return 0; }
+static u32 pf_n=100000; static u32 pframe_hi_count(void){ return 0; } static u32 pframe_free_count(void){ return g_fail_at>=0?(u32)(g_fail_at>g_frames?g_fail_at-g_frames:0):100000u; }
 /*SWAPCODE*/
 static unsigned rs=1; static unsigned rnd(void){ rs=rs*1103515245u+12345u; return rs>>8; }
 static void fill(u8* p,int i){ int k=i%5; for(int j=0;j<4096;j++){ if(k==0)p[j]=(u8)rnd(); else if(k==1)p[j]=(u8)((j/7)&0xFF); else if(k==2)p[j]=0; else if(k==3)p[j]="swap test page "[j%15]; else p[j]=(u8)((rnd()%4)?p[j?j-1:0]:rnd()); } ((u32*)p)[0]=(u32)i*(k!=2); }

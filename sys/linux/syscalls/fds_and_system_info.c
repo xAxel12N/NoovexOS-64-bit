@@ -176,6 +176,10 @@ static long lx_setsched(int pid,int pol,int prio,int nice,int setnice){
     if(setnice&&(pol==0||pol==3||pol==5)){ if(nice<-20)nice=-20; if(nice>19)nice=19; if(g_uid!=0&&nice<q->nice)return -LX_EPERM; q->nice=nice; }
     if((q->policy==1||q->policy==2||q->policy==5)&&pol!=q->policy){ if(q->vrt<g_min_vrt)q->vrt=g_min_vrt; }
     q->policy=pol; q->rtprio=prio; return 0; }
+static void lx_dent_old(u8* d,long n){
+    long o=0; while(o+20<=n){ u16 rl=*(volatile u16*)(d+o+16); if(rl<20||rl>n-o)break; u8 ty=d[o+18]; int L=0; while(L<rl-20&&d[o+19+L])L++;
+        for(int i=0;i<L;i++){ d[o+18+i]=d[o+19+i]; } d[o+18+L]=0; d[o+rl-1]=ty; o+=rl; }
+}
 static long lx_dispatch(struct sysregs* r){
     struct jproc* p=&g_jp[g_jcur];
     u64 nr=r->rax, a1=r->rdi, a2=r->rsi, a3=r->rdx, a4=r->r10, a5=r->r8, a6=r->r9;
@@ -196,14 +200,14 @@ static long lx_dispatch(struct sysregs* r){
     case 233: return lx_epoll_ctl((int)a1,(int)a2,(int)a3,a4);
     case 232: case 281: case 441: return lx_epoll_wait(r,(int)a1,a2,(int)a3,nr==441?(a4?0:-1):(long)(int)a4);
     case 8: return lx_lseek((int)a1,(long)a2,(int)a3);
-    case 9: return lx_mmap(a1,a2,(int)a3,(int)a4,(int)a5,a6);
+    case 9: { if(!((int)a4&0x20)){ struct vfile* mv=lx_vf((int)a5); if(mv&&mv->dev==LX_PERFFD)return -LX_ENODEV; } return lx_mmap(a1,a2,(int)a3,(int)a4,(int)a5,a6); }
     case 10: return lx_mprotect(a1,a2,(int)a3);
     case 11: return lx_munmap(a1,a2);
     case 12: return lx_brk(a1);
     case 13: return lx_sigaction((int)a1,a2,a3,a4);
     case 14: return lx_sigprocmask((int)a1,a2,a3,a4);
     case 15: lx_sigreturn(r);
-    case 16: { struct vfile* iv=lx_vf((int)a1); if(iv&&iv->dev==LX_BLKD)return dx_ioctl(iv->fs_idx,(u32)a2,a3); if(iv&&iv->dev==LX_SNDPCM&&(u32)a2!=0x5451u&&(u32)a2!=0x5450u&&(u32)a2!=0x5421u)return asnd_pcm_ioctl(r,iv,(u32)a2,a3); return lx_ioctl((int)a1,a2,a3); }
+    case 16: { struct vfile* iv=lx_vf((int)a1); if(iv&&iv->dev==LX_PERFFD)return lx_perf_ioctl(iv,(u32)a2,a3); if(iv&&iv->dev==LX_BLKD)return dx_ioctl(iv->fs_idx,(u32)a2,a3); if(iv&&iv->dev==LX_V4L&&(u32)a2!=0x5451u&&(u32)a2!=0x5450u&&(u32)a2!=0x5421u)return v4l_ioctl(r,iv,(u32)a2,a3); if(iv&&iv->dev==LX_SNDPCM&&(u32)a2!=0x5451u&&(u32)a2!=0x5450u&&(u32)a2!=0x5421u)return asnd_pcm_ioctl(r,iv,(u32)a2,a3); return lx_ioctl((int)a1,a2,a3); }
     case 17: lx_sr_warm((int)a1); return lx_prw((int)a1,a2,a3,(long)a4,0);
     case 18: return lx_prw((int)a1,a2,a3,(long)a4,1);
     case 19: lx_sr_warm((int)a1); return lx_rwv(r,(int)a1,a2,(int)a3,0);
@@ -308,7 +312,8 @@ static long lx_dispatch(struct sysregs* r){
     case 74: case 75: { struct vfile* v=lx_vf((int)a1); if(!v)return -LX_EBADF; if(v->dev==0&&v->fs_idx>=0&&v->fs_idx<FS_N)g_fs_dirty[v->fs_idx]=0; return k_fsync((int)a1)?-LX_EIO:0; }
     case 76: PATH1(LX_AT_FDCWD,a1,0); if((long)a2<0)return -LX_EINVAL; if(!lx_exists(pa))return -LX_ENOENT; if(lx_isdir(pa))return -LX_EISDIR; return k_truncate(pa,(long)a2)?-LX_EACCES:0;
     case 77: { struct vfile* v=lx_vf((int)a1); if(!v)return -LX_EBADF; if((long)a2<0)return -LX_EINVAL; if(v->dev==LX_MFD){ struct memfd* m=&g_mfd[v->fs_idx]; if(((u64)a2>m->size&&(m->seals&4))||((u64)a2<m->size&&(m->seals&2)))return -LX_EPERM; return mfd_truncate(v->fs_idx,(u64)a2); } if(v->dev==LX_SYSW&&(v->flags&3)!=0)return 0; if(v->dev!=0||(v->flags&3)==0)return -LX_EINVAL; return k_ftruncate((int)a1,(long)a2)?-LX_EACCES:0; }
-    case 78: { long n=lx_getdents((int)a1,a2,a3); if(n<=0)return n; u8* d=(u8*)a2; long o=0; while(o<n){ u16 rl=*(u16*)(d+o+16); u8 ty=d[o+18]; int L=lx_slen((char*)d+o+19); for(int i=0;i<=L;i++)d[o+18+i]=d[o+19+i]; d[o+rl-1]=ty; o+=rl; } return n; }
+    case 78: { long n=lx_getdents((int)a1,a2,a3); if(n<=0)return n; lx_dent_old((u8*)a2,n); return n; }
+    case 298: return lx_perf_open(a1,(int)a2,(int)a3,(int)a4,a5);
     case 253: return lx_inotify_init(0);
     case 294: return lx_inotify_init((int)a1);
     case 254: PATH1(LX_AT_FDCWD,a2,0); return lx_inotify_add((int)a1,pa,(u32)a3);
@@ -359,9 +364,9 @@ static long lx_dispatch(struct sysregs* r){
     case 87: PATH1(LX_AT_FDCWD,a1,0); return lx_unlink(pa);
     case 88: { int n=lx_str(a1,pa,LX_PATH); if(n<0)return n; PATH2(LX_AT_FDCWD,a2); if(lx_exists(pb))return -LX_EEXIST; return ux_symlink(pa,pb)?-LX_ENOSPC:0; }
     case 89: { char t[64]; if(lx_str(a1,t,64)>0){ int pe=lx_proc_exe(t,a2,a3); if(pe!=-9999)return pe; } } { char sp[LX_PATH]; if(lx_path(LX_AT_FDCWD,a1,sp,0)>=0&&sp[0]=='/'&&sp[1]=='s'&&sp[2]=='y'&&sp[3]=='s'&&(sp[4]=='/'||!sp[4])){ if((long)a3<=0)return -LX_EINVAL; char lb[200]; int ln=sx_readlink(sp,lb,200); if(ln!=-9999){ if(ln<0)return ln; if((u64)ln>a3)ln=(int)a3; return lx_put(a2,lb,(u64)ln)?-LX_EFAULT:ln; } } } PATH1(LX_AT_FDCWD,a1,0); { if((long)a3<=0)return -LX_EINVAL; if(!lx_okw(a2,a3))return -LX_EFAULT; int n=ux_readlink(pa,(char*)a2,(int)(a3>LX_PATH?LX_PATH:a3)); if(n<0)return lx_exists(pa)?-LX_EINVAL:-LX_ENOENT; return n; }
-    case 90: PATH1(LX_AT_FDCWD,a1,0); if(!lx_exists(pa))return -LX_ENOENT; return ux_chmod(pa,(unsigned)a2)?-LX_EPERM:0;
+    case 90: PATH1(LX_AT_FDCWD,a1,0); { int pc=pty_chmod_path(pa,(u32)a2); if(pc<=0)return pc; } if(!lx_exists(pa))return -LX_ENOENT; return ux_chmod(pa,(unsigned)a2)?-LX_EPERM:0;
     case 91: return lx_fchmod((int)a1,(int)a2);
-    case 92: case 94: PATH1(LX_AT_FDCWD,a1,0); if(!lx_exists(pa)){ int isd; if(ux_lookup(pa,&isd,0)<0)return -LX_ENOENT; } return ux_chown(pa,(int)a2,(int)a3,nr==92)?-LX_EPERM:0;
+    case 92: case 94: PATH1(LX_AT_FDCWD,a1,0); { int pc=pty_chown_path(pa,(int)a2,(int)a3); if(pc<=0)return pc; } if(!lx_exists(pa)){ int isd; if(ux_lookup(pa,&isd,0)<0)return -LX_ENOENT; } return ux_chown(pa,(int)a2,(int)a3,nr==92)?-LX_EPERM:0;
     case 93: { struct vfile* v=lx_vf((int)a1); if(!v)return -LX_EBADF; int isd; int k=lx_fd_node(v,&isd); if(k<0)return 0; return ux_chown_k(k,isd,(int)a2,(int)a3)?-LX_EPERM:0; }
     case 95: { int old=g_umask; g_umask=(int)a1&0777; return old; }
     case 96: { if(a1){ u64 ns=lx_now_ns(); u64 tv[2]={ns/1000000000ULL,(ns%1000000000ULL)/1000}; if(lx_put(a1,tv,16))return -LX_EFAULT; } if(a2){ u32 tz[2]={0,0}; if(lx_put(a2,tz,8))return -LX_EFAULT; } return 0; }
@@ -373,8 +378,8 @@ static long lx_dispatch(struct sysregs* r){
     case 104: case 108: return g_gid;
     case 105: { long v=lx_setid(&g_uid,(int)a1); if(!v)p->uid=g_uid; return v; }
     case 106: { long v=lx_setid(&g_gid,(int)a1); if(!v)p->gid=g_gid; return v; }
-    case 113: case 117: { long v=lx_setid(&g_uid,(int)a2); if(!v)p->uid=g_uid; return v; }
-    case 114: case 119: { long v=lx_setid(&g_gid,(int)a2); if(!v)p->gid=g_gid; return v; }
+    case 113: case 117: { long v=lx_setid(&g_uid,(int)a2!=-1?(int)a2:(int)a1!=-1?(int)a1:nr==117?(int)a3:-1); if(!v)p->uid=g_uid; return v; }
+    case 114: case 119: { long v=lx_setid(&g_gid,(int)a2!=-1?(int)a2:(int)a1!=-1?(int)a1:nr==119?(int)a3:-1); if(!v)p->gid=g_gid; return v; }
     case 118: case 120: { int v=nr==118?g_uid:g_gid; int o[3]={v,v,v}; if(a1&&lx_put(a1,o,4))return -LX_EFAULT; if(a2&&lx_put(a2,o+1,4))return -LX_EFAULT; if(a3&&lx_put(a3,o+2,4))return -LX_EFAULT; return 0; }
     case 115: { extern int acct_gids(int,int*,int); int g[32]; int n=acct_gids(g_uid,g,32); if((int)a1==0)return n; if((int)a1<n)return -LX_EINVAL; if(a2&&lx_put(a2,g,n*4))return -LX_EFAULT; return n; }
     case 116: return g_uid==0?0:-LX_EPERM;
@@ -441,7 +446,7 @@ static long lx_dispatch(struct sysregs* r){
     case 230: return lx_clock_nanosleep(r,(int)a1,(int)a2,a3);
     case 257: return lx_open((int)a1,a2,(int)a3,(int)a4);
     case 258: PATH1((int)a1,a2,0); return lx_mkdir(pa,(int)a3);
-    case 260: PATH1((int)a1,a2,0); if(!lx_exists(pa))return -LX_ENOENT; return ux_chown(pa,(int)a3,(int)a4,!((int)a5&0x100))?-LX_EPERM:0;
+    case 260: PATH1((int)a1,a2,0); { int pc=pty_chown_path(pa,(int)a3,(int)a4); if(pc<=0)return pc; } if(!lx_exists(pa))return -LX_ENOENT; return ux_chown(pa,(int)a3,(int)a4,!((int)a5&0x100))?-LX_EPERM:0;
     case 262: { int fl=(int)a4; if(fl&0x1000){ if(!a2)return lx_fstat((int)a1,a3); char t1[4]; int n=lx_str(a2,t1,4); if(n==0)return lx_fstat((int)a1,a3); }
         PATH1((int)a1,a2,0); return lx_stat_path(pa,a3,!(fl&0x100)); }
     case 332: { int fl=(int)a3; long rv; if(!lx_okw(a5,256))return -LX_EFAULT;
@@ -469,7 +474,7 @@ static long lx_dispatch(struct sysregs* r){
     case 265: PATH1((int)a1,a2,0); PATH2((int)a3,a4); { int L=lx_slen(pb), c=0; while(L>0&&pb[L-1]!='/'){ L--; c++; } if(c>51)return -LX_ENAMETOOLONG; } if(!lx_exists(pa))return -LX_ENOENT; if(lx_exists(pb))return -LX_EEXIST; return ux_link(pa,pb)?-LX_EPERM:0;
     case 266: { int n=lx_str(a1,pa,LX_PATH); if(n<0)return n; PATH2((int)a2,a3); if(lx_exists(pb))return -LX_EEXIST; return ux_symlink(pa,pb)?-LX_ENOSPC:0; }
     case 267: { char t[64]; if(lx_str(a2,t,64)>0){ int pe=lx_proc_exe(t,a3,a4); if(pe!=-9999)return pe; } } { char sp[LX_PATH]; if(lx_path((int)a1,a2,sp,0)>=0&&sp[0]=='/'&&sp[1]=='s'&&sp[2]=='y'&&sp[3]=='s'&&(sp[4]=='/'||!sp[4])){ if((long)a4<=0)return -LX_EINVAL; char lb[200]; int ln=sx_readlink(sp,lb,200); if(ln!=-9999){ if(ln<0)return ln; if((u64)ln>a4)ln=(int)a4; return lx_put(a3,lb,(u64)ln)?-LX_EFAULT:ln; } } } PATH1((int)a1,a2,0); { if((long)a4<=0)return -LX_EINVAL; if(!lx_okw(a3,a4))return -LX_EFAULT; int n=ux_readlink(pa,(char*)a3,(int)(a4>LX_PATH?LX_PATH:a4)); if(n<0)return lx_exists(pa)?-LX_EINVAL:-LX_ENOENT; return n; }
-    case 268: PATH1((int)a1,a2,0); if(!lx_exists(pa))return -LX_ENOENT; return ux_chmod(pa,(unsigned)a3)?-LX_EPERM:0;
+    case 268: PATH1((int)a1,a2,0); { int pc=pty_chmod_path(pa,(u32)a3); if(pc<=0)return pc; } if(!lx_exists(pa))return -LX_ENOENT; return ux_chmod(pa,(unsigned)a3)?-LX_EPERM:0;
     case 269: case 439: PATH1((int)a1,a2,0); return lx_access(pa,(int)a3);
     case 270: { long ms=-1; if(a5){ u64 ts[2]; if(lx_get(ts,a5,16))return -LX_EFAULT; if((i64)ts[0]<0||ts[1]>=1000000000ULL)return -LX_EINVAL; if(ts[0]>100000000ULL)ts[0]=100000000ULL; ms=(long)(ts[0]*1000+ts[1]/1000000); } return lx_select(r,(int)a1,a2,a3,a4,ms); }
     case 271: { long ms=-1; if(a3){ u64 ts[2]; if(lx_get(ts,a3,16))return -LX_EFAULT; if((i64)ts[0]<0||ts[1]>=1000000000ULL)return -LX_EINVAL; if(ts[0]>100000000ULL)ts[0]=100000000ULL; ms=(long)(ts[0]*1000+(ts[1]+999999)/1000000); } return lx_poll(r,a1,a2,ms); }
@@ -528,10 +533,12 @@ void linux_syscall(struct sysregs* r){
     g_dcwd=P->cwd; g_umask=P->umask; g_ubrk=P->brk; g_mmap_next=P->mmnext;
     u64 tnr=r->rax, ta1=r->rdi, ta2=r->rsi, ta3=r->rdx;
     g_cursc[g_jcur]=(u16)tnr; g_cura1[g_jcur]=ta1;
+    if(g_bpf_tp_any){ u64 ba[6]={r->rdi,r->rsi,r->rdx,r->r10,r->r8,r->r9}; bpf_tp_sys_enter_hit(tnr,ba); }
     long v=LXM_NO; if(p->sc_mode)v=lxm_seccomp_check(r,p);
     if(v==LXM_NO)v=lxn_hook_pre(r);
     if(v==LXM_NO)v=g_ino_any?lx_dispatch_ino(r):lx_dispatch(r);
     v=lxn_hook_post(r,tnr,v);
+    if(g_bpf_tp_any)bpf_tp_sys_exit_hit(tnr,v);
     lx_ep_io(tnr,ta1,ta2,ta3);
     lx_sc_note((u32)tnr,g_jp[g_jcur].pid,ta1,ta2,v);
     if(g_lxtrace>0){ g_lxtrace--; char b[120],*q=b; q=scopy(q,"sc "); q=udec(q,(u32)tnr); q=scopy(q," "); q=uhex(q,ta1,8); q=scopy(q," "); q=uhex(q,ta2,8); q=scopy(q," = "); if(v<0){ *q++='-'; q=udec(q,(u32)(-v)); } else q=uhex(q,(u64)v,8); *q=0; klog(b); }

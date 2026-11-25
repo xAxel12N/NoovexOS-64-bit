@@ -1,4 +1,5 @@
 #include "include/nvx/base.h"
+#include "include/nvx/lib/base/klibc.h"
 #include "include/nvx/lib/base/fmt.h"
 #include "include/nvx/drivers/video/fb/framebuffer.h"
 #include "include/nvx/drivers/net/ethernet/nic.h"
@@ -20,35 +21,33 @@
 #include "include/nvx/apps/games/doom.h"
 #include "include/nvx/apps/system/logs.h"
 #include "include/nvx/apps/media/videoplayer.h"
-/* ================= Logs app: live low-level system activity ================= */
+static char logs_buf[16385];
+static int logs_lines(int* starts,int* lens,int maxl){
+    extern int klog_ring(char*,int,int); extern int kaslr_mask(char*,int);
+    int n=klog_ring(logs_buf,16384,1); if(n<0)n=0; logs_buf[n]=0; kaslr_mask(logs_buf,n);
+    int cnt=0, st=0;
+    for(int i=0;i<=n;i++){ if(i==n||logs_buf[i]=='\n'){ if(i>st){ if(cnt<maxl){ starts[cnt]=st; lens[cnt]=i-st; cnt++; } else { for(int k=1;k<maxl;k++){ starts[k-1]=starts[k]; lens[k-1]=lens[k]; } starts[maxl-1]=st; lens[maxl-1]=i-st; } } st=i+1; } }
+    return cnt; }
 static void logs_draw(int i){
-    win_frame(i,"Logs - System Activity Monitor");
-    int x=WN[i].x+16, y=WN[i].y+TITLEH+12, w=WN[i].w-32;
-    fill_round(x,y,w,WN[i].h-TITLEH-24,8,15,rgb(12,14,20));
-    int lx=x+14, ly=y+14; char b[128],*p;
-    tcol(WHT);
-    #define LOG(col) tcol(col); term_puts(b); ly+=16
-    /* header */
-    dstr(lx,ly,"NoovexOS live activity  (byte/address level)",rgb(120,255,180),1); ly+=22;
-    /* memory map */
-    p=b;p=scopy(p,"KERNEL   base=0x00100000  size=");p=udec(p,g_buildsig.image_size);p=scopy(p," bytes");*p=0; dstr(lx,ly,b,rgb(180,200,255),1); ly+=16;
-    p=b;p=scopy(p,"DMA arena 0x0B000000-0x0C000000   RAM=");p=udec(p,g_ram_mb);p=scopy(p," MB");*p=0; dstr(lx,ly,b,rgb(180,200,255),1); ly+=16;
-    { u64 cr3; cr3=cpu_get_pt();
-      p=b;p=scopy(p,"CR3 (page dir) = 0x");p=hx(p,(u32)(cr3>>32),8);p=hx(p,(u32)cr3,8);*p=0; dstr(lx,ly,b,rgb(255,220,150),1); ly+=16; }
-    { u64 sp; sp=cpu_sp();
-      p=b;p=scopy(p,"kernel RSP     = 0x");p=hx(p,(u32)(sp>>32),8);p=hx(p,(u32)sp,8);*p=0; dstr(lx,ly,b,rgb(255,220,150),1); ly+=16; }
-    p=b;p=scopy(p,"uptime ticks   = ");p=udec(p,(u32)g_ticks);*p=0; dstr(lx,ly,b,rgb(200,255,200),1); ly+=16;
-    ly+=6; dstr(lx,ly,"-- memory hexdump @ 0x00100000 --",rgb(120,140,180),1); ly+=18;
-    /* live hexdump of the kernel's first bytes, updates each frame */
-    volatile u8* mem=(volatile u8*)0x00100000ULL; int base=(int)((g_ticks/30)%256)*16;
-    for(int r=0;r<8;r++){ p=b; u32 a=0x00100000u+base+r*16; p=hx(p,a,8); *p++=':';*p++=' ';
-        for(int c=0;c<16;c++){ p=hx(p,mem[base+r*16+c],2); *p++=' '; } *p++=' ';
-        for(int c=0;c<16;c++){ u8 ch=mem[base+r*16+c]; *p++=(ch>=32&&ch<127)?ch:'.'; } *p=0;
-        dstr(lx,ly,b,rgb(120,230,150),1); ly+=15; }
-    ly+=6; p=b;p=scopy(p,"disk=");p=scopy(p,disk_ok?"NVXFS mounted":"none");p=scopy(p,"   net=");p=scopy(p,net_ok?"up":"down");p=scopy(p,"   wifi bus3 RTL8821CE");*p=0;
-    dstr(lx,ly,b,rgb(200,200,220),1); ly+=16;
-    tcol(WHT);
-    #undef LOG
+    win_frame(i,"Logs");
+    int x=WN[i].x+16, y=WN[i].y+TITLEH+12, w=WN[i].w-32, h=WN[i].h-TITLEH-24;
+    fill_round(x,y,w,h,8,15,rgb(12,14,20));
+    int lx=x+14, ly=y+14; char b[160],*p;
+    p=b; p=scopy(p,"Kernel log   uptime "); p=udec(p,(u32)(g_ticks/100)); p=scopy(p," s   RAM "); p=udec(p,g_ram_mb); p=scopy(p," MB   disk "); p=scopy(p,disk_ok?"mounted":"none"); p=scopy(p,"   net "); p=scopy(p,net_ok?"up":"down"); *p=0;
+    dstr(lx,ly,b,rgb(120,255,180),1); ly+=22;
+    static int starts[512], lens[512];
+    int rows=(y+h-10-ly)/15; if(rows<1)rows=1; if(rows>512)rows=512;
+    int cols=(w-28)/8; if(cols<16)cols=16; if(cols>159)cols=159;
+    int cnt=logs_lines(starts,lens,rows);
+    if(!cnt){ dstr(lx,ly,"The kernel log is empty.",rgb(120,140,180),1); return; }
+    for(int k=0;k<cnt;k++){
+        const char* s0=logs_buf+starts[k]; int L=lens[k];
+        if(L>3&&s0[0]=='<'&&s0[2]=='>'){ s0+=3; L-=3; }
+        int n=L<cols?L:cols; for(int c=0;c<n;c++){ char ch=s0[c]; b[c]=(ch>=32&&ch<127)?ch:' '; } b[n]=0;
+        u32 col=rgb(190,196,214);
+        if(strstr(b,"fail")||strstr(b,"error")||strstr(b,"refused")||strstr(b,"panic"))col=rgb(255,150,150);
+        else if(strstr(b,"warn")||strstr(b,"timeout")||strstr(b,"retry"))col=rgb(255,220,150);
+        dstr(lx,ly,b,col,1); ly+=15; }
 }
 
 /* ================= Terminal Finder: hidden developer commands ================= */
@@ -57,6 +56,7 @@ static const char* TF_CMD[]={
     "wifi rx","raw baseband frame counter (RE debug)",
     "wifi cryptotest","verify WPA2 crypto vs RFC vectors",
     "iwx status/up","Intel AX200/AX210 Wi-Fi probe + firmware boot",
+    "mtwifi status/up","MediaTek MT7921/MT7922 Wi-Fi probe + firmware boot",
     "sig","show the kernel build signature (SHA-256)",
     "crypto","list crypto suite + run self-test",
     "run <ELF>","execute an ELF64 from USB/FAT",
@@ -102,7 +102,7 @@ void app_click(int i,int px,int py){
     else if(i==W_EDITOR){ extern int editor_click(int,int); editor_click(px,py); }
     else if(i==W_CALC) calc_click(px,py);
     else if(i==W_SYSMON) sysmon_click(px,py);
-    else if(i==W_DOOM){ if(g_doom_state==2) g_doom_mcap=1; }        /* click in DOOM -> capture mouse */
+    else if(i==W_DOOM) doom_click();
     else if(i==W_BROWSER) browser_click(px,py);
     else if(i==W_PPTX) pptx_click(px,py);
     else if(i==W_VIDEO) video_click(px,py);
@@ -119,7 +119,7 @@ void app_click(int i,int px,int py){
         for(int k=0;k<3;k++) if(in_rect(px,py,pt_bx[k],pt_by+k*26-11,44,22)){ paint_size=k; return; }
         if(in_rect(px,py,pt_clrx,pt_clry,pt_clrw,pt_clrh)){ paint_clear(); return; }
         paint_at(px,py); }
-    else if(i==W_SNAKE){ if(snake_state==2) snake_reset(); }
+    else if(i==W_SNAKE){ if(snake_state!=1) snake_start(); }
     else if(i==W_SETTINGS) settings_click(px,py);
     else if(i==W_CHATGPT){ extern void regedit_click(int,int); regedit_click(px,py); }
 }

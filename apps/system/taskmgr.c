@@ -23,18 +23,23 @@
 #include "include/nvx/apps/system/files_classic.h"
 #include "include/nvx/drivers/video/nvidia/nvgsp.h"
 #include "include/nvx/drivers/video/gpuid.h"
+int amd_tm_tile(char* p,int n); int amd_tm_row(int i,char* label,char* val);
 
 extern int bat_present, bat_pct, bat_charging, bat_via_ec; extern void battery_tick(void);
-extern int gdisk_count(void); extern u32 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_current(void);
+extern int gdisk_count(void); extern u64 gdisk_size_of(int); extern const char* gdisk_name_of(int); extern int gdisk_current(void);
 extern int igpu_info(const char** name,u32* did,u32* ss,u32* eu,u32* mhz,u32* maxmhz,u32* stolen,u32* tearfree);
 extern int g_syn_ready, g_etp_ready, g_wnd_up, msd_ok; extern u32 msd_lastlba; extern u32 g_ram_mb;
 extern volatile u64 g_ticks; extern int g_refresh_hz;
 
 static int tmt=0, tmsel=-1, tmdev=0, tmperf=0;
-static int tm_showhid=1, tm_jsel=-1, tm_jpid=-1; static u64 tm_bg_t, tm_svc_prev[16], tm_job_prev[JMAX]; static int tm_svc_pct[16], tm_job_pct[JMAX];
+static int tm_showhid=1, tm_jsel=-1, tm_jpid=-1, tm_menu=-1, tm_freq=100; static u64 tm_bg_t, tm_svc_prev[16], tm_job_prev[JMAX]; static int tm_svc_pct[16], tm_job_pct[JMAX];
 int svc_count(void); int svc_info(int i,const char** name,const char** desc,const char** status,int* on,int* required); int svc_set(int i,int on); u64 svc_us(int i);
 static int hx_[200], hy_[200], hw_[200], hh_[200], hid_[200], hn_=0;
 static void hit(int x,int y,int w,int h,int id){ if(hn_<200){ hx_[hn_]=x; hy_[hn_]=y; hw_[hn_]=w; hh_[hn_]=h; hid_[hn_]=id; hn_++; } }
+static int job_live(int j){ return g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB; }
+static int job_main(int j){ return job_live(j)&&(g_jp[j].tg<0||g_jp[j].tg>=JMAX||g_jp[j].tg==j); }
+static void tm_counts(int* napp,int* nsvc,int* njob,int* nthr){ int a=0,s=svc_count(),j=0,t=0; for(int k=0;k<NWIN;k++) if(WN[k].open)a++; if(s>16)s=16; for(int k=0;k<JMAX;k++){ if(job_live(k))t++; if(job_main(k))j++; } *napp=a; *nsvc=s; *njob=j; *nthr=t; }
+static char* cores_str(char* p,u32 n){ p=udec(p,n); return scopy(p,n==1?" core":" cores"); }
 #define HIST 60
 static u8 hcpu[HIST], hmem[HIST], hgpu[HIST], hker[HIST]; static u32 hcm[HIST], hal[HIST]; static u64 pu[NCPU]; static int ker_now=0; static unsigned long g_hu=0, g_hs=0; static int hpos=0; static u64 hlast=0; static u64 pt[NCPU], pi[NCPU]; static int cpu_now=0, cpu_cores=0;
 static u32 INK_=0, SUB=0, LINE=0, CARD=0, BG_=0, SEPC=0;
@@ -49,16 +54,20 @@ static void tpill(int rx,int y,const char* t,u32 bg,u32 fg){ int w=pw_str(t,1)+2
 static void tclip(char* d,const char* s,int maxw){ int n=0; while(s[n]&&n<95){ d[n]=s[n]; n++; } d[n]=0; if(pw_str(d,1)<=maxw)return; while(n>0&&pw_str(d,1)>maxw-12){ d[--n]=0; } d[n++]='.'; d[n++]='.'; d[n]=0; }
 static int mem_pct(void){ u32 tot=g_ram_mb?g_ram_mb:2048; u64 used=(u64)heap_used()/1048576ULL+64; int p=(int)(used*100/tot); return p>100?100:p; }
 static int gpu_pct(void){ if(!g_gfx||!g_gfx_frame_us)return 0; u32 f=1000000u/(u32)(g_refresh_hz>0?g_refresh_hz:60); int p=(int)((g_gfx_gpu_us+g_gfx_pres_us)*100u/f); return p>100?100:p; }
-static void sample(void){
-    if(hlast&&g_ticks-hlast<100)return; hlast=g_ticks;
+static void sample_iv(u64 iv){
+    if(hlast&&g_ticks-hlast<iv)return; hlast=g_ticks;
     u64 dt=0, di=0; int n=0;
     u64 du=0;
     for(int i=1;i<g_ncpu&&i<NCPU;i++){ struct pcpu* c=&g_cpu[i]; if(!c->online)continue; u64 t=c->ticks, id=c->idle_ticks, us=c->user_ticks; if(pt[i]){ dt+=t-pt[i]; di+=id-pi[i]; du+=us-pu[i]; n++; } pt[i]=t; pi[i]=id; pu[i]=us; }
-    cpu_cores=n; cpu_now=(dt&&n)?(int)(100-di*100/dt):0; if(cpu_now<0)cpu_now=0;
+    { extern u64 cpupower_idle_cycles(int); extern u64 hr_rdtsc(void); static u64 b_t0, b_i0; static int b_busy; u64 t=hr_rdtsc(), id=cpupower_idle_cycles(0);
+      if(b_t0&&t>b_t0){ u64 el=t-b_t0, ii=id-b_i0; if(ii>el)ii=el; b_busy=(int)(100-ii*100/el); } b_t0=t; b_i0=id;
+      int ap=(dt&&n)?(int)(100-di*100/dt):0; if(ap<0)ap=0; cpu_cores=n+1; cpu_now=(b_busy+ap*n)/(n+1); }
+    if(cpu_now<0)cpu_now=0; if(cpu_now>100)cpu_now=100;
     ker_now=cpu_now-((dt&&n)?(int)(du*100/dt):0); if(ker_now<0)ker_now=0;
     { extern void heap_stat(unsigned long*,unsigned long*); heap_stat(&g_hu,&g_hs); }
     hker[hpos]=(u8)ker_now; hcm[hpos]=(u32)(g_hs/1024UL); hal[hpos]=(u32)(g_hu/1024UL);
     hcpu[hpos]=(u8)cpu_now; hmem[hpos]=(u8)mem_pct(); hgpu[hpos]=(u8)gpu_pct(); hpos=(hpos+1)%HIST; }
+static void sample(void){ if(tm_freq)sample_iv((u64)tm_freq); }
 static void graph(int x,int y,int w,int h,const u8* d,u32 col){
     fill_rect(x,y,w,h,CARD); for(int k=0;k<=4;k++)fill_rect(x,y+(h-1)*k/4,w,1,SEPC); for(int k=1;k<6;k++)for(int q=0;q<h;q+=4)fill_rect(x+w*k/6,y+q,1,2,SEPC);
     int px=-1,py=-1; for(int k=0;k<HIST;k++){ int v=d[(hpos+k)%HIST]; int gx=x+(w-1)*k/(HIST-1), gy=y+h-2-(h-4)*v/100;
@@ -77,9 +86,8 @@ static void rail_icon(int x,int y,int k,u32 c,u32 bg){
 
 static int tm_ybot=0, tm_rx=0;
 static void processes(int x,int y,int w,int h){
-    (void)h; int cw=w; int napp=0; for(int a=0;a<NWIN;a++) if(WN[a].open)napp++;
-    int nsvc=svc_count(); if(nsvc>16)nsvc=16; int njob=0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB)njob++;
-    if(g_ticks-tm_bg_t>=100){ u64 dt=g_ticks-tm_bg_t; if(!tm_bg_t)dt=0; tm_bg_t=g_ticks;
+    (void)h; int cw=w; int napp,nsvc,njob,nthr; tm_counts(&napp,&nsvc,&njob,&nthr);
+    if(tm_freq&&g_ticks-tm_bg_t>=(u64)tm_freq){ u64 dt=g_ticks-tm_bg_t; if(!tm_bg_t)dt=0; tm_bg_t=g_ticks;
         for(int k=0;k<nsvc;k++){ u64 u=svc_us(k); u64 d=u-tm_svc_prev[k]; tm_svc_prev[k]=u; int p=dt?(int)(d/(dt*100)):0; tm_svc_pct[k]=p>100?100:p; }
         for(int j=0;j<JMAX;j++){ u64 c=g_jp[j].cputicks; u64 d=c-tm_job_prev[j]; tm_job_prev[j]=c; int p=dt?(int)(d*100/dt):0; tm_job_pct[j]=(g_jp[j].state==S_FREE)?0:(p>100?100:p); } }
     int nrow=napp+1+nsvc+1+(tm_showhid?njob:0)+1; int RH=36; int ch=42+nrow*RH; if(y+ch>tm_ybot-30){ RH=(tm_ybot-30-y-42)/nrow; if(RH<26)RH=26; ch=42+nrow*RH; if(y+ch>tm_ybot-30)ch=tm_ybot-30-y; }
@@ -107,7 +115,7 @@ static void processes(int x,int y,int w,int h){
         yy+=RH; tsep(x+56,yy-1,cw-57); }
     if(yy+RH<=ylim){ char b[16],*p=b; p=udec(p,(u32)njob); *p=0; int ty=yy+(RH-16)/2; tbold(x+18,ty,"Hidden apps",INK_); pdstr(x+26+pw_str("Hidden apps",1),ty,b,SUB,1);
         const char* bt=tm_showhid?"Hide":"Show hidden"; int bw2=pw_str(bt,1)+20; int bx2=x+cw-bw2-10, by2=yy+(RH-22)/2; int hv=in_rect(mx,my,bx2,by2,bw2,22); fill_round(bx2,by2,bw2,22,11,15,hv?rgb(214,214,220):rgb(232,232,236)); pdstr(bx2+10,by2+3,bt,INK_,1); hit(bx2,by2,bw2,22,698); yy+=RH; }
-    if(tm_showhid) for(int j=0;j<JMAX&&yy+RH<=ylim;j++){ struct jproc* jp=&g_jp[j]; if(jp->state==S_FREE||jp->state==S_ZOMB)continue; int ty=yy+(RH-16)/2; int s2=RH>30?24:20; int sel=(j==tm_jsel);
+    if(tm_showhid) for(int j=0;j<JMAX&&yy+RH<=ylim;j++){ struct jproc* jp=&g_jp[j]; if(!job_main(j))continue; int ty=yy+(RH-16)/2; int s2=RH>30?24:20; int sel=(j==tm_jsel);
         if(sel)fill_rect(x+1,yy,cw-2,RH,mix(CARD,ACC,40)); else if(in_rect(mx,my,x+1,yy,cw-2,RH))fill_rect(x+1,yy,cw-2,RH,rgb(246,246,248));
         fill_round(x+20,yy+(RH-s2)/2,s2,s2,7,15,rgb(222,222,226)); fill_round(x+26,yy+(RH-s2)/2+6,s2-12,s2-12,3,15,SUB);
         { char nmb[64],*p=nmb; const char* c=jp->cmd; const char* base=c; for(int q=0;c[q]&&c[q]!=' ';q++) if(c[q]=='/')base=c+q+1; int o=0; while(base[o]&&o<40){ *p++=base[o]; o++; } p=scopy(p,"   pid "); p=udec(p,(u32)jp->pid); *p=0; pdstr(x+56,ty,nmb,INK_,1); }
@@ -130,10 +138,10 @@ static void row2(int x,int y,const char* a,const char* b){ pdstr(x,y,a,SUB,1); c
 static void performance(int x,int y,int w,int h){
     (void)h; const char* nm; u32 did=0,ss=0,eu=0,mhz=0,mxz=0,st=0,tf=0; int hg=igpu_info(&nm,&did,&ss,&eu,&mhz,&mxz,&st,&tf);
     char v[5][48]; char* p;
-    p=v[0]; p=pct(p,cpu_now); p=scopy(p,"  "); p=udec(p,(u32)g_ncpu); p=scopy(p," cores"); *p=0;
+    p=v[0]; p=pct(p,cpu_now); p=scopy(p,"  "); p=udec(p,(u32)g_ncpu); p=cores_str(p,(u32)g_ncpu); *p=0;
     p=v[1]; p=mb(p,(u64)heap_used()/1048576ULL+64); *p++='/'; p=mb(p,g_ram_mb); *p=0;
     nvgsp_info_t ni; nvgsp_info(&ni); int hn=!hg&&ni.dev;
-    p=v[2]; if(hg){ p=pct(p,gpu_pct()); p=scopy(p,"  "); p=udec(p,mhz); p=scopy(p," MHz"); } else if(!hn){ gpu_t gl[2]; if(gpu_list(gl,2)){ p=scopy(p,gl[0].vendor); p=scopy(p," detected"); } else p=scopy(p,"no driver"); } else if(hn){ if(ni.state>=7&&!ni.off){ p=pct(p,gpu_pct()); p=scopy(p,ni.drawing?"  NVIDIA drawing":"  NVIDIA on"); } else p=scopy(p,ni.off?"NVIDIA off":ni.state?"NVIDIA starting":"NVIDIA not started"); } *p=0;
+    p=v[2]; if(hg){ p=pct(p,gpu_pct()); p=scopy(p,"  "); p=udec(p,mhz); p=scopy(p," MHz"); } else if(!hn&&amd_tm_tile(p,40)>0){ while(*p)p++; } else if(!hn){ gpu_t gl[2]; if(gpu_list(gl,2)){ p=scopy(p,gl[0].vendor); p=scopy(p," detected"); } else p=scopy(p,"no driver"); } else if(hn){ if(ni.state>=7&&!ni.off){ p=pct(p,gpu_pct()); p=scopy(p,ni.drawing?"  NVIDIA drawing":"  NVIDIA on"); } else p=scopy(p,ni.off?"NVIDIA off":ni.state?"NVIDIA starting":"NVIDIA not started"); } *p=0;
     p=v[3]; { int n=gdisk_count(); if(n){ p=mb(p,(u64)gdisk_size_of(gdisk_current())*512ULL/1048576ULL); } else p=scopy(p,"no disk"); } *p=0;
     p=v[4]; p=scopy(p,(net_ok||g_wnd_up)?"Connected":"Not connected"); *p=0;
     static const char* TN[5]={"CPU","Memory","GPU","Disk","Network"}; u32 TC[5]={rgb(30,130,230),rgb(140,90,220),rgb(40,170,120),rgb(60,170,90),rgb(200,120,40)};
@@ -162,6 +170,7 @@ static void performance(int x,int y,int w,int h){
         if(ni.vram_total){ p=b; p=mb(p,ni.vram_free/1048576ULL); p=scopy(p," free of "); p=mb(p,ni.vram_total/1048576ULL); p=scopy(p,", "); p=udec(p,ni.vram_surfaces); p=scopy(p," work buffers on the card"); *p=0; row2(gx,gy,"Graphics memory",b); gy+=22; }
         p=b; p=udec(p,g_gfx_frame_us/1000); *p++='.'; p=udec(p,(g_gfx_frame_us/100)%10); p=scopy(p," ms"); *p=0; row2(gx,gy,"Last frame",b); }
     else if(tmperf==2){ if(!hg){ gpu_t gl[4]; int gn=gpu_list(gl,4); if(!gn){ row2(gx,gy,"Graphics","none found"); return; }
+            { char la[32]; for(int r=0;amd_tm_row(r,la,b);r++){ row2(gx,gy,la,b); gy+=22; } }
             for(int k=0;k<gn;k++){ p=b; p=scopy(p,gl[k].vendor); p=scopy(p," "); p=hx(p,gl[k].ven,4); *p++=':'; p=hx(p,gl[k].dev,4); *p=0; row2(gx,gy,b,gl[k].name); gy+=20; { char d[64]; int q=0; while(gl[k].driver[q]&&q<62){ d[q]=gl[k].driver[q]; q++; } d[q]=0; row2(gx,gy,"",d); } gy+=24; } return; }
         p=b; p=pct(p,gpu_pct()); *p=0; row2(gx,gy,"Busy",b); gy+=22; p=b; p=udec(p,mhz); p=scopy(p," MHz of "); p=udec(p,mxz); p=scopy(p," MHz"); *p=0; row2(gx,gy,"Clock",b); gy+=22;
         p=b; p=udec(p,ss); p=scopy(p," x "); p=udec(p,eu); p=scopy(p," = "); p=udec(p,ss*eu); p=scopy(p," EUs"); *p=0; row2(gx,gy,"Execution units",b); gy+=22;
@@ -179,7 +188,7 @@ static const char* vname(u16 v){ return v==0x8086?"Intel":v==0x10DE?"NVIDIA":v==
 static void devlist(int cat){
     char* p; u32 OK=rgb(40,140,80), OFF=rgb(150,156,170), WARN=rgb(210,130,40); dn_=0; if(!pci_n)pci_scan();
     if(cat==0){ p=D("Processor",OK); scopy(p,g_brand)[0]=0;
-        p=D("Cores",OK); { u8 ids[NCPU]; int c=madt_apic_ids(ids,NCPU); p=udec(p,(u32)(c>0?c:g_ncpu)); p=scopy(p," cores, "); p=udec(p,(u32)g_cores_online); p=scopy(p," online"); *p=0; }
+        p=D("Cores",OK); { u8 ids[NCPU]; int c=madt_apic_ids(ids,NCPU); p=cores_str(p,(u32)(c>0?c:g_ncpu)); p=scopy(p,", "); p=udec(p,(u32)g_cores_online); p=scopy(p," online"); *p=0; }
         { u32 a,b,c,d; cpuid(1,&a,&b,&c,&d); p=D("Family / model / stepping",OK); p=udec(p,(a>>8)&15); p=scopy(p," / "); p=udec(p,((a>>4)&15)|(((a>>16)&15)<<4)); p=scopy(p," / "); p=udec(p,a&15); *p=0;
           p=D("Features",OK); p=scopy(p,"64-bit"); if(d&(1u<<25))p=scopy(p,", SSE"); if(d&(1u<<26))p=scopy(p,", SSE2"); if(c&(1u<<19))p=scopy(p,", SSE4.1"); if(c&(1u<<20))p=scopy(p,", SSE4.2"); if(c&(1u<<25))p=scopy(p,", AES"); if(c&(1u<<28))p=scopy(p,", AVX"); if(c&(1u<<5))p=scopy(p,", VT-x"); *p=0; } }
     else if(cat==1){ const char* nm; u32 did=0,ss=0,eu=0,mhz=0,mxz=0,st=0,tf=0;
@@ -254,7 +263,7 @@ static void twinbtn(int b,int bx,int cy){ int hov=in_rect(mx,my,bx-1,cy-10,20,20
     if(b==0)fill_rect(bx+6,cy+2,7,2,g);
     else if(b==1){ fill_rect(bx+6,cy-3,7,1,g); fill_rect(bx+6,cy+3,7,1,g); fill_rect(bx+6,cy-3,1,7,g); fill_rect(bx+12,cy-3,1,7,g); fill_rect(bx+6,cy-2,7,1,g); }
     else { for(int t=0;t<6;t++){ fill_rect(bx+6+t,cy-3+t,2,1,g); fill_rect(bx+11-t,cy-3+t,2,1,g); } } }
-int sysmon_cpu_pct(void){ sample(); return cpu_now; }
+int sysmon_cpu_pct(void){ sample_iv(100); return cpu_now; }
 int sysmon_mem_pct(void){ return mem_pct(); }
 static int tm_hdr_lo=0;
 static int tm_ctab=0;
@@ -270,32 +279,56 @@ static void sm_graph(int x,int y,int w,int h,const u32* a,u32 af,u32 al,const u3
 static void sm_rtext(int xr,int y,const char* t,u32 c){ int l=0; while(t[l])l++; fill_rect(xr-l*8-2,y,l*8+2,16,rgb(255,255,255)); dstr(xr-l*8,y,t,c,1); }
 static void cl_group(int x,int y,int w,int h,const char* t){ fill_rect(x,y+7,w,1,rgb(128,128,128)); fill_rect(x,y+8,w,1,rgb(255,255,255)); fill_rect(x,y+7,1,h-7,rgb(128,128,128)); fill_rect(x+1,y+8,1,h-9,rgb(255,255,255)); fill_rect(x+w-2,y+7,1,h-7,rgb(128,128,128)); fill_rect(x+w-1,y+7,1,h-7,rgb(255,255,255)); fill_rect(x,y+h-2,w,1,rgb(128,128,128)); fill_rect(x,y+h-1,w,1,rgb(255,255,255));
     int l=0; while(t[l])l++; fill_rect(x+8,y,l*8+6,16,rgb(212,208,200)); dstr(x+11,y,t,rgb(0,0,0),1); }
+static const char* const TM_MB[3]={"File","Frequency","Help"};
+static const char* const TM_MI[3][4]={{"New task (Terminal)","Refresh now","Exit",0},{"High (0.5 s)","Normal (1 s)","Low (2 s)","Paused"},{"Task Manager help","About NoovexOS",0,0}};
+static int tm_menu_n(int m){ int n=0; while(n<4&&TM_MI[m][n])n++; return n; }
+static int tm_menu_x(int X,int m){ int cx=X+9; for(int k=0;k<m;k++){ int l=0; while(TM_MB[k][l])l++; cx+=l*8+12; } return cx; }
+static int tm_freq_idx(void){ return tm_freq==50?0:tm_freq==100?1:tm_freq==200?2:3; }
+static int cbtn(int x,int y,int w,const char* t,int en,int id){ int hov=en&&in_rect(mx,my,x,y,w,22); ui_bevel(x,y,w,22,0); if(hov)fill_rect(x+2,y+2,w-4,18,rgb(226,222,214)); int l=0; while(t[l])l++; dstr(x+(w-l*8)/2,y+3,t,en?rgb(0,0,0):rgb(128,128,128),1); if(en)hit(x,y,w,22,id); return x+w+8; }
+static void tm_sel_live(void){ if(tmsel>=0&&(tmsel>=NWIN||!WN[tmsel].open))tmsel=-1; if(tm_jsel>=0&&(tm_jsel>=JMAX||!job_live(tm_jsel)||g_jp[tm_jsel].pid!=tm_jpid))tm_jsel=-1; }
+static const char* tm_prio_label(int j){ int nv=g_jp[g_jp[j].tg].nice; return nv<0?"Priority: High":nv==0?"Priority: Normal":nv<15?"Priority: Below normal":"Priority: Low"; }
+static void tm_set_prio(int j,int nn){ if(j<0||j>=JMAX||!job_live(j)||g_jp[j].pid<=1)return; int tg=g_jp[j].tg; for(int q=0;q<JMAX;q++) if(job_live(q)&&g_jp[q].tg==tg)g_jp[q].nice=nn; toast(nn<0?"Priority set to High":nn==0?"Priority set to Normal":nn==10?"Priority set to Below normal":"Priority set to Low"); }
+static void tm_end_task(void){ tm_sel_live();
+    if(tm_jsel>=0){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->pid>1){ jc_kill(jp->pid,9,0); toast("The program was ended"); } else toast("That program cannot be ended"); tm_jsel=-1; return; }
+    if(tmsel>=0){ if(tmsel==W_SYSMON){ toast("Use File > Exit to close Task Manager"); return; } close_win(tmsel); toast("The program was ended"); tmsel=-1; return; }
+    toast("Select a program first"); }
 static void sysmon_classic(int i){
-    extern int g_round_off; g_round_off=1; colours(); hn_=0; sample(); BG_=rgb(212,208,200); LINE=rgb(128,128,128);
+    extern int g_round_off; g_round_off=1; colours(); hn_=0; sample(); BG_=rgb(212,208,200); LINE=rgb(128,128,128); tm_sel_live();
     int X=WN[i].x, Y=WN[i].y, ww=WN[i].w, wh=WN[i].h;
-    win_frame(i,"System Monitor"); tm_hdr_lo=Y+TITLEH;
-    static const char* const MB[3]={"File","Frequency","Help"}; ui_menubar(X+3,Y+TITLEH,ww-6,MB,3);
+    win_frame(i,"Task Manager"); tm_hdr_lo=Y+TITLEH;
+    ui_menubar(X+3,Y+TITLEH,ww-6,TM_MB,3);
+    for(int k=0;k<3;k++){ int l=0; while(TM_MB[k][l])l++; int bx=tm_menu_x(X,k); if(tm_menu==k){ fill_rect(bx,Y+TITLEH+1,l*8+12,18,rgb(10,36,106)); dstr(bx+6,Y+TITLEH+3,TM_MB[k],rgb(255,255,255),1); } hit(bx,Y+TITLEH,l*8+12,20,600+k); }
     static const char* const TB[5]={"Processes","Performance","Storage","Network","Hardware"};
     int ty=Y+TITLEH+26; int tx=X+8; ui_tabs(tx,ty,TB,5,tm_ctab);
     { int cx=tx; for(int k=0;k<5;k++){ int l=0; while(TB[k][l])l++; int iw=l*8+16; hit(cx,ty,iw,22,500+k); cx+=iw; } }
     int px=X+6, py=ty+22, pw=ww-12, ph=wh-(py-Y)-30;
     fill_rect(px,py,pw,1,rgb(255,255,255)); fill_rect(px,py,1,ph,rgb(255,255,255)); fill_rect(px+pw-1,py,1,ph,rgb(64,64,64)); fill_rect(px+pw-2,py+1,1,ph-1,rgb(128,128,128)); fill_rect(px,py+ph-1,pw,1,rgb(64,64,64)); fill_rect(px+1,py+ph-2,pw-2,1,rgb(128,128,128));
     int cx=px+10, cy=py+10, cw=pw-20; tm_ybot=py+ph-10;
+    if(tm_ctab==0){ tm_ybot-=32; int by=py+ph-32; int bx=px+10; int en=(tmsel>=0||tm_jsel>=0);
+        bx=cbtn(bx,by,96,"End task",en,399);
+        if(tm_jsel>=0){ const char* pl=tm_prio_label(tm_jsel); int l=0; while(pl[l])l++; bx=cbtn(bx,by,l*8+20,pl,1,398); }
+        else if(tmsel>=0){ bx=cbtn(bx,by,96,"Switch to",1,397); bx=cbtn(bx,by,96,WN[tmsel].min?"Restore":"Minimize",1,396); }
+        else { int l=0; const char* hint="Select a program, or right-click a row"; while(hint[l])l++; dstr(bx,by+3,hint,rgb(96,96,96),1); } }
     if(tm_ctab==1){ int gh=(ph-30)/2-26; char b[64],*p;
         static u32 tc[HIST], kc[HIST]; for(int k=0;k<HIST;k++){ tc[k]=hcpu[k]; kc[k]=hker[k]; }
         u32 TCL=rgb(0,170,170), TF=rgb(120,210,210), KCL=rgb(200,30,30), KF=rgb(150,70,70);
         cl_group(cx,cy,cw,gh+26,"CPU usage"); sm_graph(cx+10,cy+18,cw-20,gh,tc,TF,TCL,kc,KF,KCL,100);
         int xr=cx+cw-16; p=scopy(b,"Total: "); pct(p,cpu_now); sm_rtext(xr,cy+22,b,TCL); p=scopy(b,"Kernel: "); pct(p,ker_now); sm_rtext(xr,cy+38,b,KCL);
         int my2=cy+gh+36; cl_group(cx,my2,cw,gh+26,"Memory usage");
-        u32 mx=1; for(int k=0;k<HIST;k++) if(hcm[k]>mx)mx=hcm[k]; mx+=mx/8;
+        u32 mx=(g_ram_mb?g_ram_mb:2048)*1024U; for(int k=0;k<HIST;k++) if(hcm[k]>mx)mx=hcm[k];
         sm_graph(cx+10,my2+18,cw-20,gh,hcm,rgb(200,200,200),rgb(150,150,150),hal,rgb(120,210,210),TCL,mx);
+        sm_rtext(cx+cw-16,my2+gh+2,"0%",rgb(128,128,128)); dstr(cx+12,my2+gh+2,"Scale: installed memory",rgb(128,128,128),1);
         p=scopy(b,"Committed: "); p=udec(p,(u32)(g_hs/1024UL)); p=scopy(p," KiB"); sm_rtext(xr,my2+22,b,rgb(128,128,128));
         p=scopy(b,"Allocated: "); p=udec(p,(u32)(g_hu/1024UL)); p=scopy(p," KiB"); sm_rtext(xr,my2+38,b,TCL);
         p=scopy(b,"Physical: "); p=udec(p,(u32)g_ram_mb*1024U); p=scopy(p," KiB"); sm_rtext(xr,my2+54,b,KCL); }
     else if(tm_ctab==0) processes(cx,cy,cw,wh);
     else { devices(cx,cy,cw,wh); }
-    int sy=Y+wh-26; int napp=0; for(int a=0;a<NWIN;a++) if(WN[a].open)napp++;
-    { char b[48],*p; int sw=(ww-12)/3; for(int k=0;k<3;k++){ ui_bevel(X+6+k*sw,sy,sw-2,20,1); p=b; if(k==0){ p=scopy(p,"Processes: "); p=udec(p,(u32)(napp+6)); } else if(k==1){ p=scopy(p,"Threads: "); p=udec(p,(u32)(napp+6+g_cores_online)); } else { p=scopy(p,"CPU usage: "); p=pct(p,cpu_now); } *p=0; dstr(X+12+k*sw,sy+3,b,rgb(0,0,0),1); } }
+    int sy=Y+wh-26; int napp,nsvc,njob,nthr; tm_counts(&napp,&nsvc,&njob,&nthr);
+    { char b[48],*p; int sw=(ww-12)/3; for(int k=0;k<3;k++){ ui_bevel(X+6+k*sw,sy,sw-2,20,1); p=b; if(k==0){ p=scopy(p,"Processes: "); p=udec(p,(u32)(napp+nsvc+njob)); } else if(k==1){ p=scopy(p,"Threads: "); p=udec(p,(u32)(napp+nsvc+nthr)); } else { p=scopy(p,"CPU usage: "); p=pct(p,cpu_now); } *p=0; dstr(X+12+k*sw,sy+3,b,rgb(0,0,0),1); } }
+    if(tm_menu>=0&&tm_menu<3){ int m=tm_menu, n=tm_menu_n(m), mw=190, mh=n*22+6, mx0=tm_menu_x(X,m), my0=Y+TITLEH+20; if(mx0+mw>X+ww-4)mx0=X+ww-4-mw;
+        fill_rect(mx0,my0,mw,mh,rgb(212,208,200)); ui_bevel(mx0,my0,mw,mh,0);
+        for(int k=0;k<n;k++){ int iy=my0+3+k*22; int hov=in_rect(mx,my,mx0+3,iy,mw-6,22); if(hov)fill_rect(mx0+3,iy,mw-6,22,rgb(10,36,106)); u32 tc=hov?rgb(255,255,255):rgb(0,0,0);
+            if(m==1&&k==tm_freq_idx())fill_circle(mx0+12,iy+11,3,tc); dstr(mx0+22,iy+3,TM_MI[m][k],tc,1); hit(mx0,iy,mw,22,620+m*10+k); } }
     g_round_off=0;
 }
 void sysmon_draw(int i){
@@ -316,18 +349,39 @@ void sysmon_draw(int i){
     for(int b=0;b<3;b++){ int cx=X+ww-6-18; int bx=(b==2)?cx:(b==1)?cx-2-18:cx-2-18-18; twinbtn(b,bx,Y+16); }
     int cx=X+16, cy=Y+HB+16, cw=ww-32; tm_ybot=Y+wh-16;
     if(tmt==0)processes(cx,cy,cw,wh); else if(tmt==1)performance(cx,cy,cw,wh); else if(tmt==2)devices(cx,cy,cw,wh); else services(cx,cy,cw,wh); }
+static void tm_menu_pick(int m,int k){ tm_menu=-1;
+    if(m==0){ if(k==0)open_win(W_TERM); else if(k==1){ hlast=0; tm_bg_t=0; sample(); toast("Refreshed"); } else close_win(W_SYSMON); }
+    else if(m==1){ tm_freq=k==0?50:k==1?100:k==2?200:0; hlast=0; toast(k==3?"Updates paused":"Update speed changed"); }
+    else { if(k==0)toast("Select a row and press End task, or right-click a row"); else open_win(W_ABOUT); } }
 void sysmon_click(int px,int py){
+    if(tm_menu>=0){ for(int k=hn_-1;k>=0;k--) if(in_rect(px,py,hx_[k],hy_[k],hw_[k],hh_[k])){ int id=hid_[k]; if(id>=620&&id<660){ tm_menu_pick((id-620)/10,(id-620)%10); return; } if(id>=600&&id<603){ tm_menu=(tm_menu==id-600)?-1:id-600; return; } break; } tm_menu=-1; return; }
     for(int k=hn_-1;k>=0;k--) if(in_rect(px,py,hx_[k],hy_[k],hw_[k],hh_[k])){ int id=hid_[k];
+        if(id>=600&&id<603){ tm_menu=id-600; return; }
+        if(id==397){ if(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open)focus_win(tmsel); return; }
+        if(id==396){ if(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open){ if(WN[tmsel].min)focus_win(tmsel); else win_min(tmsel); } return; }
         if(id>=10&&id<14){ tmt=id-10; return; }
         if(id>=500&&id<505){ tm_ctab=id-500; tmt=tm_ctab==0?0:tm_ctab==1?1:2; tmdev=tm_ctab==2?4:tm_ctab==3?5:tm_ctab==4?-1:tmdev; dscroll=0; return; }
         if(id>=100&&id<111){ tmdev=(tmdev==id-100)?-1:id-100; dscroll=0; return; }
         if(id>=200&&id<205){ tmperf=id-200; return; }
         if(id>=300&&id<300+NWIN){ tmsel=id-300; tm_jsel=-1; return; }
-        if(id==398){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1&&jp->pid==tm_jpid){ int tg=jp->tg; int nv=g_jp[tg].nice; int nn=nv==0?10:nv==10?19:nv==19?-5:0; for(int j=0;j<JMAX;j++) if(g_jp[j].state!=S_FREE&&g_jp[j].state!=S_ZOMB&&g_jp[j].tg==tg)g_jp[j].nice=nn; toast(nn<0?"Priority set to High":nn==0?"Priority set to Normal":nn==10?"Priority set to Below normal":"Priority set to Low"); } } return; }
-        if(id==399){ if(tm_jsel>=0&&tm_jsel<JMAX){ struct jproc* jp=&g_jp[tm_jsel]; if(jp->state!=S_FREE&&jp->state!=S_ZOMB&&jp->pid>1&&jp->pid==tm_jpid){ jc_kill(jp->pid,9,0); toast("The program was ended"); } else toast("That program has already ended"); tm_jsel=-1; return; } if(tmsel>=0&&tmsel<NWIN&&WN[tmsel].open){ close_win(tmsel); tmsel=-1; } return; }
+        if(id==398){ tm_sel_live(); if(tm_jsel>=0){ int nv=g_jp[g_jp[tm_jsel].tg].nice; tm_set_prio(tm_jsel,nv==0?10:nv==10?19:nv==19?-5:0); } return; }
+        if(id==399){ tm_end_task(); return; }
         if(id==698){ tm_showhid=!tm_showhid; return; }
         if(id>=700&&id<716){ const char *nm,*ds,*st; int on=0, req=0; if(svc_info(id-700,&nm,&ds,&st,&on,&req)&&!req){ svc_set(id-700,!on); toast(on?"Service stopped":"Service started"); } return; }
         if(id>=800&&id<800+JMAX){ tm_jsel=id-800; tm_jpid=g_jp[tm_jsel].pid; tmsel=-1; return; }
         return; } }
+int sysmon_rclick(int px,int py){ tm_menu=-1;
+    for(int k=hn_-1;k>=0;k--) if(in_rect(px,py,hx_[k],hy_[k],hw_[k],hh_[k])){ int id=hid_[k];
+        if(id>=300&&id<300+NWIN){ tmsel=id-300; tm_jsel=-1; return 1; }
+        if(id>=800&&id<800+JMAX){ tm_jsel=id-800; tm_jpid=g_jp[tm_jsel].pid; tmsel=-1; return 1; } }
+    return 0; }
+int sysmon_ctx_items(const char* out[8]){ tm_sel_live();
+    if(tm_jsel>=0){ out[0]="End task"; out[1]="Priority: High"; out[2]="Priority: Normal"; out[3]="Priority: Below normal"; out[4]="Priority: Low"; return 5; }
+    if(tmsel>=0){ out[0]="Switch to"; out[1]=WN[tmsel].min?"Restore":"Minimize"; out[2]="End task"; return 3; }
+    out[0]="Refresh now"; return 1; }
+void sysmon_ctx_click(int k){ tm_sel_live();
+    if(tm_jsel>=0){ if(k==0)tm_end_task(); else tm_set_prio(tm_jsel,k==1?-5:k==2?0:k==3?10:19); return; }
+    if(tmsel>=0){ if(k==0)focus_win(tmsel); else if(k==1){ if(WN[tmsel].min)focus_win(tmsel); else win_min(tmsel); } else tm_end_task(); return; }
+    hlast=0; tm_bg_t=0; sample(); }
 int sysmon_title_click(int px,int py){ if(py>=tm_hdr_lo)return 0; for(int k=hn_-1;k>=0;k--){ int id=hid_[k]; if(((id>=10&&id<14)||id==399)&&in_rect(px,py,hx_[k],hy_[k],hw_[k],hh_[k])){ sysmon_click(px,py); return 1; } } return 0; }
 void taskmgr_tab(int t,int dev){ if(t>=0&&t<4)tmt=t; if(dev>=0&&dev<11)tmdev=dev; }

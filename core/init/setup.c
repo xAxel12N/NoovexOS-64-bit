@@ -25,6 +25,7 @@
 #include "include/nvx/core/klog.h"
 #include "include/nvx/core/auth/faceid.h"
 #include "include/nvx/assets/uifont.h"
+#include "include/nvx/lib/fprint/fprint.h"
 /* =========================================================================
    Setup (first-run) and Login screens
    ========================================================================= */
@@ -358,7 +359,8 @@ static const char* lg_display(char* out){
     for(int i=0;i<lg_nu;i++) if(seq(lg_users[i].name,lg_sel)){ const char* f=lg_users[i].full[0]?lg_users[i].full:lg_users[i].name; int q=0; for(;f[q]&&q<63;q++)out[q]=f[q]; out[q]=0; return out; }
     const char* f=(g_fullname[0]&&seq(lg_sel,g_user))?g_fullname:lg_sel; int q=0; for(;f[q]&&q<63;q++)out[q]=f[q]; out[q]=0; return out;
 }
-static int lg_sel_haspw(void){ if(!g_lg_installed)return 0; for(int i=0;i<lg_nu;i++) if(seq(lg_users[i].name,lg_sel))return lg_users[i].haspw; return acct_has_password(lg_sel); }
+static int lg_sel_haspw(void){ for(int i=0;i<lg_nu;i++) if(seq(lg_users[i].name,lg_sel))return lg_users[i].haspw; return acct_has_password(lg_sel); }
+static int lg_nopw(void){ return !g_lg_installed&&!lg_sel_haspw(); }
 static int lg_fx,lg_fy,lg_fw,lg_fh, lg_pmx,lg_pmy, lg_pmenu, lg_pmi[3], lg_pmw;
 static int lg_scan; static u64 lg_okt; static int lg_cancx,lg_cancy,lg_cancw;
 static u32* lg_hbuf; static u32 lg_hw, lg_hh;
@@ -400,6 +402,7 @@ static void lg_battery(int x,int y,int pct,u32 c){ lg_rr(x,y,20,11,2,c,256); lg_
 static void lg_power(int cx,int cy,u32 c){ for(int k=0;k<32;k++){ static const int SX[32]={0,195,383,556,707,831,924,981,1000,981,924,831,707,556,383,195,0,-195,-383,-556,-707,-831,-924,-981,-1000,-981,-924,-831,-707,-556,-383,-195};
         int ci=(k+8)&31; if(k>=29||k<=3)continue; int x=cx+SX[k]*8/1000, y=cy-SX[ci]*8/1000; lg_disc(x,y,1,c,220); } lg_line(cx,cy-10,cx,cy-2,1,c); }
 static int lg_fid_avail(void){ return fid_has(lg_sel); }
+static int lg_fp_ok(void){ { extern int fprint_login_on(void); if(!fprint_login_on())return 0; } static char u[33]; static int v=-1; static u64 t; if(v<0||!seq(u,lg_sel)||g_ticks-t>500){ int q=0; for(;lg_sel[q]&&q<32;q++)u[q]=lg_sel[q]; u[q]=0; t=g_ticks; v=g_lg_installed&&fprint_reader()&&fprint_enrolled(lg_sel); } return v; }
 static void lg_success(void){
     lg_fail=0; lg_msg[0]=0; g_fid_fails=0;
     if(!g_lg_installed&&g_lg_liveret){ lg_live_unlock(); return; }
@@ -466,6 +469,13 @@ void login_present(void){
     { char ini=dname[0]; if(ini>='a'&&ini<='z')ini-=32; char st[2]={ini?ini:'U',0}; uf_draw_ctr(cx,cy-uf_cap_mid(UF_40B),UF_40B,st,rgb(255,255,255)); }
     { char nm[64]; int k=0; for(;dname[k]&&k<40;k++)nm[k]=(k==0&&dname[k]>='a'&&dname[k]<='z')?dname[k]-32:dname[k]; nm[k]=0; uf_draw_ctr(cx,cy+R+20,UF_24B,nm,rgb(31,36,48)); }
     lg_pw=320; int ph=46; lg_px=cx-lg_pw/2; lg_py=cy+R+64;
+    int nopw=lg_nopw();
+    if(nopw){
+        lg_bw=160; lg_bh=ph; lg_bx=cx-lg_bw/2; lg_by=lg_py;
+        int hov=in_rect(mx,my,lg_bx,lg_by,lg_bw,lg_bh); u32 bc=hov?mix(ACC,rgb(0,0,0),30):ACC;
+        lg_shadow(lg_bx,lg_by,lg_bw,lg_bh,12); lg_rr(lg_bx,lg_by,lg_bw,lg_bh,12,bc,256);
+        uf_draw_ctr(cx,lg_by+ph/2-uf_cap_mid(UF_15M),UF_15M,"Unlock",rgb(255,255,255)); }
+    else {
     lg_shadow(lg_px,lg_py,lg_pw,ph,12); lg_rr(lg_px,lg_py,lg_pw,ph,12,rgb(207,216,227),256); lg_rr(lg_px+1,lg_py+1,lg_pw-2,ph-2,11,rgb(255,255,255),256);
     lg_bw=46; lg_bh=ph; lg_bx=lg_px+lg_pw-46; lg_by=lg_py;
     { int hov=in_rect(mx,my,lg_bx,lg_by,lg_bw,lg_bh); u32 bc=hov?mix(ACC,rgb(0,0,0),30):ACC; u32* sc=SCENE;
@@ -474,7 +484,7 @@ void login_present(void){
     int tmid=lg_py+ph/2-uf_cap_mid(UF_15);
     if(login_pl==0)uf_draw(lg_px+16,tmid,UF_15,g_lg_installed&&!lg_sel_haspw()?"No password - press Enter":"Password",rgb(140,150,166));
     else { int c2=lg_px+22; for(int k=0;k<login_pl&&k<18;k++){ lg_disc(c2,lg_py+ph/2,4,rgb(40,50,70),256); c2+=14; }
-        if(((g_ticks/40)&1)){ int cxp=lg_px+22+(login_pl<18?login_pl:18)*14-6; fill_rect(cxp,lg_py+13,2,ph-26,ACC); } }
+        if(((g_ticks/40)&1)){ int cxp=lg_px+22+(login_pl<18?login_pl:18)*14-6; fill_rect(cxp,lg_py+13,2,ph-26,ACC); } } }
     int y=lg_py+ph;
     lg_fw=0;
     if(lg_fid_avail()){
@@ -489,7 +499,8 @@ void login_present(void){
     { char hb[120]; const char* hint=0; int warn=0;
       if(lg_wait_until>g_ticks){ char* q=hb; q=scopy(q,"Too many wrong passwords - try again in "); q=udec(q,(u32)((lg_wait_until-g_ticks)/100+1)); q=scopy(q," s"); *q=0; hint=hb; warn=1; }
       else if(lg_msg[0]){ hint=lg_msg; warn=1; }
-      else if(!g_lg_installed)hint="Press Return to unlock";
+      else if(nopw)hint="Press Return to unlock";
+      else if(!login_pl&&lg_fp_ok())hint="Press Return with an empty password, then touch the fingerprint reader";
       else if(seq(lg_sel,"guest"))hint="Guest - files are removed at sign out";
       else if(g_logged_in&&!acct_switch_mode()){ char* q=hb; q=scopy(q,"Locked - "); q=scopy(q,lg_sel); *q=0; hint=hb; }
       int ny=y+18;
@@ -519,13 +530,17 @@ void login_present(void){
 }
 int fid_scan_cancel_hit(int x,int y){ return in_rect(x,y,lg_cancx,lg_cancy,lg_cancw,42); }
 static void lg_try(void){
-    if(!g_lg_installed&&g_lg_liveret){ lg_live_unlock(); return; }
-    if(!g_lg_installed){ for(int i=0;i<32;i++)login_pass[i]=0; login_pl=0; g_locked=0; g_state=ST_DESKTOP; acct_ui_unlocked(); if(g_rec_openterm){open_win(W_TERM);g_rec_openterm=0;} return; }
+    if(lg_nopw()){ lg_success(); return; }
     if(lg_wait_until>g_ticks)return;
+    if(!login_pl&&lg_fp_ok()&&acct_has_password(lg_sel)){ int r=fprint_verify_user(lg_sel);
+        if(r>0){ acct_log("fingerprint sign-in for ",lg_sel,0); lg_success(); return; }
+        if(!r){ lg_fail++; acct_log("FAILED fingerprint for ",lg_sel,0); scopy(lg_msg,"Fingerprint not recognized - try again or type your password");
+            if(lg_fail>=5){ lg_wait_until=g_ticks+3000; lg_fail=0; lg_msg[0]=0; } return; } }
     int ok=acct_check(lg_sel,login_pass);
     for(int i=0;i<32;i++)login_pass[i]=0; login_pl=0;
     if(!ok){ lg_fail++; acct_log("FAILED password for ",lg_sel,0); scopy(lg_msg,"Wrong password - try again");
-        if(lg_fail>=5){ lg_wait_until=g_ticks+3000; lg_fail=0; lg_msg[0]=0; acct_log("5 wrong passwords, waiting 30 s, for ",lg_sel,0); } return; }
+        if(lg_fail>=5){ lg_wait_until=g_ticks+3000; lg_fail=0; lg_msg[0]=0; acct_log("5 wrong passwords, waiting 30 s, for ",lg_sel,0); }
+        { u64 w=(u64)acct_wait_secs(lg_sel)*100u; if(w&&g_ticks+w>lg_wait_until){ lg_wait_until=g_ticks+w; lg_msg[0]=0; } } return; }
     lg_success();
 }
 static void lg_pick(int i){ if(i<0||i>=lg_nu)return; int q=0; for(;lg_users[i].name[q]&&q<32;q++)lg_sel[q]=lg_users[i].name[q]; lg_sel[q]=0; for(int k=0;k<32;k++)login_pass[k]=0; login_pl=0; lg_msg[0]=0; }
@@ -567,7 +582,7 @@ int login_input(void){
         else if(c==27){ if(g_logged_in&&acct_switch_mode()){ acct_set_switch_mode(0); for(int k=0;k<32;k++)login_pass[k]=0; login_pl=0; lg_msg[0]=0; } }
         else if((c==19||c==20)&&lg_list_shown()){ int cur=0; for(int i=0;i<lg_nu;i++) if(seq(lg_users[i].name,lg_sel))cur=i; cur=(cur+(c==20?1:lg_nu-1))%lg_nu; lg_pick(cur); }
         else if(c=='\b'){ if(login_pl>0)login_pl--; }
-        else if(c>=32&&c<127){ if(login_pl<31)login_pass[login_pl++]=(char)c; lg_msg[0]=0; }
+        else if(c>=32&&c<127){ if(login_pl<31&&!lg_nopw())login_pass[login_pl++]=(char)c; lg_msg[0]=0; }
         login_pass[login_pl]=0; }
     static int lb=-1; int bp=(int)((g_ticks/50)&1); if(bp!=lb){lb=bp;changed=1;}
     { static u64 lm=0; if(g_ticks/1000!=lm){ lm=g_ticks/1000; changed=1; } }

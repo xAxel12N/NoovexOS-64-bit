@@ -1,5 +1,6 @@
 #include "include/nvx/base.h"
 #include "include/nvx/arch/x86_64/cpu/percpu.h"
+#include "include/nvx/core/kaslr.h"
 
 
 _Static_assert(__builtin_offsetof(struct pcpu,kstack_top)==0,"pcpu.kstack_top");
@@ -11,7 +12,7 @@ struct pcpu g_cpu[NCPU] __attribute__((aligned(64)));
 void percpu_setup(int i,u32 apic){
     struct pcpu* c=&g_cpu[i];
     c->self=c; c->id=i; c->apic_id=apic; c->jcur=-1; c->umask=022; c->ubrk=0x40002000000ULL; c->mmap_next=0x40004000000ULL;
-    c->kstack_top=(u64)(c->kstack+sizeof(c->kstack));
+    c->kstack_top=(u64)(c->kstack+sizeof(c->kstack))-kaslr_kstk_off();
     { extern void stk_cpu(int) __attribute__((weak)); if(stk_cpu)stk_cpu(i); }
 }
 void percpu_init_bsp(void){ percpu_setup(0,0); cpu_set_percpu(&g_cpu[0]); g_cpu[0].online=1; }

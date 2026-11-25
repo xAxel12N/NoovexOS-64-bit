@@ -25,6 +25,10 @@ int wifi_connect_ssid(const char* ssid,const char* pass,const char* user,int hid
 void wifi_disconnect(void);
 void wifi_mgr_tick(void);
 int wifi_powersave(int on);
+int wifi_powersave_mode(int mode);
+extern int g_wm_fast;
+void wifi_fast_set(int on);
+int wifi_fast_state(void);
 const char* wifi_state_name(void);
 int wifi_signal_bars(int rssi);
 int wifi_rate_mbps(void);

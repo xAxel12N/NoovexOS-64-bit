@@ -181,6 +181,7 @@ int k_readdir_at(const char* p,int n,char* name,int* type){
 static u64 k_days_from_civil(int y,int m,int d){ y-= m<=2; long era=(y>=0?y:y-399)/400; unsigned yoe=(unsigned)(y-era*400); unsigned doy=(153*(m+(m>2?-3:9))+2)/5+d-1; unsigned doe=yoe*365+yoe/4-yoe/100+doy; return (u64)(era*146097+(long)doe-719468); }
 static u64 g_rt_base=0;
 void k_realtime_set(u64 ms){ g_rt_base=ms-(u64)g_ticks*10ULL; }
+void k_realtime_slept(u64 ms){ if(g_rt_base)g_rt_base+=ms; }
 u64 k_realtime_ms(void){
     u64 base=g_rt_base;
     if(!base){ int hh,mm,ss,yr,mo,dy; read_clock(&hh,&mm,&ss,&yr,&mo,&dy);

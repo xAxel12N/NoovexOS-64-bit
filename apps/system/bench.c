@@ -19,7 +19,7 @@ extern int gfx_bench_surf(u32** px,int w,int h);
 #define BN_ROWS 14
 static int bn_test=0, bn_phase=0, bn_step=0, bn_prog=0, bn_done=0, bn_verdict=0, bn_sel=0;
 static char bn_row_k[BN_ROWS][28], bn_row_v[BN_ROWS][48]; static int bn_rows=0;
-static char bn_why[6][80]; static int bn_nwhy=0;
+static char bn_why[6][120]; static int bn_nwhy=0;
 static u64 bn_t0=0; static u64 bn_pass_ns[8]; static int bn_npass=0;
 static int bn_err=0, bn_warn=0;
 static u64 bn_acc=0, bn_x=0; static u64 bn_ns_acc=0;
@@ -31,7 +31,7 @@ static int bx_[8], by_[8], bw_[8], bh_[8], bid_[8], bn_hn=0;
 
 static void bn_hit(int x,int y,int w,int h,int id){ if(bn_hn<8){ bx_[bn_hn]=x; by_[bn_hn]=y; bw_[bn_hn]=w; bh_[bn_hn]=h; bid_[bn_hn]=id; bn_hn++; } }
 static void bn_add(const char* k,const char* v){ if(bn_rows>=BN_ROWS)return; int i=0; for(;k[i]&&i<27;i++)bn_row_k[bn_rows][i]=k[i]; bn_row_k[bn_rows][i]=0; for(i=0;v[i]&&i<47;i++)bn_row_v[bn_rows][i]=v[i]; bn_row_v[bn_rows][i]=0; bn_rows++; }
-static void bn_why_add(int lvl,const char* s){ if(lvl==2)bn_err=1; else if(lvl==1)bn_warn=1; if(bn_nwhy>=6)return; int i=0; for(;s[i]&&i<79;i++)bn_why[bn_nwhy][i]=s[i]; bn_why[bn_nwhy][i]=0; bn_nwhy++; }
+static void bn_why_add(int lvl,const char* s){ if(lvl==2)bn_err=1; else if(lvl==1)bn_warn=1; if(bn_nwhy>=6)return; int i=0; for(;s[i]&&i<119;i++)bn_why[bn_nwhy][i]=s[i]; bn_why[bn_nwhy][i]=0; bn_nwhy++; }
 static u64 rdmsr_(u32 m){ return cpu_rdmsr(m); }
 static int bn_temp(void){ if(!bn_dts)return -1; u64 v=rdmsr_(0x19C); if(!(v&(1ULL<<31)))return -1; return bn_tj-(int)((v>>16)&0x7F); }
 static void bn_caps(void){
@@ -147,8 +147,8 @@ static void bn_gpu_step(void){
 void bench_tick(void){ if(!bn_test||bn_done)return; if(!WN[W_BENCH].open){ return; } if(bn_test==1)bn_cpu_step(); else bn_gpu_step(); }
 static void bn_card(int x,int y,int w,int h,int t,const char* title,const char* sub,int id){
     int on=bn_sel==t, hov=mx>=x&&mx<x+w&&my>=y&&my<y+h;
-    fill_round(x,y,w,h,12,15,on?mix(rgb(255,255,255),ACC,30):hov?rgb(248,249,252):rgb(255,255,255));
-    if(on){ for(int k=0;k<w-24;k++){ putpx(x+12+k,y,ACC); putpx(x+12+k,y+h-1,ACC); } }
+    u32 bg=on?mix(rgb(255,255,255),ACC,30):hov?rgb(248,249,252):rgb(255,255,255);
+    if(on){ fill_round(x,y,w,h,12,15,ACC); fill_round(x+2,y+2,w-4,h-4,10,15,bg); } else fill_round(x,y,w,h,12,15,bg);
     int ix=x+20, iy=y+22;
     if(t==1){ fill_round(ix,iy,40,40,6,15,rgb(60,70,96)); fill_round(ix+8,iy+8,24,24,3,15,rgb(120,140,190)); for(int k=0;k<4;k++){ fill_rect(ix+6+k*9,iy-5,3,5,rgb(150,160,180)); fill_rect(ix+6+k*9,iy+40,3,5,rgb(150,160,180)); fill_rect(ix-5,iy+6+k*9,5,3,rgb(150,160,180)); fill_rect(ix+40,iy+6+k*9,5,3,rgb(150,160,180)); } }
     else { fill_round(ix-4,iy+4,48,32,5,15,rgb(40,120,80)); fill_circle(ix+28,iy+20,10,rgb(30,34,46)); fill_circle(ix+28,iy+20,6,rgb(110,200,150)); fill_rect(ix,iy+12,10,4,rgb(220,200,120)); fill_rect(ix,iy+20,10,4,rgb(220,200,120)); }
@@ -156,6 +156,16 @@ static void bn_card(int x,int y,int w,int h,int t,const char* title,const char* 
     int bx=x+w-110, byy=y+h-44; int run=bn_test==t&&!bn_done;
     fill_round(bx,byy,94,30,8,15,run?rgb(200,204,214):ACC); dstr_ctr(bx+47,byy+9,run?"Running...":"Run test",rgb(255,255,255),1);
     bn_hit(x,y,w,h,10+t); bn_hit(bx,byy,94,30,t); }
+static int bn_wrap(int x,int y,int xr,int yb,const char* s){
+    int maxc=(xr-x)/8; if(maxc<8)maxc=8;
+    char line[128]; int n=slen(s), i=0;
+    while(i<n&&y<yb){
+        while(s[i]==' ')i++;
+        int len=n-i; if(len>maxc){ len=maxc; while(len>0&&s[i+len]!=' ')len--; if(len<=0)len=maxc; }
+        if(len>127)len=127;
+        for(int k=0;k<len;k++)line[k]=s[i+k]; line[len]=0;
+        dstr(x,y,line,rgb(50,56,72),1); y+=18; i+=len; }
+    return y; }
 void bench_draw(int i){
     win_frame(i,"Benchmark"); bn_hn=0;
     int wx=WN[i].x+1, wy=WN[i].y+TITLEH, ww=WN[i].w-2, wh=WN[i].h-TITLEH-1;
@@ -178,7 +188,7 @@ void bench_draw(int i){
     fill_round(wx+20,y,ww-40,bn_rows*22+16,10,15,rgb(255,255,255));
     for(int k=0;k<bn_rows;k++){ dstr(wx+36,y+10+k*22,bn_row_k[k],rgb(110,118,138),1); dstr(wx+230,y+10+k*22,bn_row_v[k],rgb(26,30,42),1); }
     y+=bn_rows*22+28;
-    if(bn_done) for(int k=0;k<bn_nwhy&&y<wy+wh-18;k++){ dstr(wx+24,y,"-",rgb(110,118,138),1); dstr(wx+36,y,bn_why[k],rgb(50,56,72),1); y+=18; } }
+    if(bn_done) for(int k=0;k<bn_nwhy&&y<wy+wh-18;k++){ dstr(wx+24,y,"-",rgb(110,118,138),1); y=bn_wrap(wx+36,y,wx+ww-20,wy+wh-18,bn_why[k]); } }
 void bench_click(int px,int py){ for(int k=bn_hn-1;k>=0;k--) if(px>=bx_[k]&&px<bx_[k]+bw_[k]&&py>=by_[k]&&py<by_[k]+bh_[k]){ int id=bid_[k];
         if(id==1||id==2){ if(!(bn_test&&!bn_done))bench_start(id); } else if(id==11||id==12) bn_sel=id-10; return; } }
 void bench_key(int c){ if(c=='\n'||c=='\r'||c==' '){ if(bn_sel&&!(bn_test&&!bn_done))bench_start(bn_sel); } else if(c=='c'||c=='C')bn_sel=1; else if(c=='g'||c=='G')bn_sel=2; }

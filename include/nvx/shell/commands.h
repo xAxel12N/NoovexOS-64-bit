@@ -11,6 +11,8 @@ extern const TTheme TTH[6];
 
 int jc_sig_pending_cur(void);
 void sh_run_line(char* ln);
+int sh_list_cut(char* s,int* op);
+int sh_list_skip(int prev,int rc);
 void run_cmd(char* line);
 void wpa_connect_saved(u32 m,int idx,const char* pw);
 void wpa_do_join(const char* ss,const char* pw);

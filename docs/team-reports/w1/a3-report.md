@@ -74,7 +74,7 @@ include/drivers.h, add to the `pr[]` array in `nic_probe_all` (nic.c:75) and to 
 (static state). A hot-plug device (USB) instead calls `nic_add` + `nic_offer` on attach and `nic_drop` on removal
 (see drivers/usb/xhci/usb_network.c:208-213, 223-229).
 
-## 3. Wi-Fi layer (net/wifi + drivers/net/wifi/rtw88)
+## 3. Wi-Fi layer (net/wifi + drivers/net/wifi/realtek/rtw88)
 
 **Key finding: there is no chip-agnostic Wi-Fi driver interface.** net/wifi calls rtw88 functions and RTW registers
 directly. A non-Realtek chip (MT7921, ath, iwlwifi...) cannot "plug in" today; it would need a `wifi_ops` vtable
@@ -94,7 +94,7 @@ first. What exists:
 ### 3.2 rtw88 chip contract (good, already multi-chip)
 include/nvx/drivers/net/wifi/rtw_chip.h:6-97 documents bring-up order. `rtw_chip` (:60) gives tables, page
 layout, firmware blob (`fw_start/fw_end`), callbacks `power_on, efuse_parse, mac_init, phy_init, set_channel,
-set_tx_power, calibrate, coex_wifi_only, rfe_setup, phy_post, pcie_phy`. Registry drivers/net/wifi/rtw88/chip.c:15
+set_tx_power, calibrate, coex_wifi_only, rfe_setup, phy_post, pcie_phy`. Registry drivers/net/wifi/realtek/rtw88/chip.c:15
 (`rtw_chip_tab`), aliases :16, `rtw_chip_find(vendor,device,bus)` :30 (already keyed by bus), `rtw_chip_select`
 :35 (**hard-codes RTW_BUS_PCIE**). Chips: chips/rtw8821c.c:250, rtw8822b.c, rtw8822c.c.
 Recipe for another rtw88 PCIe chip: add chips/rtwXXXX.c filling `rtw_chip`, generate tables with
@@ -105,7 +105,7 @@ tools/wifi-tables/rtw_condgen.py, add to `rtw_chip_tab` (weak extern) and units.
 
 ### 4.1 What exists
 - `typedef struct rtw_bus {name, kind, r8,r16,r32, w8,w16,w32}` rtw_chip.h:32-41; `RTW_BUS_PCIE=0, RTW_BUS_USB=1` :27.
-- PCIe impl + global: drivers/net/wifi/rtw88/rtw_efuse.c:12-19 (`rtw_bus_pcie`, `g_rtw_bus=&rtw_bus_pcie`);
+- PCIe impl + global: drivers/net/wifi/realtek/rtw88/rtw_efuse.c:12-19 (`rtw_bus_pcie`, `g_rtw_bus=&rtw_bus_pcie`);
   wrappers `rtw_r8..rtw_w32` :20-25 used by all chip code, efuse, RF/BB helpers, H2C mailbox.
 - So **register access is the only thing abstracted.** First arg `u32 h` is the MMIO base for PCIe; for USB it can be
   any non-zero cookie (but see "dead card" checks below).

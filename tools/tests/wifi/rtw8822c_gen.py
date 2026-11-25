@@ -2,11 +2,11 @@ import re, sys
 # Builds the RTL8822C host test: cuts rtw_apply_cond/rtw_cond_ok out of rtw_sec.c and rtw_apply_one out of
 # rtw8821ce.c, and computes the expected table writes straight from the Linux rtw8822c_table.c with the rtw88
 # rules (rtw_parse_tbl_phy_cond + check_positive, PCIe, pkg 15) as an independent oracle.
-# build: python3 tools/tests/wifi/rtw8822c_gen.py drivers/net/wifi/rtw88/rtw_sec.c drivers/net/wifi/rtw88/rtw8821ce.c \
+# build: python3 tools/tests/wifi/rtw8822c_gen.py drivers/net/wifi/realtek/rtw88/rtw_sec.c drivers/net/wifi/realtek/rtw88/rtw8821ce.c \
 #          /tmp/ref/linux/drivers/net/wireless/realtek/rtw88/rtw8822c_table.c tools/tests/wifi/rtw8822c_main.c /tmp/t.c
 #        (cd assets/firmware && ld -r -b binary -o /tmp/fw.o rtw8822c_fw.bin)
-#        gcc -fsanitize=address,undefined -no-pie -Itools/tests/wifi/shim -I. /tmp/t.c drivers/net/wifi/rtw88/chips/rtw8822c.c \
-#            drivers/net/wifi/rtw88/chips/rtw8822c_tables.c /tmp/fw.o -o /tmp/t && /tmp/t
+#        gcc -fsanitize=address,undefined -no-pie -Itools/tests/wifi/shim -I. /tmp/t.c drivers/net/wifi/realtek/rtw88/chips/rtw8822c.c \
+#            drivers/net/wifi/realtek/rtw88/chips/rtw8822c_tables.c /tmp/fw.o -o /tmp/t && /tmp/t
 # usage: rtw8822c_gen.py rtw_sec.c rtw8821ce.c linux/rtw8822c_table.c rtw8822c_main.c out.c
 sec, r21, ltab, main_c, out = sys.argv[1:6]
 def fn(s, sig):

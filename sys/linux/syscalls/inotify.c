@@ -66,6 +66,22 @@ static int sfd_read(int i,u64 buf,u64 len){
 }
 static void sfd_close(int i){ if(i>=0&&i<SFD_MAX)g_sfd[i].used=0; }
 static void ep_close(int i);
+#define LX_PERFFD 120
+static long lx_perf_open(u64 ua,int pid,int cpu,int gfd,u64 fl){
+    u8 a[128]; lx_zero(a,128); u32 sz=0; if(lx_get(&sz,ua+4,4))return -LX_EFAULT; if(!sz)sz=64; if(sz<64)return -LX_EINVAL; if(lx_get(a,ua,sz>128?128:sz))return -LX_EFAULT;
+    if(sz>4096)return -LX_E2BIG;
+    if(sz>128){ for(u32 o=128;o<sz;o++){ u8 c; if(lx_get(&c,ua+o,1))return -LX_EFAULT; if(c){ u32 n=128; lx_put(ua+4,&n,4); return -LX_E2BIG; } } }
+    if(gfd!=-1||(fl&~8ULL))return -LX_EINVAL;
+    u32 type=*(u32*)a; u64 cfg=*(u64*)(a+8), per=*(u64*)(a+16), st=*(u64*)(a+24), rf=*(u64*)(a+32), bits=*(u64*)(a+40);
+    if(per)return -LX_ENOTSUP;
+    int me=jc_lead(&g_jp[g_jcur])->pid;
+    if(pid>0&&pid!=me&&g_uid!=0)return -LX_EACCES;
+    if(pid<-1)return -LX_EINVAL;
+    long k=perf_ev_open(type,cfg,(u32)st,(u32)rf,(int)(bits&1),pid,cpu,me); if(k<0)return k;
+    int vi=jc_newvf(LX_PERFFD,(int)k,O_RDONLY); if(vi<0){ perf_ev_close((int)k); return -LX_EMFILE; }
+    int fd=lx_fd_install(vi,(fl&8)!=0,0); if(fd<0){ vf_unref(vi); return fd; } return fd; }
+static long lx_perf_read(struct vfile* v,u64 buf,u64 len){ u64 o[4]; int n=perf_ev_read(v->fs_idx,o,4); if(n<0)return -LX_EBADF; if((u64)n>len)return -LX_ENOSPC; if(lx_put(buf,o,(u64)n))return -LX_EFAULT; return n; }
+static long lx_perf_ioctl(struct vfile* v,u32 req,u64 arg){ u64 x=0; int rc=perf_ev_ctl(v->fs_idx,req,&x); if(rc==-25)return -LX_ENOTTY; if(rc<0)return -LX_EBADF; if(req==0x80082407u&&lx_put(arg,&x,8))return -LX_EFAULT; return 0; }
 void lxabi_close(int dev,int i){ if(dev==LX_INOFD)ino_close(i); else if(dev==LX_SIGFD)sfd_close(i); else if(dev==113)ep_close(i); }
 
 #define LK_MAX 256
@@ -188,8 +204,12 @@ static long lx_read(struct sysregs* r,int fd,u64 buf,u64 len){
     if(v->dev==LX_TMFD)return lx_sock_wait(r,tm_read(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_INOFD)return lx_sock_wait(r,ino_read(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_SIGFD)return lx_sock_wait(r,sfd_read(v->fs_idx,buf,len),lx_nonblock(v));
+    if(v->dev==LX_PERFFD)return lx_perf_read(v,buf,len);
     if(v->dev==LX_MFD)return mfd_io(v,buf,len,-1,0);
     if(v->dev==LX_BLKD)return dx_pread(v->fs_idx,buf,len,-1,1);
+    if(v->dev==LX_SNDMIDI)return lx_sock_wait(r,armidi_read(v,buf,len),lx_nonblock(v));
+    if(v->dev==LX_USBSER)return userial_read(r,v,buf,len);
+    if(v->dev==LX_EVDEV||v->dev==LX_JSDEV)return lx_sock_wait(r,aev_read(v,buf,len),lx_nonblock(v));
     if(v->dev==LX_SYSW)return sx_wfd_read(v->vpath,buf,len,&v->off);
     if(v->dev==LX_PTM||v->dev==LX_PTS)return lx_sock_wait(r,pty_read(v,(u8*)buf,(int)len),lx_nonblock(v));
     int n=vfs_read(fd,(char*)buf,(int)len);
@@ -211,11 +231,14 @@ static long lx_write(struct sysregs* r,int fd,u64 buf,u64 len){
     if(len>LX_IOMAX)len=LX_IOMAX; if(!len)return 0;
     if(v->dev==LX_SYSW)return sx_wfd_write(v->vpath,buf,len);
     if(!lx_ok(buf,len))return -LX_EFAULT;
+    if(v->dev==LX_SNDMIDI){ if((v->flags&3)==0)return -LX_EBADF; return armidi_write(v,buf,len); }
+    if(v->dev==LX_USBSER){ if((v->flags&3)==0)return -LX_EBADF; return userial_write(v,buf,len); }
+    if(v->dev==LX_EVDEV||v->dev==LX_JSDEV){ if((v->flags&3)==0)return -LX_EBADF; return aev_write(v,buf,len); }
     if(v->dev==14){ int n=lxs_send(v->fs_idx,(const u8*)buf,(int)len,0,0,0); if(n==-32)jc_signal_proc(g_jcur,13); return lx_sock_wt(r,n,lx_nonblock(v),lx_stmo(v)); }
     if(v->dev==LX_AFU){ int n=un_send(v->fs_idx,(const u8*)buf,(int)len,0,0); if(n==-32)jc_signal_proc(g_jcur,13); return lx_sock_wait(r,n,lx_nonblock(v)); }
     if(v->dev==LX_EVFD)return lx_sock_wait(r,ev_write(v->fs_idx,buf,len),lx_nonblock(v));
     if(v->dev==LX_PTM||v->dev==LX_PTS)return lx_sock_wait(r,pty_write(v,(const u8*)buf,(int)len),lx_nonblock(v));
-    if(v->dev==LX_TMFD||v->dev==LX_INOFD||v->dev==LX_SIGFD)return -LX_EINVAL;
+    if(v->dev==LX_TMFD||v->dev==LX_INOFD||v->dev==LX_SIGFD||v->dev==LX_PERFFD)return -LX_EINVAL;
     if(v->dev==LX_MFD){ if((v->flags&3)==0)return -LX_EBADF; return mfd_io(v,buf,len,-1,1); }
     if(v->dev==0&&(v->flags&0x400)&&v->fs_idx>=0)v->off=FS[v->fs_idx].len;
     if(v->dev==0&&v->fs_idx>=0&&(v->off<0||v->off>=FS_CAP-1))return -27;
@@ -288,9 +311,10 @@ static long lx_getdents(int fd,u64 buf,u64 cap){
         if(n==0){ name[0]='.'; name[1]=0; type=4; }
         else if(n==1){ name[0]='.'; name[1]='.'; name[2]=0; type=4; }
         else if(fdd){ if(!lx_procent(dp,n-2,name,&type))break; }
-        else if(lx_streq(dp,"/dev/snd")){ if(!asnd_list(n-2,name,&type))break; }
+        else if(lx_streq(dp,"/dev/snd")){ if(!asnd_list(n-2,name,&type)){ int c0=0, ty3; char t3[72]; while(asnd_list(c0,t3,&ty3))c0++; if(!armidi_list(n-2-c0,name,0))break; type=2; } }
+        else if(lx_streq(dp,"/dev/input")){ if(!aev_list(n-2,name,&type))break; }
         else if(dp[0]=='/'&&dp[1]=='s'&&dp[2]=='y'&&dp[3]=='s'&&(dp[4]=='/'||!dp[4])){ if(!sx_list(dp,n-2,name,&type))break; }
-        else if(lx_streq(dp,"/dev")){ static const char* const DV[]={"null","zero","random","urandom","full","tty","console","fb0","dsp","kmsg",0}; int nb=0; while(DV[nb])nb++; if(n-2<nb){ int q=0; for(;DV[n-2][q];q++)name[q]=DV[n-2][q]; name[q]=0; type=2; } else if(!dx_list(dp,n-2-nb,name,&type))break; }
+        else if(lx_streq(dp,"/dev")){ static const char* const DV[]={"null","zero","random","urandom","full","tty","tty0","tty1","tty2","tty3","tty4","tty5","tty6","console","fb0","dsp","kmsg",0}; int nb=0; while(DV[nb])nb++; if(n-2<nb){ int q=0; for(;DV[n-2][q];q++)name[q]=DV[n-2][q]; name[q]=0; type=2; } else if(!dx_list(dp,n-2-nb,name,&type)){ int c1=0, ty4; char t4[72]; while(dx_list(dp,c1,t4,&ty4))c1++; if(!armidi_list(n-2-nb-c1,name,1)){ int c2=0; char t5[72]; while(armidi_list(c2,t5,1))c2++; if(!v4_list(n-2-nb-c1-c2,name)){ int c3=0; while(v4_list(c3,t5))c3++; if(!userial_list(n-2-nb-c1-c2-c3,name))break; } } type=2; } }
         else if(dp[0]=='/'&&dp[1]=='d'&&dp[2]=='e'&&dp[3]=='v'&&dp[4]=='/'&&!lx_streq(dp,"/dev/pts")){ if(!dx_list(dp,n-2,name,&type))break; }
         else if(lx_streq(dp,"/dev/pts")){ int c=0, f=0; for(int i=0;i<PTY_MAX;i++) if(g_pty[i].used&&!g_pty[i].locked){ if(c==n-2){ char nb[16]; pty_name(i,nb); int q=0; for(;nb[9+q];q++)name[q]=nb[9+q]; name[q]=0; f=1; break; } c++; } if(!f)break; type=2; }
         else if(lxn_on()&&lxn_ovl_ent(dp,0,name,&type)!=-9999){ if(lxn_ovl_ent(dp,n-2,name,&type)!=1)break; }
@@ -319,6 +343,7 @@ static int lx_poll_one(int fd,int ev){
     else if(v->dev==7){ struct jpipe* pp=&g_pipe[v->fs_idx]; if(pp->readers<=0)re|=8; else if(pp->n<pp->cap)re|=4; }
     else if(v->dev==5){ re|=4; struct jproc* p=jc_lead(&g_jp[g_jcur]); if((g_tin_n>0||g_tin_eof)&&p->pgid==g_tty_fg)re|=1; }
     else if(v->dev==10){ re|=4; if(g_mq_h!=g_mq_t)re|=1; }
+    else if(v->dev==43){ extern int evdev_ready(void); re|=4; if(evdev_ready())re|=1; }
     else if(v->dev==16){ extern int xin_ready(void); re|=4; if(xin_ready())re|=1; }
     else if(v->dev==17){ extern int fid_dev_ready(void); re|=4; if(fid_dev_ready())re|=1; }
     else if(v->dev==40){ extern int xtray_ready(void); re|=4; if(xtray_ready())re|=1; }
@@ -332,6 +357,10 @@ static int lx_poll_one(int fd,int ev){
     else if(v->dev==14)re=lxs_poll(v->fs_idx);
     else if(v->dev==LX_PTM||v->dev==LX_PTS)re=pty_poll(v);
     else if(v->dev==LX_SNDCTL||v->dev==LX_SNDPCM)re=asnd_poll(v);
+    else if(v->dev==LX_SNDMIDI)re=armidi_poll(v);
+    else if(v->dev==LX_USBSER)re=userial_poll(v);
+    else if(v->dev==LX_EVDEV||v->dev==LX_JSDEV)re=aev_poll(v);
+    else if(v->dev==LX_V4L)re=v4_poll(v);
     else if(v->dev==113){ extern int lx_ep_ready(int); if(lx_ep_ready(v->fs_idx))re|=1; }
     else if(v->dev==25||v->dev==26){ extern int lxm_poll_ext(struct vfile*); re=lxm_poll_ext(v); }
     else re|=5;

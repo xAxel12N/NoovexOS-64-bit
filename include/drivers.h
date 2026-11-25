@@ -18,6 +18,7 @@ int virtio_blk_probe(u64* sectors);
 int virtio_blk_read(u64 lba,int count,u8* buf);
 int virtio_blk_write(u64 lba,int count,const u8* buf);
 int virtio_blk_flush(void);
+int virtio_blk_flush_ok(void);
 struct nvx_snd {
     const char* name;
     int rate;

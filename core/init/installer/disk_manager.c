@@ -31,51 +31,52 @@ static void dm_load(void){
         g_dm_gpt=1; g_dm_gelba=*(u64*)(g_dm_ghdr+72); g_dm_gn=*(u32*)(g_dm_ghdr+80); g_dm_gsz=*(u32*)(g_dm_ghdr+84); g_dm_galt=*(u64*)(g_dm_ghdr+32);
         if(g_dm_gn>256)g_dm_gn=256; if(g_dm_gsz<128||g_dm_gsz>512)g_dm_gsz=128;
         g_dm_gsec=(g_dm_gn*g_dm_gsz+511)/512; if(g_dm_gent)kfree(g_dm_gent); g_dm_gent=(u8*)kmalloc((u64)g_dm_gsec*512); if(!g_dm_gent){ g_dm_gpt=0; return; }
-        if(gdisk_readn((u32)(g_dm_gelba*R),(int)g_dm_gsec,g_dm_gent)){ g_dm_gpt=0; return; }
+        if(gdisk_readn(g_dm_gelba*R,(int)g_dm_gsec,g_dm_gent)){ g_dm_gpt=0; return; }
         for(u32 i=0;i<g_dm_gn&&g_dm_np<DM_ROWS;i++){ const u8* e=g_dm_gent+(u64)i*g_dm_gsz; int z=1; for(int k=0;k<16;k++) if(e[k])z=0; if(z)continue;
             u64 f=*(const u64*)(e+32), l=*(const u64*)(e+40); if(l<f)continue; dmpart* d=&g_dm_p[g_dm_np++];
-            u64 st=f*R, sz=(l-f+1)*R; d->used=1; d->type=0xEE; d->start=st>0xFFFFFFFFULL?0xFFFFFFFFu:(u32)st; d->size=sz>0xFFFFFFFFULL?0xFFFFFFFFu:(u32)sz; d->gi=(int)i;
+            u64 st=f*R, sz=(l-f+1)*R; d->used=1; d->type=0xEE; d->start=st; d->size=sz; d->gi=(int)i;
             int o=0; for(int k=0;k<36&&o<39;k++){ u16 ch=*(const u16*)(e+56+k*2); if(!ch)break; d->name[o++]=(ch>=32&&ch<127)?(char)ch:'?'; } d->name[o]=0;
             if(!d->name[0])dm_cp(d->name,dm_gpt_type(e),40); else { char t[40]; int q=0; const char* tn=dm_gpt_type(e); for(;tn[q]&&q<39;q++)t[q]=tn[q]; t[q]=0; (void)t; }
-            if(st<0xFFFFFFFFULL)dm_detect_fs(d); }
+            dm_detect_fs(d); }
         return; }
-    for(int e=0;e<4;e++){ u8* pe=g_dm_mbr+446+e*16; u8 ty=valid?pe[4]:0; u32 st=*(u32*)(pe+8)*R, sz=*(u32*)(pe+12)*R;
+    for(int e=0;e<4;e++){ u8* pe=g_dm_mbr+446+e*16; u8 ty=valid?pe[4]:0; u64 st=(u64)*(u32*)(pe+8)*R, sz=(u64)*(u32*)(pe+12)*R;
         dmpart* d=&g_dm_p[e]; d->used=(valid&&ty!=0&&sz!=0); d->type=ty; d->start=st; d->size=sz; d->gi=e; if(d->used){ dm_cp(d->name,dm_mbr_type(ty),40); dm_detect_fs(d); } }
     g_dm_np=4;
 }
-static u32 dm_free_start(void){
-    u32 top=2048; for(int e=0;e<4;e++) if(g_dm_p[e].used){ u32 end=g_dm_p[e].start+g_dm_p[e].size; if(end>top)top=end; }
-    return (top+2047u)&~2047u;
+static u64 dm_free_start(void){
+    u64 top=2048; for(int e=0;e<4;e++) if(g_dm_p[e].used){ u64 end=g_dm_p[e].start+g_dm_p[e].size; if(end>top)top=end; }
+    return (top+2047u)&~2047ULL;
 }
 static void dm_create(void){
     if(g_dm_gpt){ g_dm_msg=1; g_dm_msgtext="This disk uses GPT. Delete partitions or erase the disk, then Install whole disk."; return; }
     int slot=-1; for(int e=0;e<4;e++) if(!g_dm_p[e].used){ slot=e; break; } if(slot<0){ g_dm_msg=1; g_dm_msgtext="No free partition slots (max 4)."; return; }
-    u32 st=dm_free_start(); if(st>=g_dksectors){ g_dm_msg=1; g_dm_msgtext="No free space on the disk."; return; }
-    u32 sz=g_dksectors-st; sz-=sz%dk_ratio(); g_dm_p[slot].used=1; g_dm_p[slot].type=0x0C; g_dm_p[slot].start=st; g_dm_p[slot].size=sz;
-    u8* pe=g_dm_mbr+446+slot*16; for(int i=0;i<16;i++)pe[i]=0; pe[4]=0x0C; pe[5]=0xFE;pe[6]=0xFF;pe[7]=0xFF; *(u32*)(pe+8)=st/dk_ratio(); *(u32*)(pe+12)=sz/dk_ratio();
+    u64 R=dk_ratio(), lim=g_dksectors<0xFFFFFFFFULL*R?g_dksectors:0xFFFFFFFFULL*R, st=dm_free_start(); if(st>=lim){ g_dm_msg=1; g_dm_msgtext="No free space on the disk."; return; }
+    u64 sz=lim-st; sz-=sz%R; g_dm_p[slot].used=1; g_dm_p[slot].type=0x0C; g_dm_p[slot].start=st; g_dm_p[slot].size=sz;
+    u8* pe=g_dm_mbr+446+slot*16; for(int i=0;i<16;i++)pe[i]=0; pe[4]=0x0C; pe[5]=0xFE;pe[6]=0xFF;pe[7]=0xFF; *(u32*)(pe+8)=(u32)(st/R); *(u32*)(pe+12)=(u32)(sz/R);
     g_dm_mbr[510]=0x55; g_dm_mbr[511]=0xAA; gdisk_write(0,g_dm_mbr); gdisk_flush(); dm_load(); g_dm_sel=slot;
     g_dm_msg=1; g_dm_msgtext="Partition created.";
 }
 static int dm_gpt_write_side(u64 hdr_lba,const u8* hdr_in,u64 ent_lba){
     u32 R=dk_ratio(); u8 h[512]; for(int i=0;i<512;i++)h[i]=hdr_in[i];
     u32 crc=dm_crc32(g_dm_gent,g_dm_gn*g_dm_gsz); *(u32*)(h+88)=crc; u32 hs=*(u32*)(h+12); if(hs<92||hs>512)hs=92; *(u32*)(h+16)=0; *(u32*)(h+16)=dm_crc32(h,hs);
-    for(u32 s=0;s<g_dm_gsec;s++) if(gdisk_write((u32)(ent_lba*R)+s,g_dm_gent+(u64)s*512))return -1;
-    return gdisk_write((u32)(hdr_lba*R),h); }
+    for(u32 s=0;s<g_dm_gsec;s++) if(gdisk_write(ent_lba*R+s,g_dm_gent+(u64)s*512))return -1;
+    return gdisk_write(hdr_lba*R,h); }
 static void dm_delete_do(void){
     dmpart* d=&g_dm_p[g_dm_sel];
     if(g_dm_gpt){ u8* e=g_dm_gent+(u64)d->gi*g_dm_gsz; for(u32 k=0;k<g_dm_gsz;k++)e[k]=0;
         int r=dm_gpt_write_side(1,g_dm_ghdr,g_dm_gelba);
-        u8 alt[512]; u32 R=dk_ratio(); if(g_dm_galt&&g_dm_galt*R<g_dksectors&&gdisk_read((u32)(g_dm_galt*R),1,alt)==0&&alt[0]=='E'&&alt[1]=='F'&&alt[2]=='I')r|=dm_gpt_write_side(g_dm_galt,alt,*(u64*)(alt+72));
+        u8 alt[512]; u32 R=dk_ratio(); if(g_dm_galt&&g_dm_galt*R<g_dksectors&&gdisk_read(g_dm_galt*R,1,alt)==0&&alt[0]=='E'&&alt[1]=='F'&&alt[2]=='I')r|=dm_gpt_write_side(g_dm_galt,alt,*(u64*)(alt+72));
         gdisk_flush(); dm_load(); g_dm_msg=1; g_dm_msgtext=r?"Writing the partition table failed.":"Partition deleted."; g_dm_sel=-1; return; }
     u8* pe=g_dm_mbr+446+d->gi*16; for(int i=0;i<16;i++)pe[i]=0; g_dm_mbr[510]=0x55; g_dm_mbr[511]=0xAA;
     gdisk_write(0,g_dm_mbr); gdisk_flush(); dm_load(); g_dm_msg=1; g_dm_msgtext="Partition deleted."; g_dm_sel=-1;
 }
 static void dm_erase_do(void){
     u8 z[512]; for(int i=0;i<512;i++)z[i]=0; u32 R=dk_ratio(); int bad=0;
-    for(u32 s=0;s<64u*R&&s<g_dksectors;s++) if(gdisk_write(s,z))bad=1;
-    if(g_dksectors>64u*R) for(u32 s=g_dksectors-64u*R;s<g_dksectors;s++) if(gdisk_write(s,z))bad=1;
+    for(u64 s=0;s<64u*R&&s<g_dksectors;s++) if(gdisk_write(s,z))bad=1;
+    if(g_dksectors>64u*R) for(u64 s=g_dksectors-64u*R;s<g_dksectors;s++) if(gdisk_write(s,z))bad=1;
     gdisk_flush(); dm_load(); g_dm_sel=-1; g_dm_msg=1; g_dm_msgtext=bad?"Erasing failed - the disk reported an error.":"Disk erased. It has no partitions now.";
 }
+static char* dm_u64(char* p,u64 v){ char t[21]; int n=0; do{ t[n++]=(char)('0'+v%10); v/=10; }while(v); while(n)*p++=t[--n]; return p; }
 static char* dm_size(char* p,u64 sec){ u64 mb=sec*512/1048576ULL; if(mb>=1024*1024){ p=udec(p,(u32)(mb/(1024*1024))); *p++='.'; p=udec(p,(u32)((mb%(1024*1024))*10/(1024*1024))); return scopy(p," TB"); }
     if(mb>=1024){ p=udec(p,(u32)(mb/1024)); *p++='.'; p=udec(p,(u32)((mb%1024)*10/1024)); return scopy(p," GB"); } p=udec(p,(u32)mb); return scopy(p," MB"); }
 static void dm_delete(void){
@@ -104,7 +105,7 @@ void dm_present(void){
         int hov=(mx>=lx&&mx<lx+lw&&my>=ry&&my<ry+rh)||selr;
         fill_round(lx,ry,lw,rh,8,15, selr?rgb(40,90,150):hov?rgb(30,44,72):rgb(26,36,58));
         dmpart* d=&g_dm_p[e]; p=b; p=udec(p,(u32)(e+1)); p=scopy(p,".  ");
-        if(d->used){ p=scopy(p,d->name); if(d->fs[0]){ p=scopy(p,"   ["); p=scopy(p,d->fs); *p++=']'; } p=scopy(p,"   "); p=dm_size(p,d->size); p=scopy(p,"   @ LBA "); p=udec(p,d->start);
+        if(d->used){ p=scopy(p,d->name); if(d->fs[0]){ p=scopy(p,"   ["); p=scopy(p,d->fs); *p++=']'; } p=scopy(p,"   "); p=dm_size(p,d->size); p=scopy(p,"   @ LBA "); p=dm_u64(p,d->start);
             if(!g_dm_gpt&&(g_dm_mbr[446+d->gi*16]&0x80))p=scopy(p,"  [active]"); }
         else p=scopy(p,g_dm_gpt?"(no partitions)":"(empty)");
         *p=0; dstr(lx+16,ry+12,b, d->used?rgb(232,240,252):rgb(120,132,152),1); }

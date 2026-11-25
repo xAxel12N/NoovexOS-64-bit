@@ -8,7 +8,7 @@
 #define XHID_MAX 10
 #define XHUB_MAX 6
 typedef struct { int used, ctl, reg, slot, root, depth, speed, nports, ttt, tt_slot, tt_port, parent, pport, ss; u32 route, e0_enq, e0_cyc, conn; } xhub_t;
-typedef struct { u8 id, kind; short btn_off, btn_cnt, x_off, x_sz, y_off, y_sz, w_off, w_sz, mod_off, arr_off, arr_cnt, bm_off, bm_min, bm_cnt, cc_off, cc_sz, cc_cnt, cv_cnt, cc_base; u16 cv_us[12]; short cv_off[12]; u32 idm[8]; u8 bseen, nil, iid[8], ilen[8]; } hidlay_t;
+typedef struct { u8 id, kind; short btn_off, btn_cnt, x_off, x_sz, y_off, y_sz, w_off, w_sz, mod_off, arr_off, arr_cnt, bm_off, bm_min, bm_cnt, cc_off, cc_sz, cc_cnt, cv_cnt, cc_base, h_off, h_sz, app, cl_n, cl_lmin, tip_off, bar_off, rng_off, rm_id, rm_len, rm_mul, rm_n, rm_off[2], rm_sz[2], rm_val[2], w_acc, h_acc; u16 cv_us[12], cl_us[8]; short cv_off[12]; int x_lo, x_hi, y_lo, y_hi; u32 idm[8]; u8 bseen, nil, iid[8], ilen[8], abs, rm_on; } hidlay_t;
 #define HIDLAY_MAX 4
 typedef struct { u16 vid, pid, rdlen, rdn, mps; u8 iface, ep, proto, sub; u32 rxi; u16 rxn[4]; short rdx[4], rdy[4]; int ldx, ldy; u8 rx[4][64]; u8 rd[512]; u8 pset, pfmt, ptry; u16 nboot; } xhdiag_t;
 struct nvx_ufs_t { char name[16]; u32 size, clus; };
@@ -56,10 +56,21 @@ int ufat_poke(const char* name,const char* data,int len);
 int ufat_delete_file(int idx);
 void xhc_select(int i);
 void usb_hotplug_poll(void);
+int xhci_pm_suspend(int deep);
+int xhci_pm_resume(void);
+void xhci_pm_idle(int now);
+int xhci_pm_woke(void);
+int xhci_pm_feature(int f,int on);
+int xhci_port_suspend(int p);
+int xhci_port_resume(int p);
+int xhci_lpm_apply(void);
+int xhci_lpm_off(void);
+const char* xhci_pm_status(void);
 
 #define USBDEV_MAX 16
 typedef struct { int used, ctl, port, cam, prn, hid; u16 vid, pid; char kind[32]; char name[40]; u64 t; int cls; } usbdev_t;
 extern usbdev_t g_usbdev[USBDEV_MAX]; extern int g_usbdev_n; extern u32 g_usbdev_gen;
 void usbdev_note(int port,u16 vid,u16 pid,const u8* cfg,int n,const char* name);
 void usbdev_gone(int port);
+int hidpp_info(int idx,char* kind,int kn,char* txt,int tn); int hidpp_pair(void); void hidpp_service(void); int hidpp_pair_cancel(void); int hidpp_pair_state(char* a,int an,char* b,int bn); int hidpp_unpair(int idx);
 #endif

@@ -1,0 +1,36 @@
+NoovexOS Intel Wi-Fi 6/6E driver (drivers/net/wifi/intel/iwx)
+
+iwx.h, iwx_pcie.c, iwx_fw.c, iwx_cmd.h, iwx_cmd.c, iwx_scan.c, iwx_data.c, iwx_glue.c,
+mvm/iwx_tlc.c, mvm/iwx_tlc.h, mvm/iwx_sae.c
+(and iwx_pnvm.c when added)
+  Port of OpenBSD sys/dev/pci/if_iwx.c (rev 1.230) and if_iwxreg.h (rev 1.75).
+  SPDX-License-Identifier: ISC AND BSD-3-Clause
+  Copyright (c) 2014, 2016 genua gmbh <info@genua.de> (Author: Stefan Sperling)
+  Copyright (c) 2014 Fixup Software Ltd.
+  Copyright (c) 2017, 2019, 2020 Stefan Sperling <stsp@openbsd.org>
+  Copyright (c) 2007-2010 Damien Bergamini <damien.bergamini@free.fr>
+  Intel portions (if_iwxreg.h: Copyright(c) 2017 Intel Deutschland GmbH,
+  Copyright(c) 2018 - 2019 Intel Corporation) are dual BSD/GPLv2 and are used
+  here under the BSD-3-Clause branch.
+  The verbatim OpenBSD/Intel/Bergamini licence block is kept at the top of
+  iwx.h, iwx_cmd.h, iwx_glue.c, trans/, fw/ (mvm/ files: same licence).
+  Firmware file names follow the Linux iwlwifi naming scheme (facts only).
+
+Firmware: none committed. The driver loads iwlwifi-<name>-<api>.ucode (and
+iwlwifi-<name>.pnvm for AX210/AX211) from /lib/firmware on disk and names the
+missing file in the kernel log if it is not there.
+
+mvm/iwx_sae.c also uses facts (MGMT_MCAST_KEY 0x1f command layout, STA_KEY_FLG_CCM,
+STA_KEY_MFP) from Linux drivers/net/wireless/intel/iwlwifi/fw/api/sta.h and mvm/sta.c,
+SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause, Copyright (C) 2012-2014, 2018-2021,
+2023, 2025-2026 Intel Corporation, Copyright (C) 2013-2014 Intel Mobile Communications
+GmbH, Copyright (C) 2016-2017 Intel Deutschland GmbH; used under BSD-3-Clause.
+
+mvm/iwx_he.c, mvm/iwx_he.h (HE / 160 MHz / RX block-ack) use firmware API layouts and
+constants (STA_HE_CTXT_CMD 0x7 v1-v3 = struct iwl_he_sta_context_cmd_v1/v2/v3, pkt_ext,
+STA_CTXT_HE_* flags, MAC_FILTER_IN_11AX, IWL_TLC_MNG_MODE_HE, IWL_TLC_MNG_CFG_FLAGS_LDPC,
+NVM_MAC_SKU_FLAGS_802_11AX_ENABLED) from Linux drivers/net/wireless/intel/iwlwifi/fw/api/
+mac.h, datapath.h, rs.h, nvm-reg.h, SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause,
+Copyright (C) 2012-2014, 2018-2026 Intel Corporation; used under BSD-3-Clause. ADD_STA
+add/remove_immediate_ba fields follow OpenBSD if_iwx.c iwx_sta_rx_agg_sta_cmd (ISC, above).
+New code in those files: GPL-3.0-or-later.

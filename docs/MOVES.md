@@ -60,11 +60,11 @@ The project was reorganized into named modules. Use this table to find a file by
 
 | Old | New |
 |---|---|
-| `drivers/net/wifi/rtw8821ce.c` | `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| `drivers/net/wifi/rtw_sec.c` | `drivers/net/wifi/rtw88/rtw_sec.c` |
-| `drivers/net/wifi/rtw_efuse.c` | `drivers/net/wifi/rtw88/rtw_efuse.c` |
-| `drivers/net/wifi/rtw_tables.h` | `drivers/net/wifi/rtw88/rtw_tables.h` |
-| `drivers/net/wifi/rtw_tables_cond.h` | `drivers/net/wifi/rtw88/rtw_tables_cond.h` |
+| `drivers/net/wifi/rtw8821ce.c` | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| `drivers/net/wifi/rtw_sec.c` | `drivers/net/wifi/realtek/rtw88/rtw_sec.c` |
+| `drivers/net/wifi/rtw_efuse.c` | `drivers/net/wifi/realtek/rtw88/rtw_efuse.c` |
+| `drivers/net/wifi/rtw_tables.h` | `drivers/net/wifi/realtek/rtw88/rtw_tables.h` |
+| `drivers/net/wifi/rtw_tables_cond.h` | `drivers/net/wifi/realtek/rtw88/rtw_tables_cond.h` |
 
 ## Split files renamed into named modules
 
@@ -121,3 +121,28 @@ The project was reorganized into named modules. Use this table to find a file by
 | `core/proc/jobs_parts/01_jc_resume.c` | `core/proc/jobs/resume_and_fds.c` |
 | `core/proc/jobs_parts/02_jc_tg_sync_ids.c` | `core/proc/jobs/thread_groups_and_exit.c` |
 | `core/proc/jobs_parts/03_segv_str.c` | `core/proc/jobs/faults.c` |
+
+## v11.11
+
+- `drivers/net/wifi/rtw88` -> `drivers/net/wifi/realtek/rtw88`
+- `drivers/net/wifi/iwx/iwx_pcie.c` -> `drivers/net/wifi/intel/iwx/trans/iwx_pcie.c`
+- `drivers/net/wifi/iwx/iwx_fw.c` -> `drivers/net/wifi/intel/iwx/fw/iwx_fw.c`
+- `drivers/net/wifi/iwx/iwx_pnvm.c` -> `drivers/net/wifi/intel/iwx/fw/iwx_pnvm.c`
+- `drivers/net/wifi/iwx/iwx_cmd.c` -> `drivers/net/wifi/intel/iwx/mvm/iwx_cmd.c`
+- `drivers/net/wifi/iwx/iwx_scan.c` -> `drivers/net/wifi/intel/iwx/mvm/iwx_scan.c`
+- `drivers/net/wifi/iwx/iwx_data.c` -> `drivers/net/wifi/intel/iwx/mvm/iwx_data.c`
+- `drivers/net/wifi/iwx/iwx_glue.c` -> `drivers/net/wifi/intel/iwx/iwx_glue.c`
+- `drivers/net/wifi/iwx/iwx.h` -> `drivers/net/wifi/intel/iwx/iwx.h`
+- `drivers/net/wifi/iwx/iwx_cmd.h` -> `drivers/net/wifi/intel/iwx/iwx_cmd.h`
+- `drivers/net/wifi/iwx/NOTICE` -> `drivers/net/wifi/intel/iwx/NOTICE`
+- `drivers/bluetooth/btusb.c` -> `drivers/bluetooth/transport/btusb.c`
+- `drivers/bluetooth/rtlbt_fw.c` -> `drivers/bluetooth/firmware/rtlbt_fw.c`
+- `drivers/bluetooth/rtlbt_fw.h` -> `drivers/bluetooth/firmware/rtlbt_fw.h`
+- `drivers/bluetooth/intelbt_fw.c` -> `drivers/bluetooth/firmware/intelbt_fw.c`
+- `drivers/bluetooth/intelbt_fw.h` -> `drivers/bluetooth/firmware/intelbt_fw.h`
+- `drivers/bluetooth/mtkbt_fw.c` -> `drivers/bluetooth/firmware/mtkbt_fw.c`
+- `drivers/bluetooth/mtkbt_fw.h` -> `drivers/bluetooth/firmware/mtkbt_fw.h`
+- `drivers/bluetooth/bcmbt_fw.c` -> `drivers/bluetooth/firmware/bcmbt_fw.c`
+- `drivers/bluetooth/bcmbt_fw.h` -> `drivers/bluetooth/firmware/bcmbt_fw.h`
+- `drivers/bluetooth/hci.c` -> `net/bluetooth/hci.c`
+- `drivers/bluetooth/hci_parse.h` -> `net/bluetooth/hci_parse.h`

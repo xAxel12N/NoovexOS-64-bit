@@ -182,7 +182,9 @@
             if(fi<0){ tcol(RED);term_puts("file not found\n");tcol(WHT); }
             else if(ufat_delete_file(fi)==0){ tcol(GREEN);term_puts("deleted from USB\n");tcol(WHT); } else { tcol(RED);term_puts("delete failed\n");tcol(WHT); } } }
     else if(seq(cmd,"usb")||seq(cmd,"xhci")){ term_puts(arg[0]=='r'?"restarting USB input (keyboards, mice, receivers)...\n":"rescanning all USB controllers...\n"); xhci_mouse_autoinit(); char u[]="usbinfo"; run_cmd(u); }
+    else if(seq(cmd,"sd")){ extern void sd_cmd(const char*); sd_cmd(arg); }
     else if(seq(cmd,"iwx")){ iwx_cmd(arg); }
+    else if(seq(cmd,"mtwifi")){ mtwifi_cmd(arg); }
     else if(seq(cmd,"wifi")&&wifi_cmd2(arg)){ }
     else if(seq(cmd,"wifi")){ g_wpa_pump=ui_pump; int doload=(arg[0]=='l'||arg[0]=='L'); int doinit=(arg[0]=='i'||arg[0]=='I');   /* wifi load / wifi init */
         if(!pci_n)pci_scan();
@@ -278,7 +280,7 @@
                             else { tcol(rgb(230,160,60)); term_puts("  staged, but IDDMA checksum flagged - source addr or page geometry still off.\n"); tcol(WHT); } } }
                     else if((arg[0]=='f'||arg[0]=='F')&&(arg[1]=='w'||arg[1]=='W')){
                         tcol(rgb(120,200,255)); term_puts("  [wifi fw] IDDMA firmware download (rtw88 mac.c path)\n"); tcol(WHT);
-                        int r=rtw_fw_download_iddma(mmio,fwb,fwsz);
+                        int rtw8723d_fw_download(u32 m,const u8* fw,long sz); int r=wc->wcpu==RTW_WCPU_8051?rtw8723d_fw_download(mmio,fwb,fwsz):rtw_fw_download_iddma(mmio,fwb,fwsz);
                         u16 st=rtw_r16(mmio,0x0080);
                         p=b;p=scopy(p,"  MCUFW_CTRL(0x80)=0x");p=hx(p,st,4);p=scopy(p,"  imem_dw=");p=udec(p,(st>>3)&1);
                         p=scopy(p," imem_ck=");p=udec(p,(st>>4)&1);p=scopy(p," dmem_dw=");p=udec(p,(st>>5)&1);p=scopy(p," dmem_ck=");p=udec(p,(st>>6)&1);

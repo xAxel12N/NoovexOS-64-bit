@@ -91,18 +91,34 @@
             term_puts("csp       "); term_puts(g_web_csp?"on ":"off"); term_puts("  Content Security Policy and frame-ancestors are enforced (off: only logged)\n");
             term_puts("samesite  "); term_puts(g_ck_samesite?"on ":"off"); term_puts("  SameSite cookie rules (off: cookies sent as before v10.35)\n");
             term_puts("change with: browser NAME on|off  (kept after a restart)\n"); } }
+    else if(seq(cmd,"service")){ extern int svcu_start(const char*); extern int svcu_stop(const char*); extern int svcu_restart(const char*); extern int svcu_enable(const char*,int); extern int svcu_reload(void); extern void svcu_status(const char*,char*,int); extern void svcu_logs(const char*,char*,int); extern int ux_is_admin(int);
+        static char sb[4096]; char nm[40]; int n=0; const char* q=arg; while(*q==' ')q++; while(*q&&*q!=' '&&n<39)nm[n++]=*q++; nm[n]=0; while(*q==' ')q++; const char* op=q; int adm=g_uid==0;
+        if(!nm[0]){ term_puts("usage: service NAME start|stop|restart|status|enable|disable|logs, service list, service reload\n"); }
+        else if((seq(nm,"list")||seq(nm,"--status-all"))&&!op[0]){ extern void svc_list(char*,int); extern void svcu_list(char*,int); svc_list(sb,sizeof sb); term_puts(sb); svcu_list(sb,sizeof sb); if(sb[0]){ term_puts("\nUnit services (/etc/nvx/services, use: service NAME status):\n"); term_puts(sb); } }
+        else if(seq(nm,"reload")){ if(!adm)term_puts("service: this needs root (try: sudo service ...)\n"); else { int c=svcu_reload(); char b[48],*p=b; p=scopy(p,"service: "); p=udec(p,(u32)c); p=scopy(p," units loaded\n"); *p=0; term_puts(b); } }
+        else if(!op[0]||seq(op,"status")){ svcu_status(nm,sb,sizeof sb); term_puts(sb); }
+        else if(seq(op,"logs")){ svcu_logs(nm,sb,sizeof sb); term_puts(sb); }
+        else if(!adm){ term_puts("service: this needs root (try: sudo service ...)\n"); }
+        else { int r=-9; if(seq(op,"start"))r=svcu_start(nm); else if(seq(op,"stop"))r=svcu_stop(nm); else if(seq(op,"restart"))r=svcu_restart(nm); else if(seq(op,"enable"))r=svcu_enable(nm,1); else if(seq(op,"disable"))r=svcu_enable(nm,0);
+            if(r==-9)term_puts("service: unknown action (start stop restart status enable disable logs)\n"); else if(r==-1)term_puts("service: no such service (see /etc/nvx/services)\n"); else if(r<0){ term_puts("service: could not start; "); svcu_status(nm,sb,sizeof sb); term_puts(sb); } else { term_puts(op); term_puts(seq(op,"stop")?"ping ":(seq(op,"enable")||seq(op,"disable"))?"d ":"ed "); term_puts(nm); term_putc('\n'); } } }
     else if(seq(cmd,"services")){ extern void svc_list(char*,int); extern int svc_index(const char*); extern int svc_set(int,int); extern void clock_sync_now(void);
         const char* a=arg; while(*a==' ')a++;
         int st=(a[0]=='s'&&a[1]=='t'&&a[2]=='a'&&a[3]=='r'&&a[4]=='t'&&a[5]==' ')?1:(a[0]=='s'&&a[1]=='t'&&a[2]=='o'&&a[3]=='p'&&a[4]==' ')?2:(a[0]=='s'&&a[1]=='y'&&a[2]=='n'&&a[3]=='c')?3:0;
         if(st==3){ extern void clock_sync_server(const char*); const char* h=a+4; while(*h==' ')h++; if(*h)clock_sync_server(h); else clock_sync_now(); term_puts("clock sync started (see services for the result)\n"); }
-        else if(st){ const char* nm=a+(st==1?6:5); while(*nm==' ')nm++; int i=svc_index(nm); if(i<0)term_puts("services: no such service (run services to list them)\n"); else if(!svc_set(i,st==1))term_puts("services: this service is always on\n"); else { term_puts(st==1?"started ":"stopped "); term_puts(nm); term_putc('\n'); } }
+        else if(st){ const char* nm=a+(st==1?6:5); while(*nm==' ')nm++; int i=svc_index(nm); if(i<0){ extern int svcu_start(const char*); extern int svcu_stop(const char*); extern int ux_is_admin(int); if(g_uid!=0)term_puts("services: this needs root (try: sudo services ...)\n"); else if((st==1?svcu_start(nm):svcu_stop(nm))==-1)term_puts("services: no such service (run services to list them)\n"); else { term_puts(st==1?"started ":"stopping "); term_puts(nm); term_putc('\n'); } } else if(!svc_set(i,st==1))term_puts("services: this service is always on\n"); else { term_puts(st==1?"started ":"stopped "); term_puts(nm); term_putc('\n'); } }
         else if(a[0]){ term_puts("usage: services | services start NAME | services stop NAME | services sync\n"); }
-        else { static char b[2048]; svc_list(b,sizeof b); term_puts(b); } }
+        else { static char b[2048]; svc_list(b,sizeof b); term_puts(b); extern void svcu_list(char*,int); svcu_list(b,sizeof b); if(b[0]){ term_puts("\nUnit services (/etc/nvx/services, use: service NAME status):\n"); term_puts(b); } } }
     else if(seq(cmd,"time")){ int h,m,ss,y,mo,d;read_clock(&h,&m,&ss,&y,&mo,&d);char b[16],*p=b;p=u2(p,h);*p++=':';p=u2(p,m);*p++=':';p=u2(p,ss);*p=0;term_puts(b);term_putc('\n'); }
     else if(seq(cmd,"date")){ int h,m,ss,y,mo,d;read_clock(&h,&m,&ss,&y,&mo,&d);char b[16],*p=b;p=udec(p,y);*p++='-';p=u2(p,mo);*p++='-';p=u2(p,d);*p=0;term_puts(b);term_putc('\n'); }
+    else if(seq(cmd,"kaslr")){
+        if(g_uid!=0){ tcol(rgb(240,120,120)); term_puts("kaslr: permission denied (root only)\n"); tcol(WHT); }
+        else if(seq((char*)arg,"off")){ g_kaslr_on=0; term_puts("kaslr: off for new programs\n"); }
+        else if(seq((char*)arg,"on")){ g_kaslr_on=1; term_puts("kaslr: on for new programs\n"); }
+        else { char b[900]; kaslr_report(b,(int)sizeof b); term_puts(b); } }
     else if(seq(cmd,"uptime")){ char b[24],*p=b;p=scopy(p,"up ");p=udec(p,(u32)(g_ticks/100));p=scopy(p," seconds");*p=0;term_puts(b);term_putc('\n'); }
     else if(seq(cmd,"pwd")){ dt_init(); char pb[192]; dt_path(g_dcwd,pb); term_puts(pb); term_putc('\n'); }
     else if(sh_is_user_cmd(cmd)){ sh_user_cmds(cmd,arg); }
+    else if(seq(cmd,"tty")||seq(cmd,"chvt")){ extern void vtc_cmd(const char*,const char*); vtc_cmd(cmd,arg); }
     else if(seq(cmd,"whoami")){ term_puts(cur_user()); term_putc('\n'); }
     else if(seq(cmd,"sudo")){ const char* a=arg; while(*a==' ')a++;
         if(!*a){ term_puts("usage: sudo <command>\n"); }
@@ -131,6 +147,7 @@
         int d = *a ? dt_resolve_dir(a) : g_dcwd;
         int isdev=(d>=0 && dt_child(0,"dev")==d);
         if(d<0){ tcol(rgb(240,120,120)); term_puts("ls: no such directory\n"); tcol(WHT); }
+        else if(!ux_dir_ok(d,4)){ tcol(rgb(240,120,120)); term_puts("ls: permission denied\n"); tcol(WHT); }
         else if(isdev){ tcol(rgb(120,255,180)); term_puts("null  zero  random  urandom  full  tty  console\n"); tcol(WHT); }
         else if(longfmt){
             char b[96],*p; char ms[12];
@@ -155,8 +172,9 @@
         unsigned int nm=0; int got=0; while(*a>='0'&&*a<='7'){ nm=nm*8+(*a-'0'); a++; got=1; } while(*a==' ')a++;
         if(!got||!*a){ term_puts("usage: chmod <octal> <file>   e.g. chmod 755 script\n"); }
         else { int k; for(k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==g_dcwd&&seq(FS[k].name,(char*)a))break;
-            if(k<FS_N){ FS[k].mode=(FS[k].mode&S_IFMT)|(nm&07777); if(!(FS[k].mode&S_IFMT))FS[k].mode|=S_IFREG; if(disk_ok)fs_sync(k); char mb[12]; char b2[96],*p=b2; p=scopy(p,"  "); p=scopy(p,mode_str(FS[k].mode,mb)); p=scopy(p," "); p=scopy(p,FS[k].name); *p=0; tcol(GREEN); term_puts(b2); term_putc('\n'); tcol(WHT); }
-            else { int dd=dt_child(g_dcwd,a); if(dd>=0){ DT[dd].mode=S_IFDIR|(nm&07777); } else { tcol(rgb(240,120,120)); term_puts("chmod: no such file\n"); tcol(WHT); } } }
+            if(k<FS_N&&g_uid!=0&&FS[k].uid!=g_uid){ tcol(rgb(240,120,120)); term_puts("chmod: Operation not permitted\n"); tcol(WHT); }
+            else if(k<FS_N){ FS[k].mode=(FS[k].mode&S_IFMT)|(nm&07777); if(!(FS[k].mode&S_IFMT))FS[k].mode|=S_IFREG; if(disk_ok)fs_sync(k); char mb[12]; char b2[96],*p=b2; p=scopy(p,"  "); p=scopy(p,mode_str(FS[k].mode,mb)); p=scopy(p," "); p=scopy(p,FS[k].name); *p=0; tcol(GREEN); term_puts(b2); term_putc('\n'); tcol(WHT); }
+            else { int dd=dt_child(g_dcwd,a); if(dd>=0&&g_uid!=0&&DT[dd].uid!=g_uid){ tcol(rgb(240,120,120)); term_puts("chmod: Operation not permitted\n"); tcol(WHT); } else if(dd>=0){ DT[dd].mode=S_IFDIR|(nm&07777); dt_save(); } else { tcol(rgb(240,120,120)); term_puts("chmod: no such file\n"); tcol(WHT); } } }
     }
     else if(seq(cmd,"mkdir")){
         dt_init(); const char* a=arg; while(*a==' ')a++;
@@ -168,13 +186,14 @@
         int d=dt_child(g_dcwd,a);
         if(d<0){tcol(RED);term_puts("rmdir: no such directory\n");tcol(WHT);}
         else { int has=0; for(int i=0;i<DN_MAX;i++)if(DT[i].used&&DT[i].parent==d)has=1; for(int k=0;k<FS_N;k++)if(FS[k].used&&FS[k].dir==d)has=1;
-            if(has){tcol(RED);term_puts("rmdir: not empty\n");tcol(WHT);} else { DT[d].used=0; dt_save(); } }
+            if(has){tcol(RED);term_puts("rmdir: not empty\n");tcol(WHT);} else if(d<=0||d==g_dcwd||!perm_dir(DT[d].parent)){tcol(RED);term_puts("rmdir: Permission denied\n");tcol(WHT);} else { DT[d].used=0; dt_save(); } }
     }
     else if(seq(cmd,"touch")){
         dt_init(); const char* a=arg; while(*a==' ')a++;
         if(!*a){ term_puts("usage: touch <name>\n"); }
         else { int k; for(k=0;k<FS_N;k++) if(FS[k].used&&FS[k].dir==g_dcwd&&seq(FS[k].name,(char*)a))break;
-            if(k>=FS_N){ for(k=0;k<FS_N;k++) if(!FS[k].used){ fs_newslot(k); int n=0;while(a[n]&&n<63){FS[k].name[n]=a[n];n++;}FS[k].name[n]=0; FS[k].used=1; FS[k].folder=0; FS[k].dir=g_dcwd; FS[k].mode=0100644u; if(disk_ok)fs_sync(k); break; } if(k>=FS_N){tcol(RED);term_puts("touch: no space\n");tcol(WHT);} } }
+            if(k>=FS_N&&!perm_dir(g_dcwd)){ tcol(RED);term_puts("touch: permission denied\n");tcol(WHT); }
+            else if(k>=FS_N){ for(k=0;k<FS_N;k++) if(!FS[k].used){ fs_newslot(k); int n=0;while(a[n]&&n<63){FS[k].name[n]=a[n];n++;}FS[k].name[n]=0; FS[k].used=1; FS[k].folder=0; FS[k].dir=g_dcwd; FS[k].mode=0100644u; if(disk_ok)fs_sync(k); break; } if(k>=FS_N){tcol(RED);term_puts("touch: no space\n");tcol(WHT);} } }
     }
     else if(seq(cmd,"rm")){
         dt_init(); const char* a=arg; while(*a==' ')a++;
@@ -188,6 +207,7 @@
         if(s1>=FS_N||!dst[0]){ tcol(RED);term_puts("usage: cp <src> <dst>\n");tcol(WHT); }
         else { int d1; for(d1=0;d1<FS_N;d1++) if(FS[d1].used&&FS[d1].dir==g_dcwd&&seq(FS[d1].name,dst))break; int fresh=0;
             if(d1==s1){ tcol(RED);term_puts("cp: source and destination are the same file\n");tcol(WHT); }
+            else if(!ux_dir_ok(FS[s1].dir,1)||((FS[s1].mode&0777u)&&!ux_perm_ok(s1,4))||(d1>=FS_N&&!perm_dir(g_dcwd))){ tcol(RED);term_puts("cp: permission denied\n");tcol(WHT); }
             else { if(d1>=FS_N){ fresh=1; for(d1=0;d1<FS_N;d1++) if(!FS[d1].used)break; }
             if(d1>=FS_N){tcol(RED);term_puts("cp: no space\n");tcol(WHT);}
             else if(!fresh&&!perm_file(d1,2)){ tcol(RED);term_puts("cp: permission denied\n");tcol(WHT); }

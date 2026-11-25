@@ -28,7 +28,10 @@ static u64 g_ticks; static u8 kdown[128]; static int mouse_dx,mouse_dy,mouse_evt
 static int mouse_lpress,mouse_rpress; static u64 mouse_press_t; int g_krep_delay=50, g_krep_rate=3, g_krep_flag=0;
 void in_xbtn(int b4,int b5){ (void)b4; (void)b5; }
 void in_rel(int dx,int dy){ if(!dx&&!dy)return; mouse_dx+=dx; mouse_dy-=dy; mouse_evt=1; }
+void in_abs(int x,int xr,int y,int yr){ (void)x; (void)xr; (void)y; (void)yr; }
 void in_scroll(int v,int h){ (void)h; if(v){ mouse_scroll+=v; mouse_evt=1; } }
+unsigned g_btnmask; void in_btnmask(unsigned m){ g_btnmask=m; }
+static int g_hrv; void in_scroll_hr(int v,int h){ (void)h; g_hrv+=v; int n=g_hrv/120; g_hrv-=n*120; in_scroll(n,0); }
 void in_btn_raw(int l,int r,int m){ l=l?1:0; r=r?1:0; if((l&&!mouse_btn)||(r&&!mouse_rbtn))mouse_press_t=g_ticks; if(l&&!mouse_btn)mouse_lpress++; if(r&&!mouse_rbtn)mouse_rpress++; if(l!=mouse_btn||r!=mouse_rbtn)mouse_evt=1; mouse_btn=l; mouse_rbtn=r; mouse_mid=m?1:0; }
 static char kq[256]; static int kqn; static void kpush(int c){ if(kqn<255)kq[kqn++]=(char)c; kq[kqn]=0; }
 int g_hk_last=-1; void hk_push(int id){ g_hk_last=id; }
@@ -36,7 +39,7 @@ static void io_wait(void){} static void klog(const char* s){(void)s;}
 static int g_next_slot=1, g_disabled[16], g_ndis; static u8 g_cfg_snapshot[4096]; static int g_cfg_done;
 static const u8* g_conf; static int g_conflen; static const u8* g_rd[4]; static int g_rdl[4]; static int g_req[32][3], g_nreq;
 static u32 g_cmdlog[64][3]; static int g_ncmd; static int g_stall_class, g_halted;
-typedef struct { int used, root, depth, kind, speed, nports, present, mps0; u32 route; int cflag[16], en[16], creset[16], pwr[16]; const u8* conf; int conflen; const u8* rd; int rdl; } mdev_t;
+typedef struct { int used, root, depth, kind, speed, nports, present, mps0; u32 route; int cflag[16], en[16], creset[16], pwr[16], plsbad[16], cbh[16]; const u8* conf; int conflen; const u8* rd; int rdl; } mdev_t;
 static mdev_t M[16]; static int g_nm, g_model_on; static int g_slotdev[256]; static u32 g_addr_sc[256][3]; static u32 g_hubcfg[256][3]; static int g_eval_mps[256];
 static int mfind(int root,u32 route){ for(int i=1;i<g_nm;i++) if(M[i].used&&M[i].present&&M[i].root==root&&M[i].route==route)return i; return 0; }
 static int xh_cmd_s(u32 p0,u32 p1,u32 p2,u32 type,u32 slotid,u8* cc,u8* sl){ (void)p1;(void)p2; *cc=1; if(g_ncmd<64){ g_cmdlog[g_ncmd][0]=type; g_cmdlog[g_ncmd][1]=slotid; g_cmdlog[g_ncmd][2]=p0; g_ncmd++; }
@@ -51,19 +54,25 @@ static int g_db[4096][2], g_ndb; static void xh_db(int slot,u32 t){ if(g_ndb<409
 static int msd_ok, msd_slot, msd_ctl, msd_port=-1, ufat_ok, ufs_n, g_files_usb, g_usb_arrived; static u32 msd_route; static int msd_depth; static int g_msd_calls;
 static void ufat_mount(void){ ufat_ok=1; }
 static int xhci_msd_enum_loc(const usbloc_t* L){ g_msd_calls++; int m=mfind(L->root,L->route); if(m&&M[m].kind==3){ msd_ok=1; msd_route=L->route; msd_depth=L->depth; msd_slot=g_next_slot++; return 1; } msd_slot=0; return 0; }
-static int g_hubreq[64][3], g_nhubreq;
+static int g_hubreq[64][3], g_nhubreq; static int g_mtt_dev=-1, g_setif=-1, g_setif_if=-1, g_hdepth[8], g_nhd;
 static int model_ctrl(int dv,u8 rt,u8 req,u16 val,u16 idx,u16 len){
     mdev_t* m=&M[dv]; u8* db=(u8*)(u64)cur_dbuf;
     if(m->kind==1){
+        if(rt==0x01&&req==11){ g_setif=val; g_setif_if=idx; return 1; }
+        if(rt==0x20&&req==12){ if(g_nhd<8)g_hdepth[g_nhd++]=val; return 1; }
+        if(rt==0xA0&&req==6&&m->speed==4){ u8 d[12]={12,0x2A,(u8)m->nports,0,0,10,0,0x20,0,0,0,0}; memcpy(db,d,len<12?len:12); return 1; }
+        if(rt==0x23&&req==3&&val==28){ if(g_nhubreq<64){ g_hubreq[g_nhubreq][0]=req; g_hubreq[g_nhubreq][1]=val; g_hubreq[g_nhubreq][2]=idx; g_nhubreq++; } m->plsbad[idx]=0; m->cbh[idx]=1; return 1; }
+        if(rt==0x23&&req==1&&val==29){ m->cbh[idx]=0; return 1; }
         if(rt==0xA0&&req==6){ u8 d[9]={9,0x29,(u8)m->nports,0x20,0,50,0,0,0xFF}; memcpy(db,d,len<9?len:9); return 1; }
         if(rt==0x23&&g_nhubreq<64){ g_hubreq[g_nhubreq][0]=req; g_hubreq[g_nhubreq][1]=val; g_hubreq[g_nhubreq][2]=idx; g_nhubreq++; }
         if(rt==0x23&&req==3&&val==8){ m->pwr[idx]=1; return 1; }
         if(rt==0x23&&req==3&&val==4){ m->en[idx]=mfind(m->root,m->route|((u32)idx<<(4*m->depth)))!=0; m->creset[idx]=1; return 1; }
         if(rt==0x23&&req==1&&val==20){ m->creset[idx]=0; return 1; }
         if(rt==0x23&&req==1&&val==16){ m->cflag[idx]=0; return 1; }
-        if(rt==0xA3&&req==0){ int c=mfind(m->root,m->route|((u32)idx<<(4*m->depth))); u16 st=(u16)((c?1:0)|(c&&m->en[idx]?2:0)|(m->pwr[idx]?0x100:0)); if(c){ if(M[c].speed==2)st|=0x200; if(M[c].speed==3)st|=0x400; } else m->en[idx]=0;
-            u16 ch=(u16)((m->cflag[idx]?1:0)|(m->creset[idx]?0x10:0)); db[0]=(u8)st; db[1]=(u8)(st>>8); db[2]=(u8)ch; db[3]=(u8)(ch>>8); return 1; }
+        if(rt==0xA3&&req==0){ int c=mfind(m->root,m->route|((u32)idx<<(4*m->depth))); u16 st=(u16)((c?1:0)|(c&&m->en[idx]?2:0)|(m->pwr[idx]?(m->speed==4?0x200:0x100):0)); if(c){ if(M[c].speed==2)st|=0x200; if(M[c].speed==3)st|=0x400; if(m->plsbad[idx])st|=6u<<5; } else m->en[idx]=0;
+            u16 ch=(u16)((m->cflag[idx]?1:0)|(m->creset[idx]?0x10:0)|(m->cbh[idx]?0x20:0)); db[0]=(u8)st; db[1]=(u8)(st>>8); db[2]=(u8)ch; db[3]=(u8)(ch>>8); return 1; }
         if(req==6&&val==0x0100){ memset(db,0,18); db[4]=9; db[7]=64; return 1; }
+        if(req==6&&val==0x0200&&dv==g_mtt_dev){ static const u8 HM[]={9,2,41,0,1,1,0,0xE0,0, 9,4,0,0,1,9,0,1,0, 7,5,0x81,3,1,0,12, 9,4,0,1,1,9,0,2,0, 7,5,0x81,3,1,0,12}; int n=len<41?len:41; memcpy(db,HM,(size_t)n); return 1; }
         if(req==6&&val==0x0200){ static const u8 H[]={9,2,25,0,1,1,0,0xE0,0, 9,4,0,0,1,9,0,0,0, 7,5,0x81,3,1,0,12}; int n=len<25?len:25; memcpy(db,H,(size_t)n); return 1; }
         return 1; }
     if(req==6&&val==0x0100){ memset(db,0,18); db[7]=(u8)m->mps0; return 1; }
@@ -85,6 +94,7 @@ static int uvc_has_video(const u8* c,int n){ (void)c;(void)n; return 0; }
 static int aud_has_audio(const u8* c,int n){ (void)c;(void)n; return 0; }
 static int aud_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)full;(void)wtot;(void)cfgval;(void)vid;(void)pid;(void)nm; return 0; }
 static int uvc_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)full;(void)wtot;(void)cfgval;(void)vid;(void)pid;(void)nm; return 0; }
+static int uvc_held(int r){ (void)r; return 0; } static void uvc_attach_done(void){ }
 static void uvc_add_mic(const usbloc_t* L,int d,const u8* big,int tw,u8 cfgval,u16 vid,u16 pid,const char* nm){ (void)L;(void)d;(void)big;(void)tw;(void)cfgval;(void)vid;(void)pid;(void)nm; }
 static int ok=1; static void chk(const char* w,int c){ printf("  %-70s %s\n",w,c?"ok":"FAIL"); if(!c)ok=0; }
 static const u8 UNIFYING[]={9,2,0x54,0,3,1,4,0xA0,0x31,
@@ -300,6 +310,40 @@ static void hub_tests(void){
   dis=g_ndis; xhid_remove_port(5);
   int anyh=0; for(int h=0;h<XHUB_MAX;h++)anyh|=xhub[h].used; int anyr=0; for(int r=0;r<XHID_MAX;r++)anyr|=xreg_hub[r];
   chk("unplugging the hub frees everything below it: 4 entries, 2 hubs, the stick", !xhid_used[ekb]&&!xhid_used[ems]&&!xhid_used[ems3]&&!anyh&&!anyr&&!msd_ok&&g_ndis==dis+7);
+  chk("no MIDI probe for keyboards, mice, hubs or the stick behind hubs", g_umhub_n==0);
+  { xhid_reset(); memset(g_slotdev,0,sizeof g_slotdev); g_nm=1; g_ncmd=0; msd_ok=0;
+    static const u8 MIDICFG[]={9,2,18,0,1,1,0,0x80,50, 9,4,1,0,2,1,3,0,0};
+    int H=madd(7,0,0,1,3,2,0,0,0,0,64); (void)H; int MI=madd(7,0x2,1,2,2,0,MIDICFG,sizeof MIDICFG,0,0,8); (void)MI;
+    plug(7,3); usbloc_t R2; R2.root=7; R2.depth=0; R2.hub=-1; R2.hport=0; R2.speed=3; R2.route=0; R2.tt_slot=0; R2.tt_port=0; xhci_enum_loc(&R2);
+    chk("MIDI device on hub port 2 is handed to the MIDI driver (route 2, depth 1)", g_umhub_n==1&&g_umhub_route==2&&g_umhub_depth==1);
+    xhid_remove_port(7);
+    xhid_reset(); memset(g_slotdev,0,sizeof g_slotdev); g_nm=1; g_ncmd=0; msd_ok=0; g_umhub_n=0; g_umhub_route=-1; g_umhub_depth=-1;
+    int H2=madd(8,0,0,1,3,2,0,0,0,0,64); (void)H2; int HB=madd(8,0x1,1,1,3,2,0,0,0,0,64); (void)HB; int MJ=madd(8,0x21,2,2,2,0,MIDICFG,sizeof MIDICFG,0,0,8); (void)MJ;
+    plug(8,3); usbloc_t R3; R3.root=8; R3.depth=0; R3.hub=-1; R3.hport=0; R3.speed=3; R3.route=0; R3.tt_slot=0; R3.tt_port=0; xhci_enum_loc(&R3);
+    chk("MIDI device behind a nested hub is probed once (route 0x21, depth 2) and the nested hub's own port is not reset for a MIDI probe", g_umhub_n==1&&g_umhub_route==0x21&&g_umhub_depth==2);
+    xhid_remove_port(8); }
+  printf("== 16b. multi-TT hubs, SuperSpeed hubs, warm reset, hot-plug storms ==\n");
+  { xhid_reset(); memset(g_slotdev,0,sizeof g_slotdev); g_nm=1; g_ncmd=0; msd_ok=0; g_nhubreq=0; g_setif=-1; g_setif_if=-1;
+    int H=madd(10,0,0,1,3,3,0,0,0,0,64); g_mtt_dev=H; int K1=madd(10,0x1,1,2,2,0,BOOTKBD,sizeof BOOTKBD,0,0,8); int K3=madd(10,0x3,1,2,1,0,BOOTMOUSE_NORD,sizeof BOOTMOUSE_NORD,0,0,8);
+    plug(10,3); usbloc_t R; R.root=10; R.depth=0; R.hub=-1; R.hport=0; R.speed=3; R.route=0; R.tt_slot=0; R.tt_port=0; xhci_enum_loc(&R);
+    int sH=slot_of(H), s1=slot_of(K1), s3=slot_of(K3);
+    chk("multi-TT hub: alternate setting 1 selected and MTT set in its slot context", g_setif==1&&g_setif_if==0&&sH>0&&((g_hubcfg[sH][0]>>25)&1));
+    chk("low/full-speed devices behind a multi-TT hub get their own TT port (1 and 3)", s1>0&&s3>0&&(g_addr_sc[s1][2]&0xFF)==(u32)sH&&((g_addr_sc[s1][2]>>8)&0xFF)==1&&((g_addr_sc[s3][2]>>8)&0xFF)==3);
+    int e3=entry_slot(s3,3), sto=(int)xhr_storm_n, re=0;
+    for(int i=0;i<10;i++){ int b=g_next_slot; M[H].cflag[3]=1; xhub_poll_ports(); if(g_next_slot!=b)re++; }
+    chk("a port that flaps 10 times is re-enumerated at most 6 times, then held", e3>=0&&re<=6&&re>=1&&(int)xhr_storm_n==sto+1);
+    int b=g_next_slot; M[H].cflag[3]=1; xhub_poll_ports(); int held=g_next_slot==b;
+    g_ticks+=600; xhub_poll_ports(); int s3b=slot_of(K3);
+    chk("while held nothing is enumerated; after the hold the device comes back", held&&g_next_slot!=b&&s3b>0&&entry_slot(s3b,3)>=0);
+    xhid_remove_port(10); g_mtt_dev=-1; g_setif=-1;
+    xhid_reset(); memset(g_slotdev,0,sizeof g_slotdev); g_nm=1;
+    int A=madd(11,0,0,1,4,2,0,0,0,0,512); int B=madd(11,0x2,1,1,4,2,0,0,0,0,512); M[A].plsbad[2]=1; g_nhd=0; g_nhubreq=0; int w0=(int)xhr_warm_n;
+    plug(11,4); usbloc_t S; S.root=11; S.depth=0; S.hub=-1; S.hport=0; S.speed=4; S.route=0; S.tt_slot=0; S.tt_port=0; xhci_enum_loc(&S);
+    int sA=slot_of(A), sB=slot_of(B); int bh=0; for(int i=0;i<g_nhubreq;i++) if(g_hubreq[i][0]==3&&g_hubreq[i][1]==28&&g_hubreq[i][2]==2)bh++;
+    chk("SuperSpeed hub: 0x2A descriptor read, no think time, no MTT, no multi-TT request", sA>0&&(g_hubcfg[sA][1]>>24)==2&&((g_hubcfg[sA][2]>>16)&3)==0&&!((g_hubcfg[sA][0]>>25)&1)&&g_setif==-1);
+    chk("SET_HUB_DEPTH sent with the hub's tier: 0 for the root hub's child, 1 for the nested hub", g_nhd==2&&g_hdepth[0]==0&&g_hdepth[1]==1);
+    chk("port in SS.Inactive gets a warm (BH) reset first; nested hub then set up on route 2", bh==1&&(int)xhr_warm_n==w0+1&&sB>0&&(g_addr_sc[sB][0]&0xFFFFF)==2&&(g_addr_sc[sB][2]&0xFFFF)==0);
+    xhid_remove_port(11); }
   g_model_on=0; }
 
 int main(void){

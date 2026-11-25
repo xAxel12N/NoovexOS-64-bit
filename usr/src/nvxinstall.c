@@ -76,7 +76,7 @@ static void draw(void){
         text(ox,oy,"This can take a minute.",GREY); }
     else if(page==P_WELCOME){
         box(&ox,&oy,&ow,620,LOCKED?196:176,"NoovexOS Setup");
-        text(ox,oy,"Welcome. This program installs NoovexOS 11.10 on a disk",INK); oy+=18;
+        text(ox,oy,"Welcome. This program installs NoovexOS 11.22 on a disk",INK); oy+=18;
         text(ox,oy,"in this computer.",INK); oy+=26;
         text(ox,oy,SRC==1?"Installer: INSTALL.NVX on the USB stick (signature OK)":"Installer: built into the Linux files (signature OK)",OK); oy+=18;
         if(LOCKED){ text(ox,oy,"Signed boot is on: checked with the kernel's key.",GREY); oy+=18; }

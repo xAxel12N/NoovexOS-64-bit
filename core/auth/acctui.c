@@ -236,6 +236,7 @@ int acct_ui_click(int id){
     if(id==606){ acct_ui_lock(); au_g_sw_mode=1; return 1; }
     if(id==680){ if(au_ueq(g_user,"guest")){ toast("The guest account cannot use Face ID"); return 1; } if(!fid_camera_present()){ toast("No camera found"); return 1; } acct_dlg_open_face(); return 1; }
     if(id==681){ if(fid_delete(g_user)<0)toast("Face ID could not be removed"); else { acct_log("Face ID removed for ",g_user,0); toast("Face ID removed"); } return 1; }
+    if(id>=690&&id<695){ extern int fprint_ui(int,char*,int); char m[120]; fprint_ui(id-689,m,(int)sizeof m); toast(m); return 1; }
     if(id>=610&&id<614){ static const int M[4]={5,15,30,0}; g_lock_min=M[id-610]; power_prefs_save(); return 1; }
     if(!admin){ toast("Only an administrator can change other accounts"); return 1; }
     if(id==602){ acct_dlg_open_add(); return 1; }

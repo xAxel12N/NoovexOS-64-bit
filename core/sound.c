@@ -15,28 +15,37 @@ void snd_usb_attach(const struct nvx_snd* u){
     g_snd=*u; g_snd_state=1; g_snd_usb=1; if(g_snd.volume)g_snd.volume(g_snd_vol); }
 extern int ausnd_start(void); extern int ausnd_free(void); extern int ausnd_write(const u8*,int); extern void ausnd_poll(void); extern void ausnd_stop(void); extern void ausnd_volume(int);
 extern int ausnd_rec_start(void); extern int ausnd_rec_read(u8*,int); extern void ausnd_rec_stop(void); extern void ausnd_rec_gain(int);
-static struct nvx_snd g_ausnd;
+static struct nvx_snd g_ausnd; static int g_ausnd_here=0;
 void snd_usb_arrived(const char* name,const char* mic){
     struct nvx_snd* a=&g_ausnd; u8* z=(u8*)a; for(unsigned i=0;i<sizeof(*a);i++)z[i]=0;
     a->name=name; a->rate=48000; a->start=ausnd_start; a->free_bytes=ausnd_free; a->write=ausnd_write; a->poll=ausnd_poll; a->stop=ausnd_stop; a->volume=ausnd_volume;
     if(mic){ a->rec_start=ausnd_rec_start; a->rec_read=ausnd_rec_read; a->rec_stop=ausnd_rec_stop; a->rec_gain=ausnd_rec_gain; a->rec_name=mic; }
-    snd_usb_attach(a); }
-void snd_usb_detach(void){
+    g_ausnd_here=1; snd_usb_attach(a); }
+static void snd_usb_unroute(void){
     if(!g_snd_usb)return; g_cap_on=0; g_cap_level=0; g_cap_peak=0;
     if(g_snd.stop)g_snd.stop();
     g_snd=g_snd_main; g_snd_state=g_main_state; g_snd_usb=0; }
+void snd_usb_detach(void){ g_ausnd_here=0; snd_usb_unroute(); }
+int snd_usb_avail(void){ return g_ausnd_here; }
+int snd_usb_routed(void){ return g_snd_usb; }
+const char* snd_usb_name(void){ return g_ausnd_here&&g_ausnd.name?g_ausnd.name:"USB audio"; }
+void snd_usb_route(int on){ extern void ausnd_out_restart(void); if(!g_ausnd_here)return; if(on&&!g_snd_usb)snd_usb_attach(&g_ausnd); else if(!on&&g_snd_usb){ snd_rec_stop(); snd_usb_unroute(); ausnd_out_restart(); } }
+int snd_resume(void){ if(g_snd_usb||g_snd_state!=1)return 0; if(g_snd.stop)g_snd.stop(); g_snd_state=0; return snd_init()?0:-1; }
 int snd_init(void){
     if(g_snd_state)return g_snd_state==1;
     g_snd_state=2;
-    if(hda_probe(&g_snd)||ac97_probe(&g_snd)){ g_snd_state=1; g_snd.volume(g_snd_vol); return 1; }
+    if(hda_probe(&g_snd)||ac97_probe(&g_snd)){ g_snd_state=1; snd_set_volume(g_snd_vol); return 1; }
     return 0;
 }
+void snd_set_volume(int v){ if(v<0)v=0; if(v>100)v=100; if(g_snd_state==1&&g_snd.volume)g_snd.volume(v); }
+void snd_apply_volume(int v){ snd_set_volume(v); }
 #define CAPN (1u<<20)
 static u8 cap_buf[CAPN]; static u64 cap_w=0, cap_r=0; int g_cap_on=0, g_cap_level=0, g_cap_peak=0; u32 g_cap_over=0; int g_mic_gain=70; static u64 cap_seen=0; extern volatile u64 g_ticks;
-int snd_rec_avail(void){ if(g_snd_state==0)snd_init(); return g_snd_state==1&&g_snd.rec_start!=0; }
+__attribute__((weak)) void hfp_mic_keep(void){}
+int snd_rec_avail(void){ if(g_snd_state==0)snd_init(); hfp_mic_keep(); return g_snd_state==1&&g_snd.rec_start!=0; }
 const char* snd_rec_name(void){ return snd_rec_avail()&&g_snd.rec_name?g_snd.rec_name:"No microphone"; }
 static void cap_pump(void){
-    if(!g_cap_on||!g_snd.rec_read)return; u8 t[4096]; int lv=0;
+    if(!g_cap_on||g_snd_state!=1||!g_snd.rec_read)return; u8 t[4096]; int lv=0;
     for(int g=0;g<64;g++){ int n=g_snd.rec_read(t,(int)sizeof(t)); if(n<=0)break;
         for(int i=0;i+3<n;i+=4){ short a=(short)(t[i]|(t[i+1]<<8)); short b=(short)(t[i+2]|(t[i+3]<<8)); int m=a<0?-a:a; int m2=b<0?-b:b; if(m2>m)m=m2; if(m>lv)lv=m; }
         for(int i=0;i<n;i++){ if(cap_w-cap_r>=CAPN){ cap_r++; g_cap_over++; } cap_buf[cap_w%CAPN]=t[i]; cap_w++; } }
@@ -46,7 +55,7 @@ void snd_rec_stop(void){ if(!g_cap_on)return; if(g_snd.rec_stop)g_snd.rec_stop()
 void snd_rec_gain(int pct){ if(pct<0)pct=0; if(pct>100)pct=100; g_mic_gain=pct; if(g_snd_state==1&&g_snd.rec_gain)g_snd.rec_gain(pct); }
 int snd_cap_avail(void){ cap_pump(); return (int)(cap_w-cap_r); }
 int snd_cap_read(u8* d,int len){ cap_pump(); u64 av=cap_w-cap_r; if((u64)len>av)len=(int)av; len&=~3; for(int i=0;i<len;i++)d[i]=cap_buf[(cap_r+(u64)i)%CAPN]; cap_r+=(u64)len; return len; }
-void snd_poll(void){ { extern void apcm_tick(void); apcm_tick(); } if(g_snd_state==1&&g_snd.poll)g_snd.poll(); if(g_cap_on)cap_pump(); }
+void snd_poll(void){ { extern void apcm_tick(void); apcm_tick(); } if(g_snd_state==1&&g_snd.poll)g_snd.poll(); if(g_cap_on)cap_pump(); { extern void msynth_tick(void); msynth_tick(); } }
 int snd_dev_read(char* buf,int len){
     if(!snd_rec_start())return -1;
     int n=snd_cap_read((u8*)buf,len&~3); if(n>0)return n;
@@ -55,7 +64,7 @@ int snd_dev_read(char* buf,int len){
     for(int t=0;t<1000&&n<=0;t++){ hr_delay_us(1000); n=snd_cap_read((u8*)buf,len&~3); }
     return n>0?n:0; }
 int snd_dev_write(const char* buf,int len){
-    if(!snd_init())return -1;
+    if(!snd_init()||!g_snd.start||!g_snd.write)return -1;
     g_snd.start();
     int n=g_snd.write((const u8*)buf,len&~3);
     if(n>0)return n;
@@ -65,7 +74,7 @@ int snd_dev_write(const char* buf,int len){
     return n>0?n:0;
 }
 static void snd_tone(int hz,int ms){
-    if(!snd_init())return; g_snd.start();
+    if(!snd_init()||!g_snd.start||!g_snd.write)return; g_snd.start();
     int rate=g_snd.rate>0?g_snd.rate:48000; long total=(long)rate*ms/1000; long done=0; long phase=0; long per=rate/(hz>0?hz:440);
     static u8 blk[4096];
     u64 t0=hr_ns();
@@ -77,7 +86,7 @@ static void snd_tone(int hz,int ms){
 void audio_cmd(const char* a){
     while(*a==' ')a++;
     if(!snd_init()){ tcol(rgb(240,120,120)); term_puts("audio: no HD Audio, AC97 or USB audio device found\n"); tcol(WHT); return; }
-    if(a[0]=='v'&&a[1]=='o'&&a[2]=='l'){ const char* p=a+3; while(*p==' ')p++; int v=0; while(*p>='0'&&*p<='9')v=v*10+(*p++-'0'); if(v>100)v=100; g_snd_vol=v; g_snd.volume(v); term_puts("volume set\n"); return; }
+    if(a[0]=='v'&&a[1]=='o'&&a[2]=='l'){ const char* p=a+3; while(*p==' ')p++; int v=0; while(*p>='0'&&*p<='9')v=v*10+(*p++-'0'); if(v>100)v=100; g_snd_vol=v; snd_set_volume(v); term_puts("volume set\n"); return; }
     if(a[0]=='m'&&a[1]=='i'&&a[2]=='c'){ const char* p=a+3; while(*p==' ')p++; int v=0; while(*p>='0'&&*p<='9')v=v*10+(*p++-'0'); snd_rec_gain(v); term_puts(snd_rec_avail()?"microphone level set\n":"no microphone input found\n"); return; }
     if(a[0]=='t'&&a[1]=='o'&&a[2]=='n'&&a[3]=='e'){ const char* p=a+4; while(*p==' ')p++; int hz=0; while(*p>='0'&&*p<='9')hz=hz*10+(*p++-'0'); if(hz<50||hz>8000)hz=440; term_puts("playing a 1 second tone\n"); snd_tone(hz,1000); return; }
     term_puts("audio: "); term_puts(g_snd.name);

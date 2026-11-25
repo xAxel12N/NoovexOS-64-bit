@@ -14,7 +14,7 @@
 #define NVME_PRPL DMW(0x1B6000u)
 #define NVME_BIG  DMW(0x1B8000u)
 #define NVME_BIGP 16u
-static volatile u8* nvme_regs=0; int nvme_ok=0; static u32 nvme_sectors=0, nvme_dstrd=0, nvme_nsid=1, nvme_q=64, nvme_to=10000000;
+static volatile u8* nvme_regs=0; int nvme_ok=0; static u64 nvme_sectors=0; static u32 nvme_dstrd=0, nvme_nsid=1, nvme_q=64, nvme_to=10000000;
 static u32 nasq_t=0, nacq_h=0, nacq_p=1, niosq_t=0, niocq_h=0, niocq_p=1, nvme_cid=1;
 int nvme_bad=0, nvme_lasterr=0;
 static void nvme_db(int qid,int is_cq,u32 val){ u32 off=0x1000u+(u32)((2*qid+(is_cq?1:0)))*(4u<<nvme_dstrd); *(volatile u32*)((u64)nvme_regs+off)=val; }
@@ -34,39 +34,39 @@ static int nvme_admin(u8 op,u32 nsid,u32 prp1,u32 prp2,u32 d10,u32 d11){
     return nvme_wait(NVME_ACQ,&nacq_h,&nacq_p,0,cid);
 }
 static int nvme_init(void);
-static int nvme_cmd(u8 op,u32 slba,u32 buf){
+static int nvme_cmd(u8 op,u64 slba,u32 buf){
     if(nvme_bad){ nvme_bad=0; if(!nvme_init())return -1; }
     volatile u32* e=(volatile u32*)((u64)NVME_IOSQ+(u64)niosq_t*64); for(int i=0;i<16;i++)e[i]=0;
     u16 cid=nvme_next_cid(); e[0]=op|((u32)cid<<16); e[1]=nvme_nsid; e[6]=buf; e[7]=0; e[8]=0; e[9]=0;
-    e[10]=slba; e[11]=0; e[12]=0;
+    e[10]=(u32)slba; e[11]=(u32)(slba>>32); e[12]=0;
     niosq_t=(niosq_t+1)%nvme_q; nvme_db(1,0,niosq_t);
     return nvme_wait(NVME_IOCQ,&niocq_h,&niocq_p,1,cid);
 }
-static int nvme_io(u8 op,u32 slba,u32 buf){ return nvme_cmd(op,slba,buf); }
+static int nvme_io(u8 op,u64 slba,u32 buf){ return nvme_cmd(op,slba,buf); }
 static u32 nvme_maxpg=1; u32 g_nvme_cmds=0, g_nvme_multi=0;
-static int nvme_cmdn(u8 op,u32 slba,u32 nblk,u32 bytes){
+static int nvme_cmdn(u8 op,u64 slba,u32 nblk,u32 bytes){
     if(nvme_bad){ nvme_bad=0; if(!nvme_init())return -1; }
     u32 pages=(bytes+4095u)/4096u; u32 prp2=0;
     if(pages==2)prp2=NVME_BIG+4096u;
     else if(pages>2){ volatile u64* l=(volatile u64*)(u64)NVME_PRPL; for(u32 k=1;k<pages;k++)l[k-1]=(u64)(NVME_BIG+k*4096u); prp2=NVME_PRPL; }
     volatile u32* e=(volatile u32*)((u64)NVME_IOSQ+(u64)niosq_t*64); for(int i=0;i<16;i++)e[i]=0;
     u16 cid=nvme_next_cid(); e[0]=op|((u32)cid<<16); e[1]=nvme_nsid; e[6]=NVME_BIG; e[7]=0; e[8]=prp2; e[9]=0;
-    e[10]=slba; e[11]=0; e[12]=(nblk-1u)&0xFFFFu;
+    e[10]=(u32)slba; e[11]=(u32)(slba>>32); e[12]=(nblk-1u)&0xFFFFu;
     niosq_t=(niosq_t+1)%nvme_q; nvme_db(1,0,niosq_t); g_nvme_cmds++; if(nblk>1)g_nvme_multi++;
     return nvme_wait(NVME_IOCQ,&niocq_h,&niocq_p,1,cid); }
-static u32 nvme_ratio=1; static u32 nvme_cblk=0xFFFFFFFFu; u32 g_nvme_bsz=512;
-static int nvme_load(u32 blk){ if(blk==nvme_cblk)return 0; nvme_cblk=0xFFFFFFFFu; if(nvme_io(0x02,blk,NVME_BUF))return -1; nvme_cblk=blk; return 0; }
-static int nvme_read1(u32 lba,u8* out){ if(!nvme_ok)return -1; u32 blk=lba/nvme_ratio, off=(lba%nvme_ratio)*512;
+static u32 nvme_ratio=1; static u64 nvme_cblk=~0ULL; u32 g_nvme_bsz=512;
+static int nvme_load(u64 blk){ if(blk==nvme_cblk)return 0; nvme_cblk=~0ULL; if(nvme_io(0x02,blk,NVME_BUF))return -1; nvme_cblk=blk; return 0; }
+static int nvme_read1(u64 lba,u8* out){ if(!nvme_ok)return -1; u64 blk=lba/nvme_ratio; u32 off=(u32)(lba%nvme_ratio)*512;
     if(nvme_load(blk))return -1; volatile u8* s=(volatile u8*)(u64)NVME_BUF+off; for(int i=0;i<512;i++)out[i]=s[i]; return 0; }
-static int nvme_write1(u32 lba,const u8* in){ if(!nvme_ok)return -1; u32 blk=lba/nvme_ratio, off=(lba%nvme_ratio)*512;
-    if(nvme_ratio>1){ if(nvme_load(blk))return -1; } else nvme_cblk=0xFFFFFFFFu;
+static int nvme_write1(u64 lba,const u8* in){ if(!nvme_ok)return -1; u64 blk=lba/nvme_ratio; u32 off=(u32)(lba%nvme_ratio)*512;
+    if(nvme_ratio>1){ if(nvme_load(blk))return -1; } else nvme_cblk=~0ULL;
     volatile u8* d=(volatile u8*)(u64)NVME_BUF+off; for(int i=0;i<512;i++)d[i]=in[i];
-    if(nvme_io(0x01,blk,NVME_BUF)){ nvme_cblk=0xFFFFFFFFu; return -1; } if(nvme_ratio>1)nvme_cblk=blk; return 0; }
-static int nvme_read(u32 lba,int cnt,u8* out){
+    if(nvme_io(0x01,blk,NVME_BUF)){ nvme_cblk=~0ULL; return -1; } if(nvme_ratio>1)nvme_cblk=blk; return 0; }
+static int nvme_read(u64 lba,int cnt,u8* out){
     if(!nvme_ok)return -1; u32 r=nvme_ratio, maxb=nvme_maxpg*4096u/(r*512u); if(!maxb)maxb=1;
     while(cnt>0){
         if(lba%r==0&&(u32)cnt>=r&&nvme_maxpg>0){ u32 nb=(u32)cnt/r; if(nb>maxb)nb=maxb; u32 bytes=nb*r*512u;
-            if(nvme_cmdn(0x02,lba/r,nb,bytes)!=0){ nvme_cblk=0xFFFFFFFFu; goto one; }
+            if(nvme_cmdn(0x02,lba/r,nb,bytes)!=0){ nvme_cblk=~0ULL; goto one; }
             volatile u8* s=(volatile u8*)(u64)NVME_BIG; for(u32 i=0;i<bytes;i++)out[i]=s[i]; lba+=nb*r; out+=bytes; cnt-=(int)(nb*r); continue; }
       one: if(nvme_read1(lba,out))return -1; lba++; out+=512; cnt--; }
     return 0; }
@@ -148,8 +148,8 @@ static int nvme_init(void){
         ns=*(volatile u32*)(u64)NVME_ID; if(!ns||nvme_ident_ns(ns,&nsze,&bsz,&meta)!=0||!nsze){ nvme_failstage=8; return 0; } }
     if(!bsz){ g_nvme_bsz=0; nvme_failstage=15; return 0; }
     g_nvme_bsz=bsz; if(meta){ g_nvme_bsz=0; nvme_failstage=11; return 0; }
-    nvme_ratio=bsz/512; if(!nvme_ratio)nvme_ratio=1; nvme_cblk=0xFFFFFFFFu;
-    { unsigned long long sec512=nsze*(bsz/512); nvme_sectors=(sec512>0xFFFFFFFFULL)?0xFFFFFFFFu:(u32)sec512; }
+    nvme_ratio=bsz/512; if(!nvme_ratio)nvme_ratio=1; nvme_cblk=~0ULL;
+    { u64 sec512=nsze*(bsz/512); nvme_sectors=(nsze>>54)?(1ULL<<54):sec512; }
     if(nvme_admin(0x05,0,NVME_IOCQ,0,((nvme_q-1u)<<16)|1u,0x1)!=0){ nvme_failstage=9; return 0; }
     if(nvme_admin(0x01,0,NVME_IOSQ,0,((nvme_q-1u)<<16)|1u,(1u<<16)|0x1)!=0){ nvme_failstage=10; return 0; }
     nvme_maxpg=1; if(nvme_admin(0x06,0,NVME_ID,0,1,0)==0){ u8 mdts=*(volatile u8*)((u64)NVME_ID+77); u32 mps=4096u<<((u32)((cap>>48)&0xF)); u32 mp=mdts?((1u<<(mdts<16?mdts:16))*mps/4096u):NVME_BIGP; nvme_maxpg=mp>NVME_BIGP?NVME_BIGP:mp?mp:1u; }
@@ -157,23 +157,25 @@ static int nvme_init(void){
 }
 /* ---- generic disk layer: routes to IDE / AHCI / NVMe ---- */
 
-int g_dktype=DK_NONE; u32 g_dksectors=0; volatile int g_disk_busy;
+int g_dktype=DK_NONE; u64 g_dksectors=0; volatile int g_disk_busy;
 static char g_dk_nm[24];
 const char* gdisk_name(void){ switch(g_dktype){ case DK_IDE:{ extern int g_ata_drv; return g_ata_drv==1?"IDE slave":"IDE master"; } case DK_AHCI:{ extern int ahci_cur_port(void); char* q=scopy(g_dk_nm,"SATA port "); q=udec(q,(u32)ahci_cur_port()); *q=0; return g_dk_nm; } case DK_NVME:return "NVMe"; case DK_VIRTIO:return "VirtIO"; case DK_USB:return "USB stick"; default:return "none"; } }
-static int gdisk_read_raw(u32 lba,int cnt,u8* buf){ if(g_dktype==DK_IDE)return ata_read(lba,cnt,buf); if(g_dktype==DK_AHCI)return ahci_read(lba,cnt,buf); if(g_dktype==DK_NVME)return nvme_read(lba,cnt,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_read(lba,cnt,buf); if(g_dktype==DK_USB){ extern int usb_msd_rdn(u32,int,u8*); return usb_msd_rdn(lba,cnt,buf); } return -1; }
-int gdisk_read(u32 lba,int cnt,u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_read_raw(lba,cnt,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+int g_dk_count=0, g_dk_cur=0; static u32 g_dk_ug[12]; static int dk_lba32(u64 lba,int cnt){ return cnt>=0&&lba+(u64)cnt<=0x100000000ULL; } extern u32 msd_gen;
+static int dk_usb_same(void){ return g_dk_cur>=0&&g_dk_cur<12&&g_dk_ug[g_dk_cur]==msd_gen; }
+static int gdisk_read_raw(u64 lba,int cnt,u8* buf){ if(g_dktype==DK_IDE)return dk_lba32(lba,cnt)?ata_read((u32)lba,cnt,buf):-1; if(g_dktype==DK_AHCI)return ahci_read(lba,cnt,buf); if(g_dktype==DK_NVME)return nvme_read(lba,cnt,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_read(lba,cnt,buf); if(g_dktype==DK_USB){ extern int usb_msd_rdn(u32,int,u8*); if(!dk_usb_same()||!dk_lba32(lba,cnt))return -1; return usb_msd_rdn((u32)lba,cnt,buf); } return -1; }
+int gdisk_read(u64 lba,int cnt,u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_read_raw(lba,cnt,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
 
 /* ---- buffer cache: LRU of recently-read 512-byte sectors ----
    Repeat reads of the same LBA hit RAM instead of the disk. Single-sector
    reads go through the cache; multi-sector reads bypass it (and invalidate
    any cached sector they overlap, so stale data is never returned). */
 #define BC_N 64
-static struct { u32 lba; u32 tick; int valid; u8 data[512]; } g_bc[BC_N];
+static struct { u64 lba; u32 tick; int valid; u8 data[512]; } g_bc[BC_N];
 static u32 g_bc_clock=0; unsigned long g_bc_hits=0, g_bc_miss=0;
-static int bc_find(u32 lba){ for(int i=0;i<BC_N;i++) if(g_bc[i].valid&&g_bc[i].lba==lba)return i; return -1; }
+static int bc_find(u64 lba){ for(int i=0;i<BC_N;i++) if(g_bc[i].valid&&g_bc[i].lba==lba)return i; return -1; }
 static int bc_victim(void){ int v=0; u32 oldest=0xFFFFFFFFu; for(int i=0;i<BC_N;i++){ if(!g_bc[i].valid)return i; if(g_bc[i].tick<oldest){oldest=g_bc[i].tick;v=i;} } return v; }
-void bc_invalidate(u32 lba,int cnt){ for(int i=0;i<BC_N;i++) if(g_bc[i].valid && g_bc[i].lba>=lba && g_bc[i].lba<lba+(u32)cnt) g_bc[i].valid=0; }
-int gdisk_read_cached(u32 lba,int cnt,u8* buf){
+void bc_invalidate(u64 lba,int cnt){ for(int i=0;i<BC_N;i++) if(g_bc[i].valid && g_bc[i].lba>=lba && g_bc[i].lba-lba<(u64)(u32)cnt) g_bc[i].valid=0; }
+int gdisk_read_cached(u64 lba,int cnt,u8* buf){
     if(cnt!=1){ bc_invalidate(lba,cnt); return gdisk_read(lba,cnt,buf); }   /* multi-sector: bypass + invalidate */
     int hit=bc_find(lba);
     if(hit>=0){ for(int i=0;i<512;i++)buf[i]=g_bc[hit].data[i]; g_bc[hit].tick=++g_bc_clock; g_bc_hits++; return 0; }
@@ -181,48 +183,48 @@ int gdisk_read_cached(u32 lba,int cnt,u8* buf){
     int v=bc_victim(); g_bc[v].lba=lba; g_bc[v].valid=1; g_bc[v].tick=++g_bc_clock; for(int i=0;i<512;i++)g_bc[v].data[i]=buf[i];
     g_bc_miss++; return 0;
 }
-static void gdisk_write_through(u32 lba){ bc_invalidate(lba,1); }   /* call after any write so the cache stays coherent */
+static void gdisk_write_through(u64 lba){ bc_invalidate(lba,1); }   /* call after any write so the cache stays coherent */
 
 static int gdisk_flush_raw(void){ if(g_dktype==DK_NVME)return nvme_flush(); if(g_dktype==DK_AHCI)return ahci_flush(); if(g_dktype==DK_VIRTIO)return virtio_blk_flush(); if(g_dktype==DK_USB){ extern int usb_msd_sync(void); usb_msd_sync(); return 0; } return 0; }
 int gdisk_flush(void){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_flush_raw(); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
-static int gdisk_write_raw(u32 lba,const u8* buf){ if(g_dktype==DK_IDE)return ata_write(lba,buf); if(g_dktype==DK_AHCI)return ahci_write1(lba,buf); if(g_dktype==DK_NVME)return nvme_write1(lba,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_write(lba,1,buf); if(g_dktype==DK_USB){ extern int usb_msd_wrn(u32,int,const u8*); return usb_msd_wrn(lba,1,buf); } return -1; }
-int gdisk_write(u32 lba,const u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_write_raw(lba,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
-static int nvme_writen(u32 lba,int cnt,const u8* in){
+static int gdisk_write_raw(u64 lba,const u8* buf){ if(g_dktype==DK_IDE)return dk_lba32(lba,1)?ata_write((u32)lba,buf):-1; if(g_dktype==DK_AHCI)return ahci_write1(lba,buf); if(g_dktype==DK_NVME)return nvme_write1(lba,buf); if(g_dktype==DK_VIRTIO)return virtio_blk_write(lba,1,buf); if(g_dktype==DK_USB){ extern int usb_msd_wrn(u32,int,const u8*); if(!dk_usb_same()||!dk_lba32(lba,1))return -1; return usb_msd_wrn((u32)lba,1,buf); } return -1; }
+int gdisk_write(u64 lba,const u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); gdisk_write_through(lba); int r=gdisk_write_raw(lba,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+static int nvme_writen(u64 lba,int cnt,const u8* in){
     u32 r=nvme_ratio, maxb=nvme_maxpg*4096u/(r*512u); if(!maxb)maxb=1;
     while(cnt>0){
         if(nvme_ok&&lba%r==0&&(u32)cnt>=r){ u32 nb=(u32)cnt/r; if(nb>maxb)nb=maxb; u32 bytes=nb*r*512u; volatile u8* d=(volatile u8*)(u64)NVME_BIG; for(u32 i=0;i<bytes;i++)d[i]=in[i];
-            nvme_cblk=0xFFFFFFFFu; if(nvme_cmdn(0x01,lba/r,nb,bytes)==0){ lba+=nb*r; in+=bytes; cnt-=(int)(nb*r); continue; } }
-        if(nvme_ratio>1&&lba%nvme_ratio==0&&(u32)cnt>=nvme_ratio){ u32 blk=lba/nvme_ratio; volatile u8* d=(volatile u8*)(u64)NVME_BUF; for(u32 i=0;i<nvme_ratio*512u;i++)d[i]=in[i];
-            nvme_cblk=0xFFFFFFFFu; if(nvme_io(0x01,blk,NVME_BUF))return -1; nvme_cblk=blk; lba+=nvme_ratio; in+=nvme_ratio*512u; cnt-=(int)nvme_ratio; continue; }
+            nvme_cblk=~0ULL; if(nvme_cmdn(0x01,lba/r,nb,bytes)==0){ lba+=nb*r; in+=bytes; cnt-=(int)(nb*r); continue; } }
+        if(nvme_ratio>1&&lba%nvme_ratio==0&&(u32)cnt>=nvme_ratio){ u64 blk=lba/nvme_ratio; volatile u8* d=(volatile u8*)(u64)NVME_BUF; for(u32 i=0;i<nvme_ratio*512u;i++)d[i]=in[i];
+            nvme_cblk=~0ULL; if(nvme_io(0x01,blk,NVME_BUF))return -1; nvme_cblk=blk; lba+=nvme_ratio; in+=nvme_ratio*512u; cnt-=(int)nvme_ratio; continue; }
         if(nvme_write1(lba,in))return -1; lba++; in+=512; cnt--; }
     return 0;
 }
-static int gdisk_writen_raw(u32 lba,int cnt,const u8* buf){
+static int gdisk_writen_raw(u64 lba,int cnt,const u8* buf){
     if(cnt<=0)return 0; bc_invalidate(lba,cnt);
-    if(g_dktype==DK_IDE)return ata_writen(lba,cnt,buf);
+    if(g_dktype==DK_IDE)return dk_lba32(lba,cnt)?ata_writen((u32)lba,cnt,buf):-1;
     if(g_dktype==DK_NVME)return nvme_writen(lba,cnt,buf);
-    if(g_dktype==DK_VIRTIO){ while(cnt>0){ int c=cnt>128?128:cnt; if(virtio_blk_write(lba,c,buf))return -1; lba+=(u32)c; buf+=c*512; cnt-=c; } return 0; }
-    if(g_dktype==DK_USB){ extern int usb_msd_wrn(u32,int,const u8*); return usb_msd_wrn(lba,cnt,buf); }
-    if(g_dktype==DK_AHCI){ if(!ahci_ok)return -1; while(cnt>0){ int c=cnt>128?128:cnt; volatile u8* d=(volatile u8*)(u64)AHCI_BUF; for(int i=0;i<c*512;i++)d[i]=buf[i]; if(ahci_cmd(lba,(u32)c,AHCI_BUF,1,0x35))return -1; lba+=(u32)c; buf+=c*512; cnt-=c; } return 0; }
+    if(g_dktype==DK_VIRTIO){ while(cnt>0){ int c=cnt>128?128:cnt; if(virtio_blk_write(lba,c,buf))return -1; lba+=(u64)c; buf+=c*512; cnt-=c; } return 0; }
+    if(g_dktype==DK_USB){ extern int usb_msd_wrn(u32,int,const u8*); if(!dk_usb_same()||!dk_lba32(lba,cnt))return -1; return usb_msd_wrn((u32)lba,cnt,buf); }
+    if(g_dktype==DK_AHCI){ if(!ahci_ok)return -1; while(cnt>0){ int c=cnt>(int)AHCI_MAXSEC?(int)AHCI_MAXSEC:cnt; volatile u8* d=(volatile u8*)(u64)AHCI_BUF; for(int i=0;i<c*512;i++)d[i]=buf[i]; if(ahci_cmd(lba,(u32)c,AHCI_BUF,1,0x35))return -1; lba+=(u64)c; buf+=c*512; cnt-=c; } return 0; }
     return -1;
 }
-int gdisk_writen(u32 lba,int cnt,const u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_writen_raw(lba,cnt,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
-int gdisk_readn(u32 lba,int cnt,u8* buf){
+int gdisk_writen(u64 lba,int cnt,const u8* buf){ __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int r=gdisk_writen_raw(lba,cnt,buf); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+int gdisk_readn(u64 lba,int cnt,u8* buf){
     bc_invalidate(lba,cnt);
-    while(cnt>0){ int c=cnt>128?128:cnt; if(gdisk_read(lba,c,buf))return -1; lba+=(u32)c; buf+=c*512; cnt-=c; }
+    while(cnt>0){ int c=cnt>128?128:cnt; if(gdisk_read(lba,c,buf))return -1; lba+=(u64)c; buf+=c*512; cnt-=c; }
     return 0;
 }
 static int gdisk_has_nvx(void){ u8 m[4096]; if(!g_dksectors)return 0; if(g_dktype==DK_NVME&&!g_nvme_bsz)return 0; if(gdisk_read(0,1,m))return 0; if(m[510]!=0x55||m[511]!=0xAA)return 0;
     for(int e=0;e<4;e++){ const u8* pe=m+446+e*16; if(pe[4]==0x7F&&*(const u32*)(pe+12))return 1; } return 0; }
-int g_dk_count=0, g_dk_cur=0; const char* g_dk_why=""; static int g_dk_ct[12]; static u32 g_dk_cs[12]; static int g_dk_cu[12];
-extern int ata_count(void); extern int ata_unit(int k); extern u32 ata_unit_secs(int k); extern void ata_select(int k); extern int ahci_count(void); extern int ahci_select(int k); extern int ahci_unit_port(int k); extern u32 ahci_unit_sectors(int k);
-static void gdisk_set(int i){ g_dktype=g_dk_ct[i]; g_dksectors=g_dk_cs[i]; g_dk_cur=i; if(g_dktype==DK_AHCI)ahci_select(g_dk_cu[i]); if(g_dktype==DK_IDE&&ata_count())ata_select(g_dk_cu[i]); for(int k=0;k<BC_N;k++)g_bc[k].valid=0; nvme_cblk=0xFFFFFFFFu; }
+const char* g_dk_why=""; static int g_dk_ct[12]; static u64 g_dk_cs[12]; static int g_dk_cu[12];
+extern int ata_count(void); extern int ata_unit(int k); extern u32 ata_unit_secs(int k); extern void ata_select(int k); extern int ahci_count(void); extern int ahci_select(int k); extern int ahci_unit_port(int k); extern u64 ahci_unit_sectors(int k);
+static void gdisk_set(int i){ g_dktype=g_dk_ct[i]; g_dksectors=g_dk_cs[i]; g_dk_cur=i; if(g_dktype==DK_AHCI)ahci_select(g_dk_cu[i]); if(g_dktype==DK_IDE&&ata_count())ata_select(g_dk_cu[i]); for(int k=0;k<BC_N;k++)g_bc[k].valid=0; nvme_cblk=~0ULL; }
 static void gdisk_init(void){
-    int* ct=g_dk_ct; u32* cs=g_dk_cs; int n=0;
+    int* ct=g_dk_ct; u64* cs=g_dk_cs; int n=0;
     if(g_ata_drv>=0){ int an=ata_count(); if(an<1)an=1; for(int k=0;k<an;k++){ ct[n]=DK_IDE; cs[n]=ata_count()?ata_unit_secs(k):g_disk_sectors; g_dk_cu[n]=k; n++; } }
     if(ahci_init()){ int an=ahci_count(); for(int k=0;k<an&&n<10;k++){ ct[n]=DK_AHCI; cs[n]=ahci_unit_sectors(k); g_dk_cu[n]=k; n++; } }
     if(nvme_init()){ ct[n]=DK_NVME; cs[n]=nvme_sectors; g_dk_cu[n]=0; n++; }
-    { u64 vs=0; if(virtio_blk_probe(&vs)){ ct[n]=DK_VIRTIO; cs[n]=vs>0xFFFFFFFFULL?0xFFFFFFFFu:(u32)vs; g_dk_cu[n]=0; n++; } }
+    { u64 vs=0; if(virtio_blk_probe(&vs)){ ct[n]=DK_VIRTIO; cs[n]=vs; g_dk_cu[n]=0; n++; } }
     g_dk_count=n;
     for(int i=0;i<n;i++){ gdisk_set(i); if(gdisk_has_nvx()){ g_dk_why="disk with a NoovexOS partition"; return; } }
     if(n){ gdisk_set(0); g_dk_why=n>1?"first disk (no NoovexOS partition found)":"only disk"; return; }
@@ -240,19 +242,27 @@ void ins83(const char* nm,u8 out[11]){ for(int i=0;i<11;i++)out[i]=' '; int i=0,
 
 int gdisk_usb_refresh(void){
     extern int msd_ok; extern u32 msd_lastlba, msd_bsize; extern int msd_autoinit_safe(void); gdisk_ensure();
-    for(int i=0;i<g_dk_count;i++) if(g_dk_ct[i]==DK_USB){ if(i==g_dk_cur){ if(msd_ok&&msd_bsize==512){ g_dk_cs[i]=msd_lastlba+1; g_dksectors=g_dk_cs[i]; } return i; } for(int j=i;j<g_dk_count-1;j++){ g_dk_ct[j]=g_dk_ct[j+1]; g_dk_cs[j]=g_dk_cs[j+1]; g_dk_cu[j]=g_dk_cu[j+1]; } g_dk_count--; if(g_dk_cur>i)g_dk_cur--; i--; }
+    for(int i=0;i<g_dk_count;i++) if(g_dk_ct[i]==DK_USB){ if(i==g_dk_cur){ extern int g_root_usb, disk_ok; if(g_dk_ug[i]!=msd_gen&&g_root_usb&&disk_ok)return i; if(msd_ok&&msd_bsize==512){ g_dk_cs[i]=(u64)msd_lastlba+1; g_dksectors=g_dk_cs[i]; g_dk_ug[i]=msd_gen; } return i; } for(int j=i;j<g_dk_count-1;j++){ g_dk_ct[j]=g_dk_ct[j+1]; g_dk_cs[j]=g_dk_cs[j+1]; g_dk_cu[j]=g_dk_cu[j+1]; g_dk_ug[j]=g_dk_ug[j+1]; } g_dk_count--; if(g_dk_cur>i)g_dk_cur--; i--; }
     if(!msd_ok)msd_autoinit_safe(); if(!msd_ok||msd_bsize!=512||g_dk_count>=12)return -1;
-    int n=g_dk_count; g_dk_ct[n]=DK_USB; g_dk_cs[n]=msd_lastlba+1; g_dk_cu[n]=0; g_dk_count=n+1; if(g_dktype==DK_NONE)gdisk_set(n); return n; }
+    int n=g_dk_count; g_dk_ct[n]=DK_USB; g_dk_cs[n]=(u64)msd_lastlba+1; g_dk_cu[n]=0; g_dk_ug[n]=msd_gen; g_dk_count=n+1; if(g_dktype==DK_NONE)gdisk_set(n); return n; }
 int gdisk_count(void){ gdisk_ensure(); return g_dk_count; }
 int gdisk_current(void){ return g_dk_cur; }
 int gdisk_pick(int i){ gdisk_ensure(); if(i<0||i>=g_dk_count)return -1; if(i==g_dk_cur)return 0;
     gdisk_set(i); return 1; }
-int gdisk_read_on(int i,u32 lba,int cnt,u8* buf){ gdisk_ensure(); if(i<0||i>=g_dk_count)return -1; int cur=g_dk_cur; int sw=(i!=cur); if(sw)gdisk_set(i); int r=gdisk_readn(lba,cnt,buf); if(sw&&cur>=0&&cur<g_dk_count)gdisk_set(cur); return r; }
+int gdisk_read_on(int i,u64 lba,int cnt,u8* buf){ gdisk_ensure(); if(i<0||i>=g_dk_count)return -1; int cur=g_dk_cur; int sw=(i!=cur); if(sw)gdisk_set(i); int r=gdisk_readn(lba,cnt,buf); if(sw&&cur>=0&&cur<g_dk_count)gdisk_set(cur); return r; }
+static int gdisk_flush_cap_raw(void){ if(g_dktype==DK_NVME)return nvme_ok; if(g_dktype==DK_AHCI)return ahci_flush_ok(); if(g_dktype==DK_VIRTIO){ extern int virtio_blk_flush_ok(void); return virtio_blk_flush_ok(); }
+    if(g_dktype==DK_USB){ extern int usb_msd_sync(void); return dk_usb_same()&&usb_msd_sync()==0; } return 0; }
+static int gdisk_flush_strict_raw(void){ if(!gdisk_flush_cap_raw())return -1; if(g_dktype==DK_USB){ extern int usb_msd_sync(void); return usb_msd_sync(); } return gdisk_flush_raw(); }
+static int gdisk_on(int i,int (*fn)(void)){ gdisk_ensure(); if(i<0||i>=g_dk_count)return -1; __atomic_add_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); int cur=g_dk_cur; int sw=(i!=cur); if(sw)gdisk_set(i); int r=fn(); if(sw&&cur>=0&&cur<g_dk_count)gdisk_set(cur); __atomic_sub_fetch(&g_disk_busy,1,__ATOMIC_SEQ_CST); return r; }
+int gdisk_flush_cap_of(int i){ return gdisk_on(i,gdisk_flush_cap_raw)>0; }
+int gdisk_flush_on(int i){ return gdisk_on(i,gdisk_flush_strict_raw)?-1:0; }
+int gdisk_writen_on(int i,u64 lba,int cnt,const u8* buf){ gdisk_ensure(); if(i<0||i>=g_dk_count)return -1; int cur=g_dk_cur; int sw=(i!=cur); if(sw)gdisk_set(i); int r=gdisk_writen(lba,cnt,buf); if(sw&&cur>=0&&cur<g_dk_count)gdisk_set(cur); return r; }
 u32 gdisk_ratio_of(int i){ gdisk_ensure(); if(i<0||i>=g_dk_count)return 1; return (g_dk_ct[i]==DK_NVME&&g_nvme_bsz>512)?g_nvme_bsz/512:1u; }
 int gdisk_kind_of(int i){ gdisk_ensure(); return (i>=0&&i<g_dk_count)?g_dk_ct[i]:0; }
-u32 gdisk_size_of(int i){ gdisk_ensure(); return (i>=0&&i<g_dk_count)?g_dk_cs[i]:0; }
+u64 gdisk_size_of(int i){ gdisk_ensure(); return (i>=0&&i<g_dk_count)?g_dk_cs[i]:0; }
 const char* gdisk_name_of(int i){ static char b[24]; gdisk_ensure(); if(i<0||i>=g_dk_count)return "none";
     switch(g_dk_ct[i]){ case DK_IDE:return ata_unit(g_dk_cu[i])==1?"IDE slave":"IDE master"; case DK_AHCI:{ char* q=scopy(b,"SATA port "); q=udec(q,(u32)ahci_unit_port(g_dk_cu[i])); *q=0; return b; } case DK_NVME:return "NVMe"; case DK_VIRTIO:return "VirtIO"; case DK_USB:return "USB stick"; default:return "disk"; } }
+int nvme_resume(void){ if(!nvme_ok)return 0; nvme_cblk=~0ULL; return nvme_init()?0:-1; }
 int nvme_shutdown(void){
     extern int hr_precise(void); extern u64 hr_ns(void);
     if(!nvme_ok||!nvme_regs)return 0;
@@ -262,7 +272,7 @@ int nvme_shutdown(void){
     int done=0; u64 t0=hr_precise()?hr_ns():0;
     for(u32 i=0;i<10000000u;i++){ u32 cs=nvme_csts(); if(cs==0xFFFFFFFFu)break; if(((cs>>2)&3u)==2u){ done=1; break; }
         if(t0&&hr_ns()-t0>5000000000ULL)break; io_wait(); }
-    nvme_ok=0; nvme_cblk=0xFFFFFFFFu;
+    nvme_ok=0; nvme_cblk=~0ULL;
     return (r||!done)?-1:0; }
 void gdisk_shutdown(int poweroff){
     extern void klog(const char*); extern int ahci_shutdown_all(int);

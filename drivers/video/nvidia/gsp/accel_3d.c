@@ -22,6 +22,7 @@ static void n3_free_surf(void){
 static int n3_setup(void){
     if(!nvgsp_ce_ready())return n3_fail("the NVIDIA card is not running");
     if(N3.gen==g_ce_gen&&N3.pb_va)return 1;
+    { u32 sm=nvgsp_cls_cur()->sm; if(sm!=75&&!((sm==86||sm==89)&&g_nv_sm8x_try))return n3_fail(sm==86||sm==89?"the 3D shaders are not checked on RTX 30/40 hardware - off until enabled":"the 3D shaders are built for Turing (sm_75) only"); }
     if(N3.boots==g_gsp_boots){ if(N3.ct_vram)nvv_free(N3.ct_vram); if(N3.zt_vram)nvv_free(N3.zt_vram); if(N3.sh_vram)nvv_free(N3.sh_vram); if(N3.zero_vram)nvv_free(N3.zero_vram); }
     N3.pb_va=0; N3.ct_res=0; N3.zt_res=0; N3.ct_va=0; N3.zt_va=0; N3.ct_vram=0; N3.zt_vram=0; N3.sh_vram=0; N3.zero_vram=0; N3.w=0; N3.h=0; N3.tested=0; N3.good=0; N3.open=0; N3.boots=g_gsp_boots;
     if(!N3.pb)N3.pb=(u32*)sa((u64)N3_PBW*4,0x1000); if(!N3.sem)N3.sem=(volatile u32*)sa(0x1000,0x1000); if(!N3.vb)N3.vb=(float*)sa((u64)N3_VBV*32,0x1000);
@@ -45,7 +46,7 @@ static int n3_surf(u32 w,u32 h){
     nvm_tlb_flush(g_uv.pd3,0);
     N3.ct_vram=c; N3.zt_vram=z; N3.ct_va=cv; N3.zt_va=zv; N3.s_len=len; N3.w=w; N3.h=h; N3.sw=sw; N3.sh=sh; return 1; }
 static void n3_state(void){
-    n31(N3_SET_OBJECT,0xC597u);
+    n31(N3_SET_OBJECT,nvgsp_cls_cur()->threed);
     for(u32 i=0;i+1<sizeof(nv3d_init)/4;i+=2)n31(nv3d_init[i],nv3d_init[i+1]);
     n3m(N3_SET_VERTEX_STREAM_SUBSTITUTE_A,2); n3v((u32)(N3.zero_va>>32)); n3v((u32)N3.zero_va);
     n3m(N3_SET_SURFACE_CLIP_HORIZONTAL,2); n3v(N3.w<<N3V_SURFACE_CLIP_WIDTH_SHIFT); n3v(N3.h<<N3V_SURFACE_CLIP_HEIGHT_SHIFT);

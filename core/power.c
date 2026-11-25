@@ -11,9 +11,10 @@
 #include "include/nvx/drivers/acpi/acpi_dev.h"
 #include "include/nvx/drivers/usb/xhci.h"
 #include "include/nvx/graphics/theme/theme.h"
+#include "include/nvx/core/sleepsm.h"
 
  
-struct nvx_g_acpi_t g_acpi;
+struct nvx_g_acpi_t g_acpi; int g_acpi_have_s3; u32 g_acpi_s3a, g_acpi_s3b;
 static u16 acpi_r16(const u8* p){ return (u16)(p[0]|(p[1]<<8)); }
 u32 acpi_r32(const u8* p){ return (u32)p[0]|((u32)p[1]<<8)|((u32)p[2]<<16)|((u32)p[3]<<24); }
 u64 acpi_r64(const u8* p){ return (u64)acpi_r32(p)|((u64)acpi_r32(p+4)<<32); }
@@ -62,13 +63,16 @@ void power_init(void){
     const u8* dsdt=acpi_tbl_ok(dsa);
     if(dsdt&&!acpi_find_sx(dsdt,'5',&g_acpi.s5a,&g_acpi.s5b))g_acpi.have_s5=1;
     if(dsdt&&!acpi_find_sx(dsdt,'1',&g_acpi.s1a,&g_acpi.s1b))g_acpi.have_s1=1;
+    if(dsdt&&!acpi_find_sx(dsdt,'3',&g_acpi_s3a,&g_acpi_s3b))g_acpi_have_s3=1;
+    for(int i=0;i<ns&&!g_acpi_have_s3;i++) if(!acpi_find_sx(ssdt[i],'3',&g_acpi_s3a,&g_acpi_s3b))g_acpi_have_s3=1;
     for(int i=0;i<ns;i++){ if(!g_acpi.have_s5&&!acpi_find_sx(ssdt[i],'5',&g_acpi.s5a,&g_acpi.s5b))g_acpi.have_s5=1; if(!g_acpi.have_s1&&!acpi_find_sx(ssdt[i],'1',&g_acpi.s1a,&g_acpi.s1b))g_acpi.have_s1=1; }
     g_acpi.ok=1;
     klog(g_acpi.have_s5?"acpi: ready - S5 power off available":"acpi: tables found but no _S5 object");
     if(g_acpi.have_s1)klog("acpi: S1 sleep available");
+    if(g_acpi_have_s3)klog("acpi: firmware offers S3 suspend to RAM");
 }
 static int power_fs_ok(void){ extern volatile int g_heap_busy, g_disk_busy, g_cx_panicking; return !g_cx_panicking||(!g_heap_busy&&!g_disk_busy); }
-static void power_prepare(void){ int fs_ok=power_fs_ok(); { extern int nvgsp_shutdown(void); nvgsp_shutdown(); }
+static void power_prepare(void){ { extern void svcu_shutdown(int); svcu_shutdown(5000); } int fs_ok=power_fs_ok(); { extern int nvgsp_shutdown(void); nvgsp_shutdown(); }
     if(!fs_ok){ klog("power: disk or heap busy - skipping filesystem sync"); return; }
     { extern void nvx3_sync_all(void); nvx3_sync_all(); } { extern void ufat_sync(void); ufat_sync(); } klog("power: flushing filesystems"); if(nvxntfs_mounted())nvxntfs_umount(); if(vf_mounted())vf_umount(); }
 void acpi_enable_mode(void){
@@ -108,9 +112,11 @@ void power_reboot(void){ { extern volatile int g_nmiwd_on; g_nmiwd_on=0; extern 
     for(;;)cpu_halt();
 }
 
-int g_sleeping; volatile int g_sleep_wake, g_sleep_req; u64 g_wake_t; u32 g_sleep_count, g_sleep_secs; int g_lps0_state=-1; u32 g_lps0_mask_i, g_lps0_mask_m;
+int g_sleeping; volatile int g_sleep_wake, g_sleep_req; u64 g_wake_t; u32 g_sleep_count, g_sleep_secs; int g_lps0_state=-1; u32 g_lps0_mask_i, g_lps0_mask_m, g_lps0_mask_a;
 static anode* g_lps0_dsm;
 static const u8 LPS0_I[16]={0xA0,0x40,0xEB,0xC4,0xD2,0x6C,0xE2,0x11,0xBC,0xFD,0x08,0x00,0x20,0x0C,0x9A,0x66};
+static const u8 LPS0_A[16]={0x52,0x24,0xF3,0xE3,0xBC,0xFE,0xCE,0x43,0x90,0x39,0x93,0x21,0x22,0xD3,0x77,0x21};
+static int g_lps0_rev_a;
 static const u8 LPS0_M[16]={0x56,0x0D,0xE0,0x11,0x64,0xCE,0xCE,0x47,0x83,0x7B,0x1F,0x89,0x8F,0x9A,0xA4,0x61};
 static void lps0_zero(aobj* o){ o->type=AT_NONE; o->p=0; o->e=0; o->own=0; o->len=0; o->i=0; o->cont=0; o->node=0; }
 static int g_lps0_rev_i;
@@ -128,12 +134,17 @@ static void lps0_init(void){
     g_lps0_dsm=aml_child(d[0],"_DSM"); if(!g_lps0_dsm)return;
     u64 v=0; if(!lps0_call(LPS0_I,1,0,&v)&&(v&1)){ g_lps0_mask_i=(u32)v; g_lps0_rev_i=1; } else { v=0; if(!lps0_call(LPS0_I,0,0,&v)&&(v&1))g_lps0_mask_i=(u32)v; }
     v=0; if(!lps0_call(LPS0_M,0,0,&v)&&(v&1))g_lps0_mask_m=(u32)v;
-    if(g_lps0_mask_i||g_lps0_mask_m){ g_lps0_state=1; char b[96],*q=b; q=scopy(q,"power: low-power idle device found (Intel functions 0x"); q=hx(q,g_lps0_mask_i,8); q=scopy(q,", Microsoft 0x"); q=hx(q,g_lps0_mask_m,8); *q++=')'; *q=0; klog(b); } }
+    for(int rv=0;rv<3&&!g_lps0_mask_a;rv++){ v=0; if(!lps0_call(LPS0_A,rv,0,&v)&&(v&1)){ g_lps0_mask_a=(u32)v; g_lps0_rev_a=rv; } }
+    if(g_lps0_mask_a)klog("power: AMD low-power idle functions found");
+    if(g_lps0_mask_i||g_lps0_mask_m||g_lps0_mask_a){ g_lps0_state=1; char b[96],*q=b; q=scopy(q,"power: low-power idle device found (Intel functions 0x"); q=hx(q,g_lps0_mask_i,8); q=scopy(q,", Microsoft 0x"); q=hx(q,g_lps0_mask_m,8); *q++=')'; *q=0; klog(b); } }
 static void lps0(int fi,int fm){
     if(fi&&((g_lps0_mask_i>>fi)&1))lps0_call(LPS0_I,g_lps0_rev_i,fi,0);
     if(fm&&((g_lps0_mask_m>>fm)&1))lps0_call(LPS0_M,0,fm,0); }
+static void lps0a(int fa){ if(fa&&((g_lps0_mask_a>>fa)&1))lps0_call(LPS0_A,g_lps0_rev_a,fa,0); }
+int power_lps0_present(void){ lps0_init(); return g_lps0_state==1; }
 void power_wake_req(void){ if(g_sleeping)g_sleep_wake=1; }
 extern int bkl_held(void); extern void bkl_lock(void); extern void bkl_unlock(void); extern void bl_screen(int);
+int sleep_begin(void); void sleep_end(void); int sleep_mode(void); static int power_sleep_raw(void);
 int power_s2idle(void){
     if(g_sleeping)return 0;
     klog("power: light sleep - open the lid, press the power button or a key to wake");
@@ -142,9 +153,11 @@ int power_s2idle(void){
     if(g_gdisk_probed)gdisk_flush();
     int took=0; if(!bkl_held()){ bkl_lock(); took=1; }
     fill_rect(0,0,(int)W,(int)H,rgb(0,0,0)); blit_all(); bl_screen(0);
-    lps0(3,3); lps0(0,7); lps0(5,5);
+    lps0(3,3); lps0a(4); lps0a(2); lps0(0,7); lps0(5,5);
+    { extern int amd_pmc_hint(int); amd_pmc_hint(1); }
     extern int g_battsave; int bs=g_battsave; g_battsave=1; { extern void cpupower_saver(int); cpupower_saver(1); }
     g_sleep_wake=0; g_sleeping=1; g_sleep_count++; while(kpop()>=0){}
+    { extern int acpi_wake_arm(int); acpi_wake_arm(0); }
     extern volatile int g_frz_hold, g_jc_frozen; int ofh=g_frz_hold; g_frz_hold=1; g_jc_frozen=1;
     { extern int g_state, g_logged_in; extern void acct_ui_lock(void); if(g_state==ST_DESKTOP&&g_logged_in)acct_ui_lock(); }
     extern int g_ticks_live; extern int bkl_drop(void); extern void bkl_take(int); extern int kpending(void);
@@ -154,14 +167,17 @@ int power_s2idle(void){
         if(xhid_n)xhci_mouse_poll();
         { extern volatile int g_hk_w, g_hk_r; if(g_hk_r!=g_hk_w){ g_hk_r=g_hk_w; g_sleep_wake=1; } }
         if(kpop()>=0)g_sleep_wake=1;
+        { extern int acpi_wake_poll(void); if(acpi_wake_poll())g_sleep_wake=1; }
         if(g_sleep_wake)break;
         if(g_acb_pct>=0&&g_acb_pct<=3&&!g_acb_charging&&g_ac_online!=1){ g_sleeping=0; g_jc_frozen=0; g_frz_hold=ofh; klog("power: battery empty during sleep - shutting down"); power_off(); }
         { extern void cpupower_tick(void); cpupower_tick(); }
         if(!g_ticks_live){ cpu_pause(); continue; }
         { int bd=bkl_drop(); cpu_irq_off(); if(!g_sleep_wake&&!kpending())cpu_idle(); else cpu_irq_on(); bkl_take(bd); } }
     g_jc_frozen=0; g_frz_hold=ofh;
+    { extern int acpi_wake_disarm(void); acpi_wake_disarm(); }
     g_sleeping=0; g_sleep_secs=(u32)((g_ticks-t0)/100);
-    lps0(6,6); lps0(0,8); lps0(4,4);
+    { extern int amd_pmc_hint(int); amd_pmc_hint(0); }
+    lps0(6,6); lps0a(3); lps0(0,8); lps0(4,4); lps0a(5);
     g_battsave=bs; { extern void cpupower_saver(int); cpupower_saver(bs); }
     while(kpop()>=0){}
     bl_screen(1);
@@ -171,7 +187,18 @@ int power_s2idle(void){
     g_sleep_req=0; g_wake_t=g_ticks; { extern void jc_kick_waiters(void); jc_kick_waiters(); }
     return 2; }
 int power_sleep(void){
-    if(g_acpi.ok&&g_acpi.have_s1&&g_acpi.pm1a_cnt&&g_acpi.pm1a_evt&&!g_acpi.hwred){
+    if(sleep_begin()<0)return 0;
+    int r=power_sleep_raw(); sleep_end(); return r; }
+static int power_sleep_raw(void){
+    if(sleep_mode()==SLP_MODE_S3){ extern int power_s3(void); int took=0; if(!bkl_held()){ bkl_lock(); took=1; }
+        { extern int g_state, g_logged_in; extern void acct_ui_lock(void); if(g_state==ST_DESKTOP&&g_logged_in)acct_ui_lock(); }
+        if(power_fs_ok()){ extern void nvx3_sync_all(void); nvx3_sync_all(); } if(g_gdisk_probed)gdisk_flush();
+        extern volatile int g_frz_hold, g_nmiwd_on; int ofh=g_frz_hold, onw=g_nmiwd_on; g_frz_hold=1; g_nmiwd_on=0;
+        u64 t0=g_ticks; int r=power_s3(); g_nmiwd_on=onw; g_frz_hold=ofh; { extern u32 g_s3_slept; g_sleep_secs=r==3?g_s3_slept:(u32)((g_ticks-t0)/100); }
+        if(r==3){ g_sleep_count++; while(kpop()>=0){} { extern void fb_shadow_invalidate(void); extern void gfx_invalidate_all(void); fb_shadow_invalidate(); gfx_invalidate_all(); } bl_screen(1); }
+        if(took)bkl_unlock();
+        if(r==3){ g_sleep_req=0; g_wake_t=g_ticks; { extern void jc_kick_waiters(void); jc_kick_waiters(); } return 3; } }
+    if(g_acpi.ok&&g_acpi.have_s1&&g_acpi.pm1a_cnt&&g_acpi.pm1a_evt&&!g_acpi.hwred&&sleep_mode()==SLP_MODE_S1){
         klog("power: entering S1 sleep"); acpi_enable_mode();
         u16 st=(u16)g_acpi.pm1a_evt, en=(u16)(g_acpi.pm1a_evt+(g_acpi.pm1_evt_len?g_acpi.pm1_evt_len/2:2));
         outw(st,0x8000); outw(en,(u16)(inw(en)|0x0100));

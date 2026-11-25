@@ -636,8 +636,9 @@ These "stage" and "rung" demos come from before `jobs.c` and are still in the tr
 - `/etc/rc` is created by `ux_boot_layout` with this content:
   ```
   # /etc/rc - run by init (PID 1) at boot
-  echo NoovexOS: init started
+  # commands listed here run once before the first login; add a trailing & to run one in the background
   ```
+  The "NoovexOS: init started" line goes to the kernel log (`jc_start_init`), not to the console, so it never lands on top of the terminal prompt.
 - The init program (`usr/src/init.c`):
   1. installs a SIGCHLD handler
   2. reads `/etc/rc` (up to 4 KB) line by line. `run_line` splits each line on spaces and tabs (up to 11 arguments), skips `#` comments, and treats a final `&` as background. Then it runs `fork()` and `execv(argv[0], argv)`; on failure it prints "init: cannot run ..." and exits with 127. Foreground lines are waited for with `waitpid`.
@@ -751,3 +752,80 @@ System calls: `getpriority`/`setpriority` (process, process group, user; non-roo
 
 Test: `schedtest` (QEMU group of `check.py`) checks the system calls and runs as many busy programs at nice 0 as at nice 10 (one more of each than there are processors), expecting the nice 0 ones to do clearly more work.
 
+
+## 5.18 The service manager (`apps/system/svcunits.c`, `apps/system/svcunit_parse.c`) (v11.15)
+
+Background programs are described by unit files in `/etc/nvx/services/<name>.service`. The format is a small subset of systemd units. `svcu_parse` reads these keys:
+
+| Key | Meaning |
+|---|---|
+| `Description` | Text for `service list` and Settings |
+| `ExecStart` | Program and arguments (`svcu_split_args`) |
+| `User`, `WorkingDirectory`, `Environment` | Who runs it, where, and extra variables |
+| `After` | Names that must be running first (`su_dep_ready`) |
+| `Type` | `simple` (default) or `oneshot` |
+| `Restart` | `no`, `on-failure`/`on-abnormal`, or `always` |
+| `RestartSec` | 1 to 60 s |
+| `TimeoutStopSec` | 1 to 60 s, default 5 |
+| `Enabled` or `WantedBy` | Default start at boot; `no`, `false` or `0` means off |
+
+Rules:
+- Up to 32 units (`SU_MAX`). Names use `a-z 0-9 _ - . @`, are shorter than 32 characters and do not start with a dot.
+- The directory and each unit file must be owned by root and not writable by group or others. Other files are ignored.
+- `svcu_enable` writes a `<name>.enabled` or `<name>.disabled` marker next to the unit. A marker wins over the `Enabled` key.
+- Restarts back off: `svcu_backoff` doubles `RestartSec` for each failure, up to 60 s.
+- Output goes to `/var/log/services/<name>.log`. Logs are readable by root only and are rotated at 64 KiB (`su_rotate`).
+- A missing program marks the unit failed. It does not stop the boot.
+
+Life cycle: `svcu_boot` seeds the default units and starts the enabled ones. `svcu_tick` (called from `apps/system/services.c`) reaps exits, applies restarts and starts units whose `After` list is ready. `power_prepare` in `core/power.c` calls `svcu_shutdown(5000)` before power-off or restart.
+
+Two units are seeded by `su_seed`: `sshd.service` (Dropbear on port 22, off by default) and `cron.service` (on). `su_cron_spool` also checks that `/var/spool/cron/crontabs` is a root directory with mode 1733 and that `/etc/crontab` is a root-owned regular file. It logs a warning if not.
+
+The `service list|start|stop|restart|enable|disable|status|logs <name>` command and the Settings > Advanced system > Services page use the same functions. Starting, stopping and enabling need the sudo password. Host test: `tools/tests/svc/svcparse_test.c`.
+
+## 5.19 cron (`usr/musl/cron.c`) (v11.15)
+
+cron is a musl program. One binary has two names: `/usr/sbin/cron` (the daemon, started by `cron.service` with `-f`) and `crontab` (`-e`, `-l`, `-r`, or a file to install).
+
+- The system table is `/etc/crontab` (with a user field). User tables are in `/var/spool/cron/crontabs/<user>`.
+- `cron_parse` and `cron_field` read the five time fields with lists, ranges and steps, plus the `@hourly`, `@daily`, `@midnight` style names and `@reboot`.
+- `load_all` reloads a table only when its signature (size and time) changes. Files that are not owned by their user or are writable by others are skipped (`safe_file`).
+- `run_job` forks the job as the table's user. At most 96 jobs run at once (`MAXRUN`) and at most 16 per user (`USERRUN`), so one user's jobs cannot hold up another user's.
+- `cron_catchup` runs minutes that were skipped (for example after a long stall), up to a fixed window.
+- `@reboot` jobs run once per boot. `first_since_boot` compares the boot time with a marker file, so restarting the daemon does not run them again.
+
+Settings > Advanced system > Scheduled tasks edits the user's own crontab with a time picker. Host test: `tools/tests/cron/cron_t.c`.
+
+## 5.20 Performance counters (`core/perf.c`) (v11.15)
+
+`perf_init` finds the counters with CPUID: Intel architectural PMU (`IA32_PERFEVTSELx` at 0x186, counters at 0xC1) or AMD (core counters at 0xC0010000, or the 6-counter extension at 0xC0010200). Up to 8 counters (`PF_MAXC`) are used.
+
+- `perf_event_open` maps to `perf_ev_open`. Counting mode works for the generic hardware events (cycles, instructions, cache references and misses, branches). There are 32 descriptor slots (`PF_FDS`).
+- Hardware counters are for root only.
+- `read` returns the value with the enabled and running times (`perf_ev_read`). `ioctl` enable, disable and reset go through `perf_ev_ctl`.
+- A counter that runs on another CPU is stopped on that CPU. `perf_ev_close` queues the stop and `perf_cpu_drain` runs it there.
+- Sampling for `perf top` uses the cycles counter with a period of about 1 ms, delivered as an NMI through LAPIC LVT entry 0x340 (`perf_nmi`). Samples go into a 4096-entry ring with a short call stack. `perf_tick` is the fallback on machines without an NMI path. Perf NMIs do not hide the watchdog.
+
+The `perf stat|top|info` shell command is `perf_cmd`. Settings > Privacy & security > Security features shows whether counters are present. Host tests: `tools/tests/perf/codec_t.c`, `xcpu_t.c`.
+
+## 5.21 eBPF (`sys/bpf/`, `sys/linux/syscalls/bpf_sys.c`) (v11.15)
+
+`bpf(2)` is available to root only (`bpf_allowed`).
+
+| File | Content |
+|---|---|
+| `sys/bpf/bpf.c` | Maps, programs, helper and context tables, the interpreter |
+| `sys/bpf/verifier.c` | `bpf_verify`: the static checker |
+| `sys/bpf/attach.c` | Tracepoints, raw tracepoints, socket filters, helpers, the `bpf` command |
+| `sys/bpf/cbpf.c` | Classic BPF for `SO_ATTACH_FILTER` |
+| `sys/linux/syscalls/bpf_sys.c` | The system call: `lxm_bpf` |
+
+Limits: 4096 instructions per program, 64 maps, 64 programs.
+
+- Map types: hash, array, per-CPU array and ring buffer.
+- Program types: socket filter, kprobe (as a type only), tracepoint and raw tracepoint.
+- Helpers: map lookup/update/delete, `ktime_get_ns`, `trace_printk`, `get_prandom_u32`, current pid, uid and comm, `probe_read_kernel`, `ringbuf_output`.
+
+The verifier walks every path with register state (unknown, constant, range, pointer kinds). It tracks stack slots, checks every memory access against its region, needs a null check after a map lookup, and rejects shifts by a register that may be out of range. Pointers cannot be stored in maps or passed to helpers that would print them.
+
+Attach points: `sys_enter`, `sys_exit` and `sched_switch` tracepoints (`bpf_tp_*_hit`), and socket filters on Linux sockets (`bpf_sock_attach_fd`, `bpf_sock_attach_cbpf`). Detach and close use reference counts so a filter is never freed while a packet is in it. Host tests: `tools/tests/bpf/core_test.c`, `core_fuzz.c`.

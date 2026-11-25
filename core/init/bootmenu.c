@@ -66,7 +66,7 @@ static int rc_sc(void){ return W>=1600?2:1; }
 static void rc_frame(int* l,int* fh,const char* crumb){
     int sc=rc_sc(); fill_rect(0,0,(int)W,(int)H,RC_BG);
     int bh=22+14*sc; fill_rect(0,0,(int)W,bh,RC_BAR); fill_rect(0,bh,(int)W,1,RC_LINE);
-    int x=dstr(24,(bh-14*sc)/2,"NoovexOS Recovery",RC_HI,sc); x=dstr(x+8*sc,(bh-14*sc)/2,"11.10",RC_DIM,sc);
+    int x=dstr(24,(bh-14*sc)/2,"NoovexOS Recovery",RC_HI,sc); x=dstr(x+8*sc,(bh-14*sc)/2,"11.22",RC_DIM,sc);
     if(crumb){ x=dstr(x+16*sc,(bh-14*sc)/2,">",RC_DIM,sc); dstr(x+8*sc,(bh-14*sc)/2,crumb,RC_DIM,sc); }
     int fy=(int)H-14*sc-18; fill_rect(24,fy-12,(int)W-48,1,RC_LINE);
     dstr(24,fy,g_recmode?"[Esc] Back":"[Up/Down] Choose   [Enter] Select   [Esc] Back",RC_DIM,sc);

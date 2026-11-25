@@ -104,10 +104,16 @@ typedef struct { const u8* code; u32 code_len, regs, bars, smem, pofs, psz; cons
 typedef struct { u64 va; u32 pitch, w, h; } nvcsurf;
 typedef struct { u32 k, x, y, w, h; int sdx, sdy, mdx, mdy; u32 c0, c1, a, inv, key, goff; nvcsurf d, s, m; } nvcop;
 int nvc_parse(const u8* f,u32 n,nvkern* k);
+int nvc_parse_sm(const u8* f,u32 n,nvkern* k,u32 sm);
+int nvc_pick(const u8** blob,u32* len);
+int nvc_sm8x_allowed(u32 sm);
+void nvc_sm8x_setting(int on);
+extern int g_nv_sm8x_try;
 int nvc_ready(void);
 int nvc_op(const nvcop* o,int wait);
 int nvc_submit(void);
 void nvc_abort(void);
+int nvc_raw(const u32* m,u32 n);
 void nvc_stats(u32* ops,u32* subs,u32* waits,u32* tmo);
 const char* nvc_why(void);
 void nvc_set_ok(int ok);
@@ -143,5 +149,10 @@ int nvgsp_mode_info(nvgsp_mode_t* o);
 int nvgsp_monitors(void);
 int nvgsp_mon_get(const nvgsp_mon_t** list,u32* heads,u32* headmask,const char** why);
 const char* nvgsp_mon_sig(const nvgsp_mon_t* m);
+typedef struct { int up, link, pst, hcs; u32 link_gen, link_width, max_gen, max_width, aux_pstate, hostclk_slow_off, reads, refused; const char* why; } nvgsp_sens_t;
+int nvgsp_sensors(nvgsp_sens_t* o);
+int nvgsp_sens_up(void);
+const char* nvgsp_sens_gen(u32 g);
+const char* nvgsp_sens_text(void);
 
 #endif

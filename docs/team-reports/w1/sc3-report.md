@@ -4,7 +4,7 @@ Sources checked: local Linux 7.4-rc trees (/tmp/ref/linux, /tmp/ref/linux-atlas)
 GitHub torvalds/linux tags v6.12, v6.18, v6.19, v7.0, v7.1 (raw SPDX lines), linux-firmware WHENCE + LICENSES/ (gitlab main, today).
 
 ## 0. What NoovexOS already has (do not re-propose)
-- Wi-Fi driver: rtw88 hand port, PCIe only (RTL8821CE works on owner PC; 8822BE/8822CE chips added). `drivers/net/wifi/rtw88/`.
+- Wi-Fi driver: rtw88 hand port, PCIe only (RTL8821CE works on owner PC; 8822BE/8822CE chips added). `drivers/net/wifi/realtek/rtw88/`.
   Bus layer `g_rtw_bus` (`include/nvx/drivers/net/wifi/rtw_chip.h`) already has `RTW_BUS_USB`, but only r8..w32 hooks (no bulk TX/RX).
 - Wi-Fi stack `net/wifi/`: manager, scan, join, WPA2/WPA3/EAP, netdev, **software CCMP** (`wifi_netdev.c`). No mac80211/net80211.
 - USB: xHCI with HID, storage/hubs, UVC, CDC-ECM/NCM/RNDIS (`drivers/usb/xhci/usb_network.c`: one static device, own bulk rings).

@@ -1,5 +1,6 @@
 NoovexOS 64 bundled firmware: unmodified files from linux-firmware
 https://gitlab.com/kernel-firmware/linux-firmware commit 2b2c1f39d7ae274bfe56d829e62d3993249e3a82
+MediaTek Wi-Fi files mediatek/WIFI_*MT7961*, WIFI_*MT7922* added 2026-11-15 from linux-firmware main (same WHENCE versions as listed below).
 Below: the WHENCE lines for every bundled file (File, Link, Version, Licence), sizes and sha256.
 Installed at /lib/firmware/<File>, the Link: entries in links.txt as symlinks (unused rtl8822cu_config and OBDA links skipped); licences in /usr/share/licenses/firmware/.
 
@@ -257,3 +258,149 @@ File: rtl_bt/rtl8922au_config.bin
 Size: 6  sha256: 6c28a3f07c6a30ed208c4b64862a23f02b7d93543ea980edd24df16bab45095f
 Licence: Redistributable. See LICENCE.rtlwifi_firmware.txt for details.
 SPDX-License-Identifier: LicenseRef-LICENCE.rtlwifi_firmware.txt
+
+Driver: mt7921 - MediaTek MT7921 Wireless MACs
+File: mediatek/WIFI_MT7961_patch_mcu_1_2_hdr.bin
+Version: 20260224110909a
+Size: 92192  sha256: a276c06c2b772adb50b86639d33c82824ff4c21d617feb78caea74c040b873f6
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+Driver: mt7921 - MediaTek MT7921 Wireless MACs
+File: mediatek/WIFI_RAM_CODE_MT7961_1.bin
+Version: 20260224110949
+Size: 792036  sha256: b94217a951518a9c14095765f367bc5dd7698f2dc033941d6f18fc2ebd6a2ab9
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+Driver: mt7920 - MediaTek MT7920 Wireless MACs
+File: mediatek/WIFI_MT7961_patch_mcu_1a_2_hdr.bin
+Version: 20260224110857a
+Size: 100384  sha256: a766c4e39815e554c80ce5b1596095ff283a60db93356679fecd6494f71cee23
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+Driver: mt7920 - MediaTek MT7920 Wireless MACs
+File: mediatek/WIFI_RAM_CODE_MT7961_1a.bin
+Version: 20260224110939
+Size: 802808  sha256: 3edec74ffe341b917e7fa4ddb2b68851411f2416555f10619a5900fa4b141e6c
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+Driver: mt7922 - MediaTek MT7922 Wireless MACs
+File: mediatek/WIFI_MT7922_patch_mcu_1_1_hdr.bin
+Version: 20261027203145a
+Size: 137632  sha256: 5356256c3a361ce6a06165f67cb01b55aecaac0e2f8d2d9cbde6312c4cf1a91c
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+Driver: mt7922 - MediaTek MT7922 Wireless MACs
+File: mediatek/WIFI_RAM_CODE_MT7922_1.bin
+Version: 20261027203227
+Size: 1233748  sha256: ae4dab06cc1849682e254fe97183ed093c51382baca9b3f8a00fd6809ab71884
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+AMD Radeon DMCUB display microcode amdgpu/*_dmcub.bin added 2026-11-15 from linux-firmware commit 2b2c1f39d7ae274bfe56d829e62d3993249e3a82 (WHENCE has no Version: lines for amdgpu; ucode_version from the file header). LICENSE.amdgpu is shipped verbatim as LICENCE.amdgpu.
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/renoir_dmcub.bin
+Version: ucode_version 0x0101002b
+Size: 121608  sha256: 1c9d74c58dd14dacd6d4a330dcf9820b2263d6a7d39fa54c826636a797b4b6a8
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/green_sardine_dmcub.bin
+Version: ucode_version 0x0101002b
+Size: 121608  sha256: 1c9d74c58dd14dacd6d4a330dcf9820b2263d6a7d39fa54c826636a797b4b6a8
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/yellow_carp_dmcub.bin
+Version: ucode_version 0x04000050
+Size: 236048  sha256: 8d546bbbdcec355625dfb4bb4baef78841793c9c0209be42df5305855094f4eb
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/dcn_3_1_4_dmcub.bin
+Version: ucode_version 0x08006500
+Size: 350624  sha256: 454d3eb73045d0a46f9014c42c76df9e65ae9e5da45b8c331584443fe49a8516
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/dcn_3_1_5_dmcub.bin
+Version: ucode_version 0x05003700
+Size: 239648  sha256: 035015964e5a33514201b50f43cc0643550cbee811be20da9f5e31ef6f405d76
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: rtw88 - Realtek 802.11ac WLAN driver for RTL8822BE and RTL8822CE
+File: rtw88/rtw8723d_fw.bin
+Size: 28884  sha256: 9c64e079815a333a3f7b731be7cc0be65206ebc883891659dc8ff5ed36a5e2f5
+Added 2026-11-18 from linux-firmware commit 747bdda274d0d0dce0c7c4eb01977a1270ca7163 (unmodified).
+Driver: rtw89 - Realtek 802.11ax and 802.11be WLAN driver
+File: rtw89/rtw8852b_fw-1.bin
+Version: 0.29.29.15 (added 2026-11-18 from linux-firmware main)
+Size: 1245944  sha256: 5b68415e3bfe72715d63a70703d4471b04b5475b8ff69cfdc8cdf48233cd5d3a
+Licence: Redistributable. See LICENCE.rtlwifi_firmware.txt for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.rtlwifi_firmware.txt
+Driver: rtw89 - Realtek 802.11ax and 802.11be WLAN driver
+File: rtw89/rtw8852c_fw-1.bin
+Version: 0.27.122.0 (added 2026-11-20 from linux-firmware commit f9919c7a5892be53a36100fa18d8620b5fe7d6c4, unmodified)
+Size: 2375560  sha256: 95e4226f7a4c2a506a5ea2bb8b6247842dd12fc312639750881c5bfdec7bbec5
+Licence: Redistributable. See LICENCE.rtlwifi_firmware.txt for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.rtlwifi_firmware.txt
+Driver: mt7925 - MediaTek MT7925 Wireless MACs
+File: mediatek/mt7925/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
+Version: 20261016232915a
+Size: 188192  sha256: 67ff85f1a39d1a100a51abd8e2a26edd2f198d7052514b6b8981948b231e5016
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+Driver: mt7925 - MediaTek MT7925 Wireless MACs
+File: mediatek/mt7925/WIFI_RAM_CODE_MT7925_1_1.bin
+Version: 20261016233029
+Size: 1390712  sha256: 329c0e27f780550789e4eba47452731b1723f69f9e67f525d0e50bf3cd2978ac
+Licence: Redistributable. See LICENCE.mediatek for details.
+SPDX-License-Identifier: LicenseRef-LICENCE.mediatek
+
+AMD Radeon SDMA microcode amdgpu/*sdma*.bin added 2026-11-19 from linux-firmware main (commit acaf0f3190bcf5831042cfd2ddb09ddf16ee71ae), unmodified. LICENSE.amdgpu is shipped verbatim as LICENCE.amdgpu.
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/vangogh_sdma.bin
+Version: ucode_version 0x00000046
+Size: 135424  sha256: 7e81b24cb357e3373bf0d7b94bff53c8b0225fd87d07d6940d98241d9ec572fd
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/yellow_carp_sdma.bin
+Version: ucode_version 0x00000034
+Size: 34048  sha256: be8cdc90616c6aa1e92cf1307e18515958a5c6b80552e20fa4452e2e61c18fd4
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/sdma_5_2_6.bin
+Version: ucode_version 0x00000009
+Size: 34048  sha256: 3a163db00eb7e4752be8adbd61cf7dd8f08d924e59a6f798ced7dfcd89f340ed
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/sdma_5_2_7.bin
+Version: ucode_version 0x00000009
+Size: 34048  sha256: 16fe80dc866b323e15a06f51646ef0f036878ad34da66921fcdb8167207d6b2b
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu
+
+Driver: amdgpu - AMD Radeon
+File: amdgpu/sdma_6_0_1.bin
+Version: ucode_version 0x00000018
+Size: 34560  sha256: 708c2c2c45262c98ebe8e34e32c3f1ce8eb5b007bab560c9ea9b576a8e4d6768
+Licence: Redistributable. See LICENSE.amdgpu for details.
+SPDX-License-Identifier: LicenseRef-LICENSE.amdgpu

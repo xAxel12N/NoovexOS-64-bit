@@ -9,6 +9,12 @@
 #include "include/nvx/mem/heap.h"
 #include "include/nvx/drivers/video/fb/damage.h"
 #include "include/nvx/drivers/video/nvidia/nvgsp.h"
+#include "include/nvx/graphics/ui/outputs.h"
+#include "include/nvx/graphics/ui/wm.h"
+#include "include/nvx/graphics/ui/desktop.h"
+#include "include/nvx/drivers/video/nvidia/nvflip.h"
+#include "include/nvx/drivers/video/fb/deskscale.h"
+#include "include/nvx/lib/base/fmt.h"
 /* =========================================================================
    Framebuffer + back buffers
    ========================================================================= */
@@ -26,9 +32,15 @@ u32  PITCHB2, W2, H2;
 u8   BYPP2;
 int  g_fb2_ok=0, g_fb2_rgb=0, g_mirror2=1;
 
+int g_clip_y0=-0x40000000, g_clip_y1=0x40000000, g_clip_maxy=0;
+void fb_clip_y(int y0,int y1){ g_clip_y0=y0; g_clip_y1=y1; g_clip_maxy=y0; }
+void fb_clip_off(void){ g_clip_y0=-0x40000000; g_clip_y1=0x40000000; }
+static inline void clip_note(int y){ if(y>g_clip_maxy)g_clip_maxy=y; }
 void fill_rect(int x,int y,int w,int h,u32 c){
+    clip_note(h>0?y+h:y); if(y<g_clip_y0){h-=g_clip_y0-y;y=g_clip_y0;} if(y+h>g_clip_y1)h=g_clip_y1-y;
     if(x<0){w+=x;x=0;} if(y<0){h+=y;y=0;} if(x+w>(int)W)w=(int)W-x; if(y+h>(int)H)h=(int)H-y; if(w<=0||h<=0)return;
     if(g_gfx){ gq_fill(g_rt,x,y,w,h,c); return; }
+    { extern int g_amdsdma_sys; extern int amdsdma_fill_sys(u32*,u32,u32,int,int,int,int,u32); if(g_amdsdma_sys&&(u64)w*h>=262144u&&amdsdma_fill_sys(SCENE,SW,H,x,y,w,h,c)==0)return; }
     if(g_accel2d){ for(int j=0;j<h;j++) sse_fill32(SCENE+(u64)(y+j)*SW+x, c, w); }
     else { for(int j=0;j<h;j++){ u32* r=SCENE+(u64)(y+j)*SW+x; for(int i=0;i<w;i++) r[i]=c; } }
 }
@@ -46,6 +58,7 @@ int cut(int i,int j,int w,int h,int r,int m){
 /* anti-aliased rounded rectangle */
 int g_round_off=0;
 void fill_round(int x,int y,int w,int h,int r,int m,u32 c){ if(g_round_off){ fill_rect(x,y,w,h,c); return; }
+    clip_note(h>0?y+h:y); if(y>=g_clip_y1||y+h<=g_clip_y0)return;
     if(g_gfx){ gfx_round(x,y,w,h,r,m,c,256); return; }
     for(int j=0;j<h;j++)for(int i=0;i<w;i++){
         int dx=-1,dy=0;
@@ -69,6 +82,7 @@ void shadow_soft(int wx,int wy,int ww,int wh,int wr){
 }
 /* anti-aliased filled circle */
 void fill_circle(int cx,int cy,int r,u32 c){
+    clip_note(cy+r+1); if(cy-r-1>=g_clip_y1||cy+r+2<=g_clip_y0)return;
     if(g_gfx){ gfx_circle(cx,cy,r,c,256); return; }
     for(int j=-r-1;j<=r+1;j++)for(int i=-r-1;i<=r+1;i++){ int d2=i*i+j*j; if(d2>(r+1)*(r+1)) continue;
         u32 dd=isqrt32(((u32)d2)<<16); int cov=(int)(r*256)-(int)dd+128;
@@ -78,9 +92,9 @@ void fill_circle(int cx,int cy,int r,u32 c){
 /* ---- text into SCENE ---- */
 int slen(const char*s){ int n=0; while(s[n])n++; return n; }
 void dchar(int x,int y,char ch,u32 c,int s){
-    int idx=(u8)ch-32; if(idx<0||idx>=95)return; if(g_gfx){ gfx_glyph(x,y,ch,c,s,0); return; } const unsigned char*g=fontaa[idx];
+    int idx=(u8)ch-32; if(idx<0||idx>=95)return; clip_note(y+14*s); if(y>=g_clip_y1||y+14*s<=g_clip_y0)return; if(g_gfx){ if(y<g_clip_y0||y+14*s>g_clip_y1)return; gfx_glyph(x,y,ch,c,s,0); return; } const unsigned char*g=fontaa[idx];
     (void)SCENE; for(int r=0;r<14;r++) for(int col=0;col<8;col++){ int a=g[r*8+col]; if(a<6)continue;
-        for(int dy=0;dy<s;dy++) for(int dx=0;dx<s;dx++){ int px=x+col*s+dx, py=y+r*s+dy; if((u32)px<W&&(u32)py<H){ u32*p=&g_scene[(u64)py*SW+px]; *p=a>=250?c:mix(*p,c,a); } } }
+        for(int dy=0;dy<s;dy++) for(int dx=0;dx<s;dx++){ int px=x+col*s+dx, py=y+r*s+dy; if((u32)px<W&&(u32)py<H&&py>=g_clip_y0&&py<g_clip_y1){ u32*p=&g_scene[(u64)py*SW+px]; *p=a>=250?c:mix(*p,c,a); } } }
 }
 static const char U8L1[65]="AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPsaaaaaaaceeeeiiiidnooooo/ouuuuypy";
 char u8fold(const char* s,int* n){ u8 c=(u8)s[0]; if(c<0x80){ *n=1; return (char)c; }
@@ -97,10 +111,10 @@ void gmetrics(void){ for(int idx=0;idx<95;idx++){ const unsigned char*g=fontaa[i
 int gadv(char ch,int s){ int idx=(u8)ch-32; if(idx<0||idx>=95)return 4*s; if(g_gw[idx]==0)return 4*s; return (g_gw[idx]+1)*s; }
 int pw_sub(const char*str,int a,int b,int s){ int w=0; for(int i=a;str[i]&&i<b;i++)w+=gadv(str[i],s); return w; }
 int pw_str(const char*str,int s){ int w=0; for(int i=0;str[i];){ int n; char ch=u8fold(str+i,&n); w+=gadv(ch,s); i+=n; } return w; }
-static void pdch(int x,int y,char ch,u32 c,int s){ int idx=(u8)ch-32; if(idx<0||idx>=95||g_gw[idx]==0)return; const unsigned char*gp=fontaa[idx]; int ox=x-g_gl[idx]*s; if(g_gfx){ gfx_glyph(ox,y,ch,c,s,1); return; }
+static void pdch(int x,int y,char ch,u32 c,int s){ int idx=(u8)ch-32; if(idx<0||idx>=95||g_gw[idx]==0)return; clip_note(y+14*s); if(y>=g_clip_y1||y+14*s<=g_clip_y0)return; const unsigned char*gp=fontaa[idx]; int ox=x-g_gl[idx]*s; if(g_gfx){ if(y<g_clip_y0||y+14*s>g_clip_y1)return; gfx_glyph(ox,y,ch,c,s,1); return; }
     (void)SCENE; for(int r=0;r<14;r++){ for(int col=0;col<8;col++){ int a=gp[r*8+col]; if(a<6)continue;
-        if(s==1){ int px=ox+col,py=y+r; if((u32)px<W&&(u32)py<H){ u32*p=&g_scene[(u64)py*SW+px]; *p=mix(*p,c,a); } }
-        else { for(int dy=0;dy<s;dy++)for(int dx=0;dx<s;dx++){ int px=ox+col*s+dx,py=y+r*s+dy; if((u32)px<W&&(u32)py<H){ u32*p=&g_scene[(u64)py*SW+px]; *p=mix(*p,c,a); } } } } } }
+        if(s==1){ int px=ox+col,py=y+r; if((u32)px<W&&(u32)py<H&&py>=g_clip_y0&&py<g_clip_y1){ u32*p=&g_scene[(u64)py*SW+px]; *p=mix(*p,c,a); } }
+        else { for(int dy=0;dy<s;dy++)for(int dx=0;dx<s;dx++){ int px=ox+col*s+dx,py=y+r*s+dy; if((u32)px<W&&(u32)py<H&&py>=g_clip_y0&&py<g_clip_y1){ u32*p=&g_scene[(u64)py*SW+px]; *p=mix(*p,c,a); } } } } } }
 int pdstr(int x,int y,const char*str,u32 c,int s){ for(int i=0;str[i];){ int n; char ch=u8fold(str+i,&n); pdch(x,y,ch,c,s); x+=gadv(ch,s); i+=n; } return x; }
 int pdsub(int x,int y,const char*str,int a,int b,u32 c,int s){ for(int i=a;str[i]&&i<b;i++){ pdch(x,y,str[i],c,s); x+=gadv(str[i],s); } return x; }
 void pdstr_ctr(int cx,int y,const char*s,u32 c,int sc){ pdstr(cx-pw_str(s,sc)/2,y,s,c,sc); }
@@ -132,16 +146,66 @@ static int dmg_present(void){
     if(!n){ g_dmg_idle++; g_dmg_last_n=0; g_dmg_last_px=0; g_dmg_frames++; return 1; }
     int gpu=0;
     if(!g_fb_rgb&&nvgsp_present_on()) gpu=full?nvgsp_fb_present(sc,SW,W,H,(volatile u32*)FBB,PITCHB):nvgsp_fb_present_rects(sc,SW,W,H,g_dr,n,(volatile u32*)FBB,PITCHB);
+    if(!gpu&&!g_fb_rgb){ extern int g_amdsdma_sys; extern int amdsdma_present_rects(const u32*,u32,u32,u32,const dmg_rect*,int,u8*,u32); if(g_amdsdma_sys)gpu=amdsdma_present_rects(sc,SW,W,H,g_dr,n,FBB,PITCHB); }
     if(!gpu) for(int i=0;i<n;i++)cpu_rect(g_dr[i].x,g_dr[i].y,g_dr[i].w,g_dr[i].h); else g_dmg_gpu++;
     for(int i=0;i<n;i++)sh_rect(g_dr[i].x,g_dr[i].y,g_dr[i].w,g_dr[i].h);
     g_sh_valid=1; g_dmg_frames++; g_dmg_last_n=(u32)n; g_dmg_last_px=(u32)dmg_area(g_dr,n); return 1; }
+u32 g_fb_fww=0, g_fb_fwh=0; int g_fb_native=0;
+extern u32* SCENE_NC; extern u32 SCENE_NC_STATIC[MAXW*MAXH];
+extern int fs_find_name(const char*); extern char* fsd(int); extern int fs_save_bin(const char*,const u8*,int,int); extern void nvx3_sync_all(void);
+static u32 *db_s=0, *db_b=0, *db_n=0; static u32 db_w=0, db_h=0; u32 g_desk_cpu_mb=0, g_desk_scale=0; char g_desk_why[96]; static int g_desk_sl=0; volatile int g_desk_rescale=0;
+static int db_inuse(void){ return db_s&&(g_scene==db_s||BG==db_b||SCENE_NC==db_n); }
+static void db_free(void){ if(db_inuse())return; kfree(db_s); kfree(db_b); kfree(db_n); db_s=db_b=db_n=0; db_w=db_h=0; g_desk_cpu_mb=0; }
+static int db_get(u32 w,u32 h){
+    if(db_s&&db_w==w&&db_h==h)return 1;
+    if(db_inuse())return 0;
+    db_free();
+    unsigned long n=(unsigned long)w*h*4UL; db_s=(u32*)kmalloc(n); db_b=db_s?(u32*)kmalloc(n):0; db_n=db_b?(u32*)kmalloc(n):0;
+    void* pr=db_n?kmalloc(n+(unsigned long)DESK_RESERVE):0;
+    if(!pr){ kfree(db_s); kfree(db_b); kfree(db_n); db_s=db_b=db_n=0; char* q=scopy(g_desk_why,"not enough memory for a "); q=udec(q,w); q=scopy(q,"x"); q=udec(q,h); q=scopy(q," desktop - scaled instead"); *q=0; return 0; }
+    kfree(pr); db_w=w; db_h=h; g_desk_cpu_mb=(u32)(((u64)n*3u)>>20); g_desk_why[0]=0; return 1; }
+u32 fb_desk_scale(void){
+    if(!g_desk_sl){ g_desk_sl=1; int k=fs_find_name("deskscale.cfg"); const char* d=k>=0?fsd(k):0; u32 v=0; int ok=d!=0;
+        for(int i=0;ok&&i<3;i++){ if(d[i]<'0'||d[i]>'9')ok=0; else v=v*10u+(u32)(d[i]-'0'); } if(ok&&desk_pct_ok(v))g_desk_scale=v; }
+    return g_desk_scale; }
+int fb_desk_scale_set(u32 p){
+    if(!desk_pct_ok(p))return -1;
+    fb_desk_scale(); g_desk_scale=p; u8 b[4]={(u8)('0'+p/100),(u8)('0'+p/10%10),(u8)('0'+p%10),'\n'};
+    fs_save_bin("deskscale.cfg",b,4,0); nvx3_sync_all(); g_desk_rescale=1; return 0; }
+int fb_desktop_resize(u32 w,u32 h,int apply){
+    if(!g_fb_fww){ g_fb_fww=W; g_fb_fwh=H; }
+    int back=w==g_fb_fww&&h==g_fb_fwh, big=desk_big(w,h,MAXW,MAXH);
+    if(!back&&(w<640||h<480||w>DESK_MAXW||h>DESK_MAXH||BYPP!=4||g_fb_rgb||g_panel_oled))return 0;
+    if(big&&!db_get(w,h))return 0;
+    if(!big&&!apply)db_free();
+    if(!apply||(w==W&&h==H))return 1;
+    if(g_gfx)gfx_stop("the desktop size changed");
+    u32 ow=W, oh=H; W=w; H=h; SW=w; g_fb_native=!back; fb_shadow_invalidate();
+    if(big){ g_scene=db_s; BG=db_b; SCENE_NC=db_n; }
+    else { if(g_scene==db_s)g_scene=SCENE_STATIC; if(BG==db_b)BG=BG_STATIC; if(SCENE_NC==db_n)SCENE_NC=SCENE_NC_STATIC; db_free(); }
+    for(int i=0;i<NWIN;i++){ Win* n=&WN[i]; out_resize_win(&n->x,&n->y,&n->w,&n->h,n->max,0,ow,oh,W,H); out_resize_win(&n->sx,&n->sy,&n->sw,&n->sh,0,1,ow,oh,W,H); }
+    { extern int mx, my; int mo=out_resize_pt(&mx,&my,ow,oh,W,H); out_sync(); if(mo!=1)out_mouse_clamp(&mx,&my,(int)W,(int)H); }
+    build_bg(); return 1; }
+static int nvflip_dmg(void){
+    const u32* sc=SCENE; int n=-1;
+    if(sh_ready()&&g_sh_valid){ n=dmg_rects(sc,g_shadow,SW,(int)W,(int)H,g_dr,DMG_MAX); if(n<0||n>NVFLIP_RMAX||dmg_area(g_dr,n)*10>(u64)W*H*7)n=-1; }
+    u32 w0=W, h0=H; if(!nvflip_present_rects(sc,SW,W,H,g_dr,n))return 0;
+    if(W!=w0||H!=h0||!g_shadow||g_sh_w!=W||g_sh_h!=H||g_sh_sw!=SW){ g_sh_valid=0; return 1; }
+    if(n<0)sh_rect(0,0,(int)W,(int)H); else for(int i=0;i<n;i++)sh_rect(g_dr[i].x,g_dr[i].y,g_dr[i].w,g_dr[i].h);
+    g_sh_valid=1; if(n<0)g_dmg_full++; else if(!n)g_dmg_idle++; g_dmg_frames++; return 1; }
 void blit_all(void){
     g_scene_quiet++; void blit_all2(void); blit_all2(); g_scene_quiet--; }
 void blit_all2(void){
+    if(g_desk_rescale){ g_desk_rescale=0; if(g_nvflip_live){ nvflip_off("the desktop scale changed"); if(g_fb_native)fb_desktop_resize(g_fb_fww,g_fb_fwh,1); nvflip_on(); } }
+    if(!g_nvflip_live&&!g_fb_native&&db_s)db_free();
     if(g_gfx)gfx_sync();
     { extern int g_igpu_flip; extern void igpu_pre_blit(void); if(g_igpu_flip)igpu_pre_blit(); }
     /* OLED care: shift the whole image by 1px through 4 positions, changing every ~30s */
     int shx=0,shy=0; if(g_panel_oled){ int ph=(int)((g_ticks/3000ULL)&3); shx=(ph==1)?1:(ph==3)?-1:0; shy=(ph==2)?1:0; }
+    { static int s_fl=0; if(s_fl!=g_nvflip_live){ s_fl=g_nvflip_live; g_sh_valid=0; } }
+    if(g_fb_native&&!nvflip_native(0,0)){ fb_desktop_resize(g_fb_fww,g_fb_fwh,1); goto presented; }
+    if(g_nvflip_live){ if(BYPP==4&&!g_fb_rgb&&shx==0&&shy==0&&nvflip_dmg())goto presented; g_sh_valid=0; if(g_fb_native)goto presented; }
+    { extern int g_amdflip_live; extern int amdflip_present(const u32*,u32,u32,u32); if(g_amdflip_live){ g_sh_valid=0; if(BYPP==4&&!g_fb_rgb&&shx==0&&shy==0&&amdflip_present(SCENE,SW,W,H))goto presented; } }
     { extern int g_igpu_flip; if(BYPP==4&&shx==0&&shy==0&&!g_igpu_flip&&sh_ready()&&dmg_present())goto presented; g_sh_valid=0; }
     { extern int g_igpu_flip, g_blt_present; extern int igpu_blt_present(void); if(g_igpu_flip&&g_blt_present&&!g_fb_rgb&&BYPP==4&&shx==0&&shy==0&&igpu_blt_present()==0)goto presented; }
     { extern int g_igpu_flip; extern void igpu_present_dirty_all(void); if(g_igpu_flip)igpu_present_dirty_all(); }
@@ -159,7 +223,8 @@ void blit_all2(void){
             else for(u32 x=0;x<W;x++){ int sx=(int)x-shx; if(sx<0)sx=0; if(sx>=(int)W)sx=(int)W-1; u32 c=s[sx]; d[0]=(u8)c;d[1]=(u8)(c>>8);d[2]=(u8)(c>>16); d+=3; } } }
     presented:
     { extern int g_igpu_flip; extern void igpu_post_blit(void); if(g_igpu_flip)igpu_post_blit(); }
-    if(g_fb2_ok&&g_mirror2)blit_mirror2();
+    if(g_fb2_ok){ display_cfg_tick(); if(g_mirror2)blit_mirror2(); else if(blit_extend2())blit_mirror2(); }
+    else if(g_disp_extend)display_hotplug(0);
 }
 
 /* ---- mirror the composed SCENE onto a second firmware-lit display (nearest-neighbour scale) ---- */

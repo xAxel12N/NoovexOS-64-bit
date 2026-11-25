@@ -1075,3 +1075,54 @@ Microphones: `aud_parse` reads USB Audio 2.0 (interface protocol 0x20): clock so
 | Games | `focus_hides_games` removes the Games group from the Start menu and games from launcher search. |
 | Automatic | `focus_tick` (every 5 s): schedule windows (overnight windows use the day they started; same start and end = all day), low battery (20% or less, not charging, only when no focus is on; again after charging or above 25%). `open_win` / `close_win` call `focus_app_started` / `focus_app_closed` (no app is set by default; Gaming offers DOOM and Quake as a preset); app and schedule triggers only act when no focus is on or the current one came from an app or schedule. Sign-in brings back a focus set by hand, otherwise the first focus with SignIn. A focus turned off by hand during its schedule stays off until the window ends. |
 | Where | Quick Settings Focus tile (classic) or Focus button (modern) opens a list (`fpop_*` in `desktop.c`) with "Turn focus off", "Create focus" and "Focus settings"; Settings > System > Focus (`st_focus_page`, tabs Focuses / Settings / Turn on automatically, ids 1200-1399); taskbar icon in the focus colour; lock screen line; `focus [list | NAME | off | create NAME | delete NAME]`. |
+
+## 11.21 Virtual terminals (`shell/vtcon.c`, `include/nvx/shell/vtcon.h`) (v11.15)
+
+There are 6 text consoles (`VTC_N`) on Ctrl+Alt+F1 to F6, and `chvt N` switches between them.
+
+- Each console is a `struct vtc_slot`: its own screen and scrollback buffers (allocated on first use by `vs_alloc`), cursor, current directory and foreground job.
+- Each console has its own login (`vtc_login_key`): user name, then password. The uid, gid and sudo state belong to that console, so `su` on one console does not change the others.
+- `vtc_switch` saves the current terminal state into its slot and loads the next one (`vs_save`, `vs_load`). `vtc_tick` runs a pending switch from the main loop.
+- Linux programs see `/dev/ttyN` (`vtc_dev_tty`). `VT_ACTIVATE`, `VT_GETSTATE` and `KDSETMODE` go through `vtc_ioctl`. Switching and changing the mode need permission (`vtc_caller_ok`): root, or the user signed in on the current console.
+- Settings > Advanced system > Terminals shows which consoles are signed in (`vtc_slot_info`).
+
+## 11.22 Feature guards (`core/sysfeat.c`, `include/nvx/core/sysfeat.h`) (v11.17)
+
+New features are on by default. Each one protects itself with a `struct featguard`: name, flag file, on, fail count, maximum failures, dead and trying.
+
+- `fg_begin` is called before the risky step. It writes `1` ("trying") to the flag file.
+- `fg_ok` writes `0`. `fg_fail(why)` writes `0`, counts the failure and logs the reason. When the count reaches the maximum (3 unless set lower), the feature is off for this session.
+- `fg_boot` runs once per boot. If the flag is still `1`, the last boot stopped during the start, so the feature is turned off and the flag becomes `3`. A flag of `2` means the user switched it off.
+- `fg_enable(on)` is what Settings calls. It clears the failures and gives the feature a new try.
+
+`sysfeat.c` holds the guards for features outside NVIDIA and Wi-Fi:
+
+| ID | Feature | Flag file |
+|---|---|---|
+| `SYSF_EXT4_RW` | ext4 read-write on other disks | `feat-ext4rw.cfg` |
+| `SYSF_MIDI` | USB MIDI | `feat-midi.cfg` |
+| `SYSF_INTEL_BLT` | Intel Gen 12 blitter | `feat-iblt12.cfg` |
+| `SYSF_AMD_FLIP` | AMD tear-free page flips | `feat-amdflip.cfg` |
+| `SYSF_VOLFILES` | Files on ext4 disks and SD cards | `feat-volfs.cfg` |
+| `SYSF_SD_ADMA` | SD card DMA (ADMA2) | `feat-sdadma.cfg` |
+| `SYSF_AMD_SDMA` | AMD SDMA copy engine | `feat-amdsdma.cfg` |
+| `SYSF_EXFAT` | exFAT SD cards and USB sticks | `feat-exfat.cfg` |
+| `SYSF_VOLWRITE` | Writing to USB sticks and fixed disks | `feat-volwr.cfg` |
+
+`sysfeat_get`, `sysfeat_set`, `sysfeat_state` and `sysfeat_text` are the calls for Settings and the shell. A driver uses `sysfeat_begin`, `sysfeat_ok` and `sysfeat_fail`. NVIDIA features use `nvsettings.c` (section 10.14) and Wi-Fi features use `wifi_settings.c` (section 9.12). Both follow the same rules. Bluetooth audio, Bluetooth reconnect and sleep use their own `featguard` structs in their drivers.
+
+## 11.23 Settings pages for the new features (`apps/system/settings/`) (v11.17)
+
+| Page | File | Content |
+|---|---|---|
+| Display > Advanced graphics | `graphics_nv.c` | GPU details, Intel blitter, AMD flips and copy engine |
+| Display > NVIDIA graphics | `graphics_nv.c` | A switch, live state and last error for each `nvsettings` feature, GPU info |
+| Display > Screen and monitors | `storage_and_layout.c` | Screen mode, two screens, extend or mirror |
+| Network > Wi-Fi advanced | `wifi_adv.c` | Tabs Radio, Connection, Region and chips, Status; a speed test |
+| Bluetooth | `bluetooth.c` | Adapter state, pairing request, devices, antenna sharing with Wi-Fi |
+| System > Advanced system | `unixsys.c` | Services, Remote login, Scheduled tasks, File systems, MIDI, Terminals |
+| Privacy & security > Security features | `unixsys.c` | Address randomisation, perf counters, eBPF |
+| Accounts > Sign-in options | `storage_and_layout.c`, `core/auth/acctui.c` | Fingerprint enrol, test, remove, sign-in toggle |
+| Power | `pages.c` | Sleep switch and status |
+
+Button ID ranges: Bluetooth 2800 to 2899, Wi-Fi 3000 to 3299, graphics 3400 to 3459, system 3600 to 3799. Actions that need root (service start, stop, enable) ask for the sudo password in the page, with the same check as the `service` command. Every page is listed in the Settings search table in `pages.c`.

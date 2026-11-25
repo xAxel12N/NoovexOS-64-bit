@@ -9,7 +9,7 @@ static inline long sc3(long n, long a, long b, long c){ long r; __asm__ volatile
 static inline u64 tsc(void){ u32 a, d; __asm__ volatile("rdtsc":"=a"(a),"=d"(d)); return ((u64)d << 32) | a; }
 static int now(int clk, u64* out){
     const struct vv* v = &nvx_vvar; int rt;
-    if (clk == 0 || clk == 5 || clk == 11) rt = 1; else if (clk == 1 || clk == 4 || clk == 6 || clk == 7) rt = 0; else return 0;
+    if (clk == 0 || clk == 5 || clk == 11) rt = 1; else if (clk == 1 || clk == 4 || clk == 6) rt = 0; else return 0;
     for (;;) {
         u64 s = v->seq; __asm__ volatile("" ::: "memory");
         if (s & 1) continue;

@@ -10,13 +10,13 @@ All 5 steps are done and committed. Every touched C file compiles with ccheck an
 - e455ef64: the shell banner shows the detected chip (or "not supported"). README updated.
 
 ## Files
-- New: drivers/net/wifi/rtw88/chip.c. It has:
+- New: drivers/net/wifi/realtek/rtw88/chip.c. It has:
   - the chip registry (`rtw_chip_find`, `rtw_chip_at`, `rtw_chip_count`, `rtw_chip_select`)
   - the alias table: B821, C82A and C82B map to 8821C; C82F maps to 8822C
   - `rtw_pwr_seq_run`, `rtw_rsvd_boundary`
   - the H2C ring: `rtw_h2c_ring_setup`, `rtw_h2c_pkt_send`
   - the `rtw_chip_calibrate` guard and `rtw_chmark`
-- New: drivers/net/wifi/rtw88/chips/rtw8821c.c, which defines `const rtw_chip rtw8821c_chip`. All 8821C code moved here unchanged: power-on table, power-off (rtw88 act->cardemu), efuse parse (MAC at 0xD0, RFE 0xCA, xtal 0xB9), WMAC init, BB/RF enable, phy_post (xtal cap), coex wifi-only, rfe/antenna switch, set_channel, TX power, IQK, tables, page table {16,16,16,14,1}, rqpn {2,2,1,1,0,3}, firmware `_binary_rtw8821c_fw_bin_*`. The rtw_tables_cond.h include moved here from rtw_efuse.c.
+- New: drivers/net/wifi/realtek/rtw88/chips/rtw8821c.c, which defines `const rtw_chip rtw8821c_chip`. All 8821C code moved here unchanged: power-on table, power-off (rtw88 act->cardemu), efuse parse (MAC at 0xD0, RFE 0xCA, xtal 0xB9), WMAC init, BB/RF enable, phy_post (xtal cap), coex wifi-only, rfe/antenna switch, set_channel, TX power, IQK, tables, page table {16,16,16,14,1}, rqpn {2,2,1,1,0,3}, firmware `_binary_rtw8821c_fw_bin_*`. The rtw_tables_cond.h include moved here from rtw_efuse.c.
 - New in the core, in rtw_efuse.c:
   - `rtw_rf_read` / `rtw_rf_write(path, addr, mask, val)`. They use the chip's rf_base/rf_sipi (0 means {0x2800,0x2C00}/{0xC90,0xE90}). `rf_mix=1` gives 8822C behaviour: direct writes, except RF 0x00 which goes through SIPI.
   - `rtw_bb_write_mask` / `rtw_bb_read_mask`, `rtw_efuse_load`, `rtw_efuse_apply`.

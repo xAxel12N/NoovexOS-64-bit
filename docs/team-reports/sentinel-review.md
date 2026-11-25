@@ -46,7 +46,7 @@ Overall: the network-facing parsers are bounds-checked well. I found **no remote
 - **Fix:** apply the `lxs_frame` checks (`ihl>=20`, `tot` within `n`, `thl` within `plen`, `rd32(ip+12)==dip`) to `tcp_get`, `sock_connect`, `sock_recv`, `sock_send_rel`, `tcps_open` and `do_ping`.
 
 ### 6. INFO
-- **No RSN IE downgrade check:** WPA2 4-way message 3 is not compared with the beacon's RSNE (`drivers/net/wifi/rtw88/rtw_sec.c:236-243`). Only cipher 4 (CCMP) and a fixed RSNE are ever used, so the practical impact is low.
+- **No RSN IE downgrade check:** WPA2 4-way message 3 is not compared with the beacon's RSNE (`drivers/net/wifi/realtek/rtw88/rtw_sec.c:236-243`). Only cipher 4 (CCMP) and a fixed RSNE are ever used, so the practical impact is low.
 - **First ARP reply wins:** `arp_resolve` (`net/stack/tcpip.c:35-36`) takes the first matching ARP reply and caches the gateway. ARP spoofing on a shared Wi-Fi is possible, as on most OSes. TLS and certificate checks remain the protection.
 - **Weak DNS spoofing resistance:** only a 16-bit transaction ID and a 14-bit port (`net/stack/tcpip.c:237`) protect the kernel resolver. It accepts the first answer from the server IP. There is no 0x20 case randomisation and no DNSSEC. Acceptable, given that TLS verifies certificates.
 
@@ -58,7 +58,7 @@ Overall: the network-facing parsers are bounds-checked well. I found **no remote
   - The PN replay check is per TID plus group, and a GTK reinstall does not reset the PN (KRACK-safe).
   - Open-network and decrypted copies check `need<=max`.
   - A-MSDU: subframe bounds, `14+ln-8<=1600`, queue of 8. It drops frames whose first subframe looks like LLC/SNAP, which is the FragAttacks A-MSDU mitigation.
-- **Beacon/probe scan parser** (`drivers/net/wifi/rtw88/rtw8821ce.c:334-370`, `rtw_rsn_parse`): IE walk checks `iep+2+tl<=frame_end`; RSN counts are checked before use; SSID is capped at 32.
+- **Beacon/probe scan parser** (`drivers/net/wifi/realtek/rtw88/rtw8821ce.c:334-370`, `rtw_rsn_parse`): IE walk checks `iep+2+tl<=frame_end`; RSN counts are checked before use; SSID is capped at 32.
 - **`rtw_rx_wait_mgmt`** (body capped at 256, every caller's buffer is at least 256), **`rtw_rx_wait_eapol`** (capped to `maxout`), EAPOL stash (512).
 - **EAPOL** (`rtw_sec.c` `wpa_rx_eapol_p`, `wpa_gtk_extract`):
   - `el>=99`; `flen` is checked against `el` and 512.

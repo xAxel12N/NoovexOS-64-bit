@@ -5,6 +5,7 @@
 #include "include/nvx/arch/x86_64/time/hrtimer.h"
 #include "include/nvx/drivers/video/nvidia/nvgpu.h"
 #include "include/nvx/drivers/video/nvidia/nvgsp.h"
+#include "include/nvx/drivers/video/nvidia/nvgsp_gen.h"
 
 char g_nv_log[65536]; int g_nv_log_n=0; int g_nv_step=0; char g_nv_why[160]="";
 static char g_nl_line[200]; static int g_nl_n=0;
@@ -54,6 +55,7 @@ static u8 raw8(u32 a){ return a<g_rom_len?g_rom[a]:0; }
 static u16 raw16(u32 a){ return (u16)(raw8(a)|(raw8(a+1)<<8)); }
 static u32 raw32(u32 a){ return (u32)raw16(a)|((u32)raw16(a+2)<<16); }
 
+int nvb_rom_get(const u8** r,u32* n,u32* i0,u32* id){ if(!g_rom||!g_rom_len)return 0; *r=g_rom; *n=g_rom_len; *i0=g_img0; *id=g_imgd; return 1; }
 int nvb_read_rom(void){
     if(g_rom&&g_rom_len)return 1;
     if(!g_rom){ g_rom=(u8*)kmalloc(0x100000); if(!g_rom)return 0; }
@@ -79,7 +81,8 @@ int nvb_read_rom(void){
     nvl_kv("ROM bytes read",len); nvl_kv("image 0 size",g_img0); nvl_kv("extended image (type 0xE0) at",g_imgd);
     return 1; }
 
-int nvb_find_fwsec(nvfwsec* fw){
+const u8* nvb_rom(u32* len){ if(len)*len=g_rom_len; return g_rom; }
+u32 nvb_fwsec_desc(void){
     u32 bit=0; for(u32 i=0;i+6<g_img0&&i+6<g_rom_len;i++) if(g_rom[i]==0xFF&&g_rom[i+1]==0xB8&&g_rom[i+2]=='B'&&g_rom[i+3]=='I'&&g_rom[i+4]=='T'){ bit=i; break; }
     if(!bit){ nvl_s("  no BIT table in the VBIOS"); nvl_nl(); return 0; }
     u32 esz=raw8(bit+9), ecnt=raw8(bit+10); u32 pe=0; u16 plen=0, poff=0;
@@ -89,7 +92,10 @@ int nvb_find_fwsec(nvfwsec* fw){
     nvl_s("  falcon ucode table at "); nvl_x(tbl); nvl_s(" ver "); nvl_d(tv); nvl_s(" hdr "); nvl_d(th); nvl_s(" len "); nvl_d(tl); nvl_s(" count "); nvl_d(tc); nvl_nl();
     u32 desc=0; for(u32 i=0;i<tc;i++){ u32 o=tbl+th+i*tl; u8 app=rb8(o); u32 dp=rb32(o+2); nvl_s("    app "); nvl_x(app); nvl_s(" target "); nvl_x(rb8(o+1)); nvl_s(" desc "); nvl_x(dp); nvl_nl(); if(app==0x85&&!desc)desc=dp; }
     if(!desc){ nvl_s("  FWSEC_PROD (app 0x85) not found"); nvl_nl(); return 0; }
-    u32 d=rom_fix(desc); u32 hdr=raw32(d); u32 dsz=(hdr>>16)&0xFFFFu, dver=(hdr>>8)&0xFFu;
+    return rom_fix(desc); }
+int nvb_find_fwsec(nvfwsec* fw){
+    u32 d=nvb_fwsec_desc(); if(!d)return 0;
+    u32 hdr=raw32(d); u32 dsz=(hdr>>16)&0xFFFFu, dver=(hdr>>8)&0xFFu;
     nvl_kv("FWSEC descriptor header",hdr);
     if(!(hdr&1u)||dver!=2){ nvl_s("  descriptor is not version 2 (Turing)"); nvl_nl(); return 0; }
     fw->if_off=raw32(d+0x10); fw->imem_base=raw32(d+0x14); u32 imem_load=raw32(d+0x18); fw->imem_sec_base=raw32(d+0x20); fw->imem_sec_size=raw32(d+0x24);
@@ -117,7 +123,83 @@ static int fwsec_patch(nvfwsec* fw,u32 cmd){
     if(cmd==0x15){ *(u32*)(c+0x18)=1; *(u32*)(c+0x1C)=20; *(u32*)(c+0x20)=(u32)(g_nvl.frts_addr>>12); *(u32*)(c+0x24)=(u32)(g_nvl.frts_size>>12); *(u32*)(c+0x28)=2; }
     return 1; }
 
+
+extern u64 kva_to_pa(u64);
+static u8* gen_buf(u32 n,u64* pa){
+    u8* raw=(u8*)kmalloc(n+0x2000u); if(!raw)return 0; u8* b=(u8*)(((u64)raw+0xFFFULL)&~0xFFFULL);
+    u64 p=kva_to_pa((u64)b); if(!p)p=(u64)b;
+    for(u32 o=0x1000;o<n;o+=0x1000){ u64 q=kva_to_pa((u64)b+o); if(q&&q!=p+o){ kfree(raw); return 0; } }
+    for(u32 i=0;i<n+0x100u;i++){ b[i]=0; } *pa=p; return b; }
+static void gen_flush(const u8* b,u32 n){ for(u64 a=(u64)b&~63ULL;a<(u64)b+n;a+=64)cpu_clflush(a); cpu_mb(); }
+static int fwsec_gen(u32 cmd){
+    const nvgsp_gen* g=g_nvgen; u32 F=NVF_GSP;
+    u32 d=nvb_fwsec_desc(); if(!d)return nv_fail(4,"FWSEC not found in the VBIOS");
+    u32 hdr=raw32(d), dsz=(hdr>>16)&0xFFFFu, dver=(hdr>>8)&0xFFu;
+    nvl_kv("FWSEC descriptor header",hdr);
+    if(!(hdr&1u)||dver!=3)return nv_fail(4,"FWSEC descriptor is not version 3");
+    nvgsp_ldr l; for(u32 i=0;i<sizeof(l);i++)((u8*)&l)[i]=0;
+    u32 pkc=raw32(d+0x08), ifo=raw32(d+0x0C), iphys=raw32(d+0x10), isz=raw32(d+0x14), dphys=raw32(d+0x1C), dlen=raw32(d+0x20);
+    l.engine_id=raw16(d+0x24); l.ucode_id=raw8(d+0x26); u32 nsig=raw8(d+0x27); l.fuse_ver=raw16(d+0x28);
+    u32 dal=(dlen+0xFFu)&~0xFFu;
+    nvl_kv("IMEM load size",isz); nvl_kv("DMEM load size",dlen); nvl_kv("PKC data offset",pkc); nvl_kv("interface offset",ifo); nvl_kv("engine id mask",l.engine_id); nvl_kv("ucode id",l.ucode_id); nvl_kv("signatures",nsig); nvl_kv("signature versions",l.fuse_ver);
+    if(!nsig||dsz<0x2Cu+nsig*384u||!isz||(isz&0xFFu)||isz>0x80000u||!dlen||dlen>0x80000u||pkc+384u>dal||ifo>=dlen)return nv_fail(4,"FWSEC descriptor sizes look wrong");
+    u32 src=d+dsz; if(src+isz+dlen>g_rom_len||d+0x2Cu+nsig*384u>g_rom_len)return nv_fail(4,"FWSEC ucode runs past the end of the ROM");
+    u64 pa=0; u8* buf=gen_buf(isz+dal,&pa); if(!buf)return nv_fail(4,"no physically contiguous memory for FWSEC");
+    for(u32 i=0;i<isz+dlen;i++)buf[i]=g_rom[src+i];
+    int idx=g->fwsec_sig(nsig,&l); nvl_kv("FWSEC signature index",(u64)(u32)idx);
+    if(idx<0)return nv_fail(4,"no FWSEC signature matches this GPU's fuse version");
+    for(u32 i=0;i<384u;i++)buf[isz+pkc+i]=g_rom[d+0x2Cu+(u32)idx*384u+i];
+    nvfwsec f3; f3.buf=buf; f3.dmem_off=isz; f3.if_off=ifo; f3.dmem_size=dlen;
+    if(!fwsec_patch(&f3,cmd))return nv_fail(4,"FWSEC could not be patched");
+    if(cmd==0x15&&(nvr32(0x1FA828)>>4)){ nvl_kv("WPR2 already set (hi)",nvr32(0x1FA828)); return nv_fail(4,"WPR2 is already set up from an earlier boot - power the PC off fully and try again"); }
+    l.img=buf; l.pa=pa; l.imem_off=0; l.imem_base=iphys; l.imem_size=isz; l.dmem_off=isz; l.dmem_base=dphys; l.dmem_size=dal; l.dmem_sign=pkc; l.bootvec=0;
+    if(!g->flcn_reset(F)){ nvf_dump(F,"GSP falcon"); return nv_fail(4,"GSP falcon reset or memory scrubbing did not finish"); }
+    gen_flush(buf,isz+dal);
+    if(!g->flcn_load(F,&l)){ nvf_dump(F,"GSP falcon"); return nv_fail(4,"FWSEC DMA into the GSP falcon timed out"); }
+    u32 m0=0,m1=0; int ok=g->flcn_boot(F,&l,0,0,&m0,&m1,2000);
+    u32 err=nvr32(0x001438)>>16, lo=nvr32(0x1FA824), hi=nvr32(0x1FA828);
+    nvl_kv("FWSEC mbox0",m0); nvl_kv("FRTS error (0x1438>>16)",err); nvl_kv("WPR2 lo",lo); nvl_kv("WPR2 hi",hi);
+    if(!ok){ nvf_dump(F,"GSP falcon"); return nv_fail(4,"FWSEC did not halt within 2 s"); }
+    if(cmd!=0x15){ u32 sb=nvr32(0x001454)&0xFFFFu; nvl_kv("FWSEC-SB error (0x1454)",sb); if(m0||sb){ nvf_dump(F,"GSP falcon"); return nv_fail(4,"FWSEC-SB reported an error"); } return 1; }
+    if(m0||err){ nvf_dump(F,"GSP falcon"); return nv_fail(4,"FWSEC reported an error"); }
+    if(!(hi>>4)||(lo>>4)!=(u32)(g_nvl.frts_addr>>12))return nv_fail(4,"WPR2 was not set where the FRTS region should be");
+    return 1; }
+static int booter_gen(const u8* f,u32 len,u64 wpr_meta_pa,int unload){
+    const nvgsp_gen* g=g_nvgen; u32 S=NVF_SEC2;
+    if(len<0x100||*(const u32*)f!=0x10DEu)return nv_fail(5,"booter file damaged");
+    u32 ho=*(const u32*)(f+0x0C), dofs=*(const u32*)(f+0x10), dsz=*(const u32*)(f+0x14);
+    if(ho+0x20>len)return nv_fail(5,"booter headers out of range");
+    u32 sig_off=*(const u32*)(f+ho), sig_size=*(const u32*)(f+ho+4), plo=*(const u32*)(f+ho+8), pso=*(const u32*)(f+ho+0x0C), mo=*(const u32*)(f+ho+0x10), nso=*(const u32*)(f+ho+0x18), lho=*(const u32*)(f+ho+0x1C);
+    if(plo+4>len||pso+4>len||nso+4>len||mo+12>len||lho+28>len)return nv_fail(5,"booter headers out of range");
+    u32 loc=*(const u32*)(f+plo), sig=*(const u32*)(f+pso), cnt=*(const u32*)(f+nso);
+    const u8* lh=f+lho; u32 odo=*(const u32*)(lh+8), ods=*(const u32*)(lh+12), napp=*(const u32*)(lh+16), a0o=*(const u32*)(lh+20), a0s=*(const u32*)(lh+24);
+    nvgsp_ldr l; for(u32 i=0;i<sizeof(l);i++)((u8*)&l)[i]=0;
+    l.fuse_ver=*(const u32*)(f+mo); l.engine_id=*(const u32*)(f+mo+4); l.ucode_id=*(const u32*)(f+mo+8);
+    u32 ss=cnt?sig_size/cnt:0;
+    if(!cnt||!ss||!napp||dofs+dsz>len||dofs+dsz<dofs||loc+ss>dsz||loc<odo||a0o+a0s>dsz||odo+ods>dsz||sig_off+sig+sig_size>len)return nv_fail(5,"booter headers out of range");
+    int idx=g->booter_sig(cnt,&l);
+    nvl_kv(unload?"booter_unload signature index":"booter_load signature index",(u64)(u32)idx); nvl_kv("booter fuse version",l.fuse_ver); nvl_kv("booter engine id",l.engine_id); nvl_kv("booter ucode id",l.ucode_id);
+    if(idx<0)return nv_fail(5,"no booter signature matches this GPU's fuse version");
+    u32 isz=(a0s+0xFFu)&~0xFFu, dlen=(ods+0xFFu)&~0xFFu;
+    u64 pa=0; u8* img=gen_buf(dsz+0x200u,&pa); if(!img)return nv_fail(5,"no physically contiguous memory for the booter image");
+    for(u32 i=0;i<dsz;i++)img[i]=f[dofs+i];
+    for(u32 i=0;i<ss;i++)img[loc+i]=f[sig_off+sig+(u32)idx*ss+i];
+    u32 hw=nvr32(S+0x108); u32 il=(hw&0x1FFu)<<8, dl=(hw&0x3FE00u)>>1;
+    nvl_kv("SEC2 IMEM bytes",il); nvl_kv("SEC2 DMEM bytes",dl);
+    if(isz>il||dlen>dl)return nv_fail(5,"SEC2 is too small for this booter");
+    l.img=img; l.pa=pa; l.imem_off=a0o; l.imem_base=0; l.imem_size=isz; l.dmem_off=odo; l.dmem_base=0; l.dmem_size=dlen; l.dmem_sign=loc-odo; l.bootvec=a0o;
+    if((a0o|odo)&0xFFu)return nv_fail(5,"booter sections are not 256-byte aligned");
+    if(!g->flcn_reset(S)){ nvf_dump(S,"SEC2"); return nv_fail(5,"SEC2 reset or memory scrubbing did not finish"); }
+    gen_flush(img,dsz+0x200u);
+    if(!g->flcn_load(S,&l)){ nvf_dump(S,"SEC2"); return nv_fail(5,"booter DMA into SEC2 timed out"); }
+    u32 m0=0,m1=0; int ok=unload?g->flcn_boot(S,&l,0xFFu,0xFFu,&m0,&m1,2000):g->flcn_boot(S,&l,(u32)wpr_meta_pa,(u32)(wpr_meta_pa>>32),&m0,&m1,2000);
+    nvl_kv("SEC2 mbox0 after booter",m0); nvl_kv("SEC2 mbox1 after booter",m1);
+    if(!ok){ nvf_dump(S,"SEC2"); return nv_fail(5,"booter did not halt within 2 s"); }
+    if(m0){ nvf_dump(S,"SEC2"); return nv_fail(5,"booter returned an error code in mailbox 0"); }
+    return 1; }
+
 int nv_run_fwsec(u8* bl,u32 bl_len,u32 cmd){
+    if(nvgsp_gen_hooked())return fwsec_gen(cmd);
     nvfwsec fw; if(!nvb_find_fwsec(&fw))return nv_fail(4,"FWSEC not found in the VBIOS");
     if(!fwsec_patch(&fw,cmd))return nv_fail(4,"FWSEC could not be patched");
     if(bl_len<0x400||*(u32*)bl!=0x10DEu)return nv_fail(4,"acr/bl.bin is damaged");
@@ -145,6 +227,7 @@ int nv_run_fwsec(u8* bl,u32 bl_len,u32 cmd){
     return 1; }
 
 int nv_booter(const u8* f,u32 len,u64 wpr_meta_pa,int unload){
+    if(nvgsp_gen_hooked())return booter_gen(f,len,wpr_meta_pa,unload);
     if(len<0x100||*(u32*)f!=0x10DEu)return nv_fail(5,"booter file damaged");
     u32 ho=*(u32*)(f+0x0C), dofs=*(u32*)(f+0x10), dsz=*(u32*)(f+0x14);
     u32 sig_off=*(u32*)(f+ho+0x00), sig_size=*(u32*)(f+ho+0x04), loc=*(u32*)(f+*(u32*)(f+ho+0x08)), sig=*(u32*)(f+*(u32*)(f+ho+0x0C)), cnt=*(u32*)(f+*(u32*)(f+ho+0x18)), lho=*(u32*)(f+ho+0x1C);

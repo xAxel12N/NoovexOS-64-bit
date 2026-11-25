@@ -4,6 +4,7 @@
 #include "include/nvx/graphics/theme/theme.h"
 #include "include/nvx/apps/internet/browser.h"
 #include "include/nvx/core/init/splash.h"
+#include "include/nvx/arch/x86_64/time/hrtimer.h"
 /* =========================================================================
    Boot splash  (synthwave)
    ========================================================================= */
@@ -35,7 +36,8 @@ void splash_boot(void){
     int wmw=(int)H*52/100, wmh=wmw*WM_H/WM_W;
     draw_wordmark((int)W/2,(int)H/2 - wmh/2, wmw, rgb(255,255,255));         /* centred white wordmark */
     blit_all();
-    u8 last=cmos(0); int elapsed=0;                                          /* RTC-timed 5-second hold */
+    u8 last=cmos(0); int elapsed=0;
+    { extern void nvd_boot_start(void); extern int g_nvd_boot; u64 t0=hr_ns(); nvd_boot_start(); u64 t1=hr_ns(); if(g_nvd_boot)blit_all(); if(t1>t0)elapsed=(int)((t1-t0)/1000000000ULL); last=cmos(0); }                                          /* RTC-timed 5-second hold */
     int iters=0; while(elapsed<5&&iters<6000){ iters++; if(cmos(0x0A)==0xFF)break; for(int g=0;g<100000&&(cmos(0x0A)&0x80);g++){} u8 s=cmos(0); if(s!=last){ last=s; elapsed++; } spin(40000); }
 }
 

@@ -5,7 +5,7 @@
 
 extern unsigned int* DG_ScreenBuffer;
 extern u8* g_doom_wad;
-extern int g_doomx , g_doomy , g_doom_state;
+extern int g_doomx , g_doomy , g_doom_state , g_doom_dw , g_doom_dh;
 extern int g_doom_mcap;
 extern int doom_mdx , doom_mdy , doom_mbtn , doom_mbtn_prev;
 
@@ -17,5 +17,8 @@ void DG_SleepMs(unsigned int ms);
 int DG_GetKey(int* pressed, unsigned char* key);
 void DG_DrawFrame(void);
 void doom_draw(int i);
+void doom_click(void);
+void doom_fit(int cw,int ch,int* dw,int* dh);
+int doom_can_restart(void);
 
 #endif

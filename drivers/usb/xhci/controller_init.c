@@ -12,6 +12,7 @@ int xhci_present=0, xhci_init_ok=0, xhci_slots=0, xhci_ports=0; u64 xhci_base=0,
 static u8 xhci_port_conn[32], xhci_port_speed[32]; int xhci_ports_hw=0, xhci_pci_bus=-1, xhci_pci_slot=-1; static u16 xhci_vendor=0;
 static void xdelay(int n){ for(int i=0;i<n;i++) io_wait(); }
 static const char* xhci_spd(int s){ switch(s){case 1:return "FULL";case 2:return "LOW";case 3:return "HIGH";case 4:return "SUPER";default:return "-";} }
+static void xh_iow(void){ io_wait(); }
 static void xhci_init_one(int bus,int slot,int fn){
     xhci_present=0; xhci_init_ok=0; xhci_slots=0; xhci_ports=0; xhci_hi4g=0; for(int i=0;i<32;i++){xhci_port_conn[i]=0;xhci_port_speed[i]=0;}
     xhci_present=1; xhci_pci_bus=bus; xhci_pci_slot=slot; xhci_pci_fn=fn;
@@ -23,10 +24,7 @@ static void xhci_init_one(int bus,int slot,int fn){
     xhci_base=base;
     { u32 hcc=XMR(base+0x10); u32 x=(hcc>>16)<<2; int g=0;
       while(x&&g++<64){ u64 a=base+x; u32 v=XMR(a);
-        if((v&0xFF)==1){ *(volatile u8*)(u64)(a+3)=1;
-            for(int t=0;t<400000&&(XMR(a)&(1u<<16));t++)io_wait();
-            if(XMR(a)&(1u<<16)){ *(volatile u8*)(u64)(a+2)=0; klog("usb: firmware did not release the controller, taking it"); } else klog("usb: controller handed over by firmware");
-            u32 c=XMR(a+4); XMW(a+4,(c&~0x0000E011u)|0xE0000000u); break; }
+        if((v&0xFF)==1){ klog(xhr_handoff((volatile u32*)(u64)a,xh_iow,400000)?"usb: controller handed over by firmware":"usb: firmware did not release the controller, taking it"); break; }
         u32 nx=(v>>8)&0xFF; if(!nx)break; x+=nx<<2; } }
     u8 caplen=*(volatile u8*)(u64)base;
     u32 hcs1=XMR(base+0x04); int maxslots=hcs1&0xFF; int maxports=(hcs1>>24)&0xFF; xhci_ports_hw=maxports; if(maxports>32)maxports=32; if(maxports<1)maxports=1; xhci_ports=maxports; xhci_slots=maxslots;
@@ -53,7 +51,7 @@ static void xhci_init_one(int bus,int slot,int fn){
     XMW(op+0x18,XHCI_CMDRING|1u); XMW(op+0x1C,0);
     { volatile u32* er=(volatile u32*)(u64)XHCI_EVTRING; for(int i=0;i<256*4;i++)er[i]=0; }
     { volatile u32* erst=(volatile u32*)(u64)XHCI_ERST; erst[0]=XHCI_EVTRING; erst[1]=0; erst[2]=256; erst[3]=0; }
-    { u64 rt=base+rtsoff+0x20; XMW(rt+0x08,1); XMW(rt+0x18,XHCI_EVTRING); XMW(rt+0x1C,0); XMW(rt+0x10,XHCI_ERST); XMW(rt+0x14,0); }
+    { u64 rt=xhr_ir_base(base,rtsoff,0); XMW(rt+0x08,1); XMW(rt+0x18,XHCI_EVTRING); XMW(rt+0x1C,0); XMW(rt+0x10,XHCI_ERST); XMW(rt+0x14,0); }
     *usbcmd |= 1u; for(int t=0;t<200000;t++){ if(!(*usbsts&1u))break; xdelay(1); }
     for(int p=0;p<maxports;p++){ u64 pa=op+0x400+(u32)p*0x10; u32 v=XMR(pa); if(!(v&(1u<<9))){ XMW(pa,(v&0x0E00C3E0u)|(1u<<9)); } }
     for(int t=0;t<40000;t++) xdelay(1);
@@ -107,6 +105,7 @@ static void xhid_bo_reset(void){ if(cur_slot>0&&cur_slot<256&&g_xcur>=0&&g_xcur<
 static u8 xhid_own[XHID_MAX], xhid_ppend[XHID_MAX]; static u64 xhid_pnext[XHID_MAX]; static u32 xhid_e0enq[XHID_MAX], xhid_e0cyc[XHID_MAX]; static u8 xhid_haud[XHID_MAX];
 static u8 xhid_mid[XHID_MAX], xhid_mneed[XHID_MAX]; static u32 xhid_midm[XHID_MAX][8];
 static u8 xhid_pdead[XHID_MAX], xhid_pused[XHID_MAX];
+static int hpp_vendor_iface(u16 vid,const u8* rd,int n); static int hpp_receiver_pid(u16 pid); static void hppx_attach(int e,int own,u16 vid,u16 pid,u8 iface,int rep);
 int g_usbproto_off, g_usbproto_late_off=1; static int xh_ctrl_to; static int xhid_btn_s; static u64 xhid_btn_t;
 #define XHID_BTN_QUIET 50
 int xhci_usbproto(int on){ if(on==0||on==1){ g_usbproto_off=!on; g_usbproto_late_off=!on; klog(on?"usb: late SET_PROTOCOL/SET_IDLE retries on":"usb: late SET_PROTOCOL/SET_IDLE retries off"); if(!on) for(int e=0;e<XHID_MAX;e++)xhid_ppend[e]=0; } return !g_usbproto_late_off; }
@@ -149,58 +148,76 @@ static int usn_enum_loc(const usbloc_t* L);
 static int usn_enum_root(int port);
 static int usn_active(void);
 static void usn_noslot(void);
+static int um_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr); static int um_active(void); static void um_remove_below(int root,u32 R,int dR); static int um_try_port(int p); static void um_unplug(int p); static int umidi_owns(int c,int p); static int um_hub_try(int hi,int p); static int xh_cfg_midi;
+static int us_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr); static int us_active(void); static int us_try_port(int p); static void us_unplug(int p);
+static int gpu_xfer(u8 sl,int ep,u8 cc,u32 res,u32 ptr); static int gpu_active(void); static void gpu_remove_below(int root,u32 R,int dR); static int gpu_try_port(int p); static void gpu_unplug(int p); static int gpu_hub_try(int hi,int p); static int gpu_cfg_is_pad(const u8* c,int n); static int xh_cfg_gp;
 static int aud_incam_next=0; static int aud_reg_hold=-1; static void uvc_add_mic(const usbloc_t* L,int d,const u8* big,int tw,u8 cfgval,u16 vid,u16 pid,const char* nm); static int aud_has_audio(const u8* c,int n); static int aud_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm); static void aud_reset(void); static void aud_unplug(int port); static void aud_sync_e0(void); static void aud_mark_sync(void);
-static int uvc_reg_hold=-1; static int uvc_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm); static int uvc_has_video(const u8* c,int n); static void uvc_reset(void); static void uvc_unplug(int port);
+static int uvc_reg_hold=-1; static int uvc_held(int r); static void uvc_attach_done(void); static int uvc_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval,u16 vid,u16 pid,const char* nm); static int uvc_has_video(const u8* c,int n); static void uvc_reset(void); static void uvc_unplug(int port);
 
 xhub_t xhub[XHUB_MAX]; static int xreg_hub[XHID_MAX]; u32 xhid_route[XHID_MAX]; int xhid_depth[XHID_MAX];
 static int xhub_attach(const usbloc_t* L,int d,const u8* full,int wtot,u8 cfgval);
-static void xhid_reset(void){ { extern void usn_reset_all(void); usn_reset_all(); extern void btu_reset_all(void); btu_reset_all(); } uvc_reset(); aud_reset(); for(int h=0;h<XHUB_MAX;h++)xhub[h].used=0; for(int i=0;i<XHID_MAX;i++){ xreg_hub[i]=0; xhid_route[i]=0; xhid_depth[i]=0; xhid_cnt[i]=0; xhid_lastn[i]=0; xhid_rep[i]=0; xhid_nlay[i]=0; xhid_used[i]=0; xhid_slot[i]=0; for(int k=0;k<8;k++)xhid_kprev[i][k]=0; xhid_ccn[i]=0; } xhid_n=0; xhci_mouse_ok=0; }
+static void usbreg_probe(const usbloc_t* L,const u8* full,int wtot);
+static void xhid_reset(void){ { extern void usn_reset_all(void); usn_reset_all(); extern void um_reset_all(void); um_reset_all(); extern void btu_reset_all(void); btu_reset_all(); extern void us_reset_all(void); us_reset_all(); extern void gpu_reset_all(void); gpu_reset_all(); } uvc_reset(); aud_reset(); for(int h=0;h<XHUB_MAX;h++)xhub[h].used=0; for(int i=0;i<XHID_MAX;i++){ xreg_hub[i]=0; xhid_route[i]=0; xhid_depth[i]=0; xhid_cnt[i]=0; xhid_lastn[i]=0; xhid_rep[i]=0; xhid_nlay[i]=0; xhid_used[i]=0; xhid_slot[i]=0; for(int k=0;k<8;k++)xhid_kprev[i][k]=0; xhid_ccn[i]=0; } xhid_n=0; xhci_mouse_ok=0; }
 typedef struct { u8 iface, proto, sub, ep; u16 mps; u8 intv; u16 rdlen; } hidif_t;
 
 hidlay_t xhid_lay[XHID_MAX][HIDLAY_MAX];
 static int hid_inlen;
 static int hid_parse(const u8* d,int n,hidlay_t* out,int max,int* hasid){
-    u32 upage=0, rsize=0, rcount=0, rid=0; int lmin=0; u32 ulo[32], uhi[32]; u8 usz[32]; int nus=0; u32 umin=0, umax=0; int hasrange=0, pmin=0, pmax=0; u8 uminsz=0, umaxsz=0;
-    u32 gst[4][5]; int gsp=0; int depth=0, appkind[8]={0}; int nl=0; *hasid=0; hid_inlen=0;
-    int bitpos[256]; for(int i=0;i<256;i++)bitpos[i]=0; u32 idm[8]={0,0,0,0,0,0,0,0};
+    u32 upage=0, rsize=0, rcount=0, rid=0, lmaxr=0; int lmin=0, lmaxs=0, phmin=0, phmax=0; u32 ulo[32], uhi[32]; u8 usz[32]; int nus=0; u32 umin=0, umax=0; int hasrange=0, pmin=0, pmax=0; u8 uminsz=0, umaxsz=0;
+    u32 gst[8][9]; int gsp=0; int depth=0, appkind[8]={0}, appno=0, rmapp=-1, rmid=-1, rmn=0, rmmul=1; int rmoff[2]={-1,-1}, rmsz[2]={0,0}, rmval[2]={0,0}; int nl=0; *hasid=0; hid_inlen=0;
+    int bitpos[256], fpos[256]; for(int i=0;i<256;i++){ bitpos[i]=0; fpos[i]=0; } u32 idm[8]={0,0,0,0,0,0,0,0};
     for(int i=0;i<n;){
         u8 b=d[i]; if(b==0xFE){ if(i+2>=n)break; i+=3+d[i+1]; continue; }
         int sz=b&3; if(sz==3)sz=4; int type=(b>>2)&3, tag=(b>>4)&0xF; if(i+1+sz>n)break;
-        u32 v=0; for(int k=0;k<sz;k++)v|=(u32)d[i+1+k]<<(8*k); i+=1+sz;
-        if(type==1){ if(tag==1)lmin=(sz==1)?(int)(signed char)v:(sz==2)?(int)(short)v:(int)v; if(tag==0)upage=v; else if(tag==7)rsize=v; else if(tag==8){ rid=v&0xFF; *hasid=1; } else if(tag==9)rcount=v;
-            else if(tag==10&&gsp<4){ gst[gsp][0]=upage; gst[gsp][1]=rsize; gst[gsp][2]=rcount; gst[gsp][3]=rid; gst[gsp][4]=(u32)lmin; gsp++; } else if(tag==11&&gsp>0){ gsp--; upage=gst[gsp][0]; rsize=gst[gsp][1]; rcount=gst[gsp][2]; rid=gst[gsp][3]; lmin=(int)gst[gsp][4]; } }
+        u32 v=0; for(int k=0;k<sz;k++)v|=(u32)d[i+1+k]<<(8*k); i+=1+sz; int sv=sz==1?(int)(signed char)v:sz==2?(int)(short)v:(int)v;
+        if(type==1){ if(tag==1)lmin=sv; else if(tag==2){ lmaxr=v; lmaxs=sv; } else if(tag==3)phmin=sv; else if(tag==4)phmax=sv;
+            if(tag==0)upage=v; else if(tag==7)rsize=v; else if(tag==8){ rid=v&0xFF; *hasid=1; } else if(tag==9)rcount=v;
+            else if(tag==10&&gsp<8){ u32* g=gst[gsp++]; g[0]=upage; g[1]=rsize; g[2]=rcount; g[3]=rid; g[4]=(u32)lmin; g[5]=lmaxr; g[6]=(u32)lmaxs; g[7]=(u32)phmin; g[8]=(u32)phmax; }
+            else if(tag==11&&gsp>0){ u32* g=gst[--gsp]; upage=g[0]; rsize=g[1]; rcount=g[2]; rid=g[3]; lmin=(int)g[4]; lmaxr=g[5]; lmaxs=(int)g[6]; phmin=(int)g[7]; phmax=(int)g[8]; } }
         else if(type==2){ u32 u=(sz==4)?v:((upage<<16)|v);
             if(tag==0){ if(nus<32){ ulo[nus]=uhi[nus]=u; usz[nus]=(u8)sz; nus++; } }
             else if(tag==1||tag==2){ if(tag==1){ umin=u; uminsz=(u8)sz; pmin=1; } else { umax=u; umaxsz=(u8)sz; pmax=1; } hasrange=1;
                 if(pmin&&pmax){ if(nus<32&&umax>=umin){ ulo[nus]=umin; uhi[nus]=umax; usz[nus]=(u8)(uminsz>umaxsz?uminsz:umaxsz); nus++; } pmin=pmax=0; } } }
         else if(type==0){
             for(int j=nus-1;j>=0;j--){ if(usz[j]>2)continue; if((ulo[j]>>16)==upage)break; ulo[j]=(upage<<16)|(ulo[j]&0xFFFF); uhi[j]=(upage<<16)|(uhi[j]&0xFFFF); }
-            if(tag==10){ int kind=depth>0?appkind[depth-1]:0; if(v==1){ u32 u=nus?ulo[0]:0; kind=(u==0x10002u||u==0x10001u)?2:(u==0x10006u||u==0x10007u)?1:(u==0xC0001u)?3:0; } if(depth<7){ depth++; appkind[depth-1]=kind; } }
+            int lmax=lmin<0?lmaxs:(int)lmaxr;
+            if(tag==10){ int kind=depth>0?appkind[depth-1]:0; if(v==1){ u32 u=nus?ulo[0]:0; kind=(u==0x10002u||u==0x10001u||u==0xD0001u||u==0xD0002u)?2:(u==0x10006u||u==0x10007u)?1:(u==0xC0001u||u==0x10080u)?3:0; if(!depth)appno++; } if(depth<7){ depth++; appkind[depth-1]=kind; } }
             else if(tag==12){ if(depth>0)depth--; }
+            else if(tag==11){ int pos=fpos[rid];
+                if(depth>0&&appkind[0]==2&&!(v&1)&&(v&2)&&rsize>0&&rsize<=8) for(u32 c=0;c<rcount&&c<16;c++){ u32 u=0, cc=c; for(int j=0;j<nus;j++){ u32 w=uhi[j]-ulo[j]+1; if(cc<w){ u=ulo[j]+cc; break; } cc-=w; if(j==nus-1&&ulo[j]==uhi[j])u=ulo[j]; }
+                    if(u==0x10048u&&lmax>0&&lmax<(1<<rsize)&&(rmid<0||(rmid==(int)rid&&rmapp==appno))&&rmn<2){ int lo=phmin, hi=phmax; if(!lo&&!hi){ lo=lmin; hi=lmax; } int m=hi; if(m<1||m>255)m=1;
+                        rmid=(int)rid; rmapp=appno; rmoff[rmn]=pos+(int)(c*rsize); rmsz[rmn]=(int)rsize; rmval[rmn]=lmax; if(m>rmmul)rmmul=m; rmn++; } }
+                { long np=(long)pos+(long)(rsize>16384?16384:rsize)*(long)(rcount>16384?16384:rcount); fpos[rid]=np>16384?16384:(int)np; } }
             else if(tag==8){
                 int kind=depth>0?appkind[depth-1]:0; int flags=(int)v; int pos=bitpos[rid]; idm[(rid>>5)&7]|=1u<<(rid&31); if(rsize>32||rcount>1024||pos>8192)kind=0;
                 if(kind&&!(flags&1)){
                     hidlay_t* L=0; for(int k=0;k<nl;k++) if(out[k].id==rid&&out[k].kind==kind)L=&out[k];
-                    if(!L&&nl<max){ L=&out[nl++]; for(int k=0;k<(int)(sizeof(hidlay_t)/sizeof(short));k++)((short*)L)[k]=-1; L->id=(u8)rid; L->kind=(u8)kind; L->btn_cnt=0; L->arr_cnt=0; L->bm_cnt=0; L->cc_cnt=0; L->cv_cnt=0; }
-                    if(L){ int var=(flags&2)!=0;
+                    if(!L&&nl<max){ L=&out[nl++]; for(int k=0;k<(int)(sizeof(hidlay_t)/sizeof(short));k++)((short*)L)[k]=-1; L->id=(u8)rid; L->kind=(u8)kind; L->btn_cnt=0; L->arr_cnt=0; L->bm_cnt=0; L->cc_cnt=0; L->cv_cnt=0; L->cl_n=0; L->rm_n=0; L->rm_mul=1; L->w_acc=0; L->h_acc=0; L->app=(short)appno; L->abs=0; L->rm_on=0; L->x_lo=L->x_hi=L->y_lo=L->y_hi=0; }
+                    if(L){ int var=(flags&2)!=0, rel=(flags&4)!=0;
                         if(var){ u32 rcl=rcount>256?256:rcount; for(u32 c=0;c<rcl;c++){ u32 u=0, cc=c; int j=0; for(;j<nus;j++){ u32 w=uhi[j]-ulo[j]+1; if(cc<w){ u=ulo[j]+cc; break; } cc-=w; } if(j==nus&&nus&&ulo[nus-1]==uhi[nus-1])u=ulo[nus-1];
                                 int at=pos+(int)(c*rsize); u32 pg=u>>16, us=u&0xFFFF;
                                 if(pg==9&&rsize==1){ if(L->btn_cnt==0)L->btn_off=(short)at; if(L->btn_cnt<16)L->btn_cnt++; }
-                                else if(pg==1&&us==0x30){ if(L->x_off<0){ L->x_off=(short)at; L->x_sz=(short)rsize; } }
-                                else if(pg==1&&us==0x31){ if(L->y_off<0){ L->y_off=(short)at; L->y_sz=(short)rsize; } }
+                                else if(pg==1&&us==0x30){ if(L->x_off<0){ L->x_off=(short)at; L->x_sz=(short)rsize; if(!rel&&kind==2&&lmax>lmin){ L->abs=1; L->x_lo=lmin; L->x_hi=lmax; } } }
+                                else if(pg==1&&us==0x31){ if(L->y_off<0){ L->y_off=(short)at; L->y_sz=(short)rsize; L->y_lo=lmin; L->y_hi=lmax; } }
                                 else if(pg==1&&us==0x38){ if(L->w_off<0){ L->w_off=(short)at; L->w_sz=(short)rsize; } }
+                                else if(kind==2&&pg==0x0C&&us==0x238){ if(L->h_off<0){ L->h_off=(short)at; L->h_sz=(short)rsize; } }
+                                else if(kind==2&&pg==0x0D&&rsize==1&&(us==0x42||us==0x44||us==0x32)){ if(us==0x42)L->tip_off=(short)at; else if(us==0x44)L->bar_off=(short)at; else L->rng_off=(short)at; }
                                 else if(pg==7&&rsize==1&&us>=0xE0&&us<=0xE7){ if(us==0xE0)L->mod_off=(short)at; }
-                                else if(kind==3&&pg==0x0C&&rsize==1&&us&&L->cv_cnt<12){ L->cv_us[L->cv_cnt]=(u16)us; L->cv_off[L->cv_cnt]=(short)at; L->cv_cnt++; }
+                                else if(kind==3&&rsize==1&&L->cv_cnt<12&&((pg==0x0C&&us)||(pg==1&&us>=0x81&&us<=0x83))){ L->cv_us[L->cv_cnt]=(u16)(pg==1?0x8000u|us:us); L->cv_off[L->cv_cnt]=(short)at; L->cv_cnt++; }
                                 else if(pg==7&&rsize==1&&us<0xE0){ if(L->bm_cnt==0){ L->bm_off=(short)at; L->bm_min=(short)us; } L->bm_cnt++; } } }
+                        else if(kind==3&&L->cc_cnt==0&&rsize>=1&&rsize<=16&&!hasrange&&nus>0&&lmax>=lmin&&lmax-lmin<nus){ L->cc_off=(short)pos; L->cc_sz=(short)rsize; L->cc_cnt=(short)(rcount>4?4:rcount); L->cc_base=0;
+                            { L->cl_lmin=(short)lmin; for(int j=0;j<nus&&L->cl_n<8;j++){ u32 pg=ulo[j]>>16, us=ulo[j]&0xFFFF; L->cl_us[L->cl_n++]=(u16)(pg==1?(us>=0x81&&us<=0x83?0x8000u|us:0):pg==0x0C?us:0); } } }
                         else if(kind==3&&L->cc_cnt==0&&rsize>=8&&rsize<=16){ L->cc_off=(short)pos; L->cc_sz=(short)rsize; L->cc_cnt=(short)(rcount>4?4:rcount); L->cc_base=(short)((hasrange?(int)(umin&0xFFFF):0)-lmin); }
                         else if((upage==7||(hasrange&&(umin>>16)==7))&&rsize==8&&L->arr_cnt==0){ L->arr_off=(short)pos; L->arr_cnt=(short)(rcount>6?6:rcount); } }
                 }
-                { long np=(long)pos+(long)rsize*(long)rcount; bitpos[rid]=np>16384?16384:(int)np; }
+                { long np=(long)pos+(long)(rsize>16384?16384:rsize)*(long)(rcount>16384?16384:rcount); bitpos[rid]=np>16384?16384:(int)np; }
             }
             nus=0; hasrange=0; pmin=pmax=0; umin=umax=0;
         }
     }
     int k=0; for(int j=0;j<nl;j++){ hidlay_t* L=&out[j]; int ok=(L->kind==2)?(L->x_off>=0&&L->y_off>=0):(L->kind==1)?(L->arr_cnt>0||L->bm_cnt>0):(L->kind==3)?(L->cc_cnt>0||L->cv_cnt>0):0; if(ok){ out[k]=*L; for(int w=0;w<8;w++)out[k].idm[w]=idm[w]; out[k].bseen=0; out[k].nil=0;
+        hidlay_t* O=&out[k]; if(O->abs&&O->y_hi<=O->y_lo)O->abs=0;
+        if(O->kind==2&&rmid>=0&&rmapp==O->app&&rmmul>1&&(O->w_off>=0||O->h_off>=0)){ int fl=(fpos[rmid]+7)/8; if(fl>0&&fl<=62){ O->rm_id=(short)rmid; O->rm_len=(short)fl; O->rm_mul=(short)rmmul; O->rm_n=(short)rmn; for(int q=0;q<rmn;q++){ O->rm_off[q]=(short)rmoff[q]; O->rm_sz[q]=(short)rmsz[q]; O->rm_val[q]=(short)rmval[q]; } } }
         if(*hasid) for(int r=1;r<256&&out[k].nil<8;r++) if((idm[r>>5]>>(r&31))&1){ int b=1+(bitpos[r]+7)/8; out[k].iid[out[k].nil]=(u8)r; out[k].ilen[out[k].nil]=(u8)(b>255?255:b); out[k].nil++; }
         k++; } }
     for(int j=0;j<k;j++){ int r=out[j].id; int b=(bitpos[r]+7)/8+(*hasid?1:0); if(bitpos[r]&&b>hid_inlen)hid_inlen=b; }
@@ -230,7 +247,7 @@ static int hid_pick(const u8* f,int len,hidif_t* out,int max){
     for(int i=0;i+1<len;){ int bl=f[i], bt=f[i+1]; if(bl<2||i+bl>len)break;
         if(bt==4&&bl>=9){ cur=-1; if(f[i+3]==0&&f[i+5]==3&&n<max){ cur=n; out[n].iface=f[i+2]; out[n].proto=f[i+7]; out[n].sub=f[i+6]; out[n].ep=0; out[n].mps=0; out[n].intv=0; out[n].rdlen=0; n++; } }
         else if(bt==0x21&&bl>=9&&cur>=0&&f[i+6]==0x22){ out[cur].rdlen=(u16)(f[i+7]|(f[i+8]<<8)); }
-        else if(bt==5&&bl>=7&&cur>=0&&!out[cur].ep){ u8 a=f[i+2]; if((a&0x80)&&(f[i+3]&3)==3){ out[cur].ep=a; out[cur].mps=(u16)((f[i+4]|(f[i+5]<<8))&0x7FF); out[cur].intv=f[i+6]; } }
+        else if(bt==5&&bl>=7&&cur>=0&&!out[cur].ep){ u8 a=f[i+2]; if((a&0x80)&&(a&0x0F)&&(f[i+3]&3)==3){ out[cur].ep=a; out[cur].mps=(u16)((f[i+4]|(f[i+5]<<8))&0x7FF); out[cur].intv=f[i+6]; } }
         i+=bl; }
     int k=0; for(int j=0;j<n;j++) if(out[j].ep&&out[j].mps) out[k++]=out[j];
     return k;
@@ -253,11 +270,12 @@ static int xh_event_w_in(u32 want_type,u32* p0,u8* cc,u8* slot,u8* epid,u32 tick
             ev_deq++; if(ev_deq>=256){ev_deq=0;ev_cyc^=1;}
             u64 rt=xhci_base+xhci_rtoff+0x20; XMW(rt+0x18,(XHCI_EVTRING+ev_deq*16)|(1u<<3)); XMW(rt+0x1C,0);
             if(ty==32&&(want_type!=32||(xh_want_slot>=0&&(sl!=(u8)xh_want_slot||ep!=(u8)xh_want_ep)))){
-                if(usn_xfer(sl,ep,c,rs,pp)||btu_xfer(sl,ep,c,rs,pp)){ if(g_ticks-t0>(u64)ticks)break; continue; }
+                if(usn_xfer(sl,ep,c,rs,pp)||um_xfer(sl,ep,c,rs,pp)||btu_xfer(sl,ep,c,rs,pp)||us_xfer(sl,ep,c,rs,pp)||gpu_xfer(sl,ep,c,rs,pp)){ if(g_ticks-t0>(u64)ticks)break; continue; }
                 if(xh_hid_ep(sl,ep)){ hid_xfer(sl,ep,c,rs,pp); if(g_ticks-t0>(u64)ticks)break; continue; }
                 if(xh_qn<32){ xh_q[xh_qn].ctl=(u8)g_xcur; xh_q[xh_qn].sl=sl; xh_q[xh_qn].ep=ep; xh_q[xh_qn].cc=c; xh_q[xh_qn].res=rs; xh_q[xh_qn].ptr=pp; xh_qn++; } else xh_q_drop++;
                 if(g_ticks-t0>(u64)ticks)break;
                 continue; }
+            if(ty==37&&want_type!=37){ xhr_event_note(ty,c); continue; }
             if(ty==32&&!xh_ptr_ok(pp)){ xh_stale_ev++; continue; }
             if(ty==33&&want_type==33&&xh_want_cmd&&pp&&pp!=xh_want_cmd){ xh_stale_ev++; continue; }
             if(ty==want_type){ if(p0)*p0=pp; if(cc)*cc=c; if(slot)*slot=sl; if(epid)*epid=ep; return 1; }
@@ -308,14 +326,14 @@ static int xh_ctrl(u8 rt,u8 req,u16 val,u16 idx,u16 len,int in,u8* data){
     int ok=xh_event_w(32,0,&cc,0,0,XH_T_CTRL,XH_IT_CMD); xh_want_slot=-1; xh_want_ep=-1; xh_want_pn=0;
     if(!ok){ xh_ctrl_to=1; xh_ep0_recover(R,0); xh_bo_note(1); return 0; }
     xh_bo_note(0);
-    if(cc==3||cc==4||cc==6){ xh_ep0_recover(R,1); return 0; }
+    if(xhr_halts(cc)){ xh_ep0_recover(R,1); return 0; }
     if(in&&data){ volatile u8* db=(volatile u8*)(u64)DB; for(int i=0;i<len;i++)data[i]=db[i]; }
     return cc==1||cc==13;
 }
 static u32 ctx_sz(void){ return xhci_csz?64u:32u; }
 static void ctx_zero(u32 base,int n){ volatile u32* c=(volatile u32*)(u64)base; for(int i=0;i<n;i++)c[i]=0; }
 /* enumerate one HID device on a port into the next free device index; detect kbd vs mouse */
-static int xhid_free_region(int skip0,int skip1){ for(int r=0;r<XHID_MAX;r++) if(!xhid_used[r]&&!xreg_hub[r]&&r!=skip0&&r!=skip1&&r!=uvc_reg_hold&&r!=aud_reg_hold)return r; return -1; }
+static int xhid_free_region(int skip0,int skip1){ for(int r=0;r<XHID_MAX;r++) if(!xhid_used[r]&&!xreg_hub[r]&&r!=skip0&&r!=skip1&&!uvc_held(r)&&r!=aud_reg_hold)return r; return -1; }
 static void xh_disable_slot(int slot){ if(slot<=0)return; u8 cc=0,sl=0; xh_cmd_s(0,0,0,10,(u32)slot,&cc,&sl); *(volatile u32*)(u64)(XHCI_DCBAA+slot*8)=0; }
 #define XHID_INFLIGHT 16
 static u8 xhid_bs[64];
@@ -346,15 +364,17 @@ static void xhid_recover_now(int e){
         if(st==1){ c2=0; if(!xh_cmd_s(0,0,0,15u|(dci<<6),(u32)xhid_slot[e],&c2,&s2)){ if(!c2){ xhid_hold[e]=g_ticks+1000; xhid_recpend[e]=1; } return; } st=3; }
         if(st!=3&&st!=4)return; }
     c2=0; if(!xh_cmd_s((xhid_epin[e]+xhid_ein_enq[e]*16)|xhid_ein_cyc[e],0,0,16u|(dci<<6),(u32)xhid_slot[e],&c2,&s2)){ if(!c2){ xhid_hold[e]=g_ticks+1000; xhid_recpend[e]=1; } return; }
-    for(int q=0;q<XHID_INFLIGHT;q++)xhid_arm(e);
+    xrc_hid_cleared(e); for(int q=0;q<XHID_INFLIGHT;q++)xhid_arm(e);
 }
 static void xh_set_fail(const char* m){ int i=0; while(m[i]&&i<47){ xhci_failstep[i]=m[i]; i++; } xhci_failstep[i]=0; }
 static int xh_root_reset(int port){
     xhci_csz=(XMR(xhci_base+0x10)>>2)&1; xhci_dboff=XMR(xhci_base+0x14)&~3u; xhci_rtoff=XMR(xhci_base+0x18)&~0x1Fu;
     u64 pa=xhci_op+0x400+(u32)port*0x10; u32 pv=XMR(pa);
     if(!(pv&1))return 0;
-    XMW(pa,(pv&0x0E00C3E0u)|(1u<<4));
-    for(int t=0;t<200000;t++){ if(XMR(pa)&(1u<<21))break; io_wait(); }
+    XMW(pa,(pv&0x0E00C3E0u)|(1u<<21)|(1u<<19)); XMW(pa,(pv&0x0E00C3E0u)|(1u<<4));
+    int rt=0; for(int t=0;t<200000;t++){ if(XMR(pa)&(1u<<21)){ rt=1; break; } io_wait(); }
+    if(!rt&&xhr_link_bad(XMR(pa))){ xhr_warm_n++; XMW(pa,(XMR(pa)&0x0E00C3E0u)|(1u<<31)); for(int t=0;t<200000;t++){ if(XMR(pa)&((1u<<21)|(1u<<19)))break; io_wait(); } }
+    XMW(pa,(XMR(pa)&0x0E00C3E0u)|(1u<<21)|(1u<<19));
     for(volatile int dl=0;dl<50000;dl++) io_wait();
     pv=XMR(pa); int sp=(int)((pv>>10)&0xF); return sp?sp:1; }
 static void xh_slot_ctx(volatile u32* sc,const usbloc_t* L,int entries){ sc[0]=((u32)entries<<27)|((u32)L->speed<<20)|(L->route&0xFFFFFu); sc[1]=(u32)(L->root+1)<<16; sc[2]=(u32)(L->tt_slot&0xFF)|((u32)(L->tt_port&0xFF)<<8); sc[3]=0; }
@@ -396,7 +416,10 @@ static int xhci_enum_loc(const usbloc_t* L){
     int wtot=cfg9[2]|(cfg9[3]<<8); if(wtot>256)wtot=256; u8 cfgval=cfg9[5];
     if(!xh_ctrl(0x80,6,0x0200,0,(u16)wtot,1,0)) XFAIL("GET config(full)");
     u8 full[256]; { volatile u8* db=(volatile u8*)(u64)cur_dbuf; for(int i=0;i<wtot;i++)full[i]=db[i]; }
-    for(int i=0;i+5<wtot;){ int bl=full[i]; if(bl<2)break; if(full[i+1]==4&&full[i+5]==9){ int r=xhub_attach(L,d,full,wtot,cfgval); if(r<0){ slot_ok=1; XFAIL("USB hub setup"); } return r; } i+=bl; }
+    usbreg_probe(L,full,wtot);
+    xh_cfg_midi=0; for(int i=0;i+6<wtot;){ int bl=full[i]; if(bl<2)break; if(full[i+1]==4&&bl>=9&&full[i+5]==1&&full[i+6]==3)xh_cfg_midi=1; i+=bl; }
+    xh_cfg_gp=gpu_cfg_is_pad(full,wtot);
+    for(int i=0;i+5<wtot;){ int bl=full[i]; if(bl<2)break; if(full[i+1]==4&&full[i+5]==9){ int r=xhub_attach(L,d,full,wtot,cfgval); xh_cfg_midi=0; if(r<0){ slot_ok=1; XFAIL("USB hub setup"); } return r; } i+=bl; }
     u16 cvid=0,cpid=0; char cnm[40]; cnm[0]=0;
     { u8 dd[18]; volatile u8* db0=(volatile u8*)(u64)cur_dbuf; (void)db0; u16 vid=0,pid=0; u8 ip=0;
       if(xh_ctrl(0x80,6,0x0100,0,18,1,0)){ for(int q=0;q<18;q++)dd[q]=((volatile u8*)(u64)cur_dbuf)[q]; vid=(u16)(dd[8]|(dd[9]<<8)); pid=(u16)(dd[10]|(dd[11]<<8)); ip=dd[15]; }
@@ -409,7 +432,7 @@ static int xhci_enum_loc(const usbloc_t* L){
         { volatile u8* db=(volatile u8*)(u64)cur_dbuf; for(int i=0;i<tw;i++)big[i]=db[i]; }
         int ok=uvc_attach(L,d,big,tw,cfgval,cvid,cpid,cnm); if(!ok){ kfree(big); XFAIL("camera setup"); }
         if(aud_has_audio(big,tw))uvc_add_mic(L,d,big,tw,cfgval,cvid,cpid,cnm);
-        kfree(big); uvc_reg_hold=d; return 1; }
+        kfree(big); uvc_reg_hold=d; uvc_attach_done(); return 1; }
     int aok=0;
     if(aud_has_audio(full,wtot)){ int tw=cfg9[2]|(cfg9[3]<<8); if(tw>16000)tw=16000; if(tw<9)tw=9;
         u8* big=(u8*)kmalloc((unsigned long)tw+16);
@@ -420,27 +443,33 @@ static int xhci_enum_loc(const usbloc_t* L){
     if(aok)aud_mark_sync();
     if(!nh) XFAIL("no keyboard or mouse interface");
     if(!xh_ctrl(0x00,9,cfgval,0,0,0,0)) XFAIL("SET_CONFIGURATION");
-    hidlay_t lays[6][HIDLAY_MAX]; int nlays[6]={0,0,0,0,0,0}, hasid[6]={0,0,0,0,0,0}, mode[6]={0,0,0,0,0,0}, inl[6]={0,0,0,0,0,0}, pres[6]={0,0,0,0,0,0};
+    hidlay_t lays[6][HIDLAY_MAX]; int nlays[6]={0,0,0,0,0,0}, hasid[6]={0,0,0,0,0,0}, mode[6]={0,0,0,0,0,0}, inl[6]={0,0,0,0,0,0}, pres[6]={0,0,0,0,0,0}, hvk[6]={0,0,0,0,0,0};
     { int k=0;
-      for(int j=0;j<nh;j++){ int keep=0, m=0, nl=0, hid=0, il=0, bk=(hf[j].sub==1&&hf[j].proto==1);
+      for(int j=0;j<nh;j++){ int keep=0, m=0, nl=0, hid=0, il=0, hv=0, bk=(hf[j].sub==1&&hf[j].proto==1);
         {
             xhd_rdn[k]=0; xhd_rdl[k]=0;
             if(hf[j].rdlen>0&&hf[j].rdlen<=1024){ volatile u8* z=(volatile u8*)(u64)cur_dbuf; for(int q=0;q<hf[j].rdlen;q++)z[q]=0; }
             if(hf[j].rdlen>0&&hf[j].rdlen<=1024&&xh_ctrl(0x81,6,0x2200,(u16)hf[j].iface,hf[j].rdlen,1,0)){
                 u8 rd[1024]; volatile u8* db=(volatile u8*)(u64)cur_dbuf; for(int q=0;q<hf[j].rdlen;q++)rd[q]=db[q];
-                nl=hid_parse(rd,hf[j].rdlen,lays[k],HIDLAY_MAX,&hid); il=hid_inlen; xhd_rdl[k]=hf[j].rdlen; xhd_rdn[k]=(u16)(hf[j].rdlen<512?hf[j].rdlen:512); for(int q=0;q<xhd_rdn[k];q++)xhd_rd[k][q]=rd[q]; }
+                nl=hid_parse(rd,hf[j].rdlen,lays[k],HIDLAY_MAX,&hid); il=hid_inlen; xhd_rdl[k]=hf[j].rdlen; xhd_rdn[k]=(u16)(hf[j].rdlen<512?hf[j].rdlen:512); for(int q=0;q<xhd_rdn[k];q++)xhd_rd[k][q]=rd[q]; if(!nl&&hpp_receiver_pid(cpid))hv=hpp_vendor_iface(cvid,rd,hf[j].rdlen);
+                { u8 dgf[64]; int dfl=0, dfr=0, dl=dg_probe(k,cvid,cpid,rd,hf[j].rdlen,dgf,&dfl,&dfr); if(dl>0){ if(!nl)hv=1; if(dl>il)il=dl; if(dfl>0&&dfl<=64){ volatile u8* z=(volatile u8*)(u64)cur_dbuf; for(int q=0;q<dfl;q++)z[q]=dgf[q]; xh_ctrl(0x21,0x09,(u16)(0x0300|(dfr&0xFF)),(u16)hf[j].iface,(u16)dfl,0,0); } } } }
             if(bk){ int ik=0; for(int q=0;q<nl;q++) if(lays[k][q].kind==1)ik=1; if(!hid||!ik){ nl=0; hid=0; il=0; } keep=1; m=nl>0; }
-            else if(nl>0){ keep=1; m=1; } else if(hf[j].sub==1&&hf[j].proto==2){ keep=1; m=0; nl=0; il=0; } }
-        if(keep){ if(k!=j)hf[k]=hf[j]; mode[k]=m; nlays[k]=nl; hasid[k]=hid; inl[k]=il; k++; } }
+            else if(nl>0){ keep=1; m=1; } else if(hf[j].sub==1&&hf[j].proto==2){ keep=1; m=0; nl=0; il=0; } else if(hv){ keep=1; m=1; nl=0; } }
+        if(keep){ if(k!=j)hf[k]=hf[j]; mode[k]=m; nlays[k]=nl; hasid[k]=hid; inl[k]=il; hvk[k]=hv; k++; } }
       nh=k; }
     int pdead=0, pused=0, pto[6]={0,0,0,0,0,0};
     for(int j=0;j<nh;j++){
         if(hf[j].sub==1&&!pdead){ pres[j]=xh_ctrl(0x21,0x0B,mode[j]?1:0,(u16)hf[j].iface,0,0,0)?1:2; pto[j]=xh_ctrl_to; if(xh_ctrl_to==1)pdead=1; }
-        if(!pdead&&(!g_usbproto_off||hf[j].proto==1)){ xh_ctrl(0x21,0x0A,0,(u16)hf[j].iface,0,0,0); if(xh_ctrl_to==1)pdead=1; } }
+        if(!pdead&&!hvk[j]&&(!g_usbproto_off||hf[j].proto==1)){ xh_ctrl(0x21,0x0A,0,(u16)hf[j].iface,0,0,0); if(xh_ctrl_to==1)pdead=1; } }
     if(!nh) XFAIL("no keyboard or mouse interface");
     if(!g_usbproto_off&&!pdead) for(int j=0;j<nh;j++) if(pres[j]==2&&pto[j]==2){ pused=1; xhid_bo_reset(); pres[j]=xh_ctrl(0x21,0x0B,mode[j]?1:0,(u16)hf[j].iface,0,0,0)?3:4; if(xh_ctrl_to==1)pdead=1; break; }
+    if(!pdead) for(int j=0;j<nh;j++) for(int q=0;q<nlays[j]&&mode[j];q++){ hidlay_t* M=&lays[j][q]; if(M->kind!=2||M->rm_mul<=1||M->rm_len<1||M->rm_len>62||M->rm_n<1)continue;
+        volatile u8* z=(volatile u8*)(u64)cur_dbuf; int fl=M->rm_len+(hasid[j]?1:0); for(int x=0;x<64;x++)z[x]=0; u8* fb=(u8*)z+(hasid[j]?1:0); if(hasid[j])z[0]=(u8)M->rm_id;
+        for(int r=0;r<M->rm_n&&r<2;r++) for(int t=0;t<M->rm_sz[r];t++){ int bp=M->rm_off[r]+t; if(bp<0||bp>=M->rm_len*8)continue; if((M->rm_val[r]>>t)&1)fb[bp>>3]|=(u8)(1u<<(bp&7)); }
+        M->rm_on=xh_ctrl(0x21,0x09,(u16)(0x0300|(M->rm_id&0xFF)),(u16)hf[j].iface,(u16)fl,0,0)?1:0; if(xh_ctrl_to==1)pdead=1;
+        klog(M->rm_on?"usb: high-resolution wheel on":"usb: high-resolution wheel refused, using notches"); break; }
     int reg[6]; reg[0]=d; int got=1;
-    for(int j=1;j<nh;j++){ int r=-1; for(int c=0;c<XHID_MAX&&r<0;c++){ if(xhid_used[c]||xreg_hub[c]||c==uvc_reg_hold||c==aud_reg_hold)continue; int taken=0; for(int q=0;q<j;q++) if(reg[q]==c)taken=1; if(!taken)r=c; } if(r<0)break; reg[j]=r; got++; }
+    for(int j=1;j<nh;j++){ int r=-1; for(int c=0;c<XHID_MAX&&r<0;c++){ if(xhid_used[c]||xreg_hub[c]||uvc_held(c)||c==aud_reg_hold)continue; int taken=0; for(int q=0;q<j;q++) if(reg[q]==c)taken=1; if(!taken)r=c; } if(r<0)break; reg[j]=r; got++; }
     nh=got;
     int maxdci=1; for(int j=0;j<nh;j++){ int dci=(hf[j].ep&0x0F)*2+1; if(dci>maxdci)maxdci=dci; }
     ctx_zero(XHID_INPUTCTX(d),(int)ctx_sz()*(maxdci+2)/4);
@@ -454,7 +483,7 @@ static int xhci_enum_loc(const usbloc_t* L){
     if(!xh_cmd_s(XHID_INPUTCTX(d),0,0,12,(u32)cur_slot,&cc,&sl)){xhci_failcc=cc; XFAIL("Configure Endpoint");}
     for(int j=0;j<nh;j++){ int e=reg[j]; int dci=(hf[j].ep&0x0F)*2+1; int rlen=hf[j].proto==1?8:(hf[j].mps<8?hf[j].mps:8); if(rlen<3)rlen=3;
         if(mode[j]){ rlen=hf[j].mps; if(inl[j]>rlen)rlen=inl[j]; if(rlen>64)rlen=64; if(rlen<1)rlen=8; }
-        xhid_rep[e]=mode[j]; xhid_hasid[e]=hasid[j]; xhid_nlay[e]=nlays[j]; for(int q=0;q<nlays[j];q++)xhid_lay[e][q]=lays[j][q];
+        dg_bind(j,e); xhid_rep[e]=mode[j]; xhid_hasid[e]=hasid[j]; xhid_nlay[e]=nlays[j]; for(int q=0;q<nlays[j];q++)xhid_lay[e][q]=lays[j][q];
         xhid_ctl[e]=g_xcur; xhid_used[e]=1; xhid_recpend[e]=0; xhid_recn[e]=0; xhid_rect[e]=0; xhid_hold[e]=0; xhid_slot[e]=cur_slot; xhid_dci[e]=dci; xhid_rlen[e]=rlen; { int ik=0; for(int q=0;q<nlays[j];q++) if(lays[j][q].kind==1)ik=1; xhid_iskbd[e]=mode[j]?ik:(hf[j].proto==1); } xhid_ccn[e]=0; xhid_port[e]=port; xhid_route[e]=L->route; xhid_depth[e]=L->depth;
         xhid_epin[e]=XHID_EPINRING(e); xhid_dbuf[e]=XHID_DATABUF(e); xhid_ein_enq[e]=0; xhid_ein_cyc[e]=1; for(int k=0;k<8;k++){ xhid_kprev[e][k]=0; for(int z=0;z<HIDLAY_MAX-1;z++)xhid_kprevx[e][z][k]=0; }
         if(e+1>xhid_n)xhid_n=e+1;
@@ -462,7 +491,7 @@ static int xhci_enum_loc(const usbloc_t* L){
         xhid_own[e]=(u8)d; xhid_ppend[e]=0; xhid_pnext[e]=0; xhid_mneed[e]=0;
         for(int q=0;q<nlays[j];q++){ hidlay_t* M=&lays[j][q]; if(M->kind!=2||!mode[j])continue; int bits=M->x_off+M->x_sz; if(M->y_off+M->y_sz>bits)bits=M->y_off+M->y_sz; if(M->w_off>=0&&M->w_off+M->w_sz>bits)bits=M->w_off+M->w_sz;
             xhid_mid[e]=M->id; xhid_mneed[e]=(u8)((bits+7)/8+(hasid[j]?1:0)); for(int z=0;z<8;z++)xhid_midm[e][z]=M->idm[z]; break; }
-        xhid_bs[e&63]=0; { volatile u8* z=(volatile u8*)(u64)XHID_DATABUF(e); for(int q=0;q<XHID_INFLIGHT*64;q++)z[q]=0; } for(int q=0;q<XHID_INFLIGHT;q++)xhid_arm(e); }
+        xhid_bs[e&63]=0; { volatile u8* z=(volatile u8*)(u64)XHID_DATABUF(e); for(int q=0;q<XHID_INFLIGHT*64;q++)z[q]=0; } for(int q=0;q<XHID_INFLIGHT;q++)xhid_arm(e); if(hvk[j])hppx_attach(e,d,cvid,cpid,hf[j].iface,hvk[j]); }
     xhid_e0enq[d]=e0_enq; xhid_e0cyc[d]=e0_cyc; xhid_haud[d]=(u8)(aok!=0); xhid_pdead[d]=(u8)pdead; xhid_pused[d]=(u8)pused; xhci_mouse_ok=1;
     #undef XFAIL
     return nh;

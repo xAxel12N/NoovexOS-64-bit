@@ -23,5 +23,6 @@ void p256_modn_add(const u8 a[32],const u8 b[32],u8 out[32]);
 void p256_modn(u8 a[32]);
 void p256_prime(u8 out[32]);
 void p256_order(u8 out[32]);
+void p256_fp(int op,const u8 a[32],const u8 b[32],u8 out[32]);
 
 #endif

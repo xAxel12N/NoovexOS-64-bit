@@ -92,8 +92,8 @@ static void wifi_diag(void){
       p=scopy(p," (A: read 0x"); p=hx(p,rb0,4); p=scopy(p,c->rf_mix?" write direct, RF00 via 0x":" write 0x"); p=hx(p,rs0,4);
       if(c->n_paths>1){ p=scopy(p,"; B: read 0x"); p=hx(p,rb1,4); p=scopy(p,c->rf_mix?" write direct, RF00 via 0x":" write 0x"); p=hx(p,rs1,4); }
       p=scopy(p,"), firmware "); p=scopy(p,c->fw_name); p=scopy(p,"; commands sent "); p=udec(p,g_rtw_h2c_sent); p=scopy(p," failed "); p=udec(p,g_rtw_h2c_fail);
-      p=scopy(p,"; calibration (IQK) "); p=scopy(p,!g_rtw_iqk_en?"off":g_rtw_iqk_last>0?"done":g_rtw_iqk_last==-2?"timed out":g_rtw_iqk_last==-1?"command not taken":g_rtw_iqk_last==-3?"no command ring":g_rtw_iqk_last==-4?"firmware not running":"not run yet");
-      if(g_rtw_iqk_last>0){ p=scopy(p,", fail mask 0x"); p=hx(p,(u32)((g_rtw_iqk_last>>8)&0xFF),2); } *p=0; wdiag_out(b,CYAN); }
+      p=scopy(p,"; calibration (IQK) "); p=scopy(p,!g_rtw_iqk_en&&g_rtw_iqk_undone?"off (undone automatically)":!g_rtw_iqk_en?"off":g_rtw_iqk_last>0?"done":g_rtw_iqk_last==-2?"timed out":g_rtw_iqk_last==-1?"command not taken":g_rtw_iqk_last==-3?"no command ring":g_rtw_iqk_last==-4?"firmware not running":"not run yet");
+      if(g_rtw_iqk_last>0){ p=scopy(p,", fail mask 0x"); p=hx(p,(u32)((g_rtw_iqk_last>>8)&0xFF),2); if(g_rtw_iqk_reload)p=scopy(p,", reloaded"); } *p=0; wdiag_out(b,CYAN); }
     u16 fc=rtw_r16(m,0x0080); u8 cr=rtw_r8(m,0x0100);
     p=b; p=scopy(p,"diag: firmware 0x"); p=hx(p,fc,4); p=scopy(p,(fc&(3u<<14))==(3u<<14)?" (running)":(fc&1u)?" (NOT running, still in download mode)":" (NOT running)"); p=scopy(p,", CR 0x"); p=hx(p,cr,2); p=scopy(p,", RCR 0x"); p=hx(p,rtw_r32(m,0x0608),8);
     p=scopy(p,", TXPAUSE 0x"); p=hx(p,rtw_r16(m,0x0522),4); p=scopy(p,", FUNC 0x"); p=hx(p,rtw_r8(m,0x0002),2); p=scopy(p,", RF_CTRL 0x"); p=hx(p,rtw_r8(m,0x001F),2); *p=0; wdiag_out(b,CYAN);
@@ -116,6 +116,9 @@ static void wifi_diag(void){
       { extern int g_ampdu_on; extern u32 g_ampdu_sess, g_ampdu_addba, g_ampdu_delba, g_ampdu_decl, g_ampdu_reord, g_ampdu_flush, g_ampdu_old;
         p=b; p=scopy(p,"diag: aggregation (A-MPDU receive) "); p=scopy(p,g_ampdu_on?"on":"off"); p=scopy(p,"; block-ack sessions now "); p=udec(p,g_ampdu_sess); p=scopy(p,", accepted "); p=udec(p,g_ampdu_addba); p=scopy(p,", declined "); p=udec(p,g_ampdu_decl);
         p=scopy(p,", ended by AP "); p=udec(p,g_ampdu_delba); p=scopy(p,"; frames reordered "); p=udec(p,g_ampdu_reord); p=scopy(p,", flushed after timeout "); p=udec(p,g_ampdu_flush); p=scopy(p,", old or duplicate "); p=udec(p,g_ampdu_old); *p=0; wdiag_out(b,CYAN); }
+      { extern int g_ampdu_tx_on, g_ampdu_tx_auto; extern u32 g_ampdu_tx_req, g_ampdu_tx_ok, g_ampdu_tx_fail, g_ampdu_bar, g_ampdu_prot;
+        p=b; p=scopy(p,"diag: aggregation (A-MPDU send) "); p=scopy(p,g_ampdu_tx_on?"on":(g_ampdu_tx_auto?"off (auto)":"off")); p=scopy(p,"; requests "); p=udec(p,g_ampdu_tx_req); p=scopy(p,", accepted "); p=udec(p,g_ampdu_tx_ok); p=scopy(p,", failed "); p=udec(p,g_ampdu_tx_fail);
+        p=scopy(p,"; block-ack requests "); p=udec(p,g_ampdu_bar); p=scopy(p,", protected actions "); p=udec(p,g_ampdu_prot); *p=0; wdiag_out(b,CYAN); }
       if(!g_jlog_n)wdiag_out("diag: no join attempt yet - try: wifi connect <name> <password>, then wifi diag",GREY);
       else { u32 n=g_jlog_n<RTW_JLOG_N?g_jlog_n:RTW_JLOG_N; u32 s0=g_jlog_n-n; if(g_jlog_n>RTW_JLOG_N)wdiag_out("diag: last join (oldest lines dropped):",CYAN); else wdiag_out("diag: last join:",CYAN);
         for(u32 k=0;k<n;k++){ p=b; p=scopy(p,"  "); p=scopy(p,g_jlog[(s0+k)%RTW_JLOG_N]); *p=0; wdiag_out(b,WHT); } } }
@@ -148,19 +151,57 @@ static void iwx_cmd(const char* arg){
     else if(!arg[0]||wifi_word(arg,"status"))iwx_status(b,sizeof b);
     else { term_puts("iwx status | iwx up   (Intel AX200/AX201/AX210/AX211)\n"); return; }
     term_puts(b); }
+static void mtwifi_cmd(const char* arg){
+    extern void mt7921_status(char*,int); extern void mt7921_up(char*,int); extern int mt7921_roc_enable,mt7921_tok_enable; static char b[1536];
+    if(wifi_word(arg,"roc")||wifi_word(arg,"tokens")){ int* v=wifi_word(arg,"roc")?&mt7921_roc_enable:&mt7921_tok_enable; const char* w=wifi_next(arg); if(seq((char*)w,"on"))*v=1; else if(seq((char*)w,"off"))*v=0; term_puts(*v?"  on\n":"  off\n"); return; }
+    if(wifi_word(arg,"rate")||wifi_word(arg,"ra")||wifi_word(arg,"ht")||wifi_word(arg,"he")||wifi_word(arg,"ba")||wifi_word(arg,"batx")){ extern void mt_rate_cmd(const char*,char*,int); mt_rate_cmd(arg,b,sizeof b); term_puts(b); return; }
+    if(wifi_word(arg,"up")){ term_puts("mtwifi: starting MediaTek Wi-Fi (patch + RAM code download, up to a few seconds)...\n"); mt7921_up(b,sizeof b); }
+    else if(!arg[0]||wifi_word(arg,"status"))mt7921_status(b,sizeof b);
+    else { term_puts("mtwifi status | mtwifi up | mtwifi roc on|off | mtwifi tokens on|off | mtwifi rate | mtwifi ra|ht|he|ba|batx on|off   (MediaTek MT7921/MT7922)\n"); return; }
+    term_puts(b); }
 static int wifi_cmd2(const char* arg){
     char b[160],*p; extern const char* wifi_sec_name(const scan_ap*);
     if(!arg[0]&&!rtw_find_mmio())return 0;
+    if(wifi_word(arg,"rtw89")){ extern void rtw89_status(char*,int); extern void rtw89_up(char*,int); static char rb[768]; const char* w=wifi_next(arg);
+        if(seq((char*)w,"off")){ extern int wifi_set_set(int,int); wifi_set_set(15,0); term_puts("rtw89: off (stays off after restart)\n"); return 1; }
+        if(seq((char*)w,"on")){ extern int wifi_set_set(int,int); wifi_set_set(15,1); term_puts("rtw89: powering on RTL8852BE/CE and checking firmware...\n"); rtw89_up(rb,sizeof rb); } else if(!w[0]||seq((char*)w,"status"))rtw89_status(rb,sizeof rb); else { term_puts("wifi rtw89 [status] | wifi rtw89 on   (Realtek RTL8852BE/RTL8852CE, Wi-Fi 6/6E)\n"); return 1; }
+        term_puts(rb); return 1; }
     if(!arg[0]||wifi_word(arg,"status")){ p=b; p=scopy(p,"Wi-Fi: "); p=scopy(p,wifi_state_name()); if(g_wm_state==WM_CONNECTED){ p=scopy(p," to "); p=scopy(p,g_wifi_conn); p=scopy(p,", channel "); p=udec(p,g_wm_ch); if(g_wifi_rssi>-127){ p=scopy(p,", -"); p=udec(p,(u32)(-g_wifi_rssi)); p=scopy(p," dBm"); } p=scopy(p,", up to "); p=udec(p,(u32)wifi_rate_mbps()); p=scopy(p," Mbit/s"); } *p++='\n'; *p=0; term_puts(b);
         p=b; p=scopy(p,"  "); p=scopy(p,g_wifi_status); p=scopy(p,"\n  auto-connect "); p=scopy(p,g_wm_auto?"on":"off"); p=scopy(p,", 5 GHz "); p=scopy(p,g_wm_5g?"on":"off"); p=scopy(p,", saved networks "); p=udec(p,(u32)g_wnet_n); *p++='\n'; *p=0; term_puts(b);
-        if(!arg[0])term_puts("  wifi on|off|scan|list|saved|connect <name> [password]|eap <name> <user> <password>|hidden <name> [password]|forget <name>|disconnect|auto on|off|5g on|off|powersave on|off|rate auto|safe|diag|coex|mgq on|off|iqk on|off|ampdu on|off\n  (old bring-up and test commands still work: wifi init, allbuilt, macinit, fw, rings, ...)\n");
+        { extern int wifi_feat_report(char*,int); char fr[520]; if(wifi_feat_report(fr,(int)sizeof fr)>0)term_puts(fr); }
+        if(!arg[0])term_puts("  wifi on|off|scan|list|saved|connect <name> [password]|eap <name> <user> <password>|hidden <name> [password]|forget <name>|disconnect|auto on|off|5g on|off|powersave on|off|rate auto|safe|diag|coex [status]|mgq on|off|iqk on|off|txpwr table|legacy|ampdu on|off|ampdu tx on|off\n  (old bring-up and test commands still work: wifi init, allbuilt, macinit, fw, rings, ...)|stats|speedtest [up|down] [host/path]|roam on|off|fast on|off\n");
         return 1; }
     if(wifi_word(arg,"diag")){ if(wifi_up()<0){ tcol(RED); term_puts(g_wifi_status); term_putc('\n'); tcol(WHT); return 1; } wifi_diag(); return 1; }
+    if(wifi_word(arg,"txpwr")){ extern int g_rtw_txpwr_tbl,g_rtw_txpwr_dead,g_rtw_txpwr_used,g_rtw_txpwr_regd; extern u8 g_rtw_txpwr_idx[]; extern void rtw_txpwr_set_mode(int); extern int rtw_txpwr_set_regd(const char*); extern const char* rtw_txpwr_regd_name(void);
+        const char* w=wifi_next(arg); char t[256],*q=t; if(seq((char*)w,"table"))rtw_txpwr_set_mode(1); else if(seq((char*)w,"legacy"))rtw_txpwr_set_mode(0); else if(wifi_word(w,"regd")&&rtw_txpwr_set_regd(wifi_next(w))<0){ term_puts("  regions: auto fcc mkk etsi ic kcc acma chile ukraine mexico cn qatar uk ww\n"); return 1; }
+        q=scopy(q,"  TX power: "); q=scopy(q,!g_rtw_txpwr_tbl?"legacy (one level per rate group)":g_rtw_txpwr_dead?"per-rate table, off for this session after failures":"per-rate table with regulatory limits"); q=scopy(q,", region "); q=scopy(q,rtw_txpwr_regd_name()); if(g_rtw_txpwr_regd<0)q=scopy(q," (from country)");
+        if(g_rtw_txpwr_used){ q=scopy(q,"\n  channel "); q=udec(q,(u32)g_rtw_txpwr_used); q=scopy(q," index 11M/54M/MCS7/VHT7: "); q=udec(q,g_rtw_txpwr_idx[3]); *q++='/'; q=udec(q,g_rtw_txpwr_idx[11]); *q++='/'; q=udec(q,g_rtw_txpwr_idx[19]); *q++='/'; q=udec(q,g_rtw_txpwr_idx[51]); }
+        q=scopy(q,"\n  wifi txpwr table|legacy|regd auto|<region>\n"); *q=0; term_puts(t); return 1; }
     if(wifi_word(arg,"iqk")){ const char* w=wifi_next(arg); if(seq((char*)w,"on")){ g_rtw_iqk_en=1; g_rtw_iqk_dead=0; u32 m=rtw_find_mmio(); if(m&&g_rxnum&&rtw_h2c_ring_setup(m)==0)term_puts("  firmware command (H2C) ring set up\n"); } else if(seq((char*)w,"off"))g_rtw_iqk_en=0; else { u32 m=rtw_find_mmio(); if(!m||!g_rxnum){ term_puts("  start Wi-Fi first: wifi on\n"); return 1; } rtw_chip_calibrate(m); }
-        term_puts(!g_rtw_iqk_en?"  calibration (IQK): off\n":g_rtw_iqk_last>0?"  calibration (IQK): on, last run done\n":g_rtw_iqk_last<0?"  calibration (IQK): on, last run failed (see wifi diag)\n":"  calibration (IQK): on\n"); return 1; }
+        term_puts(!g_rtw_iqk_en&&g_rtw_iqk_undone?"  calibration (IQK): off - undone automatically this session (beacons dropped or no link); wifi iqk on to retry\n":!g_rtw_iqk_en?"  calibration (IQK): off\n":g_rtw_iqk_last>0?"  calibration (IQK): on, last run done\n":g_rtw_iqk_last<0?"  calibration (IQK): on, last run failed (see wifi diag)\n":"  calibration (IQK): on\n"); return 1; }
+    if(wifi_word(arg,"6g")){ extern int g_iwx_6g; extern int iwx6_count(void); const char* w=wifi_next(arg); if(seq((char*)w,"on"))g_iwx_6g=1; else if(seq((char*)w,"off"))g_iwx_6g=0;
+        p=b; p=scopy(p,"  6 GHz (Wi-Fi 6E, Intel AX210/AX211): "); p=scopy(p,g_iwx_6g?"on":"off"); p=scopy(p,", "); p=udec(p,(u32)iwx6_count()); p=scopy(p," channels allowed, scans PSC channels, WPA3-SAE networks only\n"); *p=0; term_puts(b); return 1; }
+    if(wifi_word(arg,"batx")){ extern volatile int iwx_batx_on __attribute__((weak)); extern volatile u32 iwx_batx_frames __attribute__((weak)),iwx_batx_full __attribute__((weak)),iwx_batx_notifs __attribute__((weak));
+        { volatile int* volatile bp=&iwx_batx_on; if(!bp){ term_puts("  Intel A-MPDU TX: not built in\n"); return 1; } } const char* w=wifi_next(arg); if(seq((char*)w,"on"))iwx_batx_on=1; else if(seq((char*)w,"off"))iwx_batx_on=0;
+        char b[200],*p=b; p=scopy(p,iwx_batx_on?"  Intel A-MPDU TX (firmware aggregation queue): on - aggregated frames ":"  Intel A-MPDU TX: off - aggregated frames "); p=udec(p,iwx_batx_frames); p=scopy(p,", ring full "); p=udec(p,iwx_batx_full); p=scopy(p,", BA reports "); p=udec(p,iwx_batx_notifs); *p++='\n'; *p=0; term_puts(b); return 1; }
+    if(wifi_word(arg,"he")||wifi_word(arg,"ba")){ extern volatile int iwx_he_on __attribute__((weak)),iwx_he_fail __attribute__((weak)),iwx_he_up __attribute__((weak)),iwx_ba_on __attribute__((weak)); 
+        int he=wifi_word(arg,"he"); const char* w=wifi_next(arg); volatile int* v=he?&iwx_he_on:&iwx_ba_on; if(seq((char*)w,"on")){ *v=1; if(he)iwx_he_fail=0; } else if(seq((char*)w,"off"))*v=0;
+        p=b; p=scopy(p,he?"  Intel HE (Wi-Fi 6, 160 MHz): ":"  Intel RX block-ack (A-MPDU): "); p=scopy(p,*v?"on":"off"); if(he){ p=scopy(p,iwx_he_fail>=2?" (auto-disabled after failures)":""); p=scopy(p,iwx_he_up?", active on this link":""); } p=scopy(p," - applies at the next join\n"); *p=0; term_puts(b); return 1; }
+    if(wifi_word(arg,"ampdu")&&wifi_word(wifi_next(arg),"tx")){ extern int g_ampdu_tx_on, g_ampdu_tx_auto; extern void wnd_delba_tx(void); extern void ampdu_tx_reset(u64 now); extern volatile u64 g_ticks; const char* w=wifi_next(wifi_next(arg)); if(seq((char*)w,"on")){ if(!g_ampdu_tx_on)ampdu_tx_reset(g_ticks); g_ampdu_tx_on=1; g_ampdu_tx_auto=0; { extern int g_ampdu_tx_hard; g_ampdu_tx_hard=0; } } else if(seq((char*)w,"off")){ g_ampdu_tx_on=0; wnd_delba_tx(); }
+        term_puts(g_ampdu_tx_on?"  frame aggregation (A-MPDU send): on - asks the access point for a block-ack session after joining\n":g_ampdu_tx_auto?"  frame aggregation (A-MPDU send): off - turned itself off after repeated failures ('wifi ampdu tx on' to retry)\n":"  frame aggregation (A-MPDU send): off\n"); return 1; }
+    if(wifi_word(arg,"ampdu")&&wifi_word(wifi_next(arg),"bar")){ extern int g_wnd_barf; const char* w=wifi_next(wifi_next(arg)); if(seq((char*)w,"on"))g_wnd_barf=1; else if(seq((char*)w,"off"))g_wnd_barf=0;
+        term_puts(g_wnd_barf?"  block-ack requests from the access point: received (takes effect on the next session)\n":"  block-ack requests from the access point: not received\n"); return 1; }
     if(wifi_word(arg,"ampdu")){ extern int g_ampdu_on; extern void ampdu_reset(void); const char* w=wifi_next(arg); if(seq((char*)w,"on"))g_ampdu_on=1; else if(seq((char*)w,"off")){ g_ampdu_on=0; ampdu_reset(); }
         term_puts(g_ampdu_on?"  frame aggregation (A-MPDU receive): on - used when the access point asks for it\n":"  frame aggregation (A-MPDU receive): off - new requests are declined (reconnect to stop an active one)\n"); return 1; }
+    if(wifi_word(arg,"saefallback")){ extern int g_wifi_sae_fallback; const char* w=wifi_next(arg); if(seq((char*)w,"on"))g_wifi_sae_fallback=1; else if(seq((char*)w,"off"))g_wifi_sae_fallback=0;
+        term_puts(g_wifi_sae_fallback?"  WPA3 to WPA2 fallback after 3 SAE failures on mixed networks: on\n":"  WPA3 to WPA2 fallback: off (default) - mixed networks stay on WPA3 after SAE failures\n"); return 1; }
+    if(wifi_word(arg,"h2e")){ extern int g_wifi_h2e, g_wifi_h2e_fail; const char* w=wifi_next(arg); if(seq((char*)w,"on")){ g_wifi_h2e=1; g_wifi_h2e_fail=0; } else if(seq((char*)w,"off"))g_wifi_h2e=0;
+        term_puts(!g_wifi_h2e?"  SAE hash-to-element: off - hunting-and-pecking unless the network requires H2E\n":g_wifi_h2e_fail>=3?"  SAE hash-to-element: off after 3 failures (wifi h2e on to retry)\n":"  SAE hash-to-element (WPA3 H2E, 6 GHz): on - used when the access point supports it\n"); return 1; }
+    if(wifi_word(arg,"sae")){ extern int g_wifi_sae_ext, g_wifi_sae_fail; const char* w=wifi_next(arg); if(seq((char*)w,"on")){ g_wifi_sae_ext=1; g_wifi_sae_fail=0; } else if(seq((char*)w,"off"))g_wifi_sae_ext=0;
+        term_puts(g_wifi_sae_ext?"  WPA3 SAE on adapters that hand authentication to the host (Intel iwx): on\n":"  WPA3 SAE on host-auth adapters: off - mixed WPA2/WPA3 networks use WPA2, WPA3-only networks are refused\n"); return 1; }
     if(wifi_word(arg,"mgq")){ g_mg_try_mgq=seq((char*)wifi_next(arg),"on"); g_mg_via_be=!g_mg_try_mgq; term_puts(g_mg_try_mgq?"  management frames: management queue first (checked, falls back to the data queue)\n":"  management frames: data queue (default)\n"); return 1; }
+    if(wifi_word(arg,"coex status")){ extern char* rtw_coex_status(char*); char b[400]; rtw_coex_status(b); term_puts(b); return 1; }
+    if(wifi_word(arg,"coex")&&(seq((char*)wifi_next(arg),"on")||seq((char*)wifi_next(arg),"off"))){ extern int wifi_set_set(int,int); extern const char* wifi_set_text(int); wifi_set_set(14,seq((char*)wifi_next(arg),"on")); term_puts("  "); term_puts(wifi_set_text(14)); term_puts("\n"); return 1; }
     if(wifi_word(arg,"coex")){ u32 m=rtw_find_mmio(); if(!m||!g_rxnum){ term_puts("  start Wi-Fi first: wifi on\n"); return 1; } int ok=rtw_coex_wifi_only(m); term_puts(ok?"  antenna set for Wi-Fi only\n":"  antenna set, but the coex register did not answer\n"); return 1; }
     if(wifi_word(arg,"on")){ wifi_user_power(1); if(wifi_up()==0){ wifi_radio_on(); term_puts("Wi-Fi is on\n"); } else { tcol(RED); term_puts(g_wifi_status); term_putc('\n'); tcol(WHT); } return 1; }
     if(wifi_word(arg,"off")){ wifi_user_power(0); wifi_radio_off(); term_puts("Wi-Fi is off\n"); return 1; }
@@ -179,10 +220,41 @@ static int wifi_cmd2(const char* arg){
         if(r!=0&&g_jlog_n){ u32 n=g_jlog_n<RTW_JLOG_N?g_jlog_n:RTW_JLOG_N; u32 s0=g_jlog_n-n; tcol(GREY); term_puts("  join steps:\n"); for(u32 k=0;k<n;k++){ term_puts("  "); term_puts(g_jlog[(s0+k)%RTW_JLOG_N]); term_putc('\n'); } tcol(WHT); }
         if(r==0){ p=b; p=scopy(p,"  address "); p=ipstr(p,my_ip); p=scopy(p,"  gateway "); p=ipstr(p,gw_ip); *p++='\n'; *p=0; term_puts(b); } return 1; }
     if(wifi_word(arg,"forget")){ const char* a=wifi_next(arg); char ss[33]; wifi_tok(a,ss,33); term_puts(wifi_saved_forget(ss)==0?"Forgotten\n":"Not a saved network\n"); return 1; }
+    if(wifi_word(arg,"stats")){ struct wifi_stats ws; static char sb[1024]; wifi_stats_get(&ws); wifi_stats_fmt(sb,sizeof sb,&ws); term_puts(sb); return 1; }
+    if(wifi_word(arg,"speedtest")){ const char* a=wifi_next(arg); int up=wifi_word(a,"up"), dn=wifi_word(a,"down"); if(up||dn)a=wifi_next(a); char u[200],h[96]; wifi_tok(a,u,200); const char* path="/10MB.zip"; static char pb[200]; static char ob[512];
+        const char* x=u; if(x[0]=='h'&&x[1]=='t'&&x[2]=='t'&&x[3]=='p'&&x[4]==':'&&x[5]=='/'&&x[6]=='/')x+=7; int i=0; while(x[i]&&x[i]!='/'&&i<95){ h[i]=x[i]; i++; } h[i]=0; if(x[i]=='/'){ int k=0; while(x[i]&&k<199)pb[k++]=x[i++]; pb[k]=0; path=pb; }
+        if(!h[0]){ const char* d="speedtest.tele2.net"; int k=0; while(d[k]){ h[k]=d[k]; k++; } h[k]=0; if(up)path="/upload.php"; }
+        if(!up){ term_puts("Downloading http://"); term_puts(h); term_puts(path); term_puts(" (up to 15 s)...\n"); wifi_speedtest(ob,sizeof ob,h,path,0); term_puts(ob); }
+        if(up||(!dn&&!u[0])){ term_puts("Uploading to http://"); term_puts(h); term_puts(up?path:"/upload.php"); term_puts("...\n"); wifi_speedtest(ob,sizeof ob,h,up?path:"/upload.php",1); term_puts(ob); }
+        return 1; }
     if(wifi_word(arg,"disconnect")){ wifi_disconnect(); term_puts("Disconnected (auto-connect waits a minute)\n"); return 1; }
     if(wifi_word(arg,"auto")){ g_wm_auto=seq((char*)wifi_next(arg),"on"); wifi_saved_save(); term_puts(g_wm_auto?"Auto-connect on\n":"Auto-connect off\n"); return 1; }
+    if(wifi_word(arg,"regdb")){ extern void regdb_enable(int); extern int regdb_enabled(void); const char* w=wifi_next(arg); if(seq((char*)w,"on"))regdb_enable(1); else if(seq((char*)w,"off"))regdb_enable(0);
+        term_puts(regdb_enabled()?"  country rules: on - scan skips channels the country does not allow, no probes on DFS/no-IR channels\n":"  country rules: off - all channels scanned, probes not limited\n"); return 1; }
+    if(wifi_word(arg,"country")){ extern int regdb_set_country(const char*); extern const char* regdb_country(void); extern const char* regdb_setting(void); extern int regdb_ch_allowed(u8); extern int regdb_is_dfs(u8); extern int regdb_no_ir(u8); extern int regdb_max_dbm(u8);
+        const char* w=wifi_next(arg); char cc[8]; int n=0; while(w[n]&&w[n]!=' '&&n<7){ cc[n]=w[n]; n++; } cc[n]=0;
+        if(n){ if(regdb_set_country(cc)<0){ term_puts("  unknown country code (two letters like SE, or auto)\n"); return 1; } wifi_saved_save(); }
+        const char* st=regdb_setting(); const char* c=regdb_country(); p=b; p=scopy(p,"  country "); *p++=c[0]; *p++=c[1]; p=scopy(p,st[0]=='-'?" (auto: from the access point, else the default)\n":" (set by you)\n"); *p=0; term_puts(b);
+        static const u8 CL[]={1,2,3,4,5,6,7,8,9,10,11,12,13,14,36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177};
+        p=b; p=scopy(p,"  "); for(unsigned i=0;i<sizeof(CL);i++){ u8 ch=CL[i]; if(!regdb_ch_allowed(ch))continue; if(p-b>120){ *p++='\n'; *p=0; term_puts(b); p=b; p=scopy(p,"  "); } p=udec(p,ch); if(regdb_is_dfs(ch))*p++='d'; else if(regdb_no_ir(ch))*p++='p'; *p++='/'; p=udec(p,(u32)regdb_max_dbm(ch)); *p++=' '; }
+        *p++='\n'; *p=0; term_puts(b); term_puts("  channel/max dBm, d = radar (DFS), p = listen only\n"); return 1; }
+    if(wifi_word(arg,"fast")){ const char* v=wifi_next(arg); if(*v)wifi_fast_set(seq((char*)v,"on")); int st=wifi_fast_state(); term_puts(st==1?"Fast reconnect on (last network, channel and key are tried first)\n":st==2?"Fast reconnect off until restart (it failed 3 times) - wifi fast on to try again\n":"Fast reconnect off (always a full scan)\n"); return 1; }
     if(wifi_word(arg,"5g")){ g_wm_5g=seq((char*)wifi_next(arg),"on"); wifi_saved_save(); term_puts(g_wm_5g?"5 GHz scanning on\n":"5 GHz scanning off\n"); return 1; }
+    if(wifi_word(arg,"ps")){ const char* a=wifi_next(arg); if(seq((char*)a,"on"))wifi_powersave_mode(WPS_ON); else if(seq((char*)a,"off"))wifi_powersave_mode(WPS_OFF); else if(seq((char*)a,"auto"))wifi_powersave_mode(WPS_AUTO);
+        char b[200],*p=b; p=scopy(p,"Power saving: "); p=scopy(p,wps_mode_name()); p=scopy(p,g_wm_ps?(g_wm_lps?", sleeping now":", active"):", not active"); p=scopy(p,"\n  sleeps "); p=udec(p,g_wps_enter); p=scopy(p,", woken by TIM "); p=udec(p,g_wps_wake_tim); p=scopy(p,", beacon misses "); p=udec(p,g_wps_miss); p=scopy(p,"\n  usage: wifi ps on|off|auto\n"); *p=0; term_puts(b); return 1; }
     if(wifi_word(arg,"powersave")){ wifi_powersave(seq((char*)wifi_next(arg),"on")); term_puts(g_wm_ps?"Power saving on (experimental: the chip sleeps when idle)\n":"Power saving off\n"); return 1; }
+    if(wifi_word(arg,"ra")){ extern int g_rtw_ra_dead, g_rtw_ra_fail; extern char* rtw_ra_status(char*); const char* w=wifi_next(arg);
+        if(seq((char*)w,"fw")){ g_wifi_ra=1; g_rtw_ra_dead=0; g_rtw_ra_fail=0; term_puts("Firmware rate adaptation (AP rate list) - used from the next connection\n"); }
+        else if(seq((char*)w,"basic")){ g_wifi_ra=1; g_rtw_ra_dead=1; term_puts("Firmware rate adaptation with the basic rate list - used from the next connection\n"); }
+        else if(seq((char*)w,"fixed")){ g_wifi_ra=0; term_puts("Fixed rate (1 Mbit/s on 2.4 GHz, 6 on 5 GHz) - used from the next connection\n"); }
+        else { char b[200]; char* p=b; p=scopy(p,"  rates: "); p=rtw_ra_status(p); *p++='\n'; *p=0; term_puts(b); term_puts("  wifi ra fw|basic|fixed\n"); } return 1; }
+    if(wifi_word(arg,"bw")){ extern int g_rtw_bw_mode; extern char* rtw_bw_status(char*); const char* w=wifi_next(arg);
+        if(seq((char*)w,"auto")){ extern int wifi_set_set(int,int); wifi_set_set(13,0); } else if(seq((char*)w,"20"))g_rtw_bw_mode=1; else if(seq((char*)w,"40"))g_rtw_bw_mode=2; else if(seq((char*)w,"80"))g_rtw_bw_mode=3;
+        else if(*w){ term_puts("  wifi bw auto|20|40|80\n"); return 1; }
+        char b[240]; char* p=rtw_bw_status(b); p=scopy(p,*w?"\n  used from the next connection (RTL8821CE)\n":"\n  wifi bw auto|20|40|80\n"); *p=0; term_puts(b); return 1; }
+    if(wifi_word(arg,"bgscan")){ extern int wifi_set_set(int,int); extern const char* wifi_set_text(int); const char* v=wifi_next(arg); if(seq((char*)v,"on"))wifi_set_set(4,1); else if(seq((char*)v,"off"))wifi_set_set(4,0); term_puts("  "); term_puts(wifi_set_text(4)); term_puts("\n"); return 1; }
+    if(wifi_word(arg,"mt7925")||wifi_word(arg,"rtw8723")){ extern int wifi_set_set(int,int); extern const char* wifi_set_text(int); int f=wifi_word(arg,"mt7925")?16:17; const char* v=wifi_next(arg); if(seq((char*)v,"on"))wifi_set_set(f,1); else if(seq((char*)v,"off"))wifi_set_set(f,0); term_puts("  "); term_puts(wifi_set_text(f)); term_puts("\n"); return 1; }
+    if(wifi_word(arg,"roam")){ extern int g_wifi_roam; extern void wifi_roam_set(int); extern int wifi_roam_text(char*,int); const char* v=wifi_next(arg); if(seq((char*)v,"on"))wifi_roam_set(1); else if(seq((char*)v,"off"))wifi_roam_set(0); char rb[640]; wifi_roam_text(rb,(int)sizeof(rb)); term_puts(rb); return 1; }
     if(wifi_word(arg,"rate")){ g_wifi_ra=!seq((char*)wifi_next(arg),"safe"); term_puts(g_wifi_ra?"Automatic rates (fast) - used from the next connection\n":"Safe fixed rate (1 Mbit/s on 2.4 GHz, 6 on 5 GHz) - used from the next connection\n"); return 1; }
     return 0; }
 static void run_cmd_one(char*s){
@@ -198,19 +270,19 @@ static void run_cmd_one(char*s){
         term_puts("/bin: ls cat grep wc head tail echo mkdir rmdir rm mv cp touch ln chmod chown stat pwd hostname whoami id uname date sleep mount umount readlink tee sort\n");
         term_puts("pkg (read .deb/.apk)   nvidia/gpu (GPU info)\n"); tcol(WHT);
         term_puts("help clear echo neofetch ver cpu mem time date uptime ls cat edit\n");
-        term_puts("net usbnet dhcp wifi usb usbdisk usbcat usbwrite usbrm ec acpi battery brightness timers timertest utest ring3 run app posix mem sched fork threads preempt ipc wm compositor cores smpstart smpwork lua ping dns http https netlog pci disks colors settings reboot panic\n");
+        term_puts("net usbnet midi dhcp wifi usb usbdisk usbcat usbwrite usbrm ec acpi battery brightness timers timertest utest ring3 run app posix mem sched fork threads preempt ipc wm compositor cores smpstart smpwork lua ping dns http https netlog pci disks colors settings reboot panic\n");
         term_puts("browse <url> www desktop  (web browser: HTML, CSS, JavaScript, cookies)   qjs [-e code] [file.js]  (QuickJS)\n"); term_puts("browser [netbg|csp|samesite] [on|off]  (browser switches for testing)\n");
         term_puts("play <file|URL>  (fullscreen player: space pause, arrows seek, q quit; -b benchmark)   video <file|URL>  (Video Player window)\n");
         term_puts("fatinfo fatls fatcat  (read files from an IDE/FAT disk)\n");
         term_puts("whoami id groups who last  passwd [-l|-u|-d] [user]  su [user]  sudo [-k|-l] cmd  lock logout  hostname [name]\n");
         term_puts("sudo: adduser [--admin] NAME  useradd [-a] [-c \"Full Name\"] NAME  userdel [-r] NAME  usermod -aG|-rG GROUP|-c|-L|-U NAME\n");
-        term_puts("nvxlogin nvxwhoami nvxlogout nvxtest  (Noovex account + API probe)\n");
+        term_puts("nvxlogin nvxwhoami nvxlogout nvxtest  (Noovex account + API probe)\n"); term_puts("sshd on|off|status  (SSH server, off by default)   ssh/dbclient scp dropbearkey  (SSH client tools)\n"); term_puts("firewall [status|on|off|allow tcp|udp PORT [service]|deny tcp|udp PORT]  (inbound connections, on by default)\n");
         term_puts("update [check|install|back|new]  (NoovexOS updates from noovexos.site, keeps the previous version)\n");
-        term_puts("crash memcheck cputemp amdgpio gpus  (crash and freeze reports, heap check, CPU temperature, AMD GPIO, graphics cards)\n"); }
+        term_puts("crash memcheck cputemp amdgpio gpus  (crash and freeze reports, heap check, CPU temperature, AMD GPIO, graphics cards)\n"); term_puts("perf info | perf stat <cmd> | perf top [secs]  (CPU performance counters, sampling profiler)\n"); }
     else if(seq(cmd,"fatinfo")||seq(cmd,"mount")){ if(fat_mount()){ char b[96],*p=b; p=scopy(p,"FAT"); p=scopy(p,fat_is32?"32":"16"); p=scopy(p," mounted   drive="); p=udec(p,(u32)g_ata_drv); p=scopy(p,"   sec/clus="); p=udec(p,(u32)fat_spc); p=scopy(p,"   data@LBA "); p=udec(p,fat_datastart); *p=0; tcol(CYAN);term_puts(b);tcol(WHT);term_putc('\n'); } else { tcol(RED);term_puts("no FAT disk found (ATA/IDE PIO only; VM needs an IDE disk with FAT)\n");tcol(WHT); } }
     else if(seq(cmd,"lag")){ extern void lag_report(void); lag_report(); }
     else if(seq(cmd,"log")||seq(cmd,"dmesg")){ extern int klog_ring(char*,int,int); int want=40; { const char* q=arg; int v=0; while(*q>='0'&&*q<='9')v=v*10+(*q++-'0'); if(v>0&&v<400)want=v; }
-        char* kb=(char*)kmalloc(16385); if(!kb){ term_puts("log: out of memory\n"); return; } int n=klog_ring(kb,16384,1); if(n<0)n=0; kb[n]=0;
+        char* kb=(char*)kmalloc(16385); if(!kb){ term_puts("log: out of memory\n"); return; } int n=klog_ring(kb,16384,1); if(n<0)n=0; kb[n]=0; { extern int kaslr_mask(char*,int); kaslr_mask(kb,n); }
         int st=n, lines=0; while(st>0){ if(kb[st-1]=='\n'&&st<n){ if(++lines>=want)break; } st--; }
         if(!n)term_puts("log: the kernel log is empty\n"); else term_puts(kb+st); kfree(kb); }
     else if(seq(cmd,"report")){
@@ -224,7 +296,7 @@ static void run_cmd_one(char*s){
             for(int j=0;j<g_cap_n&&rn<CAP;j++)rb[rn++]=g_cap[j]; if(g_cap_n>=8191){ for(const char* t="\n(output cut at 8 KB)\n";*t&&rn<CAP;t++)rb[rn++]=*t; } if(rn<CAP)rb[rn++]='\n'; }
         g_cap_n=0;
         for(const char* t="== kernel log (last 8 KB) ==\n";*t&&rn<CAP;t++)rb[rn++]=*t;
-        { int room=CAP-rn; if(room>8192)room=8192; if(room>0){ int got=klog_ring(rb+rn,room,1); if(got>0)rn+=got; } }
+        { int room=CAP-rn; if(room>8192)room=8192; if(room>0){ int got=klog_ring(rb+rn,room,1); if(got>0){ extern int kaslr_mask(char*,int); kaslr_mask(rb+rn,got); rn+=got; } } }
         rb[rn]=0;
         int a1=fs_save_bin("report.txt",(const u8*)rb,rn,0); if(a1>=0&&disk_ok)nvx3_sync_all(); int a2=(msd_ok&&ufat_ok)?ufat_write_file("REPORT.TXT",rb,rn):-1;
         int ndev=0; for(int k=0;k<g_usbdev_n;k++)if(g_usbdev[k].used)ndev++;
@@ -307,6 +379,18 @@ static void run_cmd_one(char*s){
                         else if(kind==3){ tcol(rgb(230,160,60)); term_puts("  Android APK: use the ZIP viewer in Files to browse it\n"); tcol(WHT); }
                     } } } }
     }
+    else if(seq(cmd,"display")){ const char* a=arg; while(*a==' ')a++;
+        if(seq(a,"extend")){ if(display_mode_set(1)){ tcol(rgb(240,120,120)); term_puts(g_fb2_ok?"display: could not set up the second screen as its own desktop, it keeps mirroring\n":"display: no second screen - nothing to extend\n"); tcol(WHT); return; } display_mode_remember(1); }
+        else if(seq(a,"mirror")){ display_mode_set(0); display_mode_remember(0); }
+        else if(a[0]=='m'&&a[1]=='o'&&a[2]=='v'&&a[3]=='e'&&a[4]==' '){ const char* m=a+5; while(*m==' ')m++; int L=0; while(m[L])L++; int o=-1; if(L>=2&&m[L-2]==' '&&m[L-1]>='1'&&m[L-1]<='2'){ o=m[L-1]-'1'; L-=2; }
+            int w=-1; for(int i=0;i<NWIN&&w<0;i++){ const char* n=APPNAME[i]; int k=0; while(k<L&&n[k]&&((n[k]|32)==(m[k]|32)))k++; if(k==L&&!n[k])w=i; }
+            if(o<0||w<0){ term_puts("usage: display move <window name> 1|2\n"); return; }
+            if(display_move_win(w,o)){ term_puts("display: that window is not open, is maximised, or there is no such screen (display extend first)\n"); return; } }
+        else if(a[0]&&!seq(a,"status")){ term_puts("display extend   second screen becomes its own desktop to the right\ndisplay mirror   second screen shows the same picture (default)\ndisplay move <window> 1|2   put an open window on screen 1 or 2\n"); return; }
+        out_sync(); char b[160],*p=b; p=scopy(p,"display: "); p=scopy(p,!g_fb2_ok?"one screen":g_disp_extend?"extended":"mirror");
+        for(int i=0;i<out_count();i++){ p=scopy(p,"\n  screen "); p=udec(p,(u32)i+1); p=scopy(p,": "); p=udec(p,(u32)g_out[i].w); p=scopy(p,"x"); p=udec(p,(u32)g_out[i].h); p=scopy(p," at x="); p=udec(p,(u32)g_out[i].x); }
+        *p++='\n'; *p=0; term_puts(b); }
+    else if(seq(cmd,"hwcursor")){ char b[160]; const char* a=arg; while(*a==' ')a++; nvcur_cmd(a,b,(int)sizeof b); term_puts(b); }
     else if(seq(cmd,"fbdamage")){ extern int g_dmg_on; extern u32 g_dmg_frames, g_dmg_full, g_dmg_idle, g_dmg_last_px, g_dmg_last_n, g_dmg_gpu; extern void fb_shadow_invalidate(void);
         if(seq(arg,"on")){ g_dmg_on=1; fb_shadow_invalidate(); } else if(seq(arg,"off")){ g_dmg_on=0; fb_shadow_invalidate(); }
         char b[200],*p=b; p=scopy(p,"screen updates: "); p=scopy(p,g_dmg_on?"only changed areas are sent":"every frame is sent whole"); p=scopy(p,"\n  frames "); p=udec(p,g_dmg_frames); p=scopy(p,", whole "); p=udec(p,g_dmg_full); p=scopy(p,", nothing changed "); p=udec(p,g_dmg_idle);
@@ -317,7 +401,9 @@ static void run_cmd_one(char*s){
             term_puts("  nvgsp vram      VRAM size, reserved layout and allocator (read only, safe)\n  nvgsp boot      FWSEC, booter, GSP-RM, static info, BAR1/BAR2 windows\n  nvgsp objects   client, device, subdevice, address space, channels, 3D/compute/copy objects, copy test\n  nvgsp all       boot + objects + screen through the copy engine\n  nvgsp present on|off   desktop frames through the NVIDIA copy engine or the CPU\n  nvgsp monitors  outputs, connected monitors and their native modes (read only)\n  nvgsp mode      second screen on: native mode, same picture as the first screen\n  nvgsp mode all  the same, and the first screen is set to its native mode too\n  nvgsp mode off  screens set by nvgsp mode off again\n  nvgsp 3d        3D engine test: triangles with depth, read back and checked (needed before Gears draws on the GPU)\n  nvgsp status    current state\n  nvgsp log       print the last log again (saved as nvgsp-log.txt in Files and NVGSPLOG.TXT on the USB stick)\n  nvgsp unload    stop GSP-RM and tear down WPR2 so it can be started again\n");
             tcol(rgb(230,160,60)); term_puts("  boot can turn off the picture of a screen connected to the NVIDIA card. The log is saved to Files either way.\n"); tcol(WHT); }
         if(a[0]&&!seq(a,"help")){ if(!seq(a,"log")&&!seq(a,"status")&&!seq(a,"vram")&&!(a[0]=='p'&&a[1]=='r')){ term_puts("nvgsp: working - this can take up to 30 seconds\n"); } int r=nvgsp_cmd(a); term_puts(g_nv_log); tcol(r>0?rgb(120,220,120):rgb(240,120,120)); term_puts(r>0?"nvgsp: done\n":"nvgsp: stopped - see the step above (log saved as nvgsp-log.txt)\n"); tcol(WHT); } }
-    else if(seq(cmd,"nvidia")||(seq(cmd,"gpu")&&!(arg[0]=='f'||arg[0]=='b'||arg[0]=='i'||arg[0]=='r'||arg[0]=='d'||!arg[0])&&nv_probe())){
+    else if(seq(cmd,"gpu")&&arg[0]=='s'&&arg[1]=='e'){ extern const char* nvgsp_sens_text(void); if(!nv_probe())term_puts("  no NVIDIA GPU found\n"); else term_puts(nvgsp_sens_text()); }
+    else if(seq(cmd,"gpu")&&arg[0]=='a'&&arg[1]=='m'){ extern const char* nvd_ampere_cmd(const char*); term_puts(nvd_ampere_cmd(arg)); }
+    else if(seq(cmd,"nvidia")||(seq(cmd,"gpu")&&!(arg[0]=='f'||arg[0]=='b'||arg[0]=='i'||arg[0]=='r'||arg[0]=='d'||(arg[0]=='m'&&arg[1]=='o')||(arg[0]=='a'&&arg[1]=='d'&&arg[2]=='a')||!arg[0])&&nv_probe())){
         if(!nv_probe()){ tcol(rgb(230,160,60)); term_puts("  no NVIDIA GPU found (looked for vendor 10DE, class 03)\n"); tcol(WHT); }
         else { nv_read_id();
             char b[128],*p;
@@ -348,6 +434,7 @@ static void run_cmd_one(char*s){
         }
     }
     else if(seq(cmd,"crash")){ extern void crash_cmd(const char*); crash_cmd(arg); }
+    else if(seq(cmd,"perf")){ extern void perf_cmd(const char*); perf_cmd(arg); }
     else if(seq(cmd,"memcheck")){ extern int heap_check(int*,int*,char*,int); extern u32 g_heap_bad, g_heap_dfree, g_heap_badfree, g_heap_reent, g_heap_oom; extern int g_heap_poison; extern volatile u32 g_msr_faults; extern unsigned long heap_used(void); const char* a=arg; while(*a==' ')a++;
         if(seq(a,"poison on")){ g_heap_poison=1; term_puts("freed heap memory is now filled with 0xDB (finds use-after-free bugs, may expose crashes)\n"); }
         else if(seq(a,"poison off")){ g_heap_poison=0; term_puts("freed heap memory is left as it is\n"); }
@@ -357,10 +444,12 @@ static void run_cmd_one(char*s){
             p=b; p=scopy(p,"seen since start: overruns "); p=udec(p,g_heap_bad); p=scopy(p,", double frees "); p=udec(p,g_heap_dfree); p=scopy(p,", bad frees "); p=udec(p,g_heap_badfree); p=scopy(p,", re-entered "); p=udec(p,g_heap_reent); p=scopy(p,", out of memory "); p=udec(p,g_heap_oom); p=scopy(p,", refused CPU register accesses "); p=udec(p,g_msr_faults); p=scopy(p,"\n  memcheck poison on|off   fill freed memory to find use-after-free bugs\n"); *p=0; term_puts(b); } }
     else if(seq(cmd,"update")){ extern void upd_cmd(const char*); upd_cmd(arg); }
     else if(seq(cmd,"cputemp")){ extern void ctemp_cmd(void); ctemp_cmd(); }
+    else if(seq(cmd,"amdgpu")){ extern void amd_cmd(const char*); amd_cmd(arg); }
     else if(seq(cmd,"amdgpio")){ extern void amdg_cmd(const char*); amdg_cmd(arg); }
     else if(seq(cmd,"gpus")){ extern int gpu_list(void*,int); struct { u16 ven, dev; u8 bus, slot; const char* vendor; const char* name; const char* driver; int accel; } gl[8]; int n=gpu_list(gl,8); char b[200],*p;
         if(!n)term_puts("  no graphics card found on PCI\n");
-        for(int k=0;k<n;k++){ p=b; p=scopy(p,"  "); p=scopy(p,gl[k].vendor); p=scopy(p,"  "); p=hx(p,gl[k].ven,4); *p++=':'; p=hx(p,gl[k].dev,4); p=scopy(p,"  "); p=scopy(p,gl[k].name); *p=0; tcol(gl[k].accel?GREEN:WHT); term_puts(b); term_putc('\n'); tcol(GREY); p=b; p=scopy(p,"    "); p=scopy(p,gl[k].driver); *p=0; term_puts(b); term_putc('\n'); tcol(WHT); } }
+        for(int k=0;k<n;k++){ p=b; p=scopy(p,"  "); p=scopy(p,gl[k].vendor); p=scopy(p,"  "); p=hx(p,gl[k].ven,4); *p++=':'; p=hx(p,gl[k].dev,4); p=scopy(p,"  "); p=scopy(p,gl[k].name); *p=0; tcol(gl[k].accel?GREEN:WHT); term_puts(b); term_putc('\n'); tcol(GREY); p=b; p=scopy(p,"    "); p=scopy(p,gl[k].driver); *p=0; term_puts(b); term_putc('\n'); tcol(WHT);
+            if(gl[k].ven==0x10DE){ extern int nvgsp_sens_up(void); extern const char* nvgsp_sens_text(void); if(nvgsp_sens_up()){ tcol(GREY); term_puts(nvgsp_sens_text()); tcol(WHT); } } } }
     else if(seq(cmd,"gpumon")){
         if(!nv_probe()){ term_puts("  no NVIDIA GPU found\n"); }
         else { nv_read_id(); if(!nv_load_vbios()||!nv_find_dcb()){ term_puts("  VBIOS output table not available - run gpu first\n"); }

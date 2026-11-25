@@ -50,8 +50,8 @@ int sock_recv(int sid,u8* out,int maxout){
     nsock_t* s=&g_sock[sid]; u8 rx[1600]; int outlen=0,idle=0;
     while(outlen<maxout){ int n=net_poll(rx,1600,1);
         if(n<=0){ if(++idle>900)break; continue; }
-        if(rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
-        int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(rd16(t+0)!=s->dport||rd16(t+2)!=s->sp)continue;
+        if(n<54||rd16(rx+12)!=0x0800)continue; u8* ip=rx+14; if(ip[9]!=6){ dhcp_async_take(rx,n); continue; }
+        int ihl=(ip[0]&0x0F)*4; u8* t=ip+ihl; if(ihl<20||14+ihl+20>n||rd16(t+0)!=s->dport||rd16(t+2)!=s->sp)continue;
         int iptot=rd16(ip+2); int thl=((t[12]>>4)&0xF)*4; int dl=iptot-ihl-thl; { int av=n-14-ihl-thl; if(dl>av)dl=av; } if(dl<0)dl=0;
         u32 seq=rd32(t+4); u8 fl=t[13];
         if(fl&TF_RST){ s->connected=0; break; }

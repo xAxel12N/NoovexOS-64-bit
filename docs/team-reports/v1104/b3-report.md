@@ -3,7 +3,7 @@
 Read-only. Ticks are 100 Hz (wifi_mgr.c:274 divides by 100 to get seconds). Ranked by how likely the owner is to hit each one.
 
 ## 1. HIGH - one lost EAPOL frame turns auto-connect off for good (shows "password not accepted")
-- drivers/net/wifi/rtw88/rtw_sec.c:237: if key message 3/4 does not arrive within the 1500 wait, the join returns 6 ("wrong password").
+- drivers/net/wifi/realtek/rtw88/rtw_sec.c:237: if key message 3/4 does not arrive within the 1500 wait, the join returns 6 ("wrong password").
   A lost frame on a weak signal or a router that is still booting gives the same 6.
 - net/wifi/wifi_mgr.c:301: on any single auto-join result of 6, 7 or 10 the code sets `autoc=2`, saves it, and notifies "Wi-Fi password not accepted".
   wm_pick (line 270) skips networks with autoc!=1, and only a manual connect clears it (handoff v11.00).

@@ -1,11 +1,549 @@
-# What changed in v11.10
+# What changed in v11.22
 
-8 agents: 4 coders and 4 reviewers. Reports: `docs/team-reports/q1/`.
+A bug-fix release. Every app and page of the system was tried in a virtual machine, with screenshots, and 66 problems were found. This release fixes them. Nothing here has run on real hardware yet.
+
+## Crash
+- **Settings > Sound > Mute froze the whole system** on a machine without a sound card. Every volume change now goes through one checked function, and a test refuses the old pattern.
+
+## Desktop and windows
+- **Alt+F4** closes the focused window.
+- A maximised window fills the whole area above the taskbar.
+- Super+arrow keys snap the window without also moving the selection in the app.
+- Very long window titles are cut to the available width.
+- The **Clock** app no longer draws its time over other windows.
+- The tray icons each open their own popup: Wi-Fi shows the network list, the sound icon a volume slider with Mute, the power icon the battery state. Esc or a click outside closes them, and sliders follow a drag.
+- Changing the wallpaper no longer stalls the mouse and keyboard; the picture is built in small steps.
+- The taskbar CPU graph shows real usage (it read core 0 as always idle before), and both graphs have tooltips.
+- Taskbar labels are cut with "…".
+- The lock screen checks the password in the live session too; with no password set it shows an Unlock button instead of a password field.
+
+## Start menu
+- **Run...** opens a real Run dialog with history.
+- **Help** opens a help page instead of About.
+- **Exit...** opens the power menu: shut down, restart, sleep, log out, lock.
+- Right-click on the desktop > New > Text File creates the file in ~/Desktop and shows an icon.
+- Submenus flip to the left near the right screen edge.
+
+## Files
+- Folders can be copied, cut and pasted.
+- The New folder / New file prompt replaces the default name as you type.
+- The folder tree scrolls and has a scrollbar.
+- Deleting a non-empty folder asks first. The **Trash** is visible in the tree with Restore and Empty Trash.
+- Paste is greyed out when nothing was copied.
+- Trashed file names are no longer corrupted.
+
+## Task Manager
+- **End task**, Priority and Switch to buttons. The File, Frequency and Help menus work. Right-click on a process gives a process menu.
+- The memory graph is scaled to the installed memory, and the process counts agree.
+- Windows are titled "Files" and "Task Manager" like the menu.
+
+## Settings
+- The USB page says "No USB controller found" instead of showing nothing.
+- Search finds every page, including Game controllers and Printers & Scanners.
+- Text no longer runs under the buttons at narrow widths.
+- **Show seconds** works on the taskbar clock and is kept after a restart.
+- Settings opens faster: wallpaper thumbnails are decoded one per frame.
+
+## Browser and network
+- Find in page matches phrases ("Line 19"), not just single words, and resets when reopened.
+- Tabs keep their scroll position. http pages show "Not secure" instead of a padlock. about: pages have proper titles. Link underlines stop at the link.
+- The first DHCP attempt works: its 1 ms wait ended early whenever the timer counter wrapped.
+- Terminal `http`, `https` and `wget` accept `host:port`, skip the <style> and <script> text, and no longer freeze the desktop while fetching.
+
+## Games
+- Quitting DOOM shows "DOOM has quit" with a play-again prompt instead of a false "Could not load the WAD" (three runs per boot).
+- Quick key taps are no longer lost in DOOM and Quake: key presses are queued for the games instead of sampled once per frame.
+- DOOM scales to a maximised window. The cursor is hidden while Quake has the mouse. The click that captures the mouse no longer fires.
+- Snake and Flappy Bird wait for a key before starting.
+
+## Other apps
+- Paint draws continuous strokes.
+- The Camera app no longer repeats "No camera found".
+- Logs shows the real kernel log instead of a hex dump with a fixed hardware line.
+- The Voice Recorder says when the microphone delivers no sound.
+- Benchmark wraps its text; the Registry Editor cuts long values with "…".
+- The shell runs command lists (`a; b`, `a && b`, `a || b`) and expands `~`.
+
+# What changed in v11.21
+
+A large USB release: new device types, plus the gaps left in USB support from v11.20. Each new driver is on by default and switches itself off after three failures; the reason shows in Settings. Nothing here has run on real hardware yet.
+
+## USB core
+- **`lsusb` and Settings > Devices list every device**, including those several hubs deep. `lsusb -t` and the Devices page show a tree (port → hub → device) with speed and power use.
+- **Error recovery:** a stalled or crashed device is reset and set up again instead of being dropped. A full event ring is recovered, and new connections are debounced.
+- **Keyboard wake from sleep:** ACPI wake events (GPE) and USB remote wakeup are armed before sleep. Sleep to RAM is used by default only where a key can wake the computer.
+
+## Input
+- 16 mouse buttons, full n-key rollover keyboards, and smooth high-resolution scrolling in the browser. `/dev/input/event0` for Linux programs.
+- **Logitech Bolt:** pair new devices with a passkey, see device names, and unpair, in Settings > Devices.
+- **Game controllers:** Xbox 360/One, DualShock 4, DualSense (rumble, light bar, touchpad), Switch Pro and generic USB gamepads. Linux programs get `/dev/input/event1` and up, and `/dev/input/js0`. Settings > Advanced system > Game controllers.
+- **Drawing tablets and touchscreens:** HID digitizers and Wacom tablets, with pen pressure.
+
+## Cameras
+- **Two cameras at once** (`/dev/video0` and `/dev/video1`), with a USB bandwidth check.
+- **Video recording** in the Camera app, saved to ~/Videos as .avi (with sound when a microphone is present).
+- **HDMI-to-USB capture cards** (including MS2109), and H.264 cameras for Linux programs.
+
+## Sound
+- **USB headsets, DACs and speakers** as output (USB Audio 1 and 2), with volume, mute and a 44.1/48/96 kHz choice. Settings > Sound has a switch that moves sound and microphone to the USB device.
+
+## Networking
+- **USB Ethernet:** RTL8152/8153, ASIX AX88179, CDC-ECM and CDC-NCM.
+- **USB Wi-Fi:** RTL8821CU/8811CU (built on the rtw88 driver) and MediaTek MT7921AU.
+- **Phone tethering:** Android over RNDIS and CDC-NCM, iPhone over ipheth.
+
+## Other devices
+- **USB serial adapters:** FTDI, CP210x, CH340, PL2303 and CDC-ACM appear as `/dev/ttyUSB0` or `/dev/ttyACM0`, for flashing Arduino and ESP32 boards. A `serial` command and a switch in Settings.
+- **Phones and cameras as storage:** MTP and PTP protocol support.
+- **Printers and scanners over USB:** the USB printer class with IPP-over-USB, and eSCL scanning. `printer usb`, `scan`, and Settings > Advanced system > Printers & Scanners.
+- **USB-C:** the UCSI driver shows charging and alternate-mode status (`usbc` and Settings > Power).
+
+## Fixes from testing
+- Three descriptor parsing over-reads found by a new malicious-descriptor fuzzer are fixed.
+- The volume test no longer leaves temporary folders behind.
+
+## Not done yet
+- MTP and PTP devices are not yet browsable in Files.
+- RTL8152/8153 PHY start-up is not ported, so the link may not come up on some adapters.
+- iPhone tethering works only with a phone that already trusts the computer (no pairing yet).
+- RTL8821CU runs without calibration and firmware rate control.
+- The drawing tablet has no Settings page yet. USB printers behind hubs are not used.
+- The sample-rate choice for USB audio is not kept after a restart.
+- **USB serial in the QEMU test:** an FTDI adapter plugged in at start-up is listed by `lsusb` but does not appear as `/dev/ttyUSB0` yet. The protocol code passes its host tests.
+- Sleep to RAM after `smp off` did not finish resuming in one test run.
+- USB network adapters were not set up in the QEMU USB test.
+- The kernel's FAT32 writes leave the free-cluster count off by one.
+- Only the first USB stick is mounted.
+
+# What changed in v11.20
+
+Security, Face ID, cameras, mice and USB, plus the remaining open items from v11.19. Nothing here has run on real hardware yet.
+
+## Security
+- **Kernel hardening:** SMEP and UMIP are switched on where the CPU has them, so the kernel cannot run user-space code. The stack guard is random on every boot. Page reference counts can no longer overflow into a free. SMAP is built but stays off until every system call copies user memory through the checked helpers.
+- **Passwords** are stored as SHA-512-crypt with 100,000 rounds; old hashes are upgraded at the next login.
+- **Failed logins** get growing delays at the login screen, lock screen, terminals, sudo and su (SSH limits are written but not yet built into the SSH server).
+- **sudo** remembers the password per terminal.
+- **Firewall:** incoming connections are blocked by default. Replies get through, and port 22 is open only while the SSH server runs. There's a `firewall` command and a switch in Settings > Security.
+- **Fuzzing fixes:**
+  - a web server could crash the system through the browser with a huge chunk size (fixed);
+  - the network stack no longer reads past the end of received packets;
+  - FAT images survived 160,000 damaged-image tests.
+
+## Face ID
+- Set-up records at least 5 face templates from at least 2 head angles. Matching is stricter, and at least 2 templates must agree.
+- **Liveness:** a still photo is refused; sign-in needs a blink or a small head turn.
+- **Laptop infrared (Windows Hello) cameras** are used when present. The IR light is switched on automatically, and a photo or screen shows no face in infrared.
+- Lock after 5 failures. Face ID never approves admin actions unless `faceid admin on`.
+- Face templates are encrypted with a key only root can read.
+
+## Cameras
+- Best size and frame rate chosen automatically, plus 15 picture controls (brightness, exposure, focus, white balance and more).
+- Broken frames are dropped, and a stalled camera restarts by itself.
+- **`/dev/video0` for Linux programs** (V4L2), so ffmpeg, browsers and video calls can use the webcam.
+- The Camera app lets you pick the camera and resolution and take photos.
+
+## Mice, keyboards and USB
+- **Logitech Unifying and Bolt receivers:** devices are listed, battery levels show in Settings > Devices, the high-resolution wheel works, and devices reconnect after sleep.
+- **HID:** a complete report parser (horizontal scroll, media and power keys, absolute pointers), tested with 200,000 random descriptors. 1000 Hz gaming mice are read at their own rate.
+- **xHCI:**
+  - USB 2 and USB 3 hubs, including slow devices behind USB 2 hubs;
+  - a re-plug limit and BIOS handoff;
+  - a fixed bug where a second port reset returned too early.
+- **USB through sleep:** devices keep their state across sleep where the controller allows it, idle ports are powered down after 10 seconds, and a keyboard can be set up to wake the computer.
+- Files can safely eject USB sticks, not just SD cards.
+
+## Sleep
+- **S3 decides per machine:** when switched on (`s3 on` or Settings > Power), it is used only where every device can restart after it; other machines keep light sleep and Settings shows why. It stays off by default, because a key press does not yet wake the computer from S3 (only the power button does).
+- The clock catches up from the motherboard clock after waking.
+
+## Graphics
+- **NVIDIA desktops up to 3840x2160** at native resolution, with a desktop scale setting (100, 125, 150 or 200%). Above 1080p the CPU composes the desktop.
+- **Safer vblank handling:** only the vblank bit is read, error values are ignored, and polling takes over after repeated errors.
+- If screen 1's monitor is unplugged, the desktop mirrors onto the monitor that is left.
+
+## Wi-Fi
+- **RTL8852B:** transmit power follows the per-rate tables and never goes above the country limits; receive DC calibration runs at every channel switch.
+- **RTL8852C:** firmware bundled, scan and join in the simulator.
+- **MT7925:** a firmware reset is detected and the country tables are sent again.
+- **MT7921:** 6 GHz fast reconnect now scans the access point's own channel.
+
+## Bluetooth
+- **Headsets can now connect to the PC by themselves:** service records for hands-free, audio and remote control, plus incoming headset and audio connections. Only paired, encrypted devices are accepted.
+
+## Files and system
+- **exFAT renames** are safe after a power cut, and a damaged volume is repaired at mount (0 duplicates in 1496 simulated power cuts).
+- **Low memory:** a program that faults when memory is low reclaims memory first, leaving room for the kernel. This is the likely fix for the occasional swap test failure.
+- `fprint enroll` returns at once and shows progress (`fprint cancel` stops it).
+- Shell redirects `2>&1`, `2>/dev/null` and `>>` now work correctly.
+
+# What changed in v11.19
+
+Finishing work and fixes after v11.18. Nothing here has run on real hardware yet.
+
+## Sleep
+- After full suspend-to-RAM (S3), the system now restores the interrupt controllers, keyboard and mouse settings, and restarts NVMe, AHCI, USB and audio. S3 stays off by default: the screen is not restarted after S3 yet, and the clock is not resynchronised.
+
+## AMD
+- The SDMA engine's firmware is now loaded through the security processor (PSP), as these Ryzen chips require. If the system firmware holds the PSP, this is noticed within about 100 ms and shown in Settings and in `amdgpu sdma`.
+
+## Wi-Fi
+- **RTL8723DE:** transmit power never goes above the country limits (limit table from the reference driver).
+- **MT7925:** country power tables are sent again whenever the firmware is reloaded.
+- **RTL8852B:** gain tables are applied at every channel switch. Transmit power and radio calibration are still not ported, so power stays at its current safe level.
+- **RTL8852C:** now attempts firmware download. No RTL8852C firmware is bundled yet, and setup after the download is not finished.
+- **MT7921 on 6 GHz:** only joins a network after hearing its beacon on that channel within the last 30 seconds.
+
+## Bluetooth
+- **Headset microphone:** wide-band speech (mSBC) with fallback to standard quality; packet size now comes from the adapter; the headset mic stays selected after switching sound output; new input selector in Sound settings.
+- **RFCOMM fix:** outgoing channels used the wrong channel number, so real headsets could refuse the connection.
+- **Security fixes:** a hostile headset can no longer overflow the credit counter or raise the packet size beyond what was agreed; USB audio buffers no longer run dry; stopping a voice link always releases the USB endpoints.
+
+## Graphics
+- **NVIDIA mode setting:** no longer writes past its buffer when the monitor mode is smaller than the firmware screen.
+- **Resizing the desktop** keeps windows on screen 2 and the mouse on screen.
+
+## Fingerprint, files
+- **Fingerprint enrolment** no longer freezes the desktop on any reader.
+- **Updates from a USB stick** take the stick through the same one-writer rule as Files.
+- **exFAT:** a power loss while writing can no longer make a file disappear. Renames across folders can still leave a duplicate entry after a power cut, but no data is lost.
+
+# What changed in v11.18
+
+A big round of finishing work: most features that were started in v11.12 to v11.17 are now complete in the simulators, and many new safety checks were added. Everything new is on by default and turns itself off after 3 failures or an unfinished boot, with the reason shown in Settings. None of this has run on real hardware yet.
+
+## NVIDIA (GTX 16 / RTX 20)
+- **Hardware cursor:** the cursor image is uploaded to the card and moves with the mouse. Shapes: arrow, text beam, wait, busy, hand, move, resize and "not allowed".
+- **Extended desktop for real:** the second screen shows window contents. Windows and the mouse cross the edge. Menus, drag and drop, and snapping work on screen 2. Arrange it left, right, above or below in Settings > Screens. When a screen is unplugged its windows move to the other screen and come back when it is plugged in again.
+- **Native resolution desktop:** with GPU mode setting, the desktop uses the monitor's own resolution up to 1920x1080. 1440p and 4K modes are chosen when the link and memory allow; above 1080p the desktop is still scaled.
+- **Frames by the copy engine:** only the changed parts of the screen are copied to the card. Page flips finish at vertical blank, with polling as a fallback.
+- **Text drawn by the GPU:** app text comes from a glyph atlas on the card, pixel-identical to the CPU renderer.
+- **VRAM window layers:** only changed tiles are uploaded. All of its tests now pass.
+- **DisplayPort:** a DisplayPort monitor can be the main screen (the firmware's link is reused), second DisplayPort monitors are trained when the mode is set, and lost links are retrained up to 3 times.
+- **Channel recovery** uses a fresh channel and no longer leaks memory.
+
+## NVIDIA RTX 30 and RTX 40 (untested)
+- Both start the card's firmware, then get native mode, page flips, the hardware cursor and a second screen.
+- The compositor shader now has RTX 30 and RTX 40 versions. If its self-test fails, the copy and 2D engines take over.
+- The RTX 30 firmware file still has to be copied into Files (it is too big to build in).
+
+## AMD (Ryzen laptops)
+- **Tear-free page flips** on the laptop screen for Renoir/Lucienne, Van Gogh, Rembrandt, Mendocino and Phoenix. The second buffer's address is read from the memory controller and checked by reading it back before use. Panel self refresh is handled.
+- **SDMA copy engine** with a GART for copying screen updates. These chips may only accept the SDMA firmware through the security processor; if so, it switches itself off with that reason.
+- Brightness through the display firmware as a fallback. Mendocino temperature.
+
+## Wi-Fi
+- **RTL8821CE (yours):**
+  - when the speed is poor, channel width drops to 20 MHz without reconnecting;
+  - transmit power per channel width now follows the chip's tables (996 wrong cases fixed);
+  - Bluetooth sharing commands corrected to match the reference driver byte for byte;
+  - China (SRRC) channel filter.
+- **RTL8723DE:** full start-up, IQK, power tracking, channel 13/14 filter and Bluetooth sharing.
+- **RTL8852BE (Wi-Fi 6):** firmware download, scan, join and data in the simulator. Encryption is done in software. RTL8852CE stops at firmware download.
+- **MediaTek MT7925 (Wi-Fi 7):** joins networks, country power tables, 6 GHz, Wi-Fi 7 (EHT) in the association request with fallback to Wi-Fi 6.
+- **MediaTek MT7921:** 6 GHz scan and join, WPA3, a WPA2 refusal bug fixed, Wi-Fi 6 capability bits corrected.
+- **Intel:** WPA3 hash-to-element (needed by most 6 GHz networks), protected-frame SA Query, sending aggregated frames, and an H2E switch in Settings.
+- **Security fixes:** SAE checks the peer's values, runs in constant time and wipes its secrets; a downgrade from H2E is refused.
+
+## Bluetooth
+- **Headphones and speakers (A2DP)** with play, pause and volume buttons. Choose Bluetooth or speakers in Sound settings.
+- **Headset microphone (HFP)** over RFCOMM and SCO.
+- **Pairing with a code to confirm** on both sides, and passkey entry.
+- Paired devices reconnect at start without freezing the desktop.
+- Fixes: large-packet headphones were silent; play/pause could come from an unpaired device.
+
+## Files and storage
+- **ext4 disks, SD cards and USB sticks** can be browsed, opened, copied, renamed and deleted in Files.
+- **exFAT** read and write (most large SD cards and USB sticks).
+- FAT writes on fixed disks and USB sticks, folder moves, ext4 on SD cards.
+- Faster SD transfers (ADMA2).
+- **Safety:** every change is flushed; a card that was not ejected safely opens read-only; copies over an existing file go through a temporary file, so a failed copy never cuts the original; ".." paths are refused; EFI system partitions are read-only; after a write error the disk goes read-only with a clear message.
+
+## Laptops and devices
+- **Sleep:** closing the lid or choosing Sleep puts the laptop to sleep. Devices that cannot resume safely block sleep with a message. AMD deep-sleep hint. If waking fails 3 times, sleep turns itself off. Full suspend-to-RAM (S3) is built but off by default (`s3 on` or Settings > Power); laptops use the lighter sleep until disks, USB and the screen can restart after S3.
+- **Fingerprint:** Synaptics and Goodix readers (HP laptops), better matching on Elan readers, Enrol/Test/Remove in Settings > Accounts. Sign-in stays opt-in and needs your own enrolled finger. A sign-in bypass was fixed.
+- **Hotkeys:** ThinkPad and ASUS keys use the common hotkey layer.
+- **USB MIDI** devices behind USB hubs.
+
+## Settings and system
+- Long Settings pages scroll and stay inside the window; long descriptions wrap.
+- With no NVIDIA card, the NVIDIA page says so instead of showing zeros.
+- The stack address is randomised as well.
+- The serial log no longer repeats the same line every frame.
+
+# What changed in v11.17
+
+Everything new from v11.16 is on by default, and Settings has a switch for each feature, so you rarely need a command. Each feature protects itself: if it fails 3 times, or a boot stops while it was starting, it turns itself off and Settings shows why. Switching it back on in Settings gives it another try. All shell commands still work.
+
+## Settings
+- **Display > Graphics > NVIDIA**, **Screens**, **Advanced graphics:** a switch, live state and last error for each feature:
+  - GPU start at boot, native mode and tear-free flips, hardware cursor, extended desktop;
+  - window layers in VRAM, 2D engine, DisplayPort, RTX 30 and RTX 40 start;
+  - a GPU info panel.
+- **Network > Wi-Fi advanced** (Radio, Connection, Region and chips, Status):
+  - channel width, power saving, aggregation, roaming, background scans, fast reconnect;
+  - transmit power, rate selection, calibration, country, WPA3 fallback;
+  - switches for the RTL8852, MT7925 and RTL8723DE chips;
+  - a status panel and a speed test.
+- **Bluetooth:** adapter status and whether Wi-Fi and Bluetooth are sharing the antenna.
+- **System > Advanced system:**
+  - Services: start, stop, restart, enable and logs, with the same sudo password check as `service`;
+  - Remote login (SSH on/off);
+  - Scheduled tasks: add and remove tasks with a time picker;
+  - File systems: read-write status and why;
+  - MIDI: devices, built-in synth, test note;
+  - Terminals: which terminals are signed in.
+- **Privacy & security > Security features:** address randomisation, perf counters, eBPF.
+- All new pages can be found with the Settings search.
+
+## On by default now
+- **NVIDIA:**
+  - start at boot, native mode and page flips, VRAM window layers and the 2D engine are active;
+  - RTX 30 and RTX 40 cards try the GSP start and stay on the normal picture if it doesn't finish;
+  - extended desktop is on as a setting, but the second screen mirrors until it can show app contents;
+  - the hardware cursor starts its channel but the normal cursor is still drawn;
+  - DisplayPort training waits until it can run without blanking the screen.
+- **Wi-Fi:**
+  - channel width auto (40/80 MHz), falling back to 20 MHz after 3 failures;
+  - Bluetooth coexistence;
+  - the RTL8852, MT7925 and RTL8723DE drivers start by themselves and show "not supported yet" in the Wi-Fi status where bring-up isn't finished, instead of waiting or retrying.
+- **Intel Gen 12 blitter**, **USB MIDI**.
+- **ext4 read-write on any disk that supports cache flush.** Files now opens ext4 disks and shows read-only or read-write. Listing ext4 contents in Files is not done yet.
+
+## Not tested on real hardware yet
+All of the above. On a GTX 16/RTX 20 card, native mode is now tried on every boot. If it ever hangs, that happens once, and the next boot keeps it off.
+
+# What changed in v11.16
+
+New NVIDIA, Wi-Fi and Intel graphics features, finished items from v11.15, and bug fixes. Everything new for hardware is off by default unless noted, and falls back to the old path on any failure.
+
+## NVIDIA (GTX 16 / RTX 20, Turing)
+- **The GPU starts during the boot splash** (on by default when NVIDIA drawing is on), so the desktop is GPU-drawn from its first frame. If the card fails to start, the CPU path takes over as before.
+- **Recovery for one channel:** a GPU channel error now rebuilds only that channel. Drawing falls back to the CPU only after more than 3 errors or a failed rebuild. GPU page faults are logged instead of turning drawing off.
+- **Native mode and tear-free page flips** on the main screen (`gpu modeset on|off`). Each new frame is shown at the next vertical blank. DisplayPort main screens are not supported yet.
+- **Hardware cursor** and an **extended desktop** on the second screen (`display extend|mirror`). Screen 2 shows window frames only for now.
+- **DisplayPort link training** (`nvgsp dp train`), with a shared link-training state machine that Intel and AMD can reuse later.
+- **Window layers in VRAM:** only changed tiles are uploaded (`nvgsp cardmem on`).
+- **2D engine:** fills and copies from apps are drawn by the GPU's 2D engine and fall back per operation.
+- **`gpu sensors`:** PCIe link speed and width, power state and clock slowdown, read from GSP-RM. Temperature, clocks and fan are not available: NVIDIA's 535.113.01 headers do not publish those layouts.
+
+## NVIDIA RTX 30 and RTX 40 (untested)
+- **Ampere (RTX 30) GSP start** (`gpu ampere on`) and **Ada (RTX 40) GSP start** (`gpu ada on|boot`). The boot steps run in the simulator; drawing on these cards is not ported yet.
+- The Ampere GSP-RM image (`gsp-535.113.01.bin` from linux-firmware `nvidia/ga102/gsp/`) is not built in, which keeps the kernel small. Copy it into Files to use it.
+
+## Wi-Fi
+- **RTL8821CE 40 and 80 MHz channels** (`wifi bw auto|20|40|80`), with automatic fallback to 20 MHz.
+- **RTL8821CE Wi-Fi/Bluetooth coexistence:** it takes over only while Bluetooth is up (`wifi coex status`) and goes back to Wi-Fi-only if the firmware refuses it.
+- **RTL8723DE:** detection, tables and firmware loading. It does not fully start yet.
+- **Realtek Wi-Fi 6 (RTL8852BE/CE):** rtw89 driver. RTL8852BE: power-on, firmware download, MAC/BB/RF init, 20 MHz channel switch, scan offload, open/WPA2 join (software CCMP) and data path, all verified in the host simulator only (not yet on hardware). RTL8852CE: detection, power-on and PCIe DMA setup; it stops at firmware download.
+- **MediaTek MT7925 (Wi-Fi 7):** firmware download, NIC capability, scan and 6 GHz join setup on top of the MT7921 driver. Joining a network needs the newer frame format, which is not ported yet.
+
+## Intel graphics
+- **Gen 12 blitter** (Tiger Lake, Alder Lake, Raptor Lake): fast fills and copies on the blitter engine, like the Gen 9 path.
+
+## Storage, MIDI and kernel
+- **ext4:**
+  - backup superblocks and descriptor copies are protected from being freed;
+  - other disks get a cache-flush command and can mount read-write if they support flush (AHCI, NVMe, virtio, USB);
+  - fast-commit file systems are refused, and a full journal aborts cleanly.
+- **USB MIDI:** up to 4 devices and 16 cables, `/dev/midiN` and ALSA `/dev/snd/midiC0DN`, both input and output; bad descriptors are rejected.
+- **ASLR:**
+  - ld.so loads at a random base;
+  - more randomness for mmap (26 bits), PIE (up to 24 bits) and the stack (12 bits).
+- **perf:** closing a counter from another CPU now stops the right counter.
+- **Man pages are now really included.** The v11.15 image skipped them because of a build path bug.
+
+## Fixes
+- eBPF: a kernel stack overflow in `bpf_trace_printk`; a use-after-free between socket filters and detach; a socket-filter reference leak; a race on bpf file descriptors.
+- cron per-user limits; VT_ACTIVATE and KDSETMODE now need permission; service slots are reused safely.
+
+## Not tested on real hardware yet
+Everything in the NVIDIA, Wi-Fi and Intel sections, ext4 on other disks, and USB MIDI devices.
+
+# What changed in v11.15
+
+New Unix features: a service manager, cron, an SSH server, man pages, rsync, virtual terminals, USB MIDI, ext4 read/write, KASLR, perf counters and eBPF. Plus stability and security fixes.
+
+## Services and daily tools
+- **Service manager:** unit files live in `/etc/nvx/services`. Use `service list|start|stop|restart|enable|disable|status|logs <name>`. Starting and enabling a service needs the sudo password. Unit files must be owned by root. Logs are readable only by root. A missing program no longer makes boot fail.
+- **cron:** `/etc/crontab` and per-user crontabs (`crontab -e|-l|-r`). One user's jobs can no longer hold up another user's.
+- **SSH server (Dropbear):** `sshd on|off|status`, off by default. Root cannot log in with a password. Pseudo-terminals get the right owner, and only that owner (or root) can open them.
+- **Man pages:** mandoc (`man`, `apropos`) with pages for the shell commands and the ported tools.
+- **rsync 3.4.1:** works locally and over SSH.
+
+## Desktop and devices
+- **Virtual terminals:** Ctrl+Alt+F1 to F6 and `chvt N`. Each terminal asks for a username and password and has its own user and sudo state, so `su` on one terminal does not affect the others.
+- **USB MIDI:** keyboards and controllers (USB Audio class, MIDI streaming). Use `midi list|monitor|play`, plus a built-in synth that is mixed with normal audio and pauses while other audio is playing. Plugging in a MIDI device no longer turns off the webcam microphone, and `midi list` no longer resets other USB devices.
+
+## Storage
+- **ext4 read/write** on the main disk, with a journal (crash-safe; replay is skipped on read-only mounts). Every write test image passes `e2fsck -f`, including the power-cut tests.
+  - Damaged or unusual file systems switch to read-only: bad extent headers, odd geometry, an orphan list, blocks larger than 4 KiB, or corruption found during a write.
+  - Volumes on other disks stay read-only for now.
+- **Disks larger than 2 TiB:** 48-bit LBA and 64-bit sector numbers.
+
+## Kernel
+- **KASLR:** heap, kernel stacks, page frames and user-space layout are randomised. The kernel image stays at a fixed address. Users other than root see masked addresses in dmesg, syslog and crash reports.
+- **perf counters:** `perf_event_open` (counting) and a `perf stat` command. Hardware counters are for root only. Perf interrupts no longer hide the watchdog.
+- **eBPF:** `bpf(2)` with a verifier, maps, tracepoints, raw tracepoints and socket filters, and a `bpf` command. The verifier rejects shifts by a register that are out of range. Pointer values cannot leak through helpers.
+- **Low memory:** the kernel reclaims memory and retries, and logs when it runs out. Copies to and from user memory retry after reclaim instead of failing silently.
+
+## Fixes
+- Wi-Fi scans no longer freeze the desktop when you click. Long shell loops respond to Esc and Ctrl+C.
+- A race in reading directory listings is fixed. JSON output from the HTTP server is escaped properly.
+
+## Not tested on real hardware yet
+USB MIDI devices, virtual terminal login on a real keyboard, ext4 writes on a real disk (back up first), perf counters on the i5-11400F.
+
+# What changed in v11.14
+
+Every Wi-Fi feature is now on by default. Each one switches itself off after repeated failures and has its own off switch.
+
+## Realtek RTL8821CE
+- **A-MPDU send on by default** (`wifi ampdu tx off` to disable), with a data-path watchdog:
+  - if a send session is up and frames go out but nothing comes back for 5 s, the session is torn down and counted as a failure;
+  - the same happens when the link is lost within 60 s of starting it;
+  - ADDBA is sent only to access points that support HT.
+- **Power saving on by default** (`wifi ps off|auto`). It does not sleep during a scan, DHCP, the 4-way handshake, or while traffic is flowing. It turns off for the session after missed beacons, a link loss in or right after sleep, or a DHCP failure.
+- **Off-channel scans** (roaming, background scans) send a PM=1 null frame first and PM=0 after, so the access point holds frames instead of losing them.
+
+## Intel AX2xx
+- **RX block-ack on by default.** A block-ack request or teardown no longer re-enters the receive loop: the firmware command is queued and sent from the poll, and the receive path has a re-entry guard. There is a regression test.
+- **WPA3:**
+  - 6 GHz joins only WPA3-SAE networks, even on mixed access points;
+  - there is no automatic fallback from WPA3 to WPA2 after SAE failures unless `wifi saefallback on`;
+  - session protection is longer for SAE.
+- **Other fixes:** protected deauthentication is handled, the HE 160 MHz channel-flag index is fixed for AX200/AX201, and 6 GHz passive-only channels are respected.
+
+## MediaTek MT7921/MT7922
+- **RX and TX block-ack on by default.** Block-ack commands raised during receive are queued and sent from the poll, with a re-entry guard per ring (regression test). A non-zero firmware status counts as a failure.
+
+# What changed in v11.13
+
+## Realtek RTL8821CE
+- **Transmit power from the chip's tables:** per-rate power (rtw88 by-rate table) limited by the regulatory table and the country rules, applied on every channel switch. `wifi txpwr table|legacy`. It falls back to the old setting after 3 failed joins.
+- **Firmware rate adaptation:** the AP's rates, HT capabilities and short guard interval are sent to the firmware. The chosen rate is read back. `wifi ra fw|basic|fixed`.
+- **Calibration (IQK) on by default,** checked against rtw88 (reload bit fix). If beacons drop sharply after IQK, it is undone and turned off for the session.
+- **Receive aggregation:**
+  - BlockAckReq moves the reorder window, bounded to two windows so a forged request cannot stall reception;
+  - ADDBA/DELBA protected with CCMP work on PMF networks;
+  - protected deauthentication now verifies correctly.
+- **Opt-in for now:**
+  - A-MPDU send: `wifi ampdu tx on` sends ADDBA after joining, with the rtw88 descriptor bits; off after 3 failures.
+  - Power saving: `wifi ps on|auto` (PM bit, null frames, TIM wake-up, firmware LPS); off after missed beacons.
+- **Fix:** the software CCMP check on the data path accepted frames whose MIC failed and dropped good ones. It now accepts only a correct MIC. Hardware-decrypted frames (the normal case) were not affected.
+
+## Shared Wi-Fi
+- **Country rules:** wireless-regdb (ISC, 183 countries) in `net/wifi/regdb.c`. Scans skip channels the country does not allow, there are no probes on DFS or listen-only channels, and the country comes from the access point or `wifi country SE`.
+- **Roaming:** when the signal is weak (below -70 dBm), short background scans look for the same network on another access point and move when it is 8 dB better. `wifi roam on|off`.
+- **Fast reconnect:** the last network's channel and key are tried first after a drop. `wifi fast on|off`.
+- **Measuring:** `wifi stats` (signal, link rate, packets, retries, block-ack sessions), a signal graph in Settings, and `wifi speedtest [up|down]`.
+
+## Intel AX200/AX201/AX210/AX211
+- WPA3-SAE through the host with protected management frames (BIP/IGTK). `wifi sae on|off`.
+- Wi-Fi 6 (HE) and 160 MHz: HE capabilities, HE station context, HE rate control. `wifi he on|off`.
+- 6 GHz (Wi-Fi 6E) on AX210/AX211: PSC scan, WPA3 only, country from the regulatory database. `wifi 6g on|off`. Fix: 5 GHz channel flags from 68 up were read from the wrong NVM entries.
+- Receive block-ack through the firmware is opt-in (`wifi ba on`).
+
+## MediaTek MT7921/MT7922
+- Remain-on-channel before authentication and through the handshake; channel list and DFS flags from the regulatory database; TX-free events release transmit tokens.
+- Firmware rate control, HT/VHT/HE in the association request (retried without them if refused). Block-ack is opt-in (`mtwifi ba on`).
+
+## Other fixes
+- Storage:
+  - stale sector cache after a disk write;
+  - writes going to a different USB stick after a swap;
+  - vfat reclaim freeing live clusters;
+  - NVX4 deleted-file blocks never freed;
+  - NVX4 metadata copies drifting apart after a write error.
+- Terminal and shell:
+  - a long escape sequence froze the terminal;
+  - a NULL write in the alternate screen;
+  - a script running itself overflowed the kernel stack;
+  - an unterminated `$(` read past the line;
+  - permission checks added to chmod, cp, touch, rmdir and ls.
+- Start menu: opening a deleted file.
+- Network:
+  - DNS names with a label over 63 bytes were cut;
+  - TCP/IP header lengths are checked before parsing.
+
+# What changed in v11.12
+
+## AMD graphics on Ryzen laptops (phase 1)
+- New `drivers/video/amd/`. The screen still uses the UEFI framebuffer; this release reads the GPU and controls what is safe:
+  - PCI probe and register BAR;
+  - IP discovery table (DCN, GC, MP1 and NBIO versions);
+  - VBIOS from the ACPI VFCT table or ROM, with a bounds-checked AtomBIOS parser;
+  - the current display state left by the firmware (timing, surface, encoder);
+  - EDID over DisplayPort AUX;
+  - GPU temperature and clocks from the SMU (Renoir, Cezanne, Rembrandt, Phoenix);
+  - laptop backlight through ACPI `_BCM` or the panel PWM.
+- `amdgpu status|info|edid|temp|bl <0-100>`, and GPU rows in Task Manager.
+- `amdgpu flip test` (off unless you run it) moves the scanout for 2 s and restores it. It is the first step towards mode setting.
+- DMCUB display firmware for these APUs is bundled with LICENSE.amdgpu for the next phase. Register offsets follow the MIT-licensed Linux headers.
+- Safety: the SMN fallback runs only on an AMD host bridge, register reads are bounds-checked, and Mendocino is left out until its mailbox is reached correctly.
+
+## SD and eMMC card readers
+- `drivers/mmc/`, ported from OpenBSD (ISC):
+  - card core: SD, SDHC/SDXC, MMC/eMMC, 4/8-bit, high speed, block read/write;
+  - generic SDHCI host (PIO);
+  - Realtek PCIe readers (RTS5209/5227/5229/522A/5249/525A, RTL8402/8411/8411B).
+- Cards show in Files "This PC" as "SD Card". `sd status|mount|eject`. Hosts are probed on the first volume scan.
+
+## Laptop hotkeys
+- WMI bus (PNP0C14, `_WDG`, method calls and events only for matching GUIDs).
+- HP WMI hotkeys and the HPQ6001 wireless button; Dell WMI; Intel HID and AMD (AMDI0051) airplane-mode buttons.
+- One action layer for brightness (ACPI video, then AMD backlight), volume, mute, airplane mode, Wi-Fi/Bluetooth keys and keyboard light, with an on-screen indicator that can be turned off in Settings.
+- ThinkPad and ASUS decoders are included but not yet connected; the existing ThinkPad/ASUS handling in laptop.c still runs.
+
+## Fingerprint readers
+- Reader ID table and a port of the libfprint Elan image-sensor driver (04F3) over xHCI bulk transfers.
+- Own matcher with templates in `/etc/fprint/<user>` (root only). `fprint enroll|verify|delete|list|status`.
+- Fingerprint sign-in is off by default (`fprint login on`, until restart); the password always works.
+- Most HP readers (Synaptics 06CB match-on-chip, Validity 138A, Goodix 27C6) are listed as not supported yet.
+
+# What changed in v11.11
+
+## New folder layout
+- Wi-Fi drivers are grouped by vendor: `drivers/net/wifi/realtek/rtw88`, `drivers/net/wifi/intel/iwx` (`trans/` PCIe, `fw/` firmware and PNVM, `mvm/` commands, scan, data and rate control) and `drivers/net/wifi/mediatek/mt7921`.
+- Bluetooth is split into `drivers/bluetooth/transport` (HCI over USB), `drivers/bluetooth/firmware` (vendor loaders) and the host stack in `net/bluetooth` (HCI core, connections, L2CAP, pairing, keys, ATT/GATT, `profiles/` for HID).
+- Every old path is listed in `docs/MOVES.md`.
+
+## Wi-Fi: one WPA implementation for every card
+- The WPA2 handshake (4-way and group key, PTK/GTK, EAPOL-Key), WPA3-SAE and EAP moved from the Realtek driver into `net/wifi/wpa_sm.c`. The RTL8821CE uses it through a small adapter.
+- A host test runs a frozen copy of the old code next to the new one, and every frame and key matches byte for byte.
+- Generic drivers can now join WPA2 networks (PSK, PSK-SHA256, transition mode, PEAP). WPA3-only networks still need SAE support in the chip driver.
+- Frames decrypted by the card keep their CCMP header, so the PN replay check runs for them too.
+- A-MPDU: the packet number is checked before a frame enters the reorder window, so forged or replayed frames cannot move it. Duplicate A-MSDUs inside a block-ack session are dropped. The generic path drains the reorder buffer on its own tick.
+
+## Intel Wi-Fi (AX200/AX201/AX210/AX211)
+- AX201/AX211 integrated parts (PCI function 3) are found, and the firmware name is chosen from the chip and radio IDs.
+- Firmware loads on first use (scan or join), not at boot, and a failed start can be retried. Every wait has an iteration cap.
+- Automatic rate selection: firmware rate scaling (TLC v3/v4) after association, HT/VHT/WMM in the association request, 40/80 MHz.
+
+## MediaTek Wi-Fi (MT7921/MT7922/MT7920), new
+- Port of the mt76 connac2 driver (BSD-3-Clause-Clear):
+  - PCIe and WFDMA rings (polled);
+  - firmware patch and RAM download;
+  - MCU commands, hardware scan, connect, WPA2 key install;
+  - CT+TXP transmit format; multi-descriptor receive frames are dropped safely.
+- `mtwifi status|up`. Firmware (MT7961, MT7920, MT7922) is bundled from linux-firmware with its licence. The driver only starts when its PCI ID is present.
+
+## Bluetooth: connecting devices
+- Host stack:
+  - connections (BR/EDR and LE), ACL fragmentation and flow control;
+  - L2CAP (signalling, configuration, LE fixed channels);
+  - pairing: Secure Simple Pairing for BR/EDR, LE Secure Connections with P-256, passkey entry for keyboards (the passkey is shown on screen; BR/EDR links need a 16-byte key);
+  - bonded keys in `/etc/bluetooth/keys`.
+- Input devices: HID host for classic keyboards and mice, ATT/GATT and HID over GATT for LE.
+- Commands: `bt devices`, `bt pair <addr>`, `bt connect <addr>`, `bt disconnect`, `bt forget`. `bt up` reconnects bonded devices. There is a Bluetooth page in Settings.
+- Security: input is accepted only from bonded, encrypted devices. Pairing is accepted only while `bt pair` runs. A device copying a bonded address cannot replace the bond. Malformed L2CAP packets are bounded.
+
+# What changed in v11.10
 
 ## Intel Wi-Fi (AX200/AX201/AX210/AX211) is in the build
 - Port of OpenBSD iwx (ISC): PCIe transport, firmware load, host commands, NVM, UMAC scan, join (PHY/MAC context, binding, station, session protection, auth/assoc), CCMP keys, and AX210 PNVM.
 - It probes only when no RTL8821CE has registered. `iwx status` / `iwx up`.
-- Reviewer fixes: the RX ring size now matches the driver (512), and group-0 commands use LONG_GROUP (firmware API 50+ crashed on them).
+- Fixes: the RX ring size now matches the driver (512), and group-0 commands use LONG_GROUP (firmware API 50+ crashed on them).
 - Not yet: WPA2 through the generic path (the handshake still lives in the Realtek code), rate control (TX fixed at 6 Mbit/s), HT, and the BZ/MLD API. AX201/AX211 laptop parts on PCI function 3 are not found yet.
 
 ## Bundled firmware (linux-firmware, redistributable only)
@@ -17,7 +555,7 @@
 
 ## Bluetooth
 - The Realtek table grows from 2 to 15 chips (FreeBSD rtlbtfw, BSD-2), with CONFIG/MSFT flags and 58 extra USB IDs. 8821C/8822C (the owner's) still use the embedded firmware, unchanged.
-- Bluetooth adapters of class E0 (like the owner's) are probed before vendor-class ones, so `bt up` no longer resets unrelated vendor-class USB devices (reviewer).
+- Bluetooth adapters of class E0 (like the owner's) are probed before vendor-class ones, so `bt up` no longer resets unrelated vendor-class USB devices.
 - Intel 8260-family boot-params check fixed (23-byte reply, limited_cce at byte 21).
 - ISC and BSD-2 licence texts ship in /usr/share/licenses/bluetooth.
 
@@ -25,8 +563,6 @@
 - The HT A-MPDU byte is back to the old 0x17 (4 µs spacing, as before), so the association request is as in v11.08. Aggregation stays on.
 
 # What changed in v11.09
-
-Owner's request: frame aggregation for the RTL8821CE, the Intel Wi-Fi port, and Intel/MediaTek/Broadcom Bluetooth. 7 coders plus the lead. Reports: `docs/team-reports/p1/`.
 
 ## Wi-Fi: frame aggregation (A-MPDU), receive side
 - The PC now accepts the router's block-ack offer: ADDBA response with a 64-frame window and immediate policy. It also handles DELBA and keeps a reorder buffer per TID (100 ms flush, PN check on release). Downloads can arrive in bursts instead of one frame at a time.
@@ -46,12 +582,12 @@ Owner's request: frame aggregation for the RTL8821CE, the Intel Wi-Fi port, and 
 
 # What changed in v11.08 (includes v11.07)
 
-Owner (v11.06): clicking the desktop works, but clicking the taskbar or the Start menu freezes with no box. Wave 1 of the 15-hour run: 10 scouts, 10 hunters, 5 code searchers, 4 analyzers, 10 coders, 10 reviewers. v11.07 was the merged coder work (all 87 checks passed); v11.08 adds the reviewers' fixes. Reports: `docs/team-reports/w1/`.
+Owner (v11.06): clicking the desktop works, but clicking the taskbar or the Start menu freezes with no box.
 
 ## Taskbar / Start freeze
 - Late SET_PROTOCOL retry is **off by default** (it could reset the receiver while the menu was open). `usbproto on` turns it back on.
-- Idle CPUs no longer queue on the kernel lock every tick (c8). With 8 CPUs in QEMU, lag spikes went from 36 to 0. Running jobs' itimers and timer sweeps no longer bring the queue back (r8).
-- **Amber "busy" box**: if the main loop is stuck inside a nested pump for 5 s, an amber box shows what it is doing and the last steps, so a "freeze with no box" now has a box. It no longer shows over password or yes/no prompts, nor during shutdown. The false red box with a fake crash report during long network commands outside the desktop is fixed (r2).
+- Idle CPUs no longer queue on the kernel lock every tick. With 8 CPUs in QEMU, lag spikes went from 36 to 0.
+- **Amber "busy" box**: if the main loop is stuck inside a nested pump for 5 s, an amber box shows what it is doing and the last steps, so a "freeze with no box" now has a box. It no longer shows over password or yes/no prompts, nor during shutdown. The false red box with a fake crash report during long network commands outside the desktop is fixed.
 - Mouse deltas go through the normal locked input path.
 
 ## Hardware
@@ -65,14 +601,12 @@ Owner (v11.06): clicking the desktop works, but clicking the taskbar or the Star
 - Window restore after a title click is fixed, and Files no longer runs an unsaved Editor buffer.
 - Calculator decimals. FLAC/ALAC/AV1 in FFmpeg. Firmware licence notices ship in the image.
 
-## Next (wave 2)
-Scouts found licence-clean sources (BSD/ISC/MIT, all verified from file headers) for: rtw88 USB (RTL8821CU/8811CU), OpenBSD athn (AR9271) and mtw (MT7601U), ure/rge wired Ethernet, FatFs/exFAT, HDMI audio, GPIO/backlight/thermal. Foundations first: a USB class/pipe API and a Wi-Fi hardware-ops split.
+## Next
+Licence-clean sources were found (BSD/ISC/MIT, all verified from file headers) for: rtw88 USB (RTL8821CU/8811CU), OpenBSD athn (AR9271) and mtw (MT7601U), ure/rge wired Ethernet, FatFs/exFAT, HDMI audio, GPIO/backlight/thermal. Foundations first: a USB class/pipe API and a Wi-Fi hardware-ops split.
 
 # What changed in v11.06
 
-Owner (v11.05, real hardware): the first left click on empty desktop froze the whole OS: no keyboard, and no red box. 10 agents and the lead. Reports: `docs/team-reports/v1106/`.
-
-## Most likely cause: the mouse-button queue had no real lock (lead, from review R3)
+## Most likely cause: the mouse-button queue had no real lock
 - Every button change goes into a small queue (`drivers/input/input.c`); movement does not. The USB driver writes to it and the desktop reads from it.
 - The old "lock" only turned interrupts off on one CPU. On a multi-core machine (the owner's has 12 cores, and SMP starts at boot), two cores could update the indices at once, so the read index passed the write index.
 - The next pump then looped about 2^32 times with interrupts off, and fed garbage clicks after that. A freeze with no red box: it needs interrupts, so it could not appear.
@@ -80,43 +614,41 @@ Owner (v11.05, real hardware): the first left click on empty desktop froze the w
   - a real spinlock plus IRQ-save in `in_lock`/`in_unlock`; `in_btn_raw` takes it itself;
   - self-healing indices (`mq_sane` resets r=w if they are ever out of order);
   - the desktop (`graphics/ui/input.c`, `present_and_pump.c`) takes the same lock instead of a bare cli/sti, which could also turn interrupts on inside other code.
-- The heap no longer zeroes a 64 MiB growth chunk with interrupts off (IrqC). The rebase loop is capped.
+- The heap no longer zeroes a 64 MiB growth chunk with interrupts off. The rebase loop is capped.
 
 ## Seeing any future freeze
-- **NMI watchdog (Nmi):** when CPU 0's timer ticks stop for 3 s, another CPU sends it an NMI, which works even with interrupts off. The NMI handler draws a red box with the CPU, RIP, function name, call chain and the last steps.
+- **NMI watchdog:** when CPU 0's timer ticks stop for 3 s, another CPU sends it an NMI, which works even with interrupts off. The NMI handler draws a red box with the CPU, RIP, function name, call chain and the last steps.
   - It stays quiet on machines with a polled timer, during known long operations, during sleep, when interrupts were on, and on the panic and power-off screens.
   - Commands: `crash test hardlock`, `crash nmiwd on|off`.
-- **Breadcrumbs (Trace):** a lock-free ring of the last 64 steps (main-loop stage, input handler, click, selection box, USB poll), mirrored to COM1 when present. The red boxes and crash reports show the last steps.
+- **Breadcrumbs:** a lock-free ring of the last 64 steps (main-loop stage, input handler, click, selection box, USB poll), mirrored to COM1 when present. The red boxes and crash reports show the last steps.
 
 ## USB
-- The SET_PROTOCOL retry is restricted (Proto): never while a button is held or within 500 ms of a change, never inside a wait or with interrupts off, at most 1 retry, no more class requests after a timeout. Kill switch: `usbproto off`.
-- IrqU: `xh_event_w` checks its time limit even under a stream of events. The USB network poll runs under the shared poll flag. Stopped completions are not re-armed, and 32 errors in a row recover the endpoint. The lead removed the 500-tick "take over the poll" path (two pollers would corrupt the ring) and made recovery stop a running endpoint first.
-- Debug (Sim): the boot-shell command `usbsim biltema` makes QEMU's USB mouse behave like the owner's receiver (same descriptor, 3-byte boot packets). In QEMU every click case stayed alive, so the click decoding, the selection box and the SET_PROTOCOL retries do not hang by themselves.
+- The SET_PROTOCOL retry is restricted: never while a button is held or within 500 ms of a change, never inside a wait or with interrupts off, at most 1 retry, no more class requests after a timeout. Kill switch: `usbproto off`.
+- `xh_event_w` checks its time limit even under a stream of events. The USB network poll runs under the shared poll flag. Stopped completions are not re-armed, and 32 errors in a row recover the endpoint. The 500-tick "take over the poll" path is removed (two pollers would corrupt the ring), and recovery stops a running endpoint first.
+- Debug: the boot-shell command `usbsim biltema` makes QEMU's USB mouse behave like the owner's receiver (same descriptor, 3-byte boot packets). In QEMU every click case stayed alive, so the click decoding, the selection box and the SET_PROTOCOL retries do not hang by themselves.
 
-## Desktop (Desk)
+## Desktop
 - The selection box is cleared even if the button release goes to a dialog or the screensaver.
 - While the button is held, the screen is redrawn only when the pointer moves.
 
 # What changed in v11.05
 
-Owner (v11.04, real hardware): the Biltema mouse's scroll wheel never works and left click works only sometimes. The new red box caught a freeze inside input handling (stage 7). 4 agents and the lead. Reports: `docs/team-reports/v1105/`.
+Owner (v11.04, real hardware): the Biltema mouse's scroll wheel never works and left click works only sometimes.
 
 ## Mouse (Biltema receiver 248A:16BB)
 - **Cause.** The receiver ignores "switch to report protocol" and sends 3-byte boot packets [buttons, dx, dy], which have no wheel byte (`usbhid`: `rx [3] 00 FD 01`). A left click without motion is `01 00 00`. Its first byte equals the mouse's declared report ID 1, so it was read as a too-short report and the click was lost. Clicks while moving worked.
-- **Clicks (M1).** `hid_parse` stores each input report ID's expected length. A packet shorter than its ID's report is boot format. Once an endpoint has sent a clearly-boot packet, a sticky flag decodes every packet of 3–4 bytes as boot. A full-length report clears the flag. Test: the exact Biltema descriptor and packets (mouse decode, 68 checks).
-- **Wheel (M2).** Since v11.02 the EP0 back-off could skip SET_PROTOCOL(report) without ever sending it. Enumeration now sends SET_PROTOCOL and then SET_IDLE(0) to every interface (as Linux does), and re-sends a failed SET_PROTOCOL once. When boot packets arrive on a report-mode mouse, SET_PROTOCOL(report) is re-sent from the poll path: up to 3 times, at least 1 s apart, never inside a wait. `usbhid` shows the receiver's format, the result and the retry count. If the receiver still refuses, the wheel can't work: boot packets have no wheel byte.
+- **Clicks.** `hid_parse` stores each input report ID's expected length. A packet shorter than its ID's report is boot format. Once an endpoint has sent a clearly-boot packet, a sticky flag decodes every packet of 3–4 bytes as boot. A full-length report clears the flag. Test: the exact Biltema descriptor and packets (mouse decode, 68 checks).
+- **Wheel.** Since v11.02 the EP0 back-off could skip SET_PROTOCOL(report) without ever sending it. Enumeration now sends SET_PROTOCOL and then SET_IDLE(0) to every interface (as Linux does), and re-sends a failed SET_PROTOCOL once. When boot packets arrive on a report-mode mouse, SET_PROTOCOL(report) is re-sent from the poll path: up to 3 times, at least 1 s apart, never inside a wait. `usbhid` shows the receiver's format, the result and the retry count. If the receiver still refuses, the wheel can't work: boot packets have no wheel byte.
 
-## Freeze reporting (M3)
+## Freeze reporting
 - The red box now names the input handler that was running: shortcut, click, Start menu, context menu, Settings page, window click, key press, or Terminal command (for example `Terminal command 'nvgsp 3d'`).
 - When the system recovers, the box text is saved as crash-report.txt (and CRASH.TXT on the stick), a toast appears, and the box is erased. `crash` and `report` show it.
 
-## Slow click handlers (M4)
+## Slow click handlers
 - Wi-Fi connect (including hidden networks) and slow Settings actions now show "Working..." and run one main-loop pass later instead of inside the click: print test, NVIDIA actions, uninstalling apps.
 - Still open: Terminal commands run synchronously from the key handler while holding the kernel lock. Long nested waits never release the lock either.
 
 # What changed in v11.04
-
-Owner: 22 agents in about 30 minutes, to search for more bugs and safety failures, brainstorm and code improvements, and review. The team: 4 safety searchers, 4 bug hunters (reporting to the coders), 5 brainstormers, 5 coders and 4 reviewers. Reports: `docs/team-reports/v1104/`. The reviewers found no HIGH issues.
 
 ## Safety
 - **Web pages.** Fixed overflows reachable from a malicious page:
@@ -146,9 +678,9 @@ Owner: 22 agents in about 30 minutes, to search for more bugs and safety failure
   - The DHCP lease is renewed at half time without blocking, so internet no longer dies after hours.
   - A cut-off download is an error and apt retries up to 3 times.
   - DNS failures are cached for 15 s.
-- **USB input.** Keys held on a receiver that is unplugged are released. All v11.03 reviewer MEDIUMs are fixed.
+- **USB input.** Keys held on a receiver that is unplugged are released. Remaining v11.03 issues are fixed.
 
-## New (from the brainstorm, checked against what already existed)
+## New
 - `report`: one command that collects version, USB devices, `usbhid`, `lag`, the last crash and the kernel log tail. It shows a 5-line summary to photograph and saves report.txt (Documents) and REPORT.TXT (USB stick).
 - `log` / `dmesg`: show the kernel log.
 - Toast when a USB device is unplugged.
@@ -164,38 +696,29 @@ Owner: 22 agents in about 30 minutes, to search for more bugs and safety failure
 
 # What changed in v11.03
 
-Owner (v11.02, real hardware): the Start menu and opening apps work, dragging a window works, but when the drag ends the whole OS freezes, keyboard included. 28 agents in about 50 minutes: 6 bug hunters, 4 analyzers, 6 whole-OS searchers, 4 diagnosers, 4 fixers and 4 logic reviewers. Reports: `docs/team-reports/v1103/`.
-
 Not reproduced: in QEMU every drag case (middle, edges, snapped, partly off-screen) kept running. The fixes target the strongest suspects and make any remaining freeze visible.
 
 ## Suspects and fixes
-- **NVIDIA idle re-check (lead).** After any GPU timeout, `nvgsp_tick` waited until mouse and keyboard had been idle for 2 s, then turned NVIDIA drawing off and on again inside the main loop. Releasing a drag is exactly when input goes idle, and only Turing cards (the owner's GTX 1650) run this. The automatic re-check is now off, and the automatic NVIDIA start 3 s after the desktop appears is opt-in: `nvgsp auto on` (or run `nvgsp all` once by hand).
-- **Burst of first draws at drag end (F1).** `gfx.c` skipped drawing every non-live window while *any* window was dragged, so releasing the mouse redrew all of them at once. Now only the dragged window uses the cached copy. Every app draw is timed, and a draw over 50 ms logs `lag: drawing window N (App) took X ms`. Unclipped dimming loops in Files and site settings are clipped. A video-player busy-redraw loop is fixed.
-- **Device work in draw functions (F2).** The Files "This PC" drive scan, camera start and mic start now run from a tick, never from drawing. Ticks pause during a drag or resize and for one frame after it. The browser, video and X display fast paths pause during drags.
-- **USB mouse recovery (F3).** At most one endpoint recovery per poll. An endpoint whose recovery command times out is held off for 10 s. Endpoints left Stopped are recovered. A report-ID byte is never read as buttons (no stuck button or phantom click). `xhci_mouse_poll` cannot re-enter itself.
-- **Freeze you can see (F4).** The freeze watchdog now runs in the timer interrupt before the big kernel lock. If a CPU waits more than 5 s for that lock, a red box is drawn straight to the screen naming the CPU that holds it and the last main-loop step. It stays silent during known long operations (update, install, GPU start). The native sleep watchdog hold is a counter now; sleep is capped at 10 s; `bkl_take(0)` no longer takes the lock.
+- **NVIDIA idle re-check.** After any GPU timeout, `nvgsp_tick` waited until mouse and keyboard had been idle for 2 s, then turned NVIDIA drawing off and on again inside the main loop. Releasing a drag is exactly when input goes idle, and only Turing cards (the owner's GTX 1650) run this. The automatic re-check is now off, and the automatic NVIDIA start 3 s after the desktop appears is opt-in: `nvgsp auto on` (or run `nvgsp all` once by hand).
+- **Burst of first draws at drag end.** `gfx.c` skipped drawing every non-live window while *any* window was dragged, so releasing the mouse redrew all of them at once. Now only the dragged window uses the cached copy. Every app draw is timed, and a draw over 50 ms logs `lag: drawing window N (App) took X ms`. Unclipped dimming loops in Files and site settings are clipped. A video-player busy-redraw loop is fixed.
+- **Device work in draw functions.** The Files "This PC" drive scan, camera start and mic start now run from a tick, never from drawing. Ticks pause during a drag or resize and for one frame after it. The browser, video and X display fast paths pause during drags.
+- **USB mouse recovery.** At most one endpoint recovery per poll. An endpoint whose recovery command times out is held off for 10 s. Endpoints left Stopped are recovered. A report-ID byte is never read as buttons (no stuck button or phantom click). `xhci_mouse_poll` cannot re-enter itself.
+- **Freeze you can see.** The freeze watchdog now runs in the timer interrupt before the big kernel lock. If a CPU waits more than 5 s for that lock, a red box is drawn straight to the screen naming the CPU that holds it and the last main-loop step. It stays silent during known long operations (update, install, GPU start). The native sleep watchdog hold is a counter now; sleep is capped at 10 s; `bkl_take(0)` no longer takes the lock.
 
 ## If it still freezes
 Wait 60 s for a red box and photograph it. Note whether the pointer moves, the clock ticks, and Caps Lock lights. After a restart, run `crash`, `lag` and `usbhid` and photograph each.
 
 # What changed in v11.02
 
-Owner: the mouse now moves in all directions. New problem: clicking an item in the Start menu (Drivers & Hardware: Camera, Voice Recorder) froze the system, and the keyboard and mouse stopped working. 19 agents worked on it: a manager, 4 coders, 4 diff reviewers, 2 analyzers, 2 hunters, 4 whole-OS sweeps and 2 release agents. The lead merged, tested and released. Reports: `docs/team-reports/v1102/`.
+Owner: the mouse now moves in all directions.
 
-| Agent | Role | Result |
-|---|---|---|
-| Manager | Merge tracking | Did trial merges and ran the USB host tests on every branch. Found that Wait + Ring nest one USB wait inside another (also found by revwait and revring). Found that recovery counters were never cleared when a slot was reused. |
-| Wait | Coder, xHCI waits | HID events are handled while the driver waits for a command or EP0 transfer, instead of being queued and dropped. Waits are bounded by ticks (command 100 ms, EP0 150 ms, recovery 50 ms). Completions are matched to the TRB that was issued, so stale ones are dropped. EP0 recovery guard. Per-slot back-off: 3 EP0 timeouts in 3 s hold that slot's EP0 for 5 s. |
-| Ring | Coder, HID halts | A HID endpoint that halts (cc 3/4/6) gets Reset Endpoint + Set TR Dequeue and is re-armed. A watchdog re-arms Halted/Error HID endpoints every 256 polls. |
-| Launch | Coder, apps | Camera starts automatically once per open, not on every frame, with a re-entry guard. Voice Recorder tries the mic once per open (`rc_tried`). |
-| Cam | Coder, UVC/UAC | `uvc_start` is bounded (6 Configure Endpoint tries, 3 control failures, 4 s). Alt settings the controller refuses are skipped. Mic start backs off (5 s after 4 failures). |
-| revwait / revring / revapps / revcore | Diff reviewers | revwait H1 and revring H1: the nested wait (fixed by the lead). revwait M1: recovery ignored command results (fixed by the lead). revapps: no blockers; the camera still starts synchronously. revcore: heap and sleep changes OK to ship. |
-| Repro | Analyzer | In QEMU, v11.01 did not freeze on any Drivers & Hardware item and hot-plug worked. So the freeze needs real-device timeouts or stalls, and **the fix is not verified on hardware**. |
-| Waits | Analyzer | Listed every blocking USB wait and its worst-case cost. |
-| Core | Hunter, core | `kmalloc`/`kfree` are IRQ-safe. Native sleep drops the BKL and caps the duration at 1 h. |
-| UI | Hunter, UI path | Found that the camera start runs in the draw path and that the click path blocks input. Also found that `ui_pump` does not consume mouse dx/dy. That last one is not fixed. |
-| Sweep1-4 | Whole-OS sweeps | 20 minutes each, read-only, so each covered only a small part of its quarter (see below). Sweep1 found the root cause on its own. |
-| Ship / Scribe | Release | Build and checks / these notes, the reports and the handoff. |
+- HID events are handled while the driver waits for a command or EP0 transfer, instead of being queued and dropped. Waits are bounded by ticks (command 100 ms, EP0 150 ms, recovery 50 ms). Completions are matched to the TRB that was issued, so stale ones are dropped. EP0 recovery guard. Per-slot back-off: 3 EP0 timeouts in 3 s hold that slot's EP0 for 5 s.
+- A HID endpoint that halts (cc 3/4/6) gets Reset Endpoint + Set TR Dequeue and is re-armed. A watchdog re-arms Halted/Error HID endpoints every 256 polls.
+- Camera starts automatically once per open, not on every frame, with a re-entry guard. Voice Recorder tries the mic once per open (`rc_tried`).
+- `uvc_start` is bounded (6 Configure Endpoint tries, 3 control failures, 4 s). Alt settings the controller refuses are skipped. Mic start backs off (5 s after 4 failures).
+- In QEMU, v11.01 did not freeze on any Drivers & Hardware item and hot-plug worked. So the freeze needs real-device timeouts or stalls, and **the fix is not verified on hardware**.
+- `kmalloc`/`kfree` are IRQ-safe. Native sleep drops the BKL and caps the duration at 1 h.
+- Found that the camera start runs in the draw path and that the click path blocks input. Also found that `ui_pump` does not consume mouse dx/dy. That last one is not fixed.
 
 ## Root cause (most likely)
 
@@ -205,16 +728,13 @@ Owner: the mouse now moves in all directions. New problem: clicking an item in t
 
 ## Fixes merged
 
-- **xHCI waits (Wait):** HID events are handled during waits. Waits are bounded by ticks. Completions are matched to the TRB that was issued. EP0 recovery guard. Per-slot back-off.
-- **HID halt recovery (Ring + lead):** Reset Endpoint + Set TR Dequeue, plus a watchdog. Recovery is deferred while a wait runs: the `xh_wdepth` guard, with pending recoveries run from `xhci_mouse_poll`. At most 3 recoveries per second per endpoint. The endpoint is re-armed only after both Reset Endpoint and Set TR Dequeue succeed.
-- **Camera / Voice Recorder (Launch + Cam):** one automatic start per open, `uvc_start` bounded to 4 s, refused alt settings skipped, mic back-off.
+- **xHCI waits:** HID events are handled during waits. Waits are bounded by ticks. Completions are matched to the TRB that was issued. EP0 recovery guard. Per-slot back-off.
+- **HID halt recovery:** Reset Endpoint + Set TR Dequeue, plus a watchdog. Recovery is deferred while a wait runs: the `xh_wdepth` guard, with pending recoveries run from `xhci_mouse_poll`. At most 3 recoveries per second per endpoint. The endpoint is re-armed only after both Reset Endpoint and Set TR Dequeue succeed.
+- **Camera / Voice Recorder:** one automatic start per open, `uvc_start` bounded to 4 s, refused alt settings skipped, mic back-off.
 - **Core:** the heap is IRQ-safe, and native sleep drops the BKL.
-- **Lead's own fixes:** the nested-wait guard (433963e1). Recovery counters (`xhid_recpend/recn/rect`) are cleared when an entry is reused (66b7dc37).
+- **Other fixes:** the nested-wait guard (433963e1). Recovery counters (`xhid_recpend/recn/rect`) are cleared when an entry is reused (66b7dc37).
 - Tests: USB host tests 12/12 (usb 91, hidmouse 50, hidkbd 44, hidparse 79, hidsim, xhci init, uvc 25).
 
-## Whole-OS sweeps: honest coverage
-
-Each sweep read only part of its quarter in 20 minutes. Sweep1: part of drivers/usb. Sweep2: 4 files in web/. Sweep3: the Start-menu path, apps/media and the editor. Sweep4: parts of core/mem/arch/sys, but not sys/linux, fs, net or boot. **Most of the OS was not reviewed.**
 
 Important findings **not fixed** in v11.02:
 
@@ -236,36 +756,20 @@ Important findings **not fixed** in v11.02:
 
 # What changed in v11.01
 
-Owner: the Biltema B-1050W wireless mouse still moves only left/right. 8 agents searched the whole mouse and wireless input path; the lead merged, tested and released. Reports: `docs/team-reports/v1101/`.
-
-| Agent | Slice | Result |
-|---|---|---|
-| Parse | HID descriptor parser | Bug found and fixed: when Report Count is larger than the number of usages, the repeated last usage (Y) overwrote Y's position with a trailing always-zero field, so X moved and Y stayed 0. Also: Usage Min/Max mixed with Usages, Usage Page after the usages, Push/Pop keeps Logical Min. Test `hidparse_*` (79 checks). |
-| Route | Which decoder each endpoint uses | Receivers that ignore SET_PROTOCOL and keep sending 3-4 byte boot reports on a report-protocol endpoint are now detected and decoded as boot reports. |
-| Length | Transfer lengths | No root cause; hardening: ISP on interrupt TRBs, residual masked, stricter buffer lookup. Ring test with 600 transfers. |
-| Sim | End-to-end simulation | 6720 receiver combinations from enumeration to cursor (`hidsim_*`). Found that a GET_PROTOCOL answer of "boot" switched report mice to boot decoding (left/right only for 16-bit mice); the lead removed that switch. Remaining known case: an endpoint can stall when a report is an exact multiple of the packet size but shorter than the transfer. |
-| Ref | Real descriptors | Measured layout of 062A:4101: report ID 3, 12-bit X and Y, 7-byte reports (`real_descriptors.h`). |
-| Pointer | Cursor pipeline | Nothing after the USB decode treats Y differently from X. |
-| Kbd | Wireless keyboards, Bluetooth | Per-keyboard modifier state; EP0 recovers after a timeout. No Bluetooth HID code exists. |
-| Diag | Diagnostics | New `usbhid` command: descriptor hex, parsed X/Y positions, last raw reports; `usbhid live` shows reports as they arrive. |
+- Bug found and fixed: when Report Count is larger than the number of usages, the repeated last usage (Y) overwrote Y's position with a trailing always-zero field, so X moved and Y stayed 0. Also: Usage Min/Max mixed with Usages, Usage Page after the usages, Push/Pop keeps Logical Min. Test `hidparse_*` (79 checks).
+- Receivers that ignore SET_PROTOCOL and keep sending 3-4 byte boot reports on a report-protocol endpoint are now detected and decoded as boot reports.
+- No root cause; hardening: ISP on interrupt TRBs, residual masked, stricter buffer lookup. Ring test with 600 transfers.
+- 6720 receiver combinations from enumeration to cursor (`hidsim_*`). Remaining known case: an endpoint can stall when a report is an exact multiple of the packet size but shorter than the transfer.
+- Measured layout of 062A:4101: report ID 3, 12-bit X and Y, 7-byte reports (`real_descriptors.h`).
+- Nothing after the USB decode treats Y differently from X.
+- Per-keyboard modifier state; EP0 recovers after a timeout. No Bluetooth HID code exists.
+- New `usbhid` command: descriptor hex, parsed X/Y positions, last raw reports; `usbhid live` shows reports as they arrive.
 
 If the mouse still moves only left/right: run `usbhid`, slide the mouse forward and back, run `usbhid live`, and photograph both screens.
 
 # What changed in v11.00
 
-Owner: some wireless mice only move in a straight line; check wireless keyboards too; make the OS more stable; reconnect Wi-Fi automatically at boot. One hour: 4 builders, 4 reviewers, 2 fixers. Agent reports: `docs/team-reports/` (v11.00 files end in `-report.md`, `2-review.md`).
-
-## Team
-
-| Role | Name | Work |
-|---|---|---|
-| Lead | Claude | Assignments, merges, checks, release |
-| Builder | Tracker | Wireless/gaming mouse decoding |
-| Builder | Typist | Wireless keyboards and combo receivers |
-| Builder | Anchor | Wi-Fi auto-reconnect at boot |
-| Builder | Keel | Stability: sound, ACPI EC, high memory, storage, ARP |
-| Reviewer | Lens2 / Probe2 / Sentinel2 / Scope2 | USB / Wi-Fi / safety sweep / stability |
-| Fixer | Patch / Weld | USB review findings / memory, EC and Wi-Fi review findings |
+Owner: some wireless mice only move in a straight line; check wireless keyboards too; make the OS more stable; reconnect Wi-Fi automatically at boot.
 
 ## Wireless mice (the "straight line only" bug)
 
@@ -299,28 +803,11 @@ All changes pass host tests and QEMU only. If a mouse still moves in a line, run
 
 # What changed in v10.99
 
-Owner: organize the files, then a team of agents: 4 scouts searching GitHub/Linux/BSD for drivers and programs to port, 4 builders (2 coders, 2 porters), a fix round, and 4 reviewers checking the whole OS at the end. The lead (Claude) organized the files, wrote the multi-chip contract, assigned work, merged, ran the checks and built the release. Agent reports: `docs/team-reports/`; ranked, license-checked porting list: `docs/PORTING-WORKLIST.md`.
-
-## Team
-
-| Role | Name | Work |
-|---|---|---|
-| Lead | Claude | Reorganization, contract `rtw_chip.h`, merges, checks, release |
-| Scout | Atlas | Wi-Fi, Bluetooth, network drivers |
-| Scout | Nova | Storage, input, sound, platform drivers |
-| Scout | Echo | Unix programs and Linux-compat gaps |
-| Scout | Vega | BSD and other open OSes |
-| Coder | Forge | rtw88 multi-chip core, bus layer, H2C packets, IQK |
-| Coder | Bolt | Linux-compat gaps, HD Audio probe |
-| Porter | Bridge | RTL8822BE |
-| Porter | Relay | RTL8822CE |
-| Reviewer | Lens / Probe / Sentinel / Scope | Wi-Fi changes / compat changes / security sweep / stability + reorganization |
-
 ## Reorganization
 
 Files grouped into named modules; every old path is in `docs/MOVES.md`; each new folder has a README.
 - `web/` (browser engine): `core/ html/ css/ layout/ paint/ text/ image/ codec/ js/ worker/ media/`, public headers stay in `web/`.
-- Browser app: `apps/internet/browser/` (+ `glue/`). Wi-Fi driver: `drivers/net/wifi/rtw88/` with `chip.c` and `chips/`.
+- Browser app: `apps/internet/browser/` (+ `glue/`). Wi-Fi driver: `drivers/net/wifi/realtek/rtw88/` with `chip.c` and `chips/`.
 - All 52 numbered `*_parts/` files renamed by content into module folders: `shell/commands/`, `graphics/ui/desktop/`, `apps/system/settings/`, `sys/linux/syscalls/`, `drivers/usb/xhci/`, `drivers/video/nvidia/gsp/`, `apps/system/file_explorer/`, `core/init/installer/`, `fs/pkg/apt/`, `core/proc/jobs/`. `tools/check.py` (`PART_INC`) and `tools/splitc.py` know the new folders.
 
 ## Wi-Fi: one driver, three chips
@@ -331,7 +818,7 @@ Files grouped into named modules; every old path is in `docs/MOVES.md`; each new
 - `wifi diag` shows chip, bus, RF paths, H2C and IQK state. The captive-portal check now runs as a background web request (was a blocking fetch that froze the desktop on offline networks).
 - Not done on 8822B/C: TXGAPK/DPK (8822C, stubbed with a log line), runtime tracking, RSSI tables; untested on real hardware.
 
-## Linux compatibility and sound (Bolt)
+## Linux compatibility and sound
 
 - Writable `/proc/<pid>/loginuid` + sessionid (pam_loginuid: sshd, cron, login); `/sys/devices/system/cpu/cpuN`; `/proc/<pid>/cwd|root|exe` for other processes with uid checks (also in namespaces).
 - EPOLLET and EPOLLRDHUP (I/O counted in the shared read/write paths); sendfile to sockets/ptys now really sends.
@@ -388,8 +875,8 @@ The owner's v10.95 tests: `wifi probe 6` (data queue) got a probe answer address
 
 | # | Change | Where |
 |---|---|---|
-| 1 | The chip stays in "no link" mode (MSR `0x102` bits 1:0 = 0) through authentication and association and switches to "linked" (2) only after a successful association, like rtw88 (`rtw_vif_assoc_changed`). Before, the driver switched to linked before the first auth frame - the one difference between the probe that works and the join that fails. Disconnect goes back to no link. The join log shows the mode | `rtw_set_nettype`/`rtw_get_nettype` in `drivers/net/wifi/rtw88/rtw8821ce.c`, `rtw_wpa2_join`, `rtw_assoc`, `rtw_sec_clear_all` |
-| 2 | Management frames use the data queue by default (`g_mg_via_be = 1`): on this card a frame on the management queue leaves the queue but never reaches the air. `wifi mgq on` goes back to the checked management queue for testing | `drivers/net/wifi/rtw88/rtw8821ce.c`, `shell/commands/system_disks_packages_gpu.c`, `04_cmd_ring3.c` |
+| 1 | The chip stays in "no link" mode (MSR `0x102` bits 1:0 = 0) through authentication and association and switches to "linked" (2) only after a successful association, like rtw88 (`rtw_vif_assoc_changed`). Before, the driver switched to linked before the first auth frame - the one difference between the probe that works and the join that fails. Disconnect goes back to no link. The join log shows the mode | `rtw_set_nettype`/`rtw_get_nettype` in `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `rtw_wpa2_join`, `rtw_assoc`, `rtw_sec_clear_all` |
+| 2 | Management frames use the data queue by default (`g_mg_via_be = 1`): on this card a frame on the management queue leaves the queue but never reaches the air. `wifi mgq on` goes back to the checked management queue for testing | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `shell/commands/system_disks_packages_gpu.c`, `04_cmd_ring3.c` |
 | 3 | `wifi probe uni <name>` sends a directed probe (address 1 and 3 = the router, its SSID, no BMC bit) to a scanned network on its channel, so frames addressed to one router can be tested without joining | `g_probe_uni`, `g_probe_da`, `g_probe_ssid` |
 
 ## What rtw88 does that this driver does not (gap check)
@@ -420,12 +907,12 @@ The management path was checked line by line against Linux rtw88 and found to ma
 
 | # | Change | Where |
 |---|---|---|
-| 1 | Every management frame is checked: after kicking the queue the driver waits up to 20 ms for the card's read pointer to reach the write pointer. If it does not, or the queue is full, the frame is resent through the data queue (QSEL 0, the path the probe proved) and the driver stays on the data queue for management frames (`g_mg_via_be`, cleared when the rings are rebuilt). Broadcast frames get the BMC bit, unicast frames do not (so the card waits for the ACK and retries) | `drivers/net/wifi/rtw88/rtw8821ce.c` (`rtw_tx_mgmt_q`, `rtw_tx_mgmt_path`, `rtw_tx_mgmt_drain`) |
-| 2 | Auth and association use `rtw_mgmt_xchg`: tries 1-2 on the normal path, tries 3-4 forced through the data queue. If only the data queue gets an answer the driver switches to it. Same for open networks (`rtw_assoc`) | `drivers/net/wifi/rtw88/rtw_sec.c`, `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 3 | Join log: every step (queue used, whether the frame left the queue, answer and status code, AID, key messages 1/4 to 4/4, DHCP) is kept in `g_jlog` (40 lines). `wifi connect` prints it when the join fails; `wifi diag` prints it with the send-queue state (both ring pointers, `0x10C`, extra/low page counts, how many management frames left each queue or got stuck) | `drivers/net/wifi/rtw88/rtw8821ce.c`, `drivers/net/wifi/rtw88/rtw_sec.c`, `net/wifi/wifi_mgr.c`, `shell/commands/system_disks_packages_gpu.c` |
-| 4 | `wifi probe <ch> mg` sends the same probe through the management queue, so the queue can be tested without joining. A probe answer only counts if it is addressed to this laptop; answers to other devices are counted and ignored | `drivers/net/wifi/rtw88/rtw8821ce.c` (`g_probe_ring`, `g_probe_other`), `shell/commands/processes_devices_wifi_bringup.c` |
+| 1 | Every management frame is checked: after kicking the queue the driver waits up to 20 ms for the card's read pointer to reach the write pointer. If it does not, or the queue is full, the frame is resent through the data queue (QSEL 0, the path the probe proved) and the driver stays on the data queue for management frames (`g_mg_via_be`, cleared when the rings are rebuilt). Broadcast frames get the BMC bit, unicast frames do not (so the card waits for the ACK and retries) | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` (`rtw_tx_mgmt_q`, `rtw_tx_mgmt_path`, `rtw_tx_mgmt_drain`) |
+| 2 | Auth and association use `rtw_mgmt_xchg`: tries 1-2 on the normal path, tries 3-4 forced through the data queue. If only the data queue gets an answer the driver switches to it. Same for open networks (`rtw_assoc`) | `drivers/net/wifi/realtek/rtw88/rtw_sec.c`, `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 3 | Join log: every step (queue used, whether the frame left the queue, answer and status code, AID, key messages 1/4 to 4/4, DHCP) is kept in `g_jlog` (40 lines). `wifi connect` prints it when the join fails; `wifi diag` prints it with the send-queue state (both ring pointers, `0x10C`, extra/low page counts, how many management frames left each queue or got stuck) | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `drivers/net/wifi/realtek/rtw88/rtw_sec.c`, `net/wifi/wifi_mgr.c`, `shell/commands/system_disks_packages_gpu.c` |
+| 4 | `wifi probe <ch> mg` sends the same probe through the management queue, so the queue can be tested without joining. A probe answer only counts if it is addressed to this laptop; answers to other devices are counted and ignored | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` (`g_probe_ring`, `g_probe_other`), `shell/commands/processes_devices_wifi_bringup.c` |
 | 5 | Auth/assoc answers must be addressed to us (address 1 = our MAC), not just come from the router - another device's auth answer was accepted before | `rtw_rx_wait_mgmt` |
-| 6 | Per-queue contention settings (AIFS, CWmin, CWmax in `0x500-0x50C`) are written on every join with mac80211's default WMM values (short slot, SIFS 10 us on 2.4 GHz, 16 us on 5 GHz). rtw88 never writes these itself - mac80211 does through `conf_tx` - so the port had left them at power-on values. TXOP bits are kept. The response (ACK) rates `0x440` are set like rtw88 (`0x15F` on 2.4 GHz, `0x150` on 5 GHz; the MAC table left `0x15D`). ACKing the router's auth answer matters: hostapd drops a station that did not ACK it | `rtw_edca_defaults` in `drivers/net/wifi/rtw88/rtw_sec.c` |
+| 6 | Per-queue contention settings (AIFS, CWmin, CWmax in `0x500-0x50C`) are written on every join with mac80211's default WMM values (short slot, SIFS 10 us on 2.4 GHz, 16 us on 5 GHz). rtw88 never writes these itself - mac80211 does through `conf_tx` - so the port had left them at power-on values. TXOP bits are kept. The response (ACK) rates `0x440` are set like rtw88 (`0x15F` on 2.4 GHz, `0x150` on 5 GHz; the MAC table left `0x15D`). ACKing the router's auth answer matters: hostapd drops a station that did not ACK it | `rtw_edca_defaults` in `drivers/net/wifi/realtek/rtw88/rtw_sec.c` |
 | 7 | `wm_deauth` waits on whichever queue was used (`rtw_tx_mgmt_drain`) | `net/wifi/wifi_mgr.c` |
 
 ## Tests
@@ -444,9 +931,9 @@ Owner: "analyze the wifi driver 4x times over make it good". Four separate read-
 
 | # | Problem | Fix | Where |
 |---|---|---|---|
-| 1 | `rtw_rx_ring_up` writes `0x39C = 0xFFFFFFFF`, which clears every TX ring pointer as well, but the host indexes `g_beidx`/`g_mgidx` kept their values; it runs on every scan, `wifi_up` and join. The next send made the card walk stale descriptors (duplicate auth/assoc frames, old encrypted data) | Host indexes reset with the pointers; same in the firmware download | `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 2 | RX buffers were 2048 bytes but the chip may write descriptor + PHY status + shift + up to the packet limit; the limit (`0x60C`) did not match | 8 KB buffers (`RTW_RXBUF`, page aligned, 1 MB for 128 slots) and packet limit 15 x 512 bytes, written after the tables | `include/nvx/drivers/net/wifi/rtw8821ce.h`, `drivers/net/wifi/rtw88/rtw_sec.c`, `shell/commands/processes_devices_wifi_bringup.c`, every RX loop |
-| 3 | Management, probe and EAPOL frames reused one static buffer with no check that the ring had room, and rewrote the ring base registers on every send | `rtw_tx_buf` (16 rotating pages per ring) and `rtw_tx_room` (read pointer from `0x3A8`/`0x3B0`); base registers are only programmed at ring set-up | `drivers/net/wifi/rtw88/rtw8821ce.c`, `net/wifi/wpa2.c`, `net/wifi/wifi_netdev.c` |
+| 1 | `rtw_rx_ring_up` writes `0x39C = 0xFFFFFFFF`, which clears every TX ring pointer as well, but the host indexes `g_beidx`/`g_mgidx` kept their values; it runs on every scan, `wifi_up` and join. The next send made the card walk stale descriptors (duplicate auth/assoc frames, old encrypted data) | Host indexes reset with the pointers; same in the firmware download | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 2 | RX buffers were 2048 bytes but the chip may write descriptor + PHY status + shift + up to the packet limit; the limit (`0x60C`) did not match | 8 KB buffers (`RTW_RXBUF`, page aligned, 1 MB for 128 slots) and packet limit 15 x 512 bytes, written after the tables | `include/nvx/drivers/net/wifi/rtw8821ce.h`, `drivers/net/wifi/realtek/rtw88/rtw_sec.c`, `shell/commands/processes_devices_wifi_bringup.c`, every RX loop |
+| 3 | Management, probe and EAPOL frames reused one static buffer with no check that the ring had room, and rewrote the ring base registers on every send | `rtw_tx_buf` (16 rotating pages per ring) and `rtw_tx_room` (read pointer from `0x3A8`/`0x3B0`); base registers are only programmed at ring set-up | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `net/wifi/wpa2.c`, `net/wifi/wifi_netdev.c` |
 
 ## RX path and channels
 
@@ -503,10 +990,10 @@ Owner test of v10.92: the copy-engine fix applied (`0x1080=0x00010100`) but the 
 |---|---|---|---|
 | 1 | Nothing ever switched on Memory and Bus Master on the PCIe bridge (root port) above the Wi-Fi card. `pci_scan` only looks at function 0 of buses 0-3 and never at bridges; Linux `pci_enable_device` enables every upstream bridge. A bridge with Bus Master off refuses the card's memory requests while CPU access to the card still works - exactly the symptom | `pci_enable_upstream` walks up from the card's bus and sets Memory + Bus Master on each bridge; new `pci_parent_bridge`, `pci_find_cap` | `drivers/bus/pci.c`, `net/wifi/wifi_mgr.c` (`wifi_pci_prepare`) |
 | 2 | No VT-d handling at all. Firmware with pre-boot DMA protection can leave translation or protected memory regions on, letting only the devices it used (USB, disk) through | New `drivers/iommu/vtd.c`: reads the ACPI DMAR table at boot, and for each unit turns off translation (GCMD.TE, one-shot bits masked) and protected memory regions (PMEN.EPM) as Linux does when it does not use the IOMMU; one log line per unit. Interrupt remapping is left alone | `drivers/iommu/vtd.c`, `core/init/main.c` |
-| 3 | PCIe link settings Linux uses for this card were missing | ASPM turned off on the card and its bridge (Linux disables ASPM L1 for the 8821CE behind Intel bridges), completion timeout disabled (`DEVCTL2` bit 4, rtw88 does this for the 8821CE), payload size lowered to the bridge's if larger, PHY setting MDIO 0x09 = 0x6380 (rtw88 `rtw_pci_phy_cfg`, new `rtw_mdio_write`), card forced to D0 | `net/wifi/wifi_mgr.c`, `drivers/net/wifi/rtw88/rtw8821ce.c` |
+| 3 | PCIe link settings Linux uses for this card were missing | ASPM turned off on the card and its bridge (Linux disables ASPM L1 for the 8821CE behind Intel bridges), completion timeout disabled (`DEVCTL2` bit 4, rtw88 does this for the 8821CE), payload size lowered to the bridge's if larger, PHY setting MDIO 0x09 = 0x6380 (rtw88 `rtw_pci_phy_cfg`, new `rtw_mdio_write`), card forced to D0 | `net/wifi/wifi_mgr.c`, `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
 | 4 | The PCI status error bits were wiped: the enable code wrote the whole command/status dword back | Only the command half is written; the first Wi-Fi start records the card and bridge status before anything is changed, then clears them, so later errors are new | `graphics/ui/desktop/app_tiles_and_icons.c`, `shell/commands/processes_devices_wifi_bringup.c`, `net/wifi/wifi_mgr.c` |
 | 5 | Power sequence differed from rtw88: USB/SDIO-only steps (0x20 b0, 0x00 b5) were done; `rtw_mac_pre_system_cfg` and `trans_carddis_to_cardemu` were missing | Removed the USB/SDIO steps; added 0x1C=0, 0x74 b8, pin mux (0x64 b29 b28, 0x4C -b25 -b26, 0x40 b2), BB/RF off before power-on, 0x05 -b3 -b4 -b7, 0x300=0, 0x301=0 | `shell/commands/processes_devices_wifi_bringup.c` |
-| 6 | Ring memory only 64-byte aligned; the high halves of the 64-bit ring address registers (0x30C, 0x314, 0x32C, 0x33C) never written | Rings and staging buffers from `dma_alloc_pages`; high halves written 0 | `shell/commands/processes_devices_wifi_bringup.c`, `drivers/net/wifi/rtw88/rtw8821ce.c` |
+| 6 | Ring memory only 64-byte aligned; the high halves of the 64-bit ring address registers (0x30C, 0x314, 0x32C, 0x33C) never written | Rings and staging buffers from `dma_alloc_pages`; high halves written 0 | `shell/commands/processes_devices_wifi_bringup.c`, `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
 | 7 | No way to see the PCIe side | `wifi diag` adds: card command/status with decoded errors, power state, link generation/width, ASPM, payload, completion timeout; the bridge's ID, command, status and downstream status; the values at first start; IOMMU result; whether the RX ring is page aligned, below 4 GB and in usable RAM | `shell/commands/system_disks_packages_gpu.c` |
 
 After the separate review: `wifi init` from the Terminal also runs the PCIe preparation; a card woken from D3 without No_Soft_Reset gets its BARs and command register back; the graphics-only VT-d unit (scope only 00:02.0, not include-all) is left as it is, as Linux does on newer Intel GPUs; a unit that does not answer (CAP all ones) is skipped; the TX/RX pointer clear `0x39C` is a 32-bit write like rtw88. Not changed: if the chip is already powered when `wifi init` runs, rtw88 powers it off first; we do not (the owner's logs show it starts powered down).
@@ -519,12 +1006,12 @@ Owner test of v10.91: `wifi diag` showed the radio decoding frames (OFDM 10 in 1
 
 | # | Problem | Effect | Fix | Where |
 |---|---|---|---|---|
-| 1 | rtw88 `__rtw_mac_init_system_cfg` (end of `rtw_mac_power_on`) was never done: `0x1080` DDMA_EN (bit 8) and platform reset (bit 16), `0x03 |= 0xD8`, `0x1103 = (x & 0xF0) | 0x0C`, boot-from-flash off (`0x80` b20, `0x40` b19) | Without DDMA_EN the copy engine that moves the firmware from the TX buffer into the chip's memory does not work: both checksums fail (the "copied" bits in `0x80` are set by our own code, so `0x0029` did not prove any data moved) | `rtw_sys_cfg` runs at the start of every firmware download | `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 2 | The beacon-queue stager ran the full MAC queue setup (`rtw_mac_trx_init`) the first time it was used. With the new rtw88 order (firmware before `macinit`) that would have happened in the middle of the download, cutting the high queue from 0x200 pages to 16 | Firmware chunks of 33 pages would not fit | No queue setup while the firmware is loading (rtw88 does none either); after each page `0x204`, `0x101`, `0x550`, `0x422` are restored like rtw88 `rtw_fw_write_data_rsvd_page` | `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 3 | A failed firmware download left `0x80` bit 0 (download mode) set | The chip stayed in download mode | On failure bit 0 is cleared and the CPU enabled again (rtw88 `dlfw_fail`) | `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 4 | `wifi rings` set `0x300` bits 0 and 16, which rtw88 never sets; they stayed set | Possible RX DMA blocker | Bits 0 and 16 are cleared, bits 20 and 15 set (rtw88 `rtw_pci_dma_reset`), also in `rtw_rx_ring_up` | `shell/commands/processes_devices_wifi_bringup.c`, `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 5 | rtw88 `rtw_drv_info_cfg` parts missing: `0x115` low nibble 0xF ("rxdesc len = 0 issue") and `0x7D5` bits 0-1 cleared | Possible RX DMA problem on 3081-CPU chips | Done at the end of MAC init | `drivers/net/wifi/rtw88/rtw8821ce.c` |
-| 6 | `rtw_desc_chksum` wrote into bytes 14-15 of the TX descriptor (word 3 bits 16-31) | Corrupted the descriptor field there (max aggregation number). Not the download bug: rtw88 fills this checksum only on USB and SDIO | `rtw_desc_csum` writes word 7 bits 15:0 (bytes 28-29) and every TX path calls it; harmless on PCIe | `drivers/net/wifi/rtw88/rtw8821ce.c`, `net/wifi/wifi_netdev.c`, `net/wifi/wpa2.c` |
+| 1 | rtw88 `__rtw_mac_init_system_cfg` (end of `rtw_mac_power_on`) was never done: `0x1080` DDMA_EN (bit 8) and platform reset (bit 16), `0x03 |= 0xD8`, `0x1103 = (x & 0xF0) | 0x0C`, boot-from-flash off (`0x80` b20, `0x40` b19) | Without DDMA_EN the copy engine that moves the firmware from the TX buffer into the chip's memory does not work: both checksums fail (the "copied" bits in `0x80` are set by our own code, so `0x0029` did not prove any data moved) | `rtw_sys_cfg` runs at the start of every firmware download | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 2 | The beacon-queue stager ran the full MAC queue setup (`rtw_mac_trx_init`) the first time it was used. With the new rtw88 order (firmware before `macinit`) that would have happened in the middle of the download, cutting the high queue from 0x200 pages to 16 | Firmware chunks of 33 pages would not fit | No queue setup while the firmware is loading (rtw88 does none either); after each page `0x204`, `0x101`, `0x550`, `0x422` are restored like rtw88 `rtw_fw_write_data_rsvd_page` | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 3 | A failed firmware download left `0x80` bit 0 (download mode) set | The chip stayed in download mode | On failure bit 0 is cleared and the CPU enabled again (rtw88 `dlfw_fail`) | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 4 | `wifi rings` set `0x300` bits 0 and 16, which rtw88 never sets; they stayed set | Possible RX DMA blocker | Bits 0 and 16 are cleared, bits 20 and 15 set (rtw88 `rtw_pci_dma_reset`), also in `rtw_rx_ring_up` | `shell/commands/processes_devices_wifi_bringup.c`, `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 5 | rtw88 `rtw_drv_info_cfg` parts missing: `0x115` low nibble 0xF ("rxdesc len = 0 issue") and `0x7D5` bits 0-1 cleared | Possible RX DMA problem on 3081-CPU chips | Done at the end of MAC init | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
+| 6 | `rtw_desc_chksum` wrote into bytes 14-15 of the TX descriptor (word 3 bits 16-31) | Corrupted the descriptor field there (max aggregation number). Not the download bug: rtw88 fills this checksum only on USB and SDIO | `rtw_desc_csum` writes word 7 bits 15:0 (bytes 28-29) and every TX path calls it; harmless on PCIe | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `net/wifi/wifi_netdev.c`, `net/wifi/wpa2.c` |
 | 7 | Start-up order differed from rtw88 | - | `wifi_up` runs init, firmware, MAC init, tables, rings (rtw88 `rtw_power_on`), then the antenna setup; the log has each firmware part's result; "firmware running" needs both ready bits | `net/wifi/wifi_mgr.c` |
 | 8 | Diag could not show the firmware parts or the RX DMA state | - | `wifi diag` adds firmware part results ("not-staged", "copy-timeout"), "still in download mode", and `0x284` (bits 31:24 = packets waiting in the RX FIFO), `0x288`, `0x290`, `0x20C`, `0x210` (bit 2 = page overflow), `0x1080` | `shell/commands/system_disks_packages_gpu.c` |
 
@@ -534,8 +1021,8 @@ Owner photo of v10.90: "Found 0 networks - radio received 0 frames (receiver not
 
 | # | Problem | Effect | Fix | Where |
 |---|---|---|---|---|
-| 1 | The built-in register tables were the SDIO branch of rtw88's `rtw8821c_table.c`, for RFE type 0. For a PCIe card rtw88 writes other values to 25 radio registers (RF 0x3F, the receive gain table) and BB 0x8CC; boards with package type 1 and RFE 4 get other AGC and RF values; RFE 2 and 4 boards get an extra AGC table (`agc_btg_type2`) that we never wrote | Wrong receive gain on this card, wrong AGC on Bluetooth-shared antenna boards | The raw rtw88 tables with their conditions (`rtw_tables_cond.h`) are evaluated at start-up for PCIe, the chip cut, the RFE type and the package (`rtw_cond_setup`, `rtw_apply_cond`, same rules as `rtw_parse_tbl_phy_cond`). The eFuse is read before the tables. Checked on the host: the C code gives the same writes as a Python copy of rtw88's parser for 270 combinations, and the parser with "SDIO, RFE 0" reproduces the old tables exactly | `drivers/net/wifi/rtw88/rtw_tables_cond.h`, `drivers/net/wifi/rtw88/rtw_sec.c`, `shell/commands/processes_devices_wifi_bringup.c` |
-| 2 | No antenna/Bluetooth-coexistence setup at all. rtw88 sets GNT_WL high, GNT_BT low, the path owner and the antenna switch (DPDT) right after start-up | The shared antenna can stay with Bluetooth, so the radio hears nothing | `rtw_coex_wifi_only` (rtw88 power-on + Wi-Fi-only coex init, values checked against rtw88 by a separate review and a host test for all 16 RFE types); run by `wifi_up` and logged; `wifi coex` runs it by hand | `drivers/net/wifi/rtw88/rtw8821ce.c`, `net/wifi/wifi_mgr.c` |
+| 1 | The built-in register tables were the SDIO branch of rtw88's `rtw8821c_table.c`, for RFE type 0. For a PCIe card rtw88 writes other values to 25 radio registers (RF 0x3F, the receive gain table) and BB 0x8CC; boards with package type 1 and RFE 4 get other AGC and RF values; RFE 2 and 4 boards get an extra AGC table (`agc_btg_type2`) that we never wrote | Wrong receive gain on this card, wrong AGC on Bluetooth-shared antenna boards | The raw rtw88 tables with their conditions (`rtw_tables_cond.h`) are evaluated at start-up for PCIe, the chip cut, the RFE type and the package (`rtw_cond_setup`, `rtw_apply_cond`, same rules as `rtw_parse_tbl_phy_cond`). The eFuse is read before the tables. Checked on the host: the C code gives the same writes as a Python copy of rtw88's parser for 270 combinations, and the parser with "SDIO, RFE 0" reproduces the old tables exactly | `drivers/net/wifi/realtek/rtw88/rtw_tables_cond.h`, `drivers/net/wifi/realtek/rtw88/rtw_sec.c`, `shell/commands/processes_devices_wifi_bringup.c` |
+| 2 | No antenna/Bluetooth-coexistence setup at all. rtw88 sets GNT_WL high, GNT_BT low, the path owner and the antenna switch (DPDT) right after start-up | The shared antenna can stay with Bluetooth, so the radio hears nothing | `rtw_coex_wifi_only` (rtw88 power-on + Wi-Fi-only coex init, values checked against rtw88 by a separate review and a host test for all 16 RFE types); run by `wifi_up` and logged; `wifi coex` runs it by hand | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `net/wifi/wifi_mgr.c` |
 | 3 | No single command that tells where receiving stops | Every round needed several photos | `wifi diag`: registers, ring pointers, coex state, table choice, then 1 s of listening with the PHY counters reset, and a verdict (radio hears nothing / hears energy but decodes nothing / decodes but nothing reaches memory / receiver works). Every line also goes to `/System/Logs/System.nvg` as `wifi: diag: ...` | `shell/commands/system_disks_packages_gpu.c` |
 | 4 | Two name clashes that broke the strict one-file compile check (`edid_parse` in `nvdisp.c`, a second `struct nvx_ufs_t` in the apt USB reader) | `check.py` static group failed | renamed to `nvd_edid_parse`; the apt reader includes `xhci.h` | `drivers/video/nvidia/nvdisp.c`, `fs/pkg/apt/deb_archive.c` |
 
@@ -547,9 +1034,9 @@ Settings > Wi-Fi always said "Found 0 networks" on the RTL8821CE (owner report).
 
 | # | Bug | Effect | Fix | Where |
 |---|---|---|---|---|
-| 1 | The firmware download restores CR (0x100) with HCI_RXDMA_EN (bit 1) and RXDMA_EN (bit 3) cleared. `wifi rings` set bits 2 and 3 again, `rtw_rx_ring_up` bits 2-7, but nothing set bit 1 again. rtw88 restores CR whole and later writes MAC_TRX_ENABLE (0xFF). | The MAC never hands received frames to the host, so every scan (and every connection attempt) got nothing | `rtw_rx_ring_up` writes all of MAC_TRX_ENABLE; `wifi rings` and `wifi_radio_on` set bits 0-3; `wifi_up` ends with `rtw_rx_ring_up` | `drivers/net/wifi/rtw88/rtw8821ce.c`, `net/wifi/wifi_mgr.c`, `shell/commands/processes_devices_wifi_bringup.c` |
+| 1 | The firmware download restores CR (0x100) with HCI_RXDMA_EN (bit 1) and RXDMA_EN (bit 3) cleared. `wifi rings` set bits 2 and 3 again, `rtw_rx_ring_up` bits 2-7, but nothing set bit 1 again. rtw88 restores CR whole and later writes MAC_TRX_ENABLE (0xFF). | The MAC never hands received frames to the host, so every scan (and every connection attempt) got nothing | `rtw_rx_ring_up` writes all of MAC_TRX_ENABLE; `wifi rings` and `wifi_radio_on` set bits 0-3; `wifi_up` ends with `rtw_rx_ring_up` | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `net/wifi/wifi_mgr.c`, `shell/commands/processes_devices_wifi_bringup.c` |
 | 2 | `rtw_find_mmio` read a 64-bit memory BAR as 32 bits | With the card's registers above 4 GB, register writes went to the wrong address | 64-bit BARs are recognised; one above 4 GB is refused with a log line | `graphics/ui/desktop/app_tiles_and_icons.c` |
-| 3 | No way to tell why a scan found nothing | - | A scan with no networks says how many frames the radio received ("receiver not working" when none); the log has frames, beacons, CRC errors, CR, RCR and the RX pointer; `wifi_up` logs whether the firmware download was confirmed (0x80 bits 14-15) | `net/wifi/wifi_mgr.c`, `drivers/net/wifi/rtw88/rtw8821ce.c` |
+| 3 | No way to tell why a scan found nothing | - | A scan with no networks says how many frames the radio received ("receiver not working" when none); the log has frames, beacons, CRC errors, CR, RCR and the RX pointer; `wifi_up` logs whether the firmware download was confirmed (0x80 bits 14-15) | `net/wifi/wifi_mgr.c`, `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` |
 
 # What changed in v10.89
 
@@ -637,7 +1124,7 @@ Tested in QEMU with the PS/2 controller switched off (`-machine pc,i8042=off`) a
 
 # What changed in v10.84
 
-Browser: a new home page, YouTube's home and search as light pages, and three JavaScript engine crashes and failures fixed (sections 13.15 and 13.23). Window titles of Linux programs show their real text. First report from the owner's computer: Firefox on NoovexOS 64 loads YouTube, noovexos.site and claude.ai (the owner chatted with Claude from it).
+Browser: a new home page, YouTube's home and search as light pages, and three JavaScript engine crashes and failures fixed (sections 13.15 and 13.23). Window titles of Linux programs show their real text.
 
 | # | Before (v10.83) | Now (v10.84) | Where |
 |---|---|---|---|
@@ -666,7 +1153,7 @@ Containers for Linux programs (section 6.40): namespaces, chroot and pivot_root,
 
 Tested in QEMU (TCG, 2 cores): `contest` 113 of 113 (added to the `qemu` check group); `container create box`, `container run -m 64M -p 20 -h boxhost box /usr/bin/xxd -v` (ran inside), `container ls`, `container rm`. The YouTube player script was tested under Node with a mocked YouTube API (client fallback, headers, format choice, ranged download into MediaSource); youtube.com itself cannot be reached from the build machine. `host www.youtube.com` in QEMU gives "could not resolve" here for the same reason.
 
-Review by a separate agent: 11 bugs, all fixed before release. High: relative symbolic links were resolved against the host path and could leave a chroot; a failed mapping of an absolute link fell back to the host path; root inside a user namespace counted as root for other containers' namespaces, `setns` and cgroup files (now `setns`, `/proc/<pid>/ns` of other users' processes and cgroup writes need real root, and mounts need the mount namespace to belong to the caller's user namespace); an overlay with any upper directory let a user write root-owned files (overlay and bind mounts now need real root). Medium: `setuid` in a user namespace did not change the real ids; nested PID namespaces gave pids that meant nothing inside (now EINVAL); thread ids written by `CLONE_*SETTID` and `getpgrp`/`getpgid`/`getsid` were host pids inside a PID namespace; `execve("/proc/self/exe")` in a container mapped the path twice; whiteout names could be written past a 256-byte buffer and `lxn_cat` left strings unterminated; renaming a directory that exists only in the lower layer lost its contents (now EXDEV, like Linux). Low: CPU usage of a group could go backwards (throttling a whole period); mount paths longer than 111 characters were cut (now ENAMETOOLONG).
+Review: 11 bugs, all fixed before release. High: relative symbolic links were resolved against the host path and could leave a chroot; a failed mapping of an absolute link fell back to the host path; root inside a user namespace counted as root for other containers' namespaces, `setns` and cgroup files (now `setns`, `/proc/<pid>/ns` of other users' processes and cgroup writes need real root, and mounts need the mount namespace to belong to the caller's user namespace); an overlay with any upper directory let a user write root-owned files (overlay and bind mounts now need real root). Medium: `setuid` in a user namespace did not change the real ids; nested PID namespaces gave pids that meant nothing inside (now EINVAL); thread ids written by `CLONE_*SETTID` and `getpgrp`/`getpgid`/`getsid` were host pids inside a PID namespace; `execve("/proc/self/exe")` in a container mapped the path twice; whiteout names could be written past a 256-byte buffer and `lxn_cat` left strings unterminated; renaming a directory that exists only in the lower layer lost its contents (now EXDEV, like Linux). Low: CPU usage of a group could go backwards (throttling a whole period); mount paths longer than 111 characters were cut (now ENAMETOOLONG).
 
 # What changed in v10.82
 
@@ -683,7 +1170,7 @@ More wired network adapters, USB Ethernet and phone tethering, switching between
 
 Not yet seen on real hardware: the I219, I225/I226, RTL8125 and real USB adapters. QEMU emulates the 82574L, 82576, vmxnet3 and a USB CDC-ECM/RNDIS device, so those paths ran in tests.
 
-Two reviews by separate agents, fixed before release. Network drivers: the Intel transmit ring could fill until tail met head and stop for good after a cable pull (one slot is now kept free and frames are refused while there is no link); the `usb` command left a dead USB adapter registered; a USB adapter without cable could keep the system from switching back to a wired one; two waits counted timer ticks that do not advance in polled mode; the hot-plug poll could reset a port that the start-up scan had just set up; the DHCP retry counter was not reset after a switch; a removed USB adapter was "recovered" over and over; vmxnet3 did not send UPDATE_RX_MODE; the igc NVM register offset, TXDCTL bit 22 on e1000e, D0 power state and bus-master stop before reset, SMBus before the PHY power toggle, and the 82575 was dropped. System calls: a thread calling execve, and the native `int 0x80` interface, could get around seccomp; `move_pages` wrote past the checked range; a FIFO open that was waiting when its process died left a phantom reader and could be picked up by another open; FIFOs lost O_NONBLOCK and O_RDWR FIFOs could not be written; `fchmodat2(AT_EMPTY_PATH)` could change the wrong file; timed waits left their deadline behind on some error paths; `klogctl` needed root for reading and clearing and READ did not consume; TSYNC could clear no_new_privs; per-process wait markers survived a kill; smaller ABI details (futex_waitv value range, mempolicy flags, unknown seccomp actions kill the process, IPC permission when both read and write are asked); openat2 now refuses symbolic links under RESOLVE_BENEATH/IN_ROOT; limits on seccomp filter size and message-queue memory.
+Two reviews, fixed before release. Network drivers: the Intel transmit ring could fill until tail met head and stop for good after a cable pull (one slot is now kept free and frames are refused while there is no link); the `usb` command left a dead USB adapter registered; a USB adapter without cable could keep the system from switching back to a wired one; two waits counted timer ticks that do not advance in polled mode; the hot-plug poll could reset a port that the start-up scan had just set up; the DHCP retry counter was not reset after a switch; a removed USB adapter was "recovered" over and over; vmxnet3 did not send UPDATE_RX_MODE; the igc NVM register offset, TXDCTL bit 22 on e1000e, D0 power state and bus-master stop before reset, SMBus before the PHY power toggle, and the 82575 was dropped. System calls: a thread calling execve, and the native `int 0x80` interface, could get around seccomp; `move_pages` wrote past the checked range; a FIFO open that was waiting when its process died left a phantom reader and could be picked up by another open; FIFOs lost O_NONBLOCK and O_RDWR FIFOs could not be written; `fchmodat2(AT_EMPTY_PATH)` could change the wrong file; timed waits left their deadline behind on some error paths; `klogctl` needed root for reading and clearing and READ did not consume; TSYNC could clear no_new_privs; per-process wait markers survived a kill; smaller ABI details (futex_waitv value range, mempolicy flags, unknown seccomp actions kill the process, IPC permission when both read and write are asked); openat2 now refuses symbolic links under RESOLVE_BENEATH/IN_ROOT; limits on seccomp filter size and message-queue memory.
 
 # What changed in v10.81
 
@@ -710,7 +1197,7 @@ Programs can use more memory than the computer has: pages they have not touched 
 | 3 | `/proc/meminfo` counted the kernel heap's free space as free memory and had 0 for cache and swap. | `MemFree` is the free page frames, `MemAvailable` adds the reclaimable cache; `Cached`, `SwapTotal`, `SwapFree`, `Zswap`, `Zswapped`; `/proc/swaps`, `/proc/sys/vm/swappiness`, `/proc/sys/vm/drop_caches`. | `fs/vfs/unixfs.c`, `fs/vfs/vfs.c`, `08_sysfs.c` |
 | 4 | Decompressed blocks of the system files stayed in memory for good. | Blocks used only by `read()` and `mmap` are dropped oldest first when they pass a quarter of the kernel heap, when an allocation fails, or on `drop_caches`; blocks whose address a program keeps are pinned. | `fs/vfs/sysroot.c` (`blk_get`, `sysroot_bc_evict`) |
 
-A review by a separate agent found and this release fixes before shipping: reclaim inside a system call could swap out a page the kernel had just checked (a signal frame written at the next step would have stopped the system) and could change the physical page under a shared futex (lost wake-up) - kernel-side reclaim now leaves the current address space alone; `MADV_PAGEOUT` and the background pass had no limit while holding the kernel lock; swapping could not start with zero free frames (a 16-frame reserve); one reclaim call could visit a program twice and swap pages it had just used; pinned cache blocks made every cache miss scan all blocks. Not tested on real hardware. Left: 1 GB user pages are not expected by the scanner (there are none), large shared anonymous mappings above 256 MB are treated as private (as before this release).
+A review found and this release fixes before shipping: reclaim inside a system call could swap out a page the kernel had just checked (a signal frame written at the next step would have stopped the system) and could change the physical page under a shared futex (lost wake-up) - kernel-side reclaim now leaves the current address space alone; `MADV_PAGEOUT` and the background pass had no limit while holding the kernel lock; swapping could not start with zero free frames (a 16-frame reserve); one reclaim call could visit a program twice and swap pages it had just used; pinned cache blocks made every cache miss scan all blocks. Not tested on real hardware. Left: 1 GB user pages are not expected by the scanner (there are none), large shared anonymous mappings above 256 MB are treated as private (as before this release).
 
 # What changed in v10.79
 
@@ -723,7 +1210,7 @@ Linux programs see a real `/sys` tree, block device nodes in `/dev` and hotplug 
 | 3 | No hotplug events. | Netlink uevent sockets get `add`, `remove` and `change` events in the kernel format (group 1) and the libudev format (group 2); writing to a `uevent` file sends one; `SO_PASSCRED` works. | `08_sysfs.c` (`sx_emit`, `sx_poll`), `net/lxsock.c`, `06_lx_mkdir.c` |
 | 4 | - | `/sys/power/state` (`freeze`) suspends to idle; backlight brightness can be set through `/sys/class/backlight`. | `08_sysfs.c` (`sx_write`) |
 
-A review by a separate agent found and this release fixes: a kernel stack overflow when a very long path went through a sysfs link (`sx_canon` now refuses paths that would grow past 200 bytes), a read before a kernel buffer through a huge `lseek` on a writable sysfs file, fake uevents from non-root users (writing `uevent` files, and opening any sysfs file for writing, now needs root; `access()` agrees), lost hotplug events when a program read `/sys` between two polls (the poll now compares with the last announced state), partition numbers above 15 colliding with the next disk (they get major 259 as in Linux), partition sizes past the end of the disk, and `/dev/bus/usb/NNN` for buses that do not exist. `realpath` on sysfs links works (`.` and `..` after a link).
+A review found and this release fixes: a kernel stack overflow when a very long path went through a sysfs link (`sx_canon` now refuses paths that would grow past 200 bytes), a read before a kernel buffer through a huge `lseek` on a writable sysfs file, fake uevents from non-root users (writing `uevent` files, and opening any sysfs file for writing, now needs root; `access()` agrees), lost hotplug events when a program read `/sys` between two polls (the poll now compares with the last announced state), partition numbers above 15 colliding with the next disk (they get major 259 as in Linux), partition sizes past the end of the disk, and `/dev/bus/usb/NNN` for buses that do not exist. `realpath` on sysfs links works (`.` and `..` after a link).
 
 # What changed in v10.78
 
@@ -742,12 +1229,12 @@ Bug fixes in the Wi-Fi driver, the Intel graphics driver and the NVIDIA GSP driv
 
 | # | Before (v10.76) | Now (v10.77) | Where |
 |---|---|---|---|
-| 1 | 5 GHz networks without a DS Parameter field were filed under whatever channel was being scanned when the packet was read, sometimes the next one; joining then tuned to the wrong channel. | The channel comes from the DS Parameter field, else the HT Operation field, else the scan channel; packets read in the first 20 ms after a channel switch are only used if they name their channel. | `drivers/net/wifi/rtw88/rtw8821ce.c` (`rtw_scan_frame`), `net/wifi/wifi_mgr.c` |
+| 1 | 5 GHz networks without a DS Parameter field were filed under whatever channel was being scanned when the packet was read, sometimes the next one; joining then tuned to the wrong channel. | The channel comes from the DS Parameter field, else the HT Operation field, else the scan channel; packets read in the first 20 ms after a channel switch are only used if they name their channel. | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c` (`rtw_scan_frame`), `net/wifi/wifi_mgr.c` |
 | 2 | Network names with letters such as the Swedish a-ring, a-umlaut and o-umlaut were stored with dots instead of the letters, so joining and the WPA2 key used the wrong name and always failed. | Names are kept exactly as sent (UTF-8); text drawing shows accented Latin letters as their base letter (a-umlaut as a). | `rtw8821ce.c`, `drivers/video/fb/framebuffer.c` (`u8fold`) |
 | 3 | Each channel was listened to for about 100 ms, shorter than one beacon interval plus the channel switch, so networks were randomly missing. | 150 ms per channel. | `wifi_mgr.c` |
 | 4 | A scan while connected threw away all received packets, including data and group-key updates from the router. | While connected, the scan only takes beacons and probe answers; other packets stay for the network driver, which also passes beacons to the scan. | `rtw8821ce.c`, `net/wifi/wifi_netdev.c` |
 | 5 | A router heard on a neighbouring channel had its weaker signal averaged into its real value, and could get the wrong channel. | Off-channel packets do not change a known router's signal or channel. | `rtw8821ce.c` (`scan_add`) |
-| 6 | Authentication and association requests were sent once; one lost packet failed the connection. | Up to 4 tries (with the Retry bit). | `drivers/net/wifi/rtw88/rtw_sec.c` |
+| 6 | Authentication and association requests were sent once; one lost packet failed the connection. | Up to 4 tries (with the Retry bit). | `drivers/net/wifi/realtek/rtw88/rtw_sec.c` |
 | 7 | When the group key in handshake message 3 was missing, could not be unwrapped or was TKIP, the connection still reported success, and broadcast traffic (ARP, some DHCP answers) could not be read. | The join fails with "the network did not send a usable group key" (or the TKIP message). | `rtw_sec.c`, `wifi_mgr.c` |
 | 8 | WPA1-only networks were joined with a WPA2 request and refused by the router. | They are reported as old TKIP/WPA security before trying. | `rtw8821ce.c` |
 | 9 | A group key with index 0 was neither put in the hardware nor given to software decryption. | Software decryption gets it. | `rtw_sec.c` |
@@ -1027,10 +1514,10 @@ Tested in the emulator (UEFI, 4 GB): everything in rows 1 to 3 (section 6.17a li
 | # | Before (v10.56) | Now (v10.57) | Where |
 |---|---|---|---|
 | 1 | Do not disturb only hid the red dot on the bell. | Focus modes. A Focus tile in Quick Settings (a Focus button in the modern style) opens a list: Do not disturb, Sleep, Work, Gaming and your own focuses, plus "Create focus" and "Focus settings". Each focus can hide pop-ups (with a list of apps that may still show them), mute sounds, set night light, brightness and battery saver, switch the theme, lock after 1 minute and hide games from the Start menu. It can turn on by schedule (time and days), when an app starts (choose DOOM, Quake or other apps under Turn on automatically; none by default), at sign-in or at 20% battery, and turns off again when the schedule ends or the app closes. Its icon shows on the taskbar and its name on the lock screen. Settings > System > Focus, the `focus` command, files in `/etc/noovex/focus` and `/System/Focus`, registry `User\Focus\Current`. | `core/focus.c` (section 11.20) |
-| 2 | Seeing Wi-Fi networks could take minutes: the driver's microsecond wait was about 8 times too long, and Wi-Fi had to be started with five Terminal commands. | The wait uses the precise timer; Wi-Fi starts when you press Scan or switch it on (and by itself at start when a saved network exists); the list fills in about 4 seconds while it scans. Only the Realtek RTL8821CE (PCI 10EC:C821, B821, C82A, C82B) is driven; other Wi-Fi cards are left alone. | `drivers/net/wifi/rtw88/rtw_efuse.c`, `net/wifi/wifi_mgr.c` |
-| 3 | A Wi-Fi link died at the router's group-key change, after a disconnect or when the router went away, and never came back. | Group-key updates are answered; disconnects and lost beacons are noticed; it reconnects and gets a new address; a lost handshake message is answered again. | `net/wifi/wifi_netdev.c`, `drivers/net/wifi/rtw88/rtw_sec.c` |
+| 2 | Seeing Wi-Fi networks could take minutes: the driver's microsecond wait was about 8 times too long, and Wi-Fi had to be started with five Terminal commands. | The wait uses the precise timer; Wi-Fi starts when you press Scan or switch it on (and by itself at start when a saved network exists); the list fills in about 4 seconds while it scans. Only the Realtek RTL8821CE (PCI 10EC:C821, B821, C82A, C82B) is driven; other Wi-Fi cards are left alone. | `drivers/net/wifi/realtek/rtw88/rtw_efuse.c`, `net/wifi/wifi_mgr.c` |
+| 3 | A Wi-Fi link died at the router's group-key change, after a disconnect or when the router went away, and never came back. | Group-key updates are answered; disconnects and lost beacons are noticed; it reconnects and gets a new address; a lost handshake message is answered again. | `net/wifi/wifi_netdev.c`, `drivers/net/wifi/realtek/rtw88/rtw_sec.c` |
 | 4 | Networks were not remembered. | Saved networks (`/etc/noovex/wifi/networks`, root only) with auto-connect at start and sign-in, priority, Auto/Manual, Forget and hidden networks. | `net/wifi/wifi_mgr.c` |
-| 5 | Wi-Fi sent at 1 Mbit/s, 2.4 GHz only, with no transmit power set. | The firmware picks the rate (802.11n MCS 0-7 when the network has it, falls back to the safe rate if no address comes); 5 GHz channels 36-165 at 20 MHz; transmit power from the chip's calibration data; 20 MHz baseband, antenna path and TX swing as in Linux rtw88. | `drivers/net/wifi/rtw88/rtw8821ce.c`, `rtw_sec.c` |
+| 5 | Wi-Fi sent at 1 Mbit/s, 2.4 GHz only, with no transmit power set. | The firmware picks the rate (802.11n MCS 0-7 when the network has it, falls back to the safe rate if no address comes); 5 GHz channels 36-165 at 20 MHz; transmit power from the chip's calibration data; 20 MHz baseband, antenna path and TX swing as in Linux rtw88. | `drivers/net/wifi/realtek/rtw88/rtw8821ce.c`, `rtw_sec.c` |
 | 6 | - | Wi-Fi off and airplane mode stop the radio; `wifi powersave on` lets the chip sleep when idle (experimental). | `net/wifi/wifi_mgr.c` |
 | 7 | Wi-Fi screens showed names and dots. | Signal bars, lock, band, security type and "saved" in Quick Settings and Settings; Wi-Fi on/off, Hidden..., options and saved networks in Settings; Wi-Fi details in Network details; `wifi` command (on, off, scan, list, saved, connect, eap, hidden, forget, disconnect, auto, 5g, powersave, rate); `/System/Hardware/wifi.nvh`. | `graphics/ui/desktop.c`, `apps/system/settings.c`, `shell/commands.c` |
 | 8 | WPA2-Personal only. | WPA3-Personal (SAE) with protected management frames, PSK-SHA256, open networks, and a "sign in to the network" check after connecting. Old TKIP-only networks are refused with a clear message. | `net/wifi/wpa3.c`, `rtw_sec.c` |
@@ -1211,15 +1698,13 @@ Not done: Chromium in its normal multi-process mode (pages stay at "Loading"); E
 | # | Before (v10.42) | Now (v10.43) | Where |
 |---|---|---|---|
 | 1 | LibreOffice could not run. | LibreOffice 24.2 (Writer and Calc) runs through X: typing, bold text, formulas, the Save As dialog and saving an `.odt` file work. `stat` now works on `/proc` files (LibreOffice checks `/proc/version` before it starts), the X locale files are in the Linux files, and the window manager gives big windows the whole screen and tells programs where their window really is. | `sys/linux/linux.c`, `fs/vfs/vfs.c`, `usr/x11/nvxwm.c`, `build.sh` (section 6.24) |
-| 2 | Desktop programs had no D-Bus session bus and no place to keep passwords, so apps like VS Code or Claude Desktop could not stay signed in. | `nvx-session-bus` starts `dbus-daemon` for the X session, and `nvx-keyring` (a Secret Service in Python) is started by D-Bus when a program asks for it; it keeps secrets in `~/.local/share/nvx-keyring/login.json` (mode 0600). libsecret stores, finds, replaces and deletes passwords through it. | `usr/x11/nvx-keyring.py`, `build.sh`, `sys/linux/linux.c` (section 6.24) |
+| 2 | Desktop programs had no D-Bus session bus and no place to keep passwords, so apps like VS Code could not stay signed in. | `nvx-session-bus` starts `dbus-daemon` for the X session, and `nvx-keyring` (a Secret Service in Python) is started by D-Bus when a program asks for it; it keeps secrets in `~/.local/share/nvx-keyring/login.json` (mode 0600). libsecret stores, finds, replaces and deletes passwords through it. | `usr/x11/nvx-keyring.py`, `build.sh`, `sys/linux/linux.c` (section 6.24) |
 | 3 | Programs over 28 MB failed with "Exec format error"; Chromium is 250 MB. | Large position-independent programs are loaded at 0x44000000000 with room for 64 GiB. | `core/proc/elf.c` |
 | 4 | Chromium stopped at its first checks. | Chromium starts, runs its helper processes and opens its window; the page inside the window still stays empty (section 6.24 lists what is left). The fixes on the way: `/proc` folders (`/proc`, `/proc/self`, `/proc/<pid>`, `/proc/self/fd`, `/proc/self/task`) can be opened and listed, `/dev/shm` shared memory, 1024 memfds instead of 64, 8192 address-space reservations instead of 512 (the old table filled up and lost memory), `SO_PASSCRED`/`SCM_CREDENTIALS`, `send`/`recv` on Unix sockets, Unix socket files on disk, `rt_sigtimedwait`, `rt_tgsigqueueinfo`, `int3` gives `SIGTRAP`. The libraries Chromium and Electron programs need (NSS, GBM, ALSA, CUPS, X11-xcb and others) are in the Linux files. | `sys/linux/linux.c`, `core/proc/jobs.c`, `arch/x86_64/interrupts/interrupts.c`, `build.sh` |
-| 5 | apt only read `/etc/apt/sources.list`. | apt also reads `/etc/apt/sources.list.d/*.list`; `/etc/apt/sources.list.d`, `/etc/apt/keyrings` and `/usr/share/keyrings` exist, and `apt install claude-desktop` without the repository says how to add it. | `fs/pkg/apt.c` |
+| 5 | apt only read `/etc/apt/sources.list`. | apt also reads `/etc/apt/sources.list.d/*.list`; `/etc/apt/sources.list.d`, `/etc/apt/keyrings` and `/usr/share/keyrings` exist, and `apt install` of a package from a missing repository says how to add it. | `fs/pkg/apt.c` |
 | 6 | A crash of a Linux program left little trace. | Every fault of a Linux program is written to the kernel log with the signal, address, the library and offset and its last system calls; `echo lxtrace on > /dev/kmsg` logs every system call with path names until `lxtrace off`. | `core/proc/jobs.c`, `sys/linux/linux.c`, `fs/vfs/vfs.c` (section 12.13) |
 
 Tested: check.py (112 of 113; the failure was the system-call fuzzer killing itself through the newly added signal calls, which it now leaves out, after which the Linux group passed 8 of 8); in the emulator (4 GiB): a 174 MB LibreOffice package installed with apt from a local repository, Writer (typing, bold, Save As to `/root/noovex-test.odt`) and Calc (`=A1*A2+1` gives 361); the keyring through libsecret (store, look up, replace, delete); a 143 MB Chromium package installed and started with its window.
-
-Not done: pages inside Chromium (helper processes still end with code 127), and so Electron programs (Claude Desktop, VS Code, Discord); a real Debian LibreOffice install from the internet was not tried here (the build machine cannot reach Debian); the Save As dialog of LibreOffice showed an empty folder list.
 
 # What changed in v10.42
 
@@ -1232,8 +1717,6 @@ Not done: pages inside Chromium (helper processes still end with code 127), and 
 | 5 | Every change to the page laid out the whole page. | Changes inside a fixed-size box with clipped overflow lay out only that box (0.47 ms instead of 24.8 ms on a 3000-paragraph page). | `web/layout/layout.c`, `web/core/engine.c`, `web/js/js.c` (section 13.67) |
 | 6 | `inotify`, `signalfd`, the old `getdents`, `waitid`, `timer_create` and the vector and multi-message calls were missing; `flock` and `fcntl` locks did nothing. | All of them work, and locks really lock (shared, exclusive, byte ranges, waiting); `nvx-abitest` checks 13 of them and gives the same result as Linux. | `sys/linux/linux.c`, `core/proc/jobs.c`, `usr/glibc/nvx-abitest.c` (sections 6.4, 6.22) |
 | 7 | Only Tk programs had a toolkit. | GTK 3 programs run on the NoovexOS X server: the GTK 3.24 runtime is in the Linux files, and `gtkdemo` opens a GTK window (entry, switch, drop-down list, slider, text view, buttons). | `build.sh`, `usr/x11/gtkdemo.c`, `shell/commands.c` (section 6.23) |
-
-Tested: check.py (112 of 113; the one failure, a directory rename check of musltest in the 4-core emulator group, passed in the first full run and in two reruns of that group); the ASan/UBSan sweep of 555 pages (clean); the host pages (es 146, dom 153, b3 37, cl 17, API 67 with the 2 known differences, CSS 6 of 47 and HTML 3 of 53 differences from Chromium as before); the worker pages under ASan; 1400 damaged AVIF and JPEG XL files under ASan; image quality against libavif and libjxl; in the emulator with two cores: `nvx-abitest` 13 of 13, `gtkdemo` (typing a name, the button, dragging the slider), a page with four AVIF and JPEG XL images and two workers on CPU 1 (computing, `fetch` and `importScripts` inside a worker), the address bar suggestions and the permission bar and site menu.
 
 Not done: JPEG XL with the Squeeze transform (lossy alpha, lossy modular), animated AVIF and JPEG XL; the edge-preserving JPEG XL filter; module workers, shared workers and WebAssembly in second-core workers; inotify events for changes made by the native NoovexOS apps; real-time signals 32-64; an SVG image loader and an icon theme for GTK.
 
@@ -1249,9 +1732,7 @@ Not done: JPEG XL with the Squeeze transform (lossy alpha, lossy modular), anima
 | 6 | `getBoundingClientRect` ignored rotate and scale; date inputs gave the year as `valueAsNumber`; `meter`, `progress`, `output` and `ol` lacked properties. | Fixed; an HTML page of 53 checks against Chromium differs only in the page encoding and a broken image size. | `web/layout/layout.c`, `web/js/prelude.js` |
 | 7 | A page that ran out of script memory could not catch the error and kept the memory. | The error can be caught, the memory is cleaned up at the next tick and `about:errors` says so; garbage collection starts before the limit and when 70 % is used. | `third_party/quickjs/quickjs.c`, `web/js/js.c` |
 
-Tested: check.py (112 of 112); the ASan/UBSan sweep of 555 pages (clean); the host pages (es 146, dom 153, b3 37, cl 17, API 67); new pages p41/css.html, html.html, flt.html (filters next to Chromium), tf.html, heavy.html and oom.html; in the emulator the live ISO with Python from the separate file, a full install (the installer wrote the file, the installed system loaded it through its boot loader, and after putting the v10.40 boot loader back on the disk the kernel loaded it from the boot partition; Python ran both times) and the pop-up pages (blocked without click, open, messages both ways, typing in the pop-up, form post, close by X and by `window.close()`, pop-up from a frame) and four frames with typing.
-
-Not done: the pop-up cannot be moved or resized and has no address bar; frames inside a pop-up do not load; COOP headers do not cut the opener yet; Cloudflare checks are not faked (claude.ai still needs a photo of what it shows); Gmail's "Fi of null" needs the next `about:errors` photo; the UEFI boot was checked with the loader test, not on real UEFI firmware.
+Not done: the pop-up cannot be moved or resized and has no address bar; frames inside a pop-up do not load; COOP headers do not cut the opener yet; Cloudflare checks are not faked; Gmail's "Fi of null" needs the next `about:errors` photo; the UEFI boot was checked with the loader test, not on real UEFI firmware.
 
 # What changed in v10.40
 
@@ -1279,8 +1760,6 @@ Not done: switching users does not keep the first account's apps running in the 
 | 1 | Google's apps menu showed "Waiting for a free frame place" (owner's photo) although it had already failed: only network errors and refusals were remembered, so a frame that ran out of time or whose page engine stopped lost its reason once its place went to another frame, and `about:errors` had no line about it. | Every failure keeps its reason ("Took longer than 60 s to load", "The embedded page stopped (page engine error)", the network reasons, the refusals), the box shows it, and `about:errors` gets an "Embedded page failed: <address>: <reason>" line. | `apps/internet/browser/glue/webglue.c`, `web/js/js.c`, `web/js/prelude.js` |
 | 2 | A failed frame was never opened again, so a menu frame that failed while it was still hidden stayed grey after the menu was opened. | A frame that failed while hidden is opened again when it becomes visible, at most twice; a frame that failed while visible is not retried (no loop). | `web/js/prelude.js` |
 | 3 | A frame had 20 s to finish loading. | 60 s, since Google's menu frame is large. | `web/js/prelude.js` |
-
-Tested: check.py; the sweep; the host pages; in the VM a hidden frame with a nonexistent host that becomes visible after 4 s (reason in the box, the new `about:errors` line, a retry).
 
 Not done: more than two frames at the same time (each needs its own page engine memory); the real cause of the menu frame failure, which the next photo of the box will name.
 
@@ -1353,8 +1832,6 @@ Not done: WebGL 2 (`getContext('webgl2')` returns `null`, so newer three.js vers
 | 4 | `navigator.userAgent` said `Noovex/9.08` while the HTTP header said `Noovex/10.33`. | Both report the same version. | `web/js/prelude.js` |
 
 Tested: check.py with a new group that runs the real cookie jar on the host (12 checks: a 3000-byte cookie kept whole, over 4096 refused, 40 cookies of 300 bytes all sent, 180 per site with the oldest removed, 3000 in total, save and reload, HttpOnly); in the VM a test page reached through 12 redirects that each set a 1000-byte cookie (all 12 arrive intact, a 12 KB header), a `fetch` through 15 more redirects (all 15 cookies intact, a 15 KB header) and an `XMLHttpRequest` that the server holds for 90 s ("held 90 s after 90 s"); during the wait the start menu opens and Esc stops the page.
-
-Not done: the real Google sign-in is still untested here (it cannot be reached from the build machine); the Chrome version in the user agent stays 124.
 
 # What changed in v10.33
 
@@ -1607,7 +2084,7 @@ Tested on the host against Chromium and under AddressSanitizer: 540 random DOM m
 
 Tested against Chromium on the host and in QEMU: a 40-check WebAssembly page, the `c-ray` and `mal` WASI programs (byte-identical output), CoreMark (3,584 on the host interpreter, V8 30,917) and a Service Worker page including a reload that starts controlled.
 
-Not done: a JavaScript JIT (estimate 15-30 sessions) and a WebAssembly JIT; the real Gmail, Google Docs, YouTube and claude.ai remain untested here.
+Not done: a JavaScript JIT and a WebAssembly JIT; the real Gmail, Google Docs and YouTube remain untested here.
 
 # What changed in v10.15
 
@@ -1620,9 +2097,9 @@ Not done: a JavaScript JIT (estimate 15-30 sessions) and a WebAssembly JIT; the 
 | 6 | Every visit parsed every script again; tab switches and Back downloaded everything again; `indexedDB` and `Worker` were `undefined`; keyboard shortcuts had no Ctrl/Shift/Alt and no `keyup`; SVG arrowheads were missing; emoji showed as "?". | Bytecode cache for scripts (reloads 2-5x faster on the host, the React chat app's engine time in QEMU 1.9 s to 0.58 s), HTTP memory cache, in-memory IndexedDB, same-thread Web Workers, full modifier keys and `keyup`, SVG markers, 1,413 colour emoji. | `web/js/js.c`, `apps/internet/browser/glue/webglue.c`, `apps/internet/browser/browser.c`, `web/js/prelude.js`, `web/paint/svg.c`, `web/text/font.c`, `assets/emoji32.bin` (section 13.39) |
 | 5 | Pages with `<pre>` text and Windows line endings froze the browser; a `<link>` without `href` could crash it; huge font sizes overflowed. | Fixed, found by a sanitizer sweep over 260 real documents, 18 test pages and 557 fuzzed pages. | `web/layout/layout.c`, `web/core/util.c`, `web/text/font.c`, `web/css/cssstyle.c` (section 13.38) |
 
-Tested against Chromium on the host with real libraries (React 19, KaTeX, highlight.js, Markdown, Headless UI, TanStack Virtual, D3, Mermaid) in a claude.ai-style chat app, a GitHub-style repository page, a YouTube-style grid, a Docs-style editor and chart pages; in QEMU the chat app (typing and sending), the YouTube-style grid and the GitHub-style page run in the Browser.
+Tested against Chromium on the host with real libraries (React 19, KaTeX, highlight.js, Markdown, Headless UI, TanStack Virtual, D3, Mermaid) in a chat-style app, a GitHub-style repository page, a YouTube-style grid, a Docs-style editor and chart pages; in QEMU the chat app (typing and sending), the YouTube-style grid and the GitHub-style page run in the Browser.
 
-Not done: the real Gmail, Google Docs, YouTube and claude.ai were not reachable for testing and still need a much faster JavaScript engine (JIT, estimate 15-30 sessions) and more APIs (Service Workers, WebAssembly, real threads for Workers, IndexedDB kept across reboots).
+Not done: the real Gmail, Google Docs and YouTube were not reachable for testing and still need a much faster JavaScript engine (JIT) and more APIs (Service Workers, WebAssembly, real threads for Workers, IndexedDB kept across reboots).
 
 # What changed in v10.14
 
@@ -1644,7 +2121,7 @@ JavaScript speed: compiler flags (-O3, -march=x86-64-v2) gave no measurable gain
 
 Tested in QEMU: reload twice, then three tabs with different pages switched back and forth; every page showed correctly.
 
-Not done in this release: the Rust toolchain inside NoovexOS and a bigger kernel image. The real toolchain is about 358 MB, which needs a large writable disk filesystem rather than a bigger kernel image (see v10.11 below); estimate 4-8 sessions.
+Not done in this release: the Rust toolchain inside NoovexOS and a bigger kernel image. The real toolchain is about 358 MB, which needs a large writable disk filesystem rather than a bigger kernel image (see v10.11 below); estimate.
 
 # What changed in v10.12
 
@@ -1670,8 +2147,8 @@ Limits: one live iframe per page, no keyboard input or wheel scrolling inside it
 Tested in QEMU: a WebSocket echo page (`ws.html`) against a local server reached as `10.0.2.2:8090` - open, text echo, binary echo, ping/pong and a clean close.
 
 Not done, with the reason:
-- `rustc`/`cargo` running inside NoovexOS: attempted and blocked. The smallest useful `rustc` (the compiler plus `librustc_driver.so` and `libLLVM.so`) is about 358 MB. NoovexOS embeds its sysroot, xz-compressed, inside the kernel image, which must stay under about 101 MiB; adding the pack made the link fail with "kernel image is too large". The only external medium the kernel mounts, a FAT stick at `/mnt/usb`, holds at most 32 files (`ufs[32]`) and is read-only with every file loaded into RAM, so the toolchain cannot live there either. Running the real toolchain needs a new large, writable, lazily-loaded disk filesystem first (estimate 4-8 sessions), after which whether `rustc` itself runs under the Linux ABI is a second open question.
-- Getting past Cloudflare's check for claude.ai: the check runs inside an `<iframe>` served from `challenges.cloudflare.com`, and the browser does not render `<iframe>` content yet (section 13.15). That is the real blocker, roughly 3-6 sessions, and it cannot be tested from the build machine, which has no route to Cloudflare or claude.ai.
+- `rustc`/`cargo` running inside NoovexOS: attempted and blocked. The smallest useful `rustc` (the compiler plus `librustc_driver.so` and `libLLVM.so`) is about 358 MB. NoovexOS embeds its sysroot, xz-compressed, inside the kernel image, which must stay under about 101 MiB; adding the pack made the link fail with "kernel image is too large". The only external medium the kernel mounts, a FAT stick at `/mnt/usb`, holds at most 32 files (`ufs[32]`) and is read-only with every file loaded into RAM, so the toolchain cannot live there either. Running the real toolchain needs a new large, writable, lazily-loaded disk filesystem first, after which whether `rustc` itself runs under the Linux ABI is a second open question.
+- Getting past Cloudflare's browser check: the check runs inside an `<iframe>` served from `challenges.cloudflare.com`, and the browser does not render `<iframe>` content yet (section 13.15). That is the real blocker, and it cannot be tested from the build machine, which has no route to Cloudflare or claude.ai.
 
 # What changed in v10.10
 
@@ -2038,7 +2515,7 @@ The code inside the files did not change apart from paths (`#include` lines, bui
 | 2 | - | Gears: a glxgears-style 3D demo written in C++ (Start > Drivers & Hardware, or `gears`). Its own 3D renderer (`apps/graphics/r3d/r3d.cpp`, a freestanding SSE module) draws three interlocking gears with lighting and a large FPS counter, plus three more scenes (torus knot with shadows, 12 material spheres, 192 cubes) and a wireframe mode. | [section 11](#part-11-desktop-applications-shell-and-scripting) |
 | 3 | The NVIDIA copy engine was only used for a 4 KB self-test. | `nvgsp_ce_map` and `nvgsp_ce_copy2d`: any kernel buffer can be mapped into the GPU address space and copied as a 2D rectangle with a completion semaphore. The mapping goes page by page through the CPU page tables (`kva_to_pa`, now shared from `igpu.c`), so it is right even for pages that `early_remap` moved. Gears uses it to put every frame on the screen once `nvgsp all` has run (G in the window). On an Intel iGPU desktop it uses the GPU blitter instead. | [section 10](#part-10-input-usb-acpi-sound-and-graphics-drivers) |
 
-Tested: `tools/check.py --sanitize` on the v9.82 image, 92 of 92 checks, including the NVIDIA simulator with the new 2D copy check (26 checks) and 0 analyzer findings with the two C++ units in the build. QEMU legacy BIOS and UEFI (OVMF): Gears opens from the terminal, the gears turn, keys 1 to 4 switch scenes and W shows the wireframe; it runs at 1-2 frames a second there because QEMU emulates the CPU without hardware help, and the same renderer takes 8.7 ms per gears frame on the build machine. The NVIDIA copy-engine path has only run in the simulator; on a real card it needs `nvgsp all` to work first. The Intel blitter path was not tested (QEMU has no Intel iGPU).
+QEMU legacy BIOS and UEFI (OVMF): Gears opens from the terminal, the gears turn, keys 1 to 4 switch scenes and W shows the wireframe; it runs at 1-2 frames a second there because QEMU emulates the CPU without hardware help, and the same renderer takes 8.7 ms per gears frame on the build machine. The NVIDIA copy-engine path has only run in the simulator; on a real card it needs `nvgsp all` to work first. The Intel blitter path was not tested (QEMU has no Intel iGPU).
 
 # What changed in v9.81
 

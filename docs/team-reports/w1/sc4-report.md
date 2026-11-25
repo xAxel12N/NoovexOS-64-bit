@@ -75,8 +75,8 @@ Size: ~600-800 lines. Firmware licence: linux-firmware WHENCE says "Licence: Red
 ## 4. Recommended plan with estimates
 
 **Milestone 1: "scan and list nearby devices"** (rank 1), 12-20 agent-hours plus owner hardware test.
-1. `drivers/bluetooth/btusb.c` (own): claim class E0/01/01 (match 0BDA:C123 and the generic Realtek E0 class). Implement EP0 command send, interrupt-IN event ring and bulk ACL in/out.
-2. `drivers/bluetooth/rtlbt_fw.c`: port FreeBSD rtlbtfw (BSD-2) for V1+V2, cross-checked against btrtl. Add the blobs to the firmware assets: `rtl8821c_fw.bin`, `rtl8821c_config.bin`, `rtl8822cu_fw.bin`, `rtl8761bu_config.bin`.
+1. `drivers/bluetooth/transport/btusb.c` (own): claim class E0/01/01 (match 0BDA:C123 and the generic Realtek E0 class). Implement EP0 command send, interrupt-IN event ring and bulk ACL in/out.
+2. `drivers/bluetooth/firmware/rtlbt_fw.c`: port FreeBSD rtlbtfw (BSD-2) for V1+V2, cross-checked against btrtl. Add the blobs to the firmware assets: `rtl8821c_fw.bin`, `rtl8821c_config.bin`, `rtl8822cu_fw.bin`, `rtl8761bu_config.bin`.
 3. Minimal HCI layer (own):
    - Reset, Read_BD_ADDR, Set_Event_Mask, Write_Inquiry_Mode=2 (EIR).
    - Inquiry: parse Inquiry_Result_with_RSSI and Extended_Inquiry_Result (name from EIR), and run Remote_Name_Request for devices without a name.
@@ -103,7 +103,7 @@ Testing:
 Rough total to "BT mouse + keyboard + headphones on the owner's PC": **~100-150 agent-hours**, of which milestone 1 is ~15.
 
 ## 5. Files and paths
-- Our existing code: `drivers/usb/xhci/usb_network.c` (template), `drivers/usb/xhci/hid_keyboard_mouse.c`, `drivers/input/input.c`, `drivers/sound/ring.h`, `drivers/net/wifi/rtw88/rtw8821ce.c:261` + `chips/rtw8821c.c:264` (coex), `third_party/ffmpeg/libavcodec/sbcenc.c`.
+- Our existing code: `drivers/usb/xhci/usb_network.c` (template), `drivers/usb/xhci/hid_keyboard_mouse.c`, `drivers/input/input.c`, `drivers/sound/ring.h`, `drivers/net/wifi/realtek/rtw88/rtw8821ce.c:261` + `chips/rtw8821c.c:264` (coex), `third_party/ffmpeg/libavcodec/sbcenc.c`.
 - References downloaded:
   - `/tmp/sc4dl/WHENCE`, `/tmp/sc4dl/rtl8821c_fw.bin`, `/tmp/sc4dl/rtl8822cu_fw.bin`;
   - `/tmp/sc4dl/nb/*` (NetBSD netbt, dev/bluetooth, ubt.c);

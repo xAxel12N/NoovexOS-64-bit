@@ -13,7 +13,7 @@ This was a read-only review: nothing was built and nothing was run on hardware.
 ## HIGH
 
 ### H1. The EIR event is not unmasked (the report's claim is false). Phones and PCs found over BR/EDR lose their names, or are not reported at all.
-**Where:** `drivers/bluetooth/hci.c:76`
+**Where:** `net/bluetooth/hci.c:76`
 ```c
 static const u8 em[8]={0xFF,0xFF,0xFB,0xFF,0x02,0x00,0x00,0x60};
 ```
@@ -33,7 +33,7 @@ Optional: add an assert to `tools/tests/bluetooth/hci_main.c` that bit 46 and bi
 ## MEDIUM
 
 ### M1. Coex restore: if the indirect write to 0x38 fails, the "done" flag is already cleared, so Wi-Fi is left on HW-PTA grant with no retry
-**Where:** `drivers/net/wifi/rtw88/rtw8821ce.c:266`
+**Where:** `drivers/net/wifi/realtek/rtw88/rtw8821ce.c:266`
 - On the off path, `g_rtw_coex_bt=0` is set first. Then `rtw_lte_write(m,0x38,saved)` runs. That write can fail when `rtw_lte_wait` times out, for example while the card is in LPS or briefly busy.
 - On failure, GNT_BT/GNT_WL stay at HW PTA. Nobody retries, and `bt_coex()` (hci.c:87) ignores the return value.
 - This is the only code path where the antenna is not put back exactly. Every other path checks out:
@@ -62,7 +62,7 @@ Optional: add an assert to `tools/tests/bluetooth/hci_main.c` that bit 46 and bi
 
 **Patch (build.sh, after line 304):**
 ```diff
-+mkdir -p $SR/usr/share/licenses/bluetooth && cp drivers/bluetooth/NOTICE $SR/usr/share/licenses/bluetooth/NOTICE && sed -n '1,28p' drivers/bluetooth/rtlbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.rtlbtfw-BSD-2-Clause && cp assets/firmware/rtl_bt/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.rtl_bt.txt
++mkdir -p $SR/usr/share/licenses/bluetooth && cp drivers/bluetooth/NOTICE $SR/usr/share/licenses/bluetooth/NOTICE && sed -n '1,28p' drivers/bluetooth/firmware/rtlbt_fw.c > $SR/usr/share/licenses/bluetooth/LICENSE.rtlbtfw-BSD-2-Clause && cp assets/firmware/rtl_bt/WHENCE.txt $SR/usr/share/licenses/firmware/WHENCE.rtl_bt.txt
 ```
 Also add these lines to `assets/firmware/README.txt`:
 ```
@@ -87,7 +87,7 @@ Also add these lines to `assets/firmware/README.txt`:
 `btu_remove_below` is already forward-declared in `controller_init.c:146`. `xh_under(route,0,0,0)` is true for a root device.
 
 ### L2. The config blob is skipped when key_id != 0; neither FreeBSD nor Linux does that
-**Where:** `drivers/bluetooth/rtlbt_fw.c:153` (`if(cl>0&&!key&&...)`)
+**Where:** `drivers/bluetooth/firmware/rtlbt_fw.c:153` (`if(cl>0&&!key&&...)`)
 - FreeBSD `main.c` calls `rtlbt_append_fwfile(&fw,&cfg)` whenever a config file is present. Linux btrtl does the same.
 - This only affects 8822C units with a non-zero security key, not the owner's 8821C (V1, key=0). It is still an undocumented deviation (the NOTICE lists only the security-subsection one).
 

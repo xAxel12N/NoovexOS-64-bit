@@ -1,8 +1,14 @@
 static int fx_rowat(int px,int py){ for(int h=0;h<fx_hn2;h++) if(in_rect(px,py,fx_hx[h],fx_hy[h],fx_hw[h],fx_hh[h]))return fx_hrow[h]; return -1; }
-static void fx_confirm_do(int yes){ if(yes&&fx_confirm_dir>0){ int n=fx_rmtree(fx_confirm_dir); dt_save(); char b[40],*p=b; p=scopy(p,"Deleted "); p=udec(p,(u32)n); p=scopy(p," items"); *p=0; toast(b); fx_seldir=-1; if(!DT[fx_dir].used)fx_go(0); } fx_confirm=0; fx_confirm_dir=-1; }
+static void fx_confirm_do(int yes){
+    if(yes&&fx_confirm_dir>0&&DT[fx_confirm_dir].used){
+        if(fx_confirm_kind==1){ fx_trash_folder(fx_confirm_dir); toast("Moved to Trash"); }
+        else { int t=fx_trash_id(); if(t>0&&DT[fx_confirm_dir].parent==t)fx_info_drop(t,'D',DT[fx_confirm_dir].name);
+            int n=fx_rmtree(fx_confirm_dir); dt_save(); if(disk_ok)nvx3_flush_meta(); char b[40],*p=b; p=scopy(p,"Deleted "); p=udec(p,(u32)n); p=scopy(p,n==1?" item":" items"); *p=0; toast(b); }
+        fx_seldir=-1; if(!DT[fx_dir].used)fx_go(0); }
+    fx_confirm=0; fx_confirm_dir=-1; fx_confirm_kind=0; }
 static void fx_click(int px,int py){
     for(int b=0;b<fx_bn;b++) if(in_rect(px,py,fx_bx[b],fx_by[b],fx_bw[b],fx_bh[b])){
-        int id=fx_bid[b]; if(id==90){ fx_confirm_do(0); return; } if(id==91){ fx_confirm_do(1); return; }
+        int id=fx_bid[b]; if(id==90){ fx_confirm_do(0); return; } if(id==91){ fx_confirm_do(1); return; } if(id==94){ fx_do(94,py); return; }
         if(id==40&&fx_mode){ fx_mode=0; fx_go(0); return; } fx_do(id,fx_bval[b]); return; }
     if(fx_confirm)return;
     if(!fx_mode&&fx_pvw>0){
@@ -37,6 +43,11 @@ int fx_rclick(int px,int py){   /* returns context-menu kind for a right-click i
     if(fx_mode||g_files_usb||g_files_tree||fx_confirm)return 0;
     int r=fx_rowat(px,py); if(r>=0){ fx_select_row(r); return fx_rk[r]?2:7; }
     if(in_rect(px,py,fx_mainx,fx_mainy,fx_mainw,fx_mainh)){ g_fsel=-1; fx_seldir=-1; return 8; } return 0; }
+void fx_wheel(int sc){
+    if(fx_mode||g_files_usb||g_files_tree||fx_confirm){ fx_scroll-=sc; return; }
+    extern int out_enter(int,int*,int*); extern void out_leave(int,int,int*,int*); int lx=mx, ly=my;
+    int ok=out_enter(W_FILES,&lx,&ly); int over=fx_th0>0&&in_rect(lx,ly,fx_tx,fx_ty0,fx_tw0,fx_th0); out_leave(W_FILES,ok,&lx,&ly);
+    if(over){ fx_tscroll-=sc*36; if(fx_tscroll<0)fx_tscroll=0; } else fx_scroll-=sc; }
 void files_key(int c){
     if(g_files_usb||g_files_tree)return;
     if(fx_confirm){ if(c=='\n')fx_confirm_do(1); else if(c==27)fx_confirm_do(0); return; }
@@ -53,7 +64,7 @@ void files_key(int c){
 void files_draw(int i){
     if(!g_files_tree&&!g_files_usb){ fx_draw(i); return; }
     if(g_files_tree){                                    /* Windows-style folder tree view */
-        win_frame(i,"File Explorer");
+        win_frame(i,"Files");
         int wx=WN[i].x, wy=WN[i].y+TITLEH, ww=WN[i].w, wh=WN[i].h-TITLEH;
         fill_rect(wx+1,wy+1,ww-2,34,rgb(247,248,250));
         int bh=(mx>=wx+10&&mx<wx+52&&my>=wy+7&&my<wy+30);
@@ -93,7 +104,7 @@ void files_draw(int i){
         return;
     }
     if(g_files_usb){                                     /* USB drive view */
-        win_frame(i,"File Explorer  -  USB (E:)");
+        win_frame(i,"Files  -  USB (E:)");
         int wx=WN[i].x, wy=WN[i].y+TITLEH, ww=WN[i].w, wh=WN[i].h-TITLEH;
         fill_rect(wx+1,wy+1,ww-2,34,rgb(247,248,250));
         int bh=(mx>=wx+10&&mx<wx+96&&my>=wy+7&&my<wy+30);
@@ -111,7 +122,7 @@ void files_draw(int i){
             y+=26; } }
         return;
     }
-    win_frame(i,"File Explorer");
+    win_frame(i,"Files");
     int wx=WN[i].x, wy=WN[i].y+TITLEH, ww=WN[i].w, wh=WN[i].h-TITLEH;
     int sbw=150, listw=232, lx0=wx+sbw, pvx=lx0+listw;
     const char*nav[5]={"Home","Desktop","Documents","Downloads","This PC"};
@@ -237,7 +248,7 @@ void about_draw(int i){
     win_frame(i,"About NoovexOS");
     int x=WN[i].x+28,y=WN[i].y+TITLEH+24;
     draw_logo(WN[i].x+70, y, 60, ACC, 256);
-    dstr(x+90,y+6,"NoovexOS 64",INK,3); dstr(x+90,y+46,"Version 11.10  -  from scratch",rgb(90,100,120),1);
+    dstr(x+90,y+6,"NoovexOS 64",INK,3); dstr(x+90,y+46,"Version 11.22  -  from scratch",rgb(90,100,120),1);
     y+=96; dstr(x,y,"A hobby operating system in C and assembly.",INK,1); y+=22;
     dstr(x,y,"Native x86-64 long mode. No external kernel code.",INK,1); y+=22;
     char b[64],*p=b;p=scopy(p,"CPU: ");p=scopy(p,g_brand);*p=0; dstr(x,y,b,INK,1);

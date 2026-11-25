@@ -20,6 +20,12 @@ static char re_newname[32];
 static void re_hit(int x,int y,int w,int h,int id){ if(re_hn<48){ re_hx[re_hn]=x; re_hy[re_hn]=y; re_hw[re_hn]=w; re_hh[re_hn]=h; re_hid[re_hn]=id; re_hn++; } }
 static void re_cp(char* d,const char* s,int cap){ int i=0; for(;s[i]&&i<cap-1;i++)d[i]=s[i]; d[i]=0; }
 static int re_has(const char* s,const char* w){ if(!w[0])return 1; for(int i=0;s[i];i++){ int k=0; while(w[k]){ char a=s[i+k], b=w[k]; if(a>='A'&&a<='Z')a+=32; if(b>='A'&&b<='Z')b+=32; if(a!=b)break; k++; } if(!w[k])return 1; } return 0; }
+static void re_fit(char* d,const char* s,int maxw,int cap){
+    re_cp(d,s,cap); if(pw_str(d,1)<=maxw)return;
+    int n=slen(d), ew=pw_str("...",1);
+    while(n>0){ n--; while(n>0&&((u8)d[n]&0xC0)==0x80)n--; d[n]=0; if(pw_str(d,1)+ew<=maxw)break; }
+    while(n>0&&d[n-1]==' ')d[--n]=0;
+    if(n+3<cap){ d[n]='.'; d[n+1]='.'; d[n+2]='.'; d[n+3]=0; } }
 static void re_say(const char* m,int err){ re_cp(re_msg,m,96); re_msg_err=err; }
 
 static void re_reload(void){
@@ -69,7 +75,7 @@ void regedit_draw(int i){
         fill_round(c1,ry+6,12,12,3,15,r==2?rgb(170,174,186):rgb(80,140,220));
         { char t[32]; re_cp(t,re_vals[v],30); pdstr(c1+18,ry+4,t,INK,1); }
         { char t[40]; re_cp(t,val,26); pdstr(c2,ry+4,t,INK,1); }
-        { const char* h=reg_help(key,re_vals[v]); char t[64]; int mxw=(vx+vw-c3-8)/8; if(mxw>62)mxw=62; if(mxw<4)mxw=4; re_cp(t,h[0]?h:(r==2?"Read only":""),mxw+1); pdstr(c3,ry+4,t,rgb(120,126,140),1); }
+        { const char* h=reg_help(key,re_vals[v]); char t[100]; re_fit(t,h[0]?h:(r==2?"Read only":""),vx+vw-c3-8,100); pdstr(c3,ry+4,t,rgb(120,126,140),1); }
         re_hit(vx+1,ry,vw-2,24,100+v); }
     if(!re_nv)pdstr(vx+10,top+60,"No values in this key",rgb(140,144,156),1);
     if(re_mode!=RM_NONE&&re_mode!=RM_FIND){
